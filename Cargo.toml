@@ -18,7 +18,7 @@ futures = "0"
 lazy_static = "1"
 log = "0"
 num = "0"
-rand_core = { version = ">= 0.5, < 1.0", features = ["getrandom"] }
+rand_core = { version = "0.5", features = ["getrandom"] }
 rocket = "0.5.0-rc.2"
 rocket_dyn_templates = { version = "0.1.0-rc.2", features = ["tera"] }
 rusqlite = "0"
