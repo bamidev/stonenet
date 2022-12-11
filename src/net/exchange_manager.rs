@@ -83,7 +83,6 @@ impl ExchangeManager {
         exchange_id: u32,
         buffer: &[u8]
     ) -> bool {
-        error!("TRIGGER response");
         let mut exchanges = self.exchanges.lock().await;
         match exchanges.sessions.remove(&exchange_id) {
             None => false,
@@ -200,7 +199,6 @@ impl ExchangeManager {
 
     /// Starts garbage collecting the unresponded requests.
     pub fn spawn_garbage_collector(self: Arc<Self>, stop_flag: Arc<AtomicBool>) {
-        error!("spawn_garbage_collector");
         tokio::task::spawn(async move {
             let this = self.clone();
             let mut i = 0;

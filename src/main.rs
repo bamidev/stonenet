@@ -98,13 +98,13 @@ async fn main() {
 		let ui = tokio::spawn(async {
 			ui::main(g2).await;
 		});
-		node_main(stop_flag, &globals).await;
+		node_main(stop_flag, &globals, &config).await;
 
 		info!("Exiting stonenetd...");
 		ui.await.expect("Unable to join UI task.");
 	}
 	else {
-		node_main(stop_flag, &globals).await;
+		node_main(stop_flag, &globals, &config).await;
 	}
 	info!("Finished.");
 }
@@ -120,15 +120,17 @@ async fn load_node(db: Arc<Database>, config: &Config) -> OverlayNode {
 	}
 }
 
-async fn node_main(stop_flag: Arc<AtomicBool>, g: &Global) {
+async fn node_main(stop_flag: Arc<AtomicBool>, g: &Global, config: &Config) {
 	info!("Network node started.");
-	let flag2 = stop_flag.clone();
-	let node = g.node.clone();
-	tokio::spawn(async move {
-		if !node.join_network(flag2).await {
-			error!("Attempt at joining the network failed.")
-		}
-	});
+	if config.bootstrap_nodes.len() > 0 {
+		let flag2 = stop_flag.clone();
+		let node = g.node.clone();
+		tokio::spawn(async move {
+			if !node.join_network(flag2).await {
+				error!("Attempt at joining the network failed.")
+			}
+		});
+	}
 	g.node.clone().serve(stop_flag).await;
 	info!("Network node exitted.");
 }

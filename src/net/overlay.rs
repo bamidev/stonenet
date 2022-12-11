@@ -546,7 +546,9 @@ impl OverlayNode {
 	/// Runs a continual loop that can be stopped with `stop()`, that processes
 	/// al messages received on the UDP socket.
 	pub async fn serve(self: Arc<Self>, stop_flag: Arc<AtomicBool>) {
-		tokio::spawn(self.clone().keep_hole_open(stop_flag.clone()));
+		if self.bootstrap_nodes.len() > 0 {
+			tokio::spawn(self.clone().keep_hole_open(stop_flag.clone()));
+		}
 		self.exch.clone().serve(stop_flag, move |address, buffer| {
 			let this = self.clone();
 			tokio::task::spawn(async move {
