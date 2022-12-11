@@ -1,0 +1,6 @@
+{% extends "base" %}
+{% block title %}StoneNet - Home{% endblock %}
+
+{% block content %}
+Welcome to StoneNet!
+{% endblock content %}

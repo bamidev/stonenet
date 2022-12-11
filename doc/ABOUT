@@ -1,0 +1,91 @@
+# About StoneNet
+
+StoneNet is a censorship-resistant peer-to-peer network for (micro-)blogging or
+publishing media.
+It is designed with the preservation of free-speech in mind, trusting in the
+concept of the "Marketplace of Idea's".
+
+StoneNet's highest priority is preserving the data of one's feed, so that it's
+messages cannot be taken down by any one person, institution or goverment.
+In order to accomplish this, StoneNet is completely decentralized, leaving no
+power to a central authorities.
+
+In this day and age, there are a few different networks doing a similar thing,
+but I believe StoneNet is 
+
+## Comparison to other networks
+
+### The freedom to choose the data to support
+
+One problem that other networks have, is that its data gets stored at a peer
+that doesn't necessarily know about its contents, or gets to choose whether it
+wants to help out or not.
+This causes some legal issues in some countries, and moreover, if you don't want
+to be helping people spread illegal content (child pornography for example), you
+can't really do anything about that.
+With StoneNet, you only store data for the feeds you follow. If there is someone
+trying to spread content you don't like, don't follow him/her, and you won't
+store any data for them. It is as simple as that.
+
+### Efficiency
+
+StoneNet is also designed to be have a reasonable bandwith footprint. If
+StoneNet is going to be used to follow many feeds, it should be possible to do
+so without clogging the network. It is not uncommon for people on microblogging
+services such as Twitter or ActivityPub to follow 300 other people (or even 1
+or 2k).
+For example, a new video post of many gigabytes of data, shouldn't have to 'hop'
+over multiple nodes before it gets to its followers.
+In some networks, this happens as part of its feature to keep your IP address
+hidden. In StoneNet, that sacrafice is not made, and it is left up to the user
+to work behind a VPN or another onion routing network, if they wish to stay
+anonymous.
+
+There are plans to create a seperate onion routing network specifically for
+interacting with StoneNet, but that's not final.
+
+## How it works
+
+StoneNet is basically comprised of one 'overlay network', and many 'actor
+networks'. An actor network is the network of the peers that follow a specific
+feed.
+
+Now this poses some challenges. For example, a small network is very prone to
+Cybil attacks. If a goverment came to be aware of an activist's blog on the
+network, and wanted to shut it down, it wouldn't be that hard if there weren't
+that many peers in the actor network (yet).
+To combat this, StoneNet uses a 'network of trust' as well. An user is able to
+construct a list of 'friends', and then the client will make sure to connect to
+those peers before other random peers in the network. This will mean that if you
+are part of the trust network of the feed's author, malicious nodes won't be
+able to block communications for you.
+
+Now, for anyone that is not part of that trust network, or part of another
+trust network that doesn't connect to it, it is a bit harder to fight against
+a Cybil attack.
+However, the StoneNet client will attempt to combat such an attack by
+remembering where it has last seen the author's node, or where it has last seen
+nodes that follow the author from the author's own trust network (if (s)he chooses
+to make that public).
+Those nodes can be asked the important question: are there new posts? Once you
+know that, you can weed out the malicious nodes based on the basis of who is -
+and who isn't willing to give you those posts' data.
+
+## Privacy
+
+StoneNet is not designed to have a peer's IP address hidden by default, as that
+would impact the performance of the network in a significant way. However, I do
+understand that anonimity is very important for those who need to have their
+identity hidden in order to avoid persecution, for example.
+
+The author of a feed technically speaking should only have to be online to
+inject a post into the network, and could then leave. Staying offline could help
+maintain a higher degree of anonimity.
+
+However, if you also need to hide the fact that you are participating in the
+network, using a VPN could be a solution. Tor can't be used with P2P networks
+unfortunately, but an UDP onion routing network, if it existed, could help in
+theory.
+
+Also, you will have the option to only participate in an actor network through
+your own trust network and routing your packets through it.

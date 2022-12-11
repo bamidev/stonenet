@@ -1,0 +1,13 @@
+{% extends "base" %}
+{% block title %}StoneNet - Feed{% endblock %}
+
+{% block content %}
+Address: {{ address }}
+<ul>
+    {% for post in posts %}
+        <li>
+            This is a post
+        </li>
+    {% endfor %}
+</ul>
+{% endblock content %}

@@ -1,0 +1,30 @@
+[package]
+name = "stonenet"
+version = "0.0.0"
+authors = ["Danny de Jong"]
+description = "The API for the censorship-resistant peer-to-peer network for blogging, StoneNet."
+edition = "2021"
+homepage = "https://stonenet.org"
+readme = "README"
+
+[dependencies]
+async-trait = "0"
+base58 = "0"
+bincode = "1"
+dirs = "4"
+ed25519-dalek = { version = "1", features = ["serde"] }
+env_logger = "0"
+futures = "0"
+lazy_static = "1"
+log = "0"
+num = "0"
+rand_core = { version = ">= 0.5, < 1.0", features = ["getrandom"] }
+rocket = "0.5.0-rc.2"
+rocket_dyn_templates = { version = "0.1.0-rc.2", features = ["tera"] }
+rusqlite = "0"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0"
+signal-hook = "0"
+tokio = { version = "1", features = ["rt", "macros", "net", "sync", "time"] }
+toml = "0"
+unsafe-send-sync = "0"
