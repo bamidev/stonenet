@@ -141,6 +141,7 @@ impl OverlayNode {
 				Err(f) => f,
 				Ok(result) => return Some(result)
 			};
+			
 			// Our own node might be in their k-bucket already, so ignore that.
 			// Also, check if all new fingers are actually closer, a malicious
 			// node might put us off track.

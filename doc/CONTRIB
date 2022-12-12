@@ -1,0 +1,38 @@
+# Contribution Guidelines
+
+Here are some guidelines to contributing to this project.
+
+## Spaces or tabs?
+
+Tabs. Tabs for indentation, spaces for aligning code after indentation.
+
+## Committing
+
+Be sure to only commit something once everything actuallycompiles and all tests
+are succeeding.
+
+## Fixing bugs
+
+When fixing a bug, if all tests are passing and yet the bug is there regardless,
+add a new test first, that appropriatly tests the functionality that is
+currently failing. Then, fix the bug.
+
+## The frontend
+
+The 'user interface' is just a web server that runs locally.
+
+All basic functionality of the UI should also work without JavaScript enabled.
+JS should only be used to implement embelishments or extra's.
+Nowadays, it seems a common approach to have the web frontend rely on JS being
+available.
+However, because the user interface for the Stonenet client will also
+be used to host feeds on a regular website, I want to cather to those who
+believe excessive use of JS on websites is a security and/or privacy
+vurnerability.
+
+## Bootstrap nodes
+
+If are a developer that has been contributing significantly to this project,
+and you want to help the network out by hosting your own bootstrap node, please
+let me know!
+I will add your node to the default list in the configuration template file.

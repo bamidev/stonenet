@@ -10,7 +10,7 @@ use std::{
 
 pub struct LimitedVec<V> {
     store: VecDeque<V>,
-    pub limit: usize
+    limit: usize
 }
 
 pub struct LimitedMap<K, V> {
@@ -26,6 +26,7 @@ impl<K, V> LimitedMap<K, V> {
 
 impl<V> LimitedVec<V> {
     pub fn new(limit: usize) -> Self {
+        debug_assert!(limit > 0, "Can't use a limit smaller than 1");
         Self {
             store: VecDeque::new(),
             limit

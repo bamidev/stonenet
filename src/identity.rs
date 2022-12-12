@@ -3,6 +3,7 @@ use std::ops::{Deref, DerefMut};
 use crate::common::*;
 
 use ed25519_dalek;
+use rand_core::OsRng;
 use serde::{Serialize, Deserialize};
 use sha2::{Digest, Sha256};
 
@@ -32,6 +33,11 @@ impl Identity {
 impl MyIdentity {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ed25519_dalek::SignatureError> {
         Ok(Self(ed25519_dalek::Keypair::from_bytes(bytes)?))
+    }
+
+    pub fn generate() -> Self {
+        let mut rng = OsRng {};
+        Self (ed25519_dalek::Keypair::generate(&mut rng))
     }
 
     pub fn public(&self) -> PublicKey {

@@ -133,10 +133,10 @@ async fn node_main(stop_flag: Arc<AtomicBool>, g: &Global, config: &Config) {
 			}
 			else {
 				info!("Joined network.");
-			}
 
-			// Publish own identities
-			node.publish_identities().await;
+				// Publish own identities
+				node.publish_identities().await;
+			}
 		});
 	}
 

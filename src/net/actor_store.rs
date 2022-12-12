@@ -26,7 +26,7 @@ pub struct ActorStoreEntry {
 
 
 lazy_static! {
-    pub static ref NODE_ACTOR_STORE: Mutex<ActorStore> = Mutex::new(ActorStore::new(0));
+    pub static ref NODE_ACTOR_STORE: Mutex<ActorStore> = Mutex::new(ActorStore::new(10));
     pub static ref FOLLOW_ACTOR_STORE: Mutex<HashMap<IdType, Identity>> = Mutex::new(HashMap::new());
 }
 

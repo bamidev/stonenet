@@ -6,6 +6,7 @@ description = "The API for the censorship-resistant peer-to-peer network for blo
 edition = "2021"
 homepage = "https://stonenet.org"
 readme = "README"
+rust-version = "1.59"
 
 [dependencies]
 async-trait = "0"
