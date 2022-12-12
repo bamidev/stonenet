@@ -122,15 +122,25 @@ async fn load_node(db: Arc<Database>, config: &Config) -> OverlayNode {
 
 async fn node_main(stop_flag: Arc<AtomicBool>, g: &Global, config: &Config) {
 	info!("Network node started.");
+
+	// Join the network
 	if config.bootstrap_nodes.len() > 0 {
 		let flag2 = stop_flag.clone();
 		let node = g.node.clone();
 		tokio::spawn(async move {
 			if !node.join_network(flag2).await {
-				error!("Attempt at joining the network failed.")
+				error!("Attempt at joining the network failed.");
 			}
+			else {
+				info!("Joined network.");
+			}
+
+			// Publish own identities
+			node.publish_identities().await;
 		});
 	}
+
+	// Process messages
 	g.node.clone().serve(stop_flag).await;
 	info!("Network node exitted.");
 }

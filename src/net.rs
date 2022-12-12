@@ -25,6 +25,7 @@ use crate::{
 use std::{
 	collections::VecDeque,
 	io,
+	mem,
 	net::SocketAddr,
 	sync::Arc,
 	time::{Duration, SystemTime}
@@ -150,21 +151,24 @@ impl<'a> AsyncIterator for AllFingersIter<'a> {
 	type Item = NodeContactInfo;
 
 	async fn next(&mut self) -> Option<NodeContactInfo> {
-		if self.global_index < self.buckets.len() {
+		while self.global_index < self.buckets.len() {
 			let bucket = self.buckets[self.global_index].lock().await;
 			if self.bucket_index < bucket.main.len() {
 				let result = Some(bucket.main[self.bucket_index].contact_info.clone());
 				self.bucket_index += 1;
-				result
+				return result;
 			}
 			else if self.bucket_index == bucket.main.len() {
 				self.bucket_index = 0;
 				self.global_index += 1;
-				bucket.backup.as_ref().map(|e| e.contact_info.clone())
+				match bucket.backup.as_ref() {
+					None => {},
+					Some(e) => return Some(e.contact_info.clone())
+				}
 			}
-			else { None }
+			else { panic!("Unreachable"); }
 		}
-		else { None }
+		None
 	}
 }
 
@@ -209,8 +213,9 @@ impl<I> Node<I> where I: NodeInterface {
 		return 0xFF;
 	}
 
-	/// Finds the nodes nearest to the given id. Doesn't include its own node_id
-	/// in the lookup.
+	/// Finds the nodes nearest to the given id. There weren't any nodes found
+	/// that are actually closer to the our own node id, an empty list is
+	/// returned.
 	async fn find_nearest_fingers(&self, id: &IdType) -> Vec<NodeContactInfo> {
 		let bucket_pos = match Self::differs_at_bit(&self.node_id, id) {
 			// If ID is the same as ours, don't give any other contacts
@@ -220,26 +225,18 @@ impl<I> Node<I> where I: NodeInterface {
 
 		// Return the fingers of the first non-empty bucket lowest in the
 		// binary tree.
-		for i in (0..(bucket_pos+1)).rev() {
-			let bucket = self.buckets[i].lock().await;
-			if bucket.main.len() > 0 {
-				return bucket.main.iter().map(|e| e.contact_info.clone()).collect()
-			}
-		}
-
-		// When nothing was found, return empty list
-		Vec::new()
+		let bucket = self.buckets[bucket_pos].lock().await;
+		bucket.main.iter().map(|e| e.contact_info.clone()).collect()
 	}
 
 	/// Keeps making FIND_NODE requests until the node has been found
-	pub async fn find_nearest_nodes(&self, id: &IdType) -> Vec<NodeContactInfo> {
-		let mut fingers = self.find_nearest_fingers(id).await;
-		if fingers.len() == 0 {
-			warn!("Couldn't find nearest node because we don't have any fingers anymore.");
+	/*pub async fn find_nearest_nodes(&self, id: &IdType) -> Vec<NodeContactInfo> {
+		let mut prev_fingers = self.find_nearest_fingers(id).await;
+		if prev_fingers.len() == 0 {
 			return Vec::new();
 		};
 
-		let mut prev_fingers = Vec::new();
+		let mut fingers = Vec::new();
 		while fingers.len() > 0 {
 			if !fingers.iter().map(|f| &f.node_id).find(|id| id == &&self.node_id).is_none() {
 				return fingers;
@@ -250,7 +247,7 @@ impl<I> Node<I> where I: NodeInterface {
 
 		// prev_fingers should contain the nearest nodes we could find.
 		prev_fingers
-	}
+	}*/
 
 	/// Gets a new list of peers to contact to get closer to the given ID.
 	/// Returns None if none of the given fingers responded, returns a
@@ -266,30 +263,24 @@ impl<I> Node<I> where I: NodeInterface {
 		Vec::new()
 	}
 
-	// FIXME: Make it so that this function always returns `max` number of contacts.
 	pub async fn find_node_contacts(&self, node_id: &IdType, max: usize) -> Vec<NodeContactInfo> {
 		// Keep finding new fingers until we have not been able to get any
 		// closer to our own ID.
-		let mut current_distance = distance(node_id, &self.node_id);
+		//let mut current_distance = distance(node_id, &self.node_id);
 		let mut prev_fingers = self.find_nearest_fingers(node_id).await;
+		if prev_fingers.len() == 0 { return Vec::new() }
+		
 		let mut fingers = Vec::new();
 		let mut i = 0;
 		loop {
 			fingers = self.find_node_from_fingers(&self.node_id, &*prev_fingers).await;
-			// Our own node might be in their k-bucket already, so ignore that.
-			// Also, check if all new fingers are actually closer, a malicious
-			// node might put us off track.
-			fingers.retain(|f| {
-				f.node_id != self.node_id //&&
-				//distance(&f.node_id, &self.node_id) < current_distance
-			});
 			if fingers.len() == 0 { break; }
 			if i >= 64 {
-				warn!("Loop detected!");
+				error!("Loop detected!");
 				return Vec::new();
 			}
-			// TODO: Maybe get shortest distance of all fingers? Or maybe not necessary.
-			current_distance = distance(&fingers[0].node_id, &self.node_id);
+			// TODO: check if all new fingers are actually closer, a malicious
+			// node might put us off track.
 
 			prev_fingers = fingers;
 			i += 1;
@@ -317,6 +308,7 @@ impl<I> Node<I> where I: NodeInterface {
 
 	/// Pings a node and returns its latency and node ID .
 	pub async fn ping(&self, target: &SocketAddr) -> io::Result<(u32, IdType)> {
+		debug!("Pinging {}...", target);
 		let start = SystemTime::now();
 		let node_id = self.request_ping(target).await?;
 		let stop = SystemTime::now();
@@ -327,6 +319,7 @@ impl<I> Node<I> where I: NodeInterface {
 	/// Removes the node from our k-buckets. Returns false if the node wasn't in
 	/// our k-buckets.
 	async fn reject_node(&self, address: &SocketAddr) -> bool {
+		debug!("Rejecting node {}.", address);
 		for bucket_mutex in self.buckets.iter() {
 			let mut bucket = bucket_mutex.lock().await;
 			let mut index: usize = usize::MAX;
@@ -370,11 +363,17 @@ impl<I> Node<I> where I: NodeInterface {
 
 		let mut bucket = self.buckets[bucket_pos].lock().await;
 
-		// If peer is already in our bucket, do nothing
-		if !bucket.main.iter()
-			.find(|e| e.contact_info.address == contact_info.address)
-			.is_none()
-		{ return }
+		// If peer is already in our bucket, only update node id
+		match bucket.main.iter()
+			.position(|e| e.contact_info.address == contact_info.address)
+		{
+			None => debug!("Remember node {}.", &contact_info.address),
+			Some(index) => {
+				bucket.main[index].contact_info.node_id = contact_info.node_id;
+				debug!("Node ID updated for {}.", &contact_info.address);
+				return;
+			}
+		}
 
 		// If bucket is full, decide what to do after a ping
 		if bucket.main.len() < KADEMLIA_K as usize {
@@ -427,7 +426,7 @@ impl<I> Node<I> where I: NodeInterface {
 		buffer: &[u8]
 	) -> io::Result<(IdType, Vec<u8>)> {
 		let result = self.interface.request(target, message_type_id, buffer).await;
-	
+		
 		// Reject the node from our routing table if it has proven
 		// unresponsive.
 		if !result.is_ok() {

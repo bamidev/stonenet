@@ -144,10 +144,10 @@ impl OverlayNode {
 			// Our own node might be in their k-bucket already, so ignore that.
 			// Also, check if all new fingers are actually closer, a malicious
 			// node might put us off track.
-			fingers.retain(|f| {
-				f.node_id != self.base.node_id //&&
-				//distance(&f.node_id, id) < current_distance
-			});
+			//fingers.retain(|f| {
+			//	f.node_id != self.base.node_id //&&
+			//	//distance(&f.node_id, id) < current_distance
+			//});
 			if fingers.len() == 0 { break; }
 			if i >= 64 {
 				warn!("Loop detected!");
@@ -267,8 +267,12 @@ impl OverlayNode {
 						// If not a single peer was available, reconnect to the
 						// network again.
 						None => {
+							warn!("Lost connection to all nodes.");
 							if !self.join_network(stop_flag.clone()).await {
 								error!("Attempt at rejoining the network failed.")
+							}
+							else {
+								info!("Rejoined the network");
 							}
 							break;
 						}
@@ -342,7 +346,7 @@ impl OverlayNode {
 		if message_type_id > NETWORK_MESSAGE_TYPE_ID_PING_REQUEST + 1 {
 			let address_copy = address.clone();
 			let node = self.base.clone();
-			tokio::task::spawn_local(async move {
+			tokio::task::spawn(async move {
 				node.remember_node(NodeContactInfo {
 					address: address_copy,
 					node_id: sender_node_id
@@ -364,7 +368,7 @@ impl OverlayNode {
 		// If we follow this actor, reply with us as a peer node, and possibly
 		// our other contacts.
 		let mut response: Option<FindActorResponse> = FOLLOW_ACTOR_STORE
-			.lock().unwrap()
+			.lock().await
 			.get(&request.node_id)
 			.map(|public_key| {
 				// TODO: Add other known peers of the subnetwork to this list:
@@ -381,7 +385,7 @@ impl OverlayNode {
 		// If we don't follow this actor, check if we have stored in our node's
 		// DHT store.
 		if response.is_none() {
-			response = NODE_ACTOR_STORE.lock().unwrap()
+			response = NODE_ACTOR_STORE.lock().await
 				.find(&request.node_id)
 				.map(|entry| {
 					FindActorResponse {
@@ -431,7 +435,6 @@ impl OverlayNode {
 	}
 
 	async fn process_response(&self, sender_node_id: &IdType, message_type_id: u8, exchange_id: u32, buffer: &[u8]) {
-		error!("Process response");
 		let success = self.exch.trigger_response(sender_node_id, exchange_id, buffer).await;
 		if !success {
 			error!("Unable to trigger response with exchange ID {}.", exchange_id)
@@ -483,7 +486,7 @@ impl OverlayNode {
 
 		// TODO: Check if actor_id is indeed the hash of the public_key.
 
-		let mut node_store = NODE_ACTOR_STORE.lock().unwrap();
+		let mut node_store = NODE_ACTOR_STORE.lock().await;
 		match node_store.find_mut(&request.actor_id) {
 			None => {
 				let mut new_list = LimitedVec::new(10); // TODO: Use a constant for array size
@@ -493,6 +496,7 @@ impl OverlayNode {
 				});
 				node_store.add(request.actor_id.clone(), ActorStoreEntry {
 					public_key: request.public_key.clone(),
+					i_am_available: false,
 					available_nodes: new_list
 				});
 			},
@@ -512,6 +516,7 @@ impl OverlayNode {
 		target: &SocketAddr,
 		node_id: &IdType
 	) -> io::Result<FindActorResponse> {
+		debug!("Find actor request to {}", target);
 		let response = self.base.request_find_x(
 			target,
 			node_id,
@@ -563,20 +568,49 @@ impl OverlayNode {
 		nodes: Vec<NodeContactInfo>
 	) -> bool {
 		let contacts = self.base.find_node_contacts(&actor_id, KADEMLIA_K as _).await;
-
-		let futs = contacts.iter().map(|c| async {
-			match self.request_store_actor(
-				&c.address,
-				actor_id.clone(),
-				public_key.clone(),
-				nodes.clone()
-			).await {
-				Err(_) => false,
-				Ok(()) => true
+		if contacts.len() == 0 {
+			let mut store = NODE_ACTOR_STORE.lock().await;
+			store.store_personal(actor_id, public_key);
+			false
+		}
+		else {
+			let futs = contacts.iter().map(|c| async {
+				match self.request_store_actor(
+					&c.address,
+					actor_id.clone(),
+					public_key.clone(),
+					nodes.clone()
+				).await {
+					Err(_) => false,
+					Ok(()) => true
+				}
+			});
+			let mut results = join_all(futs).await;
+			results.retain(|r| *r);
+			if results.len() == 0 {
+				let mut store = NODE_ACTOR_STORE.lock().await;
+				store.store_personal(actor_id, public_key);
+				false
 			}
-		});
-		let mut results = join_all(futs).await;
-		results.retain(|r| *r);
-		results.len() > 0
+			else { true }
+		}
+	}
+
+	/// Publishes the identities that are stored in the DB
+	pub async fn publish_identities(&self) {
+		let identities = match self.db.fetch_my_identities() {
+			Err(e) => {
+				error!("Unable to fetch my identities: {}", e);
+				return;
+			}
+			Ok(i) => i
+		};
+
+		for (label, address, keypair) in identities {
+			let public_key = keypair.public();
+			if !self.store_actor(&address, &public_key, Vec::new()).await {
+				error!("Unable to store personal identity {} = {}.", &label, &address);
+			}
+		}
 	}
 }

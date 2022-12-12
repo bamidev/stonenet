@@ -18,6 +18,12 @@ pub struct LimitedMap<K, V> {
 }
 
 
+impl<K, V> LimitedMap<K, V> {
+    pub fn insert(&mut self, key: K, value: V) {
+        self.base.push_front((key, value))
+    }
+}
+
 impl<V> LimitedVec<V> {
     pub fn new(limit: usize) -> Self {
         Self {
@@ -68,7 +74,7 @@ impl<K, V> LimitedMap<K, V> where K: PartialEq {
         }
     }
 
-    fn index_of(&self, key: &K) -> Option<usize> {
+    pub fn index_of(&self, key: &K) -> Option<usize> {
         for i in 0..self.base.store.len() {
             if self.base.store[i].0 == *key {
                 return Some(i);

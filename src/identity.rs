@@ -29,6 +29,16 @@ impl Identity {
     }
 }
 
+impl MyIdentity {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ed25519_dalek::SignatureError> {
+        Ok(Self(ed25519_dalek::Keypair::from_bytes(bytes)?))
+    }
+
+    pub fn public(&self) -> PublicKey {
+        PublicKey (self.0.public)
+    }
+}
+
 impl From<ed25519_dalek::PublicKey> for PublicKey {
     fn from(other: ed25519_dalek::PublicKey) -> Self {
         Self (other)

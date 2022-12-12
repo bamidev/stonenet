@@ -7,7 +7,13 @@ use std::{
     path::*
 };
 
+use crate::{
+    common::*,
+    identity::*
+};
+
 use dirs;
+use log::*;
 use rusqlite::{self, Connection};
 use unsafe_send_sync::*;
 
@@ -16,10 +22,51 @@ const DATABASE_PATH: &'static str = ".stonenet/db.sqlite";
 const DATABASE_VERSION: (u8, u16, u16) = (0, 0, 0);
 
 
-pub struct Database (UnsafeSendSync<Connection>);
+pub struct Database (
+    // The documentation of rusqlite mentions that the Connection struct does
+    // not need a mutex, that it is already thread-safe. For some reason it was
+    // not marked as Sync.
+    UnsafeSendSync<Connection>
+);
 
 
 impl Database {
+    pub fn fetch_my_identities(&self) -> 
+        rusqlite::Result<Vec<(String, IdType, MyIdentity)>>
+    {
+        let mut stat = self.0.prepare(r#"
+            SELECT label, i.address, i.keypair FROM my_identity AS mi
+            LEFT JOIN identity AS i ON mi.identity_id = i.rowid
+        "#)?;
+        let mut rows = stat.query([])?;
+
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            let address_string: String = row.get(1)?;
+            let address = match IdType::from_base58(&address_string) {
+                Err(e) => {
+                    error!("Unable to load address from DB: {}", e);
+                    continue;
+                }
+                Ok(a) => a
+            };
+            let blob: Vec<u8> = row.get(2)?;
+            let id = match MyIdentity::from_bytes(&blob) {
+                Err(e) => {
+                    error!("Unable to load identity from DB: {}", e);
+                    continue;
+                }
+                Ok(i) => i
+            };
+            ids.push((
+                row.get(0)?,
+                address,
+                id
+            ));
+        }
+        Ok(ids)
+    }
+
     pub fn load() -> rusqlite::Result<Self> {
         let mut db_path: PathBuf = dirs::home_dir().expect("no home dir found");
         db_path.push(DATABASE_PATH);

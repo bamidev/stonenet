@@ -120,7 +120,7 @@ async fn static_(file: PathBuf) -> Option<NamedFile> {
 async fn search(query: &str, g: &State<Global>) -> Template {
     #[derive(rocket::serde::Serialize)]
     struct SearchResult {
-
+        
     }
 
     let mut error_message: Option<String> = None;
