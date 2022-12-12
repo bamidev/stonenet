@@ -25,5 +25,6 @@ Currently, the following features are being worked on/to be expected:
 - [ ] Ability to post more than just text, like images, videos & attachments.
 - [ ] Ability to encrypt posts to limit visibility to your friends.
 - [ ] Ability to connect to a friend over an alternative transport protocol.
+- [ ] An ActivityPub 'bridge' to allow people from the fediverse to follow your feed.
 - [ ] A seperate onion-routing network to allow users to interact with the
       network anonymously.
