@@ -9,6 +9,7 @@ readme = "README"
 rust-version = "1.59"
 
 [dependencies]
+async-recursion = "1"
 async-trait = "0"
 base58 = "0"
 bincode = "1"

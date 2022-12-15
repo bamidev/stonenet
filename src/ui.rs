@@ -137,7 +137,11 @@ async fn search(query: &str, g: &State<Global>) -> Template {
             }
             else {
                 let actor_id = IdType::from_slice(&data).unwrap();
-                g.node.find_actor(&actor_id).await
+                g.node.find_actor(
+                    &actor_id,
+                    100,
+                    false
+                ).await
             }
         }
     };

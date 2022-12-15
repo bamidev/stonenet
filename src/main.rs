@@ -22,7 +22,6 @@ use common::*;
 use config::Config;
 use net::overlay::OverlayNode;
 
-use bincode::{self, Options};
 use env_logger;
 use global::Global;
 use log::*;
@@ -64,9 +63,6 @@ fn load_config() -> Option<Config> {
 
 #[tokio::main]
 async fn main() {
-	bincode::options()
-		.with_varint_encoding()
-		.reject_trailing_bytes();
 	env_logger::init();
 	
 	let stop_flag = Arc::new(AtomicBool::new(false));
@@ -135,7 +131,7 @@ async fn node_main(stop_flag: Arc<AtomicBool>, g: &Global, config: &Config) {
 				info!("Joined network.");
 
 				// Publish own identities
-				node.publish_identities().await;
+				node.store_my_identities().await;
 			}
 		});
 	}

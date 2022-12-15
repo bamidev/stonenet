@@ -14,12 +14,21 @@ pub trait AsyncIterator {
     type Item;
 
     async fn next(&mut self) -> Option<Self::Item>;
+
+    async fn count(&mut self) -> usize {
+        let mut i = 0;
+        while let Some(_) = self.next().await {
+            i += 1;
+        }
+        i
+    }
 }
 
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct IdType (pub [u8; 32]);
 
+#[derive(Debug)]
 pub enum IdFromBase58Error {
     FromBase58Error(FromBase58Error),
     TooLong,

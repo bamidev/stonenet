@@ -13,3 +13,9 @@ bootstrap_nodes = [
 
 # Maximum idle time for UDP hole-punching to work in seconds:
 udp_max_idle_time = 60
+
+# The number of nodes to remember in each 'bucket'. This is a technical feature
+# that generally does not need to be changed. However, increasing this number
+# makes it less likely to be disconnected from the network. Decreasing this
+# number saves memory.
+bucket_size = 4

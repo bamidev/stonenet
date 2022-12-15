@@ -32,7 +32,8 @@ fn main() {
 		address: "0.0.0.0:37337".into(),
 		bootstrap_nodes: vec!["0.0.0.0:9999".into()],
 		load_web_interface: false,
-		udp_max_idle_time: 60
+		udp_max_idle_time: 60,
+		bucket_size: 4
 	};
 
 	// Load database
@@ -62,13 +63,7 @@ fn main() {
 		let public_key = keypair.public();
 		let address = public_key.generate_address();
 
-		// TODO: Set to some kind of default value initially.
-		let mut first_peer: Arc<OverlayNode> = common::launch_node(
-			stop_flag.clone(),
-			"0.0.0.0:".to_string() + &(20000u16 + 3456).to_string(),
-			db.clone(),
-			&config
-		).await;
+		let mut first_peer = master.clone();
 		for i in 0..1000 {
 			let peer = common::launch_node(
 				stop_flag.clone(),
@@ -85,13 +80,19 @@ fn main() {
 				first_peer = peer.clone();
 			}
 			else if i == 999 {
-				if !peer.store_actor(&address, &public_key, Vec::new()).await {
+				if !peer.store_actor(
+					&address,
+					4,
+					&public_key,
+					true,
+					Vec::new()
+				).await {
 					info!("public key got stored by own node");
 				}
 			}
 		}
-		// Not working yet:
-		//let actor_info = first_peer.find_actor(&address).await
-		//	.expect("stored actor not found");
+		// Will not always be able to find the actor, considering that the
+		// nodes' buckets may not be filled enough yet.
+		let _ = first_peer.find_actor(&address, 1001, false).await;
 	});
 }

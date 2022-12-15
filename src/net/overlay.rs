@@ -129,43 +129,44 @@ impl OverlayNode {
 		})
 	}
 
-	/// Returns actor info if it found some
-	pub async fn find_actor(&self, id: &IdType) -> Option<FindActorResult> {
-		// Keep finding new fingers until we have not been able to get any
-		// closer to our own ID.
-		let mut fingers = self.base.find_nearest_fingers(id).await;
-		let mut current_distance = distance(&self.base.node_id, id);
-		let mut i = 0;
-		loop {
-			fingers = match self.find_actor_from_fingers(&self.base.node_id, &*fingers).await {
-				Err(f) => f,
-				Ok(result) => return Some(result)
-			};
-			
-			// Our own node might be in their k-bucket already, so ignore that.
-			// Also, check if all new fingers are actually closer, a malicious
-			// node might put us off track.
-			//fingers.retain(|f| {
-			//	f.node_id != self.base.node_id //&&
-			//	//distance(&f.node_id, id) < current_distance
-			//});
-			if fingers.len() == 0 { break; }
-			if i >= 64 {
-				warn!("Loop detected!");
-				return None;
+	pub async fn find_actor(&self,
+		id: &IdType,
+		hop_limit: usize,
+		only_narrow_down: bool
+	) -> Option<FindActorResult> {
+		fn verify_pubkey(id: &IdType, data: &[u8]) -> bool {
+			match bincode::deserialize::<PublicKey>(&data) {
+				Err(e) => {
+					warn!("Received invalid actor public key from node: {}", e);
+					false
+				},
+				Ok(pub_key) => {
+					&pub_key.generate_address() == id
+				}
 			}
-			// TODO: Maybe get shortest distance of all fingers? Or maybe not necessary.
-			current_distance = distance(&fingers[0].node_id, id);
-
-			i += 1;
 		}
 
-		// If we reached this point, we have not found the actor before we have
-		// exhausted our resources.
-		None
+		let fingers = self.base.find_nearest_fingers(id).await;
+		if fingers.len() == 0 { return None; }
+		
+		let result = self.base.find_value_from_fingers(
+			id,
+			OVERLAY_MESSAGE_TYPE_ID_FIND_ACTOR_REQUEST,
+			&fingers,
+			hop_limit, 
+			only_narrow_down,
+			verify_pubkey
+		).await;
+		
+		match result {
+			None => None,
+			Some(buffer) => Some(
+				bincode::deserialize(&buffer).expect("error not properly handled")
+			)
+		}
 	}
 
-	pub async fn find_actor_from_fingers(&self,
+	/*pub async fn find_actor_from_fingers(&self,
 		id: &IdType,
 		fingers: &[NodeContactInfo]
 	) -> Result<FindActorResult, Vec<NodeContactInfo>> {
@@ -177,7 +178,7 @@ impl OverlayNode {
 		}
 
 		Err(Vec::new())
-	}
+	}*/
 
 	/// Joins the network by trying to connect to old peers. If that doesn't
 	/// work, try to connect to bootstrap nodes.
@@ -185,6 +186,7 @@ impl OverlayNode {
 		// TODO: Find remembered nodes from the database and try them out
 
 		let mut i = 0;
+		// TODO: Contact all bootstrap nodes at the same time
 		while i < self.bootstrap_nodes.len() && !stop_flag.load(Ordering::Relaxed) {
 			let bootstrap_node = &self.bootstrap_nodes[i];
 			match self.join_network_starting_at(bootstrap_node).await {
@@ -204,6 +206,9 @@ impl OverlayNode {
 	/// Joins the network via a peer. If pinging that peer fails, returns an
 	/// I/O error.
 	pub async fn join_network_starting_at(&self, node_address: &SocketAddr) -> io::Result<()> {
+		// FIXME: It would save 1 request if we would just take the node_id from
+		// the first 'FIND_NODE' request. But that would require some
+		// restructuring of the code base.
 		let (_, node_id) = self.base.ping(node_address).await?;
 		let first_contact = NodeContactInfo {
 			address: node_address.clone(),
@@ -212,29 +217,30 @@ impl OverlayNode {
 		
 		// Keep finding new fingers until we have not been able to get any
 		// closer to our own ID.
-		let mut current_distance = distance(&first_contact.node_id, &self.base.node_id);
-		let mut fingers = vec![first_contact; 1];
-		let mut i = 0;
-		loop {
-			fingers = self.base.find_node_from_fingers(&self.base.node_id, &*fingers).await;
-			// Our own node might be in their k-bucket already, so ignore that.
-			// Also, check if all new fingers are actually closer, a malicious
-			// node might put us off track.
-			fingers.retain(|f| {
-				f.node_id != self.base.node_id //&&
-				//distance(&f.node_id, &self.node_id) < current_distance
-			});
-			if fingers.len() == 0 { break; }
-			if i >= 64 {
-				return Err(io::ErrorKind::NotFound.into());
-			}
-			// TODO: Maybe get shortest distance of all fingers? Or maybe not necessary.
-			current_distance = distance(&fingers[0].node_id, &self.base.node_id);
+		let current_distance = distance(&first_contact.node_id, &self.base.node_id);
+		let fingers = vec![first_contact; 1];
+		let neighbours = self.base.find_node_from_fingers(
+			&self.base.node_id,
+			&*fingers,
+			KADEMLIA_K as _,
+			1000,	// TODO: Make configuration variable
+			true
+		).await;
 
-			i += 1;
-		}
-		// We are now 'connected', because our k-buckets are filled with
-		// usefull nodes, and they have us in their own k-buckets.
+		// Our neighbours haven't been informed yet of our presence, talk to
+		// them too. Send a request to them to do that.
+		let futs = neighbours.iter().map(|n| async {
+			match self.base.request_find_node(&n.address, &n.node_id).await {
+				Err(e) => warn!(
+					"Saying 'hi' to neighbour {} failed: {}",
+					&n.address,
+					e
+				),
+				Ok(_) => {}
+			}
+		});
+		join_all(futs).await;
+
 		Ok(())
 	}
 
@@ -403,12 +409,23 @@ impl OverlayNode {
 		match response {
 			// Otherwise, just respond with the nearest node/finger
 			None => {
+				error!("NONE");
 				let nearest_nodes = self.base.find_nearest_fingers(&request.node_id).await;
+				let x = bincode::serialize(&FindActorResponse {
+					result: Err(nearest_nodes.clone())
+				}).unwrap();
+				let y = [1u8; 2];
+				error!("Y -> {}", BigUint::from_bytes_be(&y));
+				error!("X({}) -> {:x}", x[0], BigUint::from_bytes_be(&x));
+
 				Some(bincode::serialize(&FindActorResponse {
 					result: Err(nearest_nodes)
 				}).unwrap())
 			},
-			Some(r) => Some(bincode::serialize(&r).unwrap())
+			Some(r) => {
+				error!("SOME");
+				Some(bincode::serialize(&r).unwrap())
+			}
 		}
 	}
 
@@ -425,7 +442,6 @@ impl OverlayNode {
 		let fingers = self.base.find_nearest_fingers(&request.node_id).await;
 		let response = FindNodeResponse {
 			fingers,
-			i_am_stable: false,
 			follows: Vec::new()
 		};
 		Some(bincode::serialize(&response).unwrap())
@@ -534,11 +550,13 @@ impl OverlayNode {
 		target: &SocketAddr,
 		actor_id: IdType,
 		public_key: PublicKey,
+		i_am_available: bool,
 		nodes: Vec<NodeContactInfo>
 	) -> io::Result<()> {
 		let request = StoreActorRequest {
 			actor_id,
 			public_key,
+			i_am_available,
 			nodes
 		};
 		self.base.request(
@@ -565,30 +583,39 @@ impl OverlayNode {
 
 	pub async fn store_actor(&self,
 		actor_id: &IdType,
+		duplicates: usize,
 		public_key: &PublicKey,
+		i_am_available: bool,
 		nodes: Vec<NodeContactInfo>
 	) -> bool {
-		let contacts = self.base.find_node_contacts(&actor_id, KADEMLIA_K as _).await;
+		let contacts = self.base.find_node(
+			&actor_id,
+			duplicates*2,
+			100,
+			true
+		).await;
+		// If we coudn't find a node that was closer to the ID than us, we store
+		// it ourselves.
 		if contacts.len() == 0 {
 			let mut store = NODE_ACTOR_STORE.lock().await;
 			store.store_personal(actor_id, public_key);
 			false
 		}
 		else {
-			let futs = contacts.iter().map(|c| async {
-				match self.request_store_actor(
-					&c.address,
-					actor_id.clone(),
+			let mut store_count = 0;
+			for contact in contacts {
+				if self.request_store_actor(
+					&contact.address,
+					contact.node_id.clone(),
 					public_key.clone(),
+					i_am_available,
 					nodes.clone()
-				).await {
-					Err(_) => false,
-					Ok(()) => true
+				).await.is_ok() {
+					store_count += 1;
 				}
-			});
-			let mut results = join_all(futs).await;
-			results.retain(|r| *r);
-			if results.len() == 0 {
+			}
+			// If no nodes were found, store it ourselves
+			if store_count == 0 {
 				let mut store = NODE_ACTOR_STORE.lock().await;
 				store.store_personal(actor_id, public_key);
 				false
@@ -598,7 +625,7 @@ impl OverlayNode {
 	}
 
 	/// Publishes the identities that are stored in the DB
-	pub async fn publish_identities(&self) {
+	pub async fn store_my_identities(&self) {
 		let identities = match self.db.fetch_my_identities() {
 			Err(e) => {
 				error!("Unable to fetch my identities: {}", e);
@@ -607,10 +634,31 @@ impl OverlayNode {
 			Ok(i) => i
 		};
 
-		for (label, address, keypair) in identities {
-			let public_key = keypair.public();
-			if !self.store_actor(&address, &public_key, Vec::new()).await {
-				error!("Unable to store personal identity {} = {}.", &label, &address);
+		for (label, node_id, keypair) in identities {
+			let contacts = self.base.find_node(
+				&node_id,
+				KADEMLIA_K as _,
+				100,
+				true
+			).await;
+
+			for contact in contacts {
+				let public_key = keypair.public();
+				match self.request_store_actor(
+					&contact.address,
+					node_id.clone(),
+					public_key.clone(),
+					true,
+					Vec::new()
+				).await {
+					Err(e) => error!(
+						"Unable to store personal identity {}={}: {}",
+						&label,
+						&node_id,
+						e
+					),
+					Ok(()) => {}
+				}
 			}
 		}
 	}

@@ -7,6 +7,7 @@
 
 mod actor;
 mod actor_store;
+mod bincode;
 pub mod exchange_manager;
 mod message;
 mod object;
@@ -16,6 +17,7 @@ pub mod overlay;
 use crate::{
 	common::*,
 	//identity::*,
+	limited_store::LimitedVec,
 	net::{
 		exchange_manager::ExchangeManager,
 		message::*
@@ -25,13 +27,14 @@ use crate::{
 use std::{
 	collections::VecDeque,
 	io,
-	mem,
 	net::SocketAddr,
 	sync::Arc,
 	time::{Duration, SystemTime}
 };
 
+use async_recursion::async_recursion;
 use async_trait::async_trait;
+//use futures::future::join_all;
 use log::*;
 use num::BigUint;
 use serde::{
@@ -101,7 +104,7 @@ struct BucketEntry {
 	last_ping: SystemTime
 }
 
-pub struct Node<I> where I: NodeInterface {
+pub struct Node<I> where I: NodeInterface + Send {
 	pub node_id: IdType,
 	buckets: Vec<Mutex<Bucket>>,
 	interface: I
@@ -136,11 +139,25 @@ pub trait NodeInterface {
 }
 
 
-// FIXME: Is the double clone really necessary?
+/// Calculates the distance between two hashes.
 fn distance(a: &IdType, b: &IdType) -> BigUint {
+	// Calculating this is a bit weird, because the first bit (0x01) of the first byte
+	// is the most significant. In big-endian encoding, the last bit (0x80) of
+	// the first byte would be the most significant.
 	let mut c = IdType::default();
 	for i in 0..32 {
-		c.0[i] = a.0[i] ^ b.0[i];
+		let mut ci = &mut c.0[i];
+		*ci = a.0[i] ^ b.0[i];
+		// Mirror the bits
+		*ci =
+			( *ci         << 7) |
+			((*ci & 0x02) << 5) |
+			((*ci & 0x04) << 3) |
+			((*ci & 0x08) << 1) |
+			((*ci & 0x10) >> 1) |
+			((*ci & 0x20) >> 3) |
+			((*ci & 0x40) >> 5) |
+			( *ci         >> 7) 
 	}
 	BigUint::from_bytes_be(&c.0)
 }
@@ -190,7 +207,7 @@ impl From<NodeContactInfo> for BucketEntry {
 	}
 }
 
-impl<I> Node<I> where I: NodeInterface {
+impl<I> Node<I> where I: NodeInterface + Send + Sync {
 	fn differs_at_bit(a: &IdType, b: &IdType) -> Option<u8> {
 		for i in 0..32 {
 			let x = Self::differs_at_bit_u8(a.0[i] as _, b.0[i] as _) as usize;
@@ -213,81 +230,384 @@ impl<I> Node<I> where I: NodeInterface {
 		return 0xFF;
 	}
 
-	/// Finds the nodes nearest to the given id. There weren't any nodes found
-	/// that are actually closer to the our own node id, an empty list is
-	/// returned.
+	/// Finds the k nodes nearest to the given id. If it can't find k fingers that
+	/// are closer to the id than this node is, it will supplement with nodes
+	/// that are farther away.
 	async fn find_nearest_fingers(&self, id: &IdType) -> Vec<NodeContactInfo> {
 		let bucket_pos = match Self::differs_at_bit(&self.node_id, id) {
 			// If ID is the same as ours, don't give any other contacts
 			None => return Vec::new(),
 			Some(p) => p as usize
 		};
+		let mut fingers = Vec::with_capacity(KADEMLIA_K as _);
 
 		// Return the fingers of the first non-empty bucket lowest in the
 		// binary tree.
-		let bucket = self.buckets[bucket_pos].lock().await;
-		bucket.main.iter().map(|e| e.contact_info.clone()).collect()
-	}
+		for i in (0..(bucket_pos+1)).rev() {
+			let additional_fingers: Vec<NodeContactInfo> = {
+				let bucket = self.buckets[i].lock().await;
+				bucket.main.iter()
+					.map(|e| e.contact_info.clone())
+					.collect()
+			};
 
-	/// Keeps making FIND_NODE requests until the node has been found
-	/*pub async fn find_nearest_nodes(&self, id: &IdType) -> Vec<NodeContactInfo> {
-		let mut prev_fingers = self.find_nearest_fingers(id).await;
-		if prev_fingers.len() == 0 {
-			return Vec::new();
-		};
+			let remaining = KADEMLIA_K as usize - fingers.len();
+			if remaining <= additional_fingers.len() {
+				fingers.extend_from_slice(&additional_fingers[0..remaining]);
+			}
+			else {
+				fingers.extend_from_slice(&additional_fingers);
+			}
 
-		let mut fingers = Vec::new();
-		while fingers.len() > 0 {
-			if !fingers.iter().map(|f| &f.node_id).find(|id| id == &&self.node_id).is_none() {
+			if fingers.len() >= KADEMLIA_K as usize {
 				return fingers;
 			}
-			prev_fingers = fingers;
-			fingers = self.find_node_from_fingers(id, &*prev_fingers).await;
 		}
 
-		// prev_fingers should contain the nearest nodes we could find.
-		prev_fingers
+		fingers
+	}
+
+	pub async fn find_node(&self,
+		id: &IdType,
+		result_limit: usize,
+		hop_limit: usize,
+		only_narrow_down: bool
+	) -> Vec<NodeContactInfo> {
+		let fingers = self.find_nearest_fingers(id).await;
+		if fingers.len() == 0 { return Vec::new(); }
+		self.find_node_from_fingers(
+			id,
+			&fingers,
+			result_limit,
+			hop_limit, 
+			only_narrow_down
+		).await
+	}
+
+	/// Gets the k closest nodes it can find to the given id.
+	/// `fingers` - The nodes to start searching at.
+	/// `hop_limit` - The maximum number of hops to make. It may go over it,
+	///     but not more than k times.
+	/// `only_narrow_down` - Whether to only look for nodes that are closer to
+	///     the target than the previous node. If set to `false`, will only
+	///     continue with nodes that are further away if none other can be
+	///     found. Keep in mind that setting this to `false` is very
+	///     ineffecient.
+	/*pub async fn find_node_from_fingers(&self,
+		id: &IdType,
+		result_limit: usize,
+		fingers: &[NodeContactInfo],
+		hop_limit: usize,
+		only_narrow_down: bool
+	) -> Vec<NodeContactInfo> {
+		let mut visited = Vec::with_capacity(hop_limit);
+		let mut found = LimitedVec::new(result_limit);
+		let initial_distance = distance(id, &self.node_id);
+		for finger in fingers.iter().rev() {
+			if distance(id, &finger.node_id) < initial_distance {
+				found.push_front(finger.clone());
+			}
+		}
+
+		self._find_node_from_fingers(id, fingers, true, &mut visited, hop_limit, &mut found).await;
+		found.into()
 	}*/
 
-	/// Gets a new list of peers to contact to get closer to the given ID.
-	/// Returns None if none of the given fingers responded, returns a
-	/// (possibly) empty vector
-	pub async fn find_node_from_fingers(&self, id: &IdType, fingers: &[NodeContactInfo]) -> Vec<NodeContactInfo> {
+	/*async fn _find_node_from_fingers(&self,
+		id: &IdType,
+		fingers: &[NodeContactInfo],
+		visited: &mut Vec<SocketAddr>,
+		visited_limit: usize,
+		found: &mut LimitedVec<NodeContactInfo>
+	) {
+		let current_distance = if found.len() == 0 {
+			distance(id, &self.node_id)
+		}
+		else {
+			distance(id, &found[0].node_id)
+		};
 		for finger in fingers {
+			// Don't try nodes that have already been visited
+			if visited.contains(&finger.address) {
+				continue
+			}
+			visited.push(finger.address.clone());
+
 			let result = match self.request_find_node(&finger.address, &id).await {
 				Err(e) => {},
-				Ok(response) => return response.fingers
+				Ok(response) => {
+					let mut sub_fingers = response.fingers;
+					// Don't use the fingers that are further away if narrowing down
+					sub_fingers.retain(|f| {
+						distance(&f.node_id, &self.node_id) < current_distance &&
+						!visited.contains(&f.address)
+					});
+					if sub_fingers.len() == 0 { continue }
+					// Start with the closest one first
+					sub_fingers.sort_by(|a, b| {
+						distance(&a.node_id, &self.node_id).cmp(
+							&distance(&b.node_id, &self.node_id)
+						)
+					});
+					// Add to found list if closer
+					for sub_finger in sub_fingers.iter().rev() {
+						found.push_front(sub_finger.clone());
+					}
+
+					// Only go deeper if we haven't reached our limit yet.
+					if (visited.len() + sub_fingers.len()) < visited_limit {
+						self._find_node_from_fingers(
+							id,
+							&sub_fingers,
+							narrowing_down,
+							visited,
+							visited_limit,
+							found
+						);
+					}
+				}
 			};
 		}
+	}*/
 
-		Vec::new()
+	// TODO: Add a `impl Fn` argument that validates and deserializes the data.
+	/*pub async fn find_value_from_fingers(&self,
+		id: &IdType,
+		message_type_id: u8,
+		fingers: &[NodeContactInfo],
+		hop_limit: usize
+	) -> Option<Vec<u8>> {
+		let mut visited = Vec::with_capacity(hop_limit);
+		let initial_distance = distance(id, &self.node_id);
+		error!("INITIAL Dist: {}", initial_distance);
+		error!("TEST: {} {}", id, &self.node_id);
+		self._find_value_from_fingers(
+			id,
+			message_type_id,
+			fingers,
+			&mut visited,
+			hop_limit,
+			&initial_distance
+		).await
+	}*/
+
+	fn append_candidates(id: &IdType, candidates: &mut VecDeque<(BigUint, NodeContactInfo)>, fingers: &[NodeContactInfo]) {
+		for finger in fingers {
+			Self::insert_candidate(id, candidates, finger);
+		}
 	}
 
-	pub async fn find_node_contacts(&self, node_id: &IdType, max: usize) -> Vec<NodeContactInfo> {
-		// Keep finding new fingers until we have not been able to get any
-		// closer to our own ID.
-		//let mut current_distance = distance(node_id, &self.node_id);
-		let mut prev_fingers = self.find_nearest_fingers(node_id).await;
-		if prev_fingers.len() == 0 { return Vec::new() }
-		
-		let mut fingers = Vec::new();
-		let mut i = 0;
-		loop {
-			fingers = self.find_node_from_fingers(&self.node_id, &*prev_fingers).await;
-			if fingers.len() == 0 { break; }
-			if i >= 64 {
-				error!("Loop detected!");
-				return Vec::new();
+	fn insert_candidate(id: &IdType, candidates: &mut VecDeque<(BigUint, NodeContactInfo)>, finger: &NodeContactInfo) {
+		let distance = distance(id, &finger.node_id);
+		for i in 0..candidates.len() {
+			let candidate_distance = &candidates[i].0;
+			if &distance < candidate_distance {
+				candidates.insert(i, (distance, finger.clone()));
+				return;
 			}
-			// TODO: check if all new fingers are actually closer, a malicious
-			// node might put us off track.
+		}
+		candidates.push_back((distance, finger.clone()));
+	}
 
-			prev_fingers = fingers;
+	fn sort_fingers(id: &IdType, fingers: &[NodeContactInfo]) -> VecDeque<(BigUint, NodeContactInfo)> {
+		let mut fingers2 = Vec::<(BigUint, NodeContactInfo)>::with_capacity(fingers.len() * 2);
+		fingers2 = fingers.into_iter().map(|f| {
+			let dist = distance(id, &f.node_id);
+			(dist, f.clone())
+		}).collect();
+		fingers2.sort_by(|a, b| a.0.cmp(&b.0));
+		let mut candidates = VecDeque::with_capacity(fingers.len());
+		candidates.extend(fingers2);
+		candidates
+	}
+
+	pub async fn find_node_from_fingers(&self,
+		id: &IdType,
+		fingers: &[NodeContactInfo],
+		result_limit: usize,
+		visit_limit: usize,
+		narrow_down: bool
+	) -> Vec<NodeContactInfo> {
+		let mut visited = Vec::<SocketAddr>::new();
+		let mut candidates = Self::sort_fingers(id, fingers);
+		let mut found = LimitedVec::<NodeContactInfo>::new(result_limit);
+		let mut shortest_distance = BigUint::from_slice(&[
+			0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+			0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+		]);
+		
+		let mut i = 0;
+		while candidates.len() > 0 && i < visit_limit {
+			let (dist, candidate_contact) = &candidates[0];
+			if visited.contains(&candidate_contact.address) {
+				candidates.pop_front();
+				continue;
+			}
+			visited.push(candidate_contact.address.clone());
+			if dist < &shortest_distance {
+				found.push_front(candidate_contact.clone());
+				shortest_distance = dist.clone();
+			}
+
+			match self.request_find_node(
+				&candidate_contact.address,
+				&id
+			).await {
+				Err(e) => warn!("Disregarding finger {} due to error: {}", &candidate_contact.address, e),
+				Ok(response) => {
+					let mut new_fingers = response.fingers;
+					if narrow_down {
+						new_fingers.retain(|f| &distance(id, &f.node_id) < &dist);
+					}
+					Self::append_candidates(id, &mut candidates, &new_fingers);
+				}
+			}
 			i += 1;
 		}
-
-		prev_fingers
+		found.into()
 	}
+
+	pub async fn find_value_from_fingers(&self,
+		id: &IdType,
+		message_type_id: u8,
+		fingers: &[NodeContactInfo],
+		visit_limit: usize,
+		narrow_down: bool,
+		do_verify: impl Fn(&IdType, &[u8]) -> bool
+	) -> Option<Vec<u8>> {
+		let mut visited = Vec::<SocketAddr>::with_capacity(visit_limit);
+		let mut candidates = Self::sort_fingers(id, fingers);
+		
+		let mut i = 0;
+		while candidates.len() > 0 && i < visit_limit {
+			let (dist, candidate_contact) = &candidates[0];
+			if visited.contains(&candidate_contact.address) {
+				candidates.pop_front();
+				continue;
+			}
+			visited.push(candidate_contact.address.clone());
+
+			match self.request_find_value(
+				&candidate_contact.address,
+				&id,
+				message_type_id
+			).await {
+				Err(e) => warn!("Disregarding finger {} due to error: {}", &candidate_contact.address, e),
+				Ok(response) => {
+					match response {
+						// If node returned new nodes, append them to the candidate list
+						Err(mut new_fingers) => {
+							if narrow_down {
+								new_fingers.retain(|f| &distance(id, &f.node_id) < dist);
+							}
+							Self::append_candidates(id, &mut candidates, &new_fingers);
+						}
+						Ok(value) => {
+							if do_verify(id, &value) {
+								return Some(value)
+							}
+							// If data is invalid, skip candidate
+							else {
+								continue;
+							}
+						}
+					}
+				}
+			}
+			i += 1;
+		}
+		None
+	}
+	
+	/*#[async_recursion]
+	async fn _find_value_from_fingers(&self,
+		id: &IdType,
+		message_type_id: u8,
+		fingers: &[NodeContactInfo],
+		visited: &mut Vec<SocketAddr>,
+		visited_limit: usize,
+		current_distance: &BigUint
+	) -> Option<(Vec<u8>, usize)> {
+		error!("NEXT Dist: {}", current_distance);
+		
+		for finger in fingers {
+			// Don't try nodes that have already been visited
+			if visited.contains(&finger.address) {
+				error!("Already visited");
+				continue
+			}
+			visited.push(finger.address.clone());
+
+			let result = match self.request_find_value(
+				&finger.address,
+				&id,
+				message_type_id
+			).await {
+				Err(e) => error!(
+					"Disregarding finger {} due to error: {}",
+					&finger.address,
+					e
+				),
+				Ok(response) => {
+					let mut sub_fingers = match response {
+						Err(f) => f,
+						Ok(value) => {
+							error!("Found");
+							// TODO: Verify data by checking hash/id
+							return (Some(value), KADEMLIA_K);
+						}
+					};
+					// Don't use the fingers that are further away
+					sub_fingers.retain(|f| {
+						distance(&f.node_id, &self.node_id) < *current_distance &&
+						!visited.contains(&f.address)
+					});
+					if sub_fingers.len() == 0 { error!("Finger got nothing"); continue }
+					// Start with the closest one first
+					sub_fingers.sort_by(|a, b| {
+						distance(&a.node_id, &self.node_id).cmp(
+							&distance(&b.node_id, &self.node_id)
+						)
+					});
+
+					// Only go deeper if we haven't reached our limit yet.
+					if (visited.len() + sub_fingers.len()) < visited_limit {
+						let result = self._find_value_from_fingers(
+							id,
+							message_type_id,
+							&sub_fingers,
+							narrowing_down,
+							visited,
+							visited_limit,
+							&distance(&sub_fingers[0].node_id, id)
+						).await;
+						match result {
+							None => {},
+							Some((value, mut duplicates)) => {
+								// If a value is found, try to duplicate the
+								// value at nodes that are slightly less close.
+								if duplicates > 0 {
+									for sub_finger in sub_fingers {
+										if duplicates > 0 {
+											tokio::spawn(async {
+												self.base.request_store_actor(
+
+												).await:
+											});
+											duplicates -= 1;
+										}
+									}
+								}
+								return (value, duplicates)
+							}
+						}
+					}
+				}
+			};
+		}
+		error!("End none");
+		None
+	}*/
 
 	pub fn iter_all_fingers(&self) -> AllFingersIter<'_> {
 		AllFingersIter { global_index: 0, bucket_index: 0, buckets: &self.buckets }
@@ -462,6 +782,29 @@ impl<I> Node<I> where I: NodeInterface {
 		))
 	}
 
+	pub async fn request_find_value(&self,
+		target: &SocketAddr,
+		node_id: &IdType,
+		message_type_id: u8
+	) -> io::Result<Result<Vec<u8>, Vec<NodeContactInfo>>> {
+		let response = self.request_find_x(target, node_id, message_type_id).await?;
+		if response[0] == 0 {
+			return Ok(Ok(response[1..].to_vec()));
+		}
+		else if response[0] == 1 {
+			return Ok(Err(bincode::deserialize(&response[1..]).map_err(|e| {
+				error!("HOI");
+				io::Error::new(
+					io::ErrorKind::InvalidData,
+					e
+				)
+			})?));
+		}
+		else {
+			return Err(io::Error::from(io::ErrorKind::InvalidData));
+		}
+	}
+
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
 	/// RPC.
 	async fn request_ping(&self,
@@ -477,3 +820,15 @@ impl<I> Node<I> where I: NodeInterface {
 		Ok(result.0)
 	}
 }
+
+/*#[cfg(test)]
+mod tests {
+	use super::*;
+
+#[test]
+fn test_distance() {
+	let a1 = IdType::from_base58("DSLVRnqejmzQXKmoZ4KtfvvGLBSFwKJxKEQxnXJq1A8b").unwrap();
+	let a2 = IdType::from_base58("E7hinjgaQ7WfsNjos1FHYvHNCgHJfC9f29arA5QqtZw1").unwrap();
+	assert!(distance(&a1, &a2) > 0.into());
+}}
+*/

@@ -27,7 +27,8 @@ fn main() {
 		address: "0.0.0.0:37337".into(),
 		bootstrap_nodes: vec!["0.0.0.0:10000".into()],
 		load_web_interface: false,
-		udp_max_idle_time: 60
+		udp_max_idle_time: 60,
+		bucket_size: 4
 	};
 
 	// Load database

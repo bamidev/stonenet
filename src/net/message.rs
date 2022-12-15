@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 
 
 #[derive(Serialize, Deserialize)]
+pub struct DownloadBlockRequest {
+    post_number: u64,
+    file_id: IdType,
+    block_id: IdType
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct PingRequest {}
 
 #[derive(Serialize, Deserialize)]
@@ -25,11 +32,9 @@ pub struct FindNodeRequest {
 
 #[derive(Serialize, Deserialize)]
 pub struct FindNodeResponse {
-    /// A list of contact information to other peers
+    /// A list of contact information to other peers.
     pub fingers: Vec<NodeContactInfo>,
-    /// Whether this peer promises to stay online 24/7
-    pub i_am_stable: bool,
-    /// A list of actor addresses
+    /// A list of actor networks that this node is connected to.
     pub follows: Vec<IdType>
 }
 
@@ -54,6 +59,7 @@ pub struct FindActorResponse {
 pub struct StoreActorRequest {
     pub actor_id: IdType,
     pub public_key: PublicKey,
+    pub i_am_available: bool,
     pub nodes: Vec<NodeContactInfo>
 }
 
@@ -92,12 +98,16 @@ pub struct FindObjectRequest {
 
 #[derive(Serialize, Deserialize)]
 pub struct FindObjectResponse {
+    pub result: Result<FindObjectResult, Vec<NodeContactInfo>>
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FindObjectResult {
     pub header: ObjectHeader
 }
 
 pub enum FindObjectResponsePayload {
     Post(PostObject),
-    Undo(u64),
     Boost(BoostObject),
     Move(IdType)
 }
@@ -109,6 +119,11 @@ pub struct FindFileRequest {
 
 #[derive(Serialize, Deserialize)]
 pub struct FindFileResponse {
+    pub result: Result<FindFileResult, Vec<NodeContactInfo>>
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FindFileResult {
     pub mime_type: String,
     pub blocks: Vec<IdType>
 }
@@ -124,11 +139,10 @@ pub struct FindBlockRequest {
 
 #[derive(Serialize, Deserialize)]
 pub struct FindBlockResponse {
-    pub payload: Option<FindBlockResult>
+    pub result: Result<FindBlockResult, Vec<NodeContactInfo>>
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct FindBlockResult {
-    pub index: u32,
-    pub payload: Vec<u8>
+    pub size: u64
 }
