@@ -55,27 +55,6 @@ pub const NETWORK_MESSAGE_TYPE_ID_PING_RESPONSE: u8 = 1;
 pub const NETWORK_MESSAGE_TYPE_ID_FIND_NODE_REQUEST: u8 = 2;
 pub const NETWORK_MESSAGE_TYPE_ID_FIND_NODE_RESPONSE: u8 = 3;
 
-// Messages for the feed subnetworks:
-/// Asks node to relay a request/response exchage for you. Generally will only
-/// be allowed by nodes that trust you directly.
-pub const FEED_MESSAGE_TYPE_ID_PROXY_REQUEST: u8 = 4;
-pub const FEED_MESSAGE_TYPE_ID_PROXY_RESPONSE: u8 = 5;
-/// A message that notifies a node of the existance of a new post.
-pub const FEED_MESSAGE_ID_BROADCAST_POST_REQUEST: u8 = 6;
-pub const FEED_MESSAGE_ID_BROADCAST_POST_RESPONSE: u8 = 7;
-/// Asks a node their last known post id.
-pub const FEED_MESSAGE_ID_LATEST_POST_REQUEST: u8 = 8;
-pub const FEED_MESSAGE_ID_LATEST_POST_RESPONSE: u8 = 9;
-/// To find the hashes of the files of the post
-pub const FEED_MESSAGE_ID_FIND_POST_REQUEST: u8 = 10;
-pub const FEED_MESSAGE_ID_FIND_POST_RESPONSE: u8 = 11;
-/// To find the hashes of the blocks of a file
-pub const FEED_MESSAGE_ID_FIND_FILE_REQUEST: u8 = 12;
-pub const FEED_MESSAGE_ID_FIND_FILE_RESPONSE: u8 = 13;
-/// To download the data for a block
-pub const FEED_MESSAGE_ID_FIND_BLOCK_REQUEST: u8 = 14;
-pub const FEED_MESSAGE_ID_FIND_BLOCK_RESPONSE: u8 = 15;
-
 const NODE_COMMUNICATION_TTL: u32 = 64;
 const NODE_COMMUNICATION_TIMEOUT: u32 = 2;
 const MINIMUM_PING_INTERVAL: u32 = 60000;
@@ -243,7 +222,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 
 		// Return the fingers of the first non-empty bucket lowest in the
 		// binary tree.
-		for i in (0..(bucket_pos+1)).rev() {
+		for i in (0..bucket_pos).rev() {
 			let additional_fingers: Vec<NodeContactInfo> = {
 				let bucket = self.buckets[i].lock().await;
 				bucket.main.iter()
@@ -270,8 +249,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 	pub async fn find_node(&self,
 		id: &IdType,
 		result_limit: usize,
-		hop_limit: usize,
-		only_narrow_down: bool
+		hop_limit: usize
 	) -> Vec<NodeContactInfo> {
 		let fingers = self.find_nearest_fingers(id).await;
 		if fingers.len() == 0 { return Vec::new(); }
@@ -279,8 +257,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 			id,
 			&fingers,
 			result_limit,
-			hop_limit, 
-			only_narrow_down
+			hop_limit
 		).await
 	}
 
@@ -425,29 +402,23 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		id: &IdType,
 		fingers: &[NodeContactInfo],
 		result_limit: usize,
-		visit_limit: usize,
-		narrow_down: bool
+		visit_limit: usize
 	) -> Vec<NodeContactInfo> {
 		let mut visited = Vec::<SocketAddr>::new();
 		let mut candidates = Self::sort_fingers(id, fingers);
-		let mut found = LimitedVec::<NodeContactInfo>::new(result_limit);
-		let mut shortest_distance = BigUint::from_slice(&[
-			0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-			0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-		]);
+		let mut found = candidates.clone();
+		while found.len() > result_limit { found.pop_back(); };
 		
 		let mut i = 0;
 		while candidates.len() > 0 && i < visit_limit {
-			let (dist, candidate_contact) = &candidates[0];
+			let (dist, candidate_contact) = candidates[0].clone();
 			if visited.contains(&candidate_contact.address) {
 				candidates.pop_front();
 				continue;
 			}
 			visited.push(candidate_contact.address.clone());
-			if dist < &shortest_distance {
-				found.push_front(candidate_contact.clone());
-				shortest_distance = dist.clone();
-			}
+			//error!("VISIT {} - {} {}", &candidate_contact.address, i, candidates.len());
+			//error!("DIST: {}", &found[0].0);
 
 			match self.request_find_node(
 				&candidate_contact.address,
@@ -456,15 +427,19 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 				Err(e) => warn!("Disregarding finger {} due to error: {}", &candidate_contact.address, e),
 				Ok(response) => {
 					let mut new_fingers = response.fingers;
-					if narrow_down {
-						new_fingers.retain(|f| &distance(id, &f.node_id) < &dist);
-					}
+					new_fingers.retain(|f| !visited.contains(&f.address));
+					new_fingers.retain(|f| &distance(id, &f.node_id) < &dist);
+					Self::append_candidates(id, &mut found, &new_fingers);
+					while found.len() > result_limit { found.pop_back(); }
 					Self::append_candidates(id, &mut candidates, &new_fingers);
+					// Prevent using candidates that were found too far back. We
+					// don't intend to iterate over the whole network.
+					while candidates.len() > KADEMLIA_K as usize { candidates.pop_back(); }
 				}
 			}
 			i += 1;
 		}
-		found.into()
+		found.into_iter().map(|c| c.1).collect()
 	}
 
 	pub async fn find_value_from_fingers(&self,
@@ -480,12 +455,14 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		
 		let mut i = 0;
 		while candidates.len() > 0 && i < visit_limit {
-			let (dist, candidate_contact) = &candidates[0];
+			let (dist, candidate_contact) = candidates.pop_front().unwrap();
 			if visited.contains(&candidate_contact.address) {
-				candidates.pop_front();
 				continue;
 			}
 			visited.push(candidate_contact.address.clone());
+
+			error!("VISIT {} {}", i, &candidate_contact.address);
+			error!("dist {}", &dist);
 
 			match self.request_find_value(
 				&candidate_contact.address,
@@ -497,13 +474,18 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 					match response {
 						// If node returned new nodes, append them to the candidate list
 						Err(mut new_fingers) => {
+							new_fingers.retain(|f| !visited.contains(&f.address));
 							if narrow_down {
-								new_fingers.retain(|f| &distance(id, &f.node_id) < dist);
+								new_fingers.retain(|f| &distance(id, &f.node_id) < &dist);
 							}
 							Self::append_candidates(id, &mut candidates, &new_fingers);
+							if narrow_down {
+								while candidates.len() > KADEMLIA_K as usize { candidates.pop_back(); }
+							}
 						}
 						Ok(value) => {
 							if do_verify(id, &value) {
+								error!("VALUE");
 								return Some(value)
 							}
 							// If data is invalid, skip candidate

@@ -11,7 +11,8 @@ use std::{
 
 use stonenet::{
 	config::Config,
-	db::Database
+	db::Database,
+	identity::*
 };
 
 use log::*;
@@ -46,6 +47,10 @@ fn main() {
 		.enable_time()
 		.build().unwrap();
 	rt.block_on(async {
+		let keypair = MyIdentity::generate();
+		let public_key = keypair.public();
+		let test_address = public_key.generate_address();
+
 		let node_addr: SocketAddr = "0.0.0.0:10001".parse().unwrap();
 		let node = common::launch_node(
 			stop_flag.clone(),

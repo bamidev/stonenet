@@ -146,6 +146,22 @@ impl OverlayNode {
 			}
 		}
 
+		{
+			match NODE_ACTOR_STORE.lock().await.find(id) {
+				None => {},
+				Some(entry) => {
+					return Some(FindActorResult {
+						public_key: entry.public_key.clone(),
+						i_am_available: entry.i_am_available,
+						peers: entry.available_nodes.clone().into()
+					});
+				}
+			}
+		}
+
+		// TODO: Check if you follow this actor. If so, return a FindActorResult
+		// with i_am_available set to true.
+
 		let fingers = self.base.find_nearest_fingers(id).await;
 		if fingers.len() == 0 { return None; }
 		
@@ -223,8 +239,7 @@ impl OverlayNode {
 			&self.base.node_id,
 			&*fingers,
 			KADEMLIA_K as _,
-			1000,	// TODO: Make configuration variable
-			true
+			100,	// TODO: Make configuration variable
 		).await;
 
 		// Our neighbours haven't been informed yet of our presence, talk to
@@ -409,14 +424,11 @@ impl OverlayNode {
 		match response {
 			// Otherwise, just respond with the nearest node/finger
 			None => {
-				error!("NONE");
 				let nearest_nodes = self.base.find_nearest_fingers(&request.node_id).await;
 				let x = bincode::serialize(&FindActorResponse {
 					result: Err(nearest_nodes.clone())
 				}).unwrap();
 				let y = [1u8; 2];
-				error!("Y -> {}", BigUint::from_bytes_be(&y));
-				error!("X({}) -> {:x}", x[0], BigUint::from_bytes_be(&x));
 
 				Some(bincode::serialize(&FindActorResponse {
 					result: Err(nearest_nodes)
@@ -591,8 +603,7 @@ impl OverlayNode {
 		let contacts = self.base.find_node(
 			&actor_id,
 			duplicates*2,
-			100,
-			true
+			100
 		).await;
 		// If we coudn't find a node that was closer to the ID than us, we store
 		// it ourselves.
@@ -638,8 +649,7 @@ impl OverlayNode {
 			let contacts = self.base.find_node(
 				&node_id,
 				KADEMLIA_K as _,
-				100,
-				true
+				100
 			).await;
 
 			for contact in contacts {

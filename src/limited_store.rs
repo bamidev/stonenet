@@ -17,13 +17,6 @@ pub struct LimitedMap<K, V> {
     base: LimitedVec<(K, V)>
 }
 
-
-impl<K, V> LimitedMap<K, V> {
-    pub fn insert(&mut self, key: K, value: V) {
-        self.base.push_front((key, value))
-    }
-}
-
 impl<V> LimitedVec<V> {
     pub fn new(limit: usize) -> Self {
         debug_assert!(limit > 0, "Can't use a limit smaller than 1");
@@ -82,6 +75,10 @@ impl<K, V> LimitedMap<K, V> where K: PartialEq {
             }
         }
         None
+    }
+    
+    pub fn insert(&mut self, key: K, value: V) {
+        self.base.push_front((key, value))
     }
 
     pub fn iter(&self) -> Iter<'_, (K, V)> {

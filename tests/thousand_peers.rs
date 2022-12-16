@@ -92,7 +92,7 @@ fn main() {
 			}
 		}
 		// Will not always be able to find the actor, considering that the
-		// nodes' buckets may not be filled enough yet.
+		// nodes' buckets are not be filled enough yet in this situation.
 		let _ = first_peer.find_actor(&address, 1001, false).await;
 	});
 }
