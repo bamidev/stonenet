@@ -1,0 +1,30 @@
+{% extends "base" %}
+{% block title %}StoneNet - My Identities{% endblock %}
+
+{% block content %}
+<table>
+	<thead>
+		<tr>
+			<th>Label</th>
+			<th>Address</th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for identity in identities %}
+			<tr>
+				<td>{{ identity.label }}</td>
+				<td><a href="/feed/{{ identity.address }}">{{ identity.address }}</a></td>
+			</tr>
+		{% endfor %}
+	</tbody>
+	<tfoot>
+		<tr>
+			<form method="post">
+				<td><input type="text" name="label" /></td>
+				<td />
+				<td><input type="submit" value="Add" />
+			</form>
+		</tr>
+	</tfoot>
+</table>
+{% endblock content %}

@@ -1,17 +1,17 @@
 use std::{
-    path::{Path, PathBuf},
-    sync::*
+	path::{Path, PathBuf}
 };
 
 use crate::{
-    common::*,
-    db::Database,
-    global::Global,
-    identity::*
+	common::*,
+	global::Global,
+	identity::*,
+	model::*
 };
 
 use base58::FromBase58;
 use ed25519_dalek::Keypair;
+use futures::future::join_all;
 use rand_core::OsRng;
 use rocket::*;
 use rocket::form::Form;
@@ -19,137 +19,174 @@ use rocket::fs::NamedFile;
 use rocket_dyn_templates::{Template, context};
 
 
+fn render_error<E>(error: E, title: &str, message: &str) -> Template {
+	Template::render("error", context! {
+		title,
+		message
+	})
+}
+
 #[get("/")]
 async fn index() -> Template {
-    Template::render("home", context! {
-        test: "Test"
-    })
+	Template::render("home", context! {
+		test: "Test"
+	})
 }
 
 pub async fn main(g: Global) {
-    let _ = rocket::build()
-        .attach(Template::fairing())
-        .manage(g)
-        .mount("/", routes![
-            feed,
-            static_,
-            index,
-            my_identities,
-            my_identities_post,
-            search
-        ])
-        .launch().await
-        .expect("Rocket runtime failed");
+	let _ = rocket::build()
+		.attach(Template::fairing())
+		.manage(g)
+		.mount("/", routes![
+			feed,
+			static_,
+			index,
+			my_identities,
+			my_identities_post,
+			search
+		])
+		.launch().await
+		.expect("Rocket runtime failed");
 }
 
-#[get("/feed/<address>")]
-async fn feed(address: &str, g: &State<Global>) -> Template {
-    #[derive(rocket::serde::Serialize)]
-    struct PostObject {
+#[get("/feed/<address_str>")]
+async fn feed(address_str: &str, g: &State<Global>) -> Template {
+	#[derive(rocket::serde::Serialize)]
+	struct Object {
+		body: String
+	}
 
-    }
+	let address = match IdType::from_base58(address_str) {
+		Err(e) => return render_error(&e, "Database error", &format!("This is not a valid address: {}", e)),
+		Ok(a) => a
+	};
+	let latest_objects = match g.fetch_latest_objects(&address, 5, 0).await {
+		Err(e) => return render_error(&e, "Database error", &format!("Database error while trying to fetch latest objects: {}", e)),
+		Ok(a) => a
+	};
+	let mut futs = Vec::with_capacity(latest_objects.len());
+	for i in 0..latest_objects.len() {
+		let object = latest_objects[i].clone();
+		futs.push(async {
+			match object {
+				None => "Unable to locate this feed object...",
+				Some(header) => {
+					/*let payload = match g.fetch_object_payload(header.index).await {
+						Err(e) => return render_error(e,
+							"Database error",
+							&format!("Database error while trying to fetch latest object payloads: {}", e)
+						),
+						Ok(p) => p
+					};
+					render_object_payload(payload)*/
+					"test"
+				}
+			}
+		})
+	}
+	let object_htmls = join_all(futs).await;
 
-    Template::render("feed", context! {
-        address: address.to_string(),
-        posts: Vec::<PostObject>::new()
-    })
+	Template::render("feed", context! {
+		address: address.to_string(),
+		posts: Vec::<PostObject>::new()
+	})
 }
 
 #[get("/my-identities")]
 async fn my_identities(g: &State<Global>) -> Template {
-    #[derive(rocket::serde::Serialize)]
-    struct Object {
-        id: u64,
-        label: String,
-        address: String
-    }
-    
-    let mut stat = g.db.prepare(r#"
-        SELECT label, identity_id, i.address FROM my_identity AS mi
-        LEFT JOIN identity AS i ON mi.identity_id = i.rowid
-    "#).expect("sql error");
-    let mut rows = stat.query([]).expect("sql error");
+	#[derive(rocket::serde::Serialize)]
+	struct Object {
+		id: u64,
+		label: String,
+		address: String
+	}
+	
+	let mut stat = g.db.prepare(r#"
+		SELECT label, identity_id, i.address FROM my_identity AS mi
+		LEFT JOIN identity AS i ON mi.identity_id = i.rowid
+	"#).expect("sql error");
+	let mut rows = stat.query([]).expect("sql error");
 
-    let mut identities = Vec::new();
-    while let Some(row) = rows.next().unwrap() {
-        identities.push(Object {
-            id: row.get(1).unwrap(),
-            label: row.get(0).unwrap(),
-            address: row.get(2).unwrap()
-        });
-    }
+	let mut identities = Vec::new();
+	while let Some(row) = rows.next().unwrap() {
+		identities.push(Object {
+			id: row.get(1).unwrap(),
+			label: row.get(0).unwrap(),
+			address: row.get(2).unwrap()
+		});
+	}
 
-    Template::render("my_identities", context! {
-        identities: identities
-    })
+	Template::render("my_identities", context! {
+		identities: identities
+	})
 }
 
 #[derive(FromForm)]
 struct MyIdentitiesPostData {
-    label: String
+	label: String
 }
 
 #[post("/my-identities", data = "<form_data>")]
 async fn my_identities_post(form_data: Form<MyIdentitiesPostData>, g: &State<Global>) -> Template {
-    assert!(form_data.label.len() > 0, "Invalid label received");
-    
-    let mut rng = OsRng{};
-    let keypair = Keypair::generate(&mut rng);
-    let identity: Identity = keypair.public.into();
-    let address = identity.generate_address();
-    
-    {
-        let mut stat = g.db.prepare("INSERT INTO identity (address, keypair) VALUES(?, ?)").unwrap();
-        let new_id = stat.insert(rusqlite::params![address.to_string(), keypair.to_bytes()]).unwrap();
-        stat = g.db.prepare(r#"
-            INSERT INTO my_identity (label, identity_id, publish_trust)
-            VALUES (?, ?, FALSE)
-        "#).unwrap();
-        stat.insert(rusqlite::params![form_data.label, new_id]).unwrap();
-    }
+	assert!(form_data.label.len() > 0, "Invalid label received");
+	
+	let mut rng = OsRng{};
+	let keypair = Keypair::generate(&mut rng);
+	let identity: Identity = keypair.public.into();
+	let address = identity.generate_address();
+	
+	{
+		let mut stat = g.db.prepare("INSERT INTO identity (address, keypair) VALUES(?, ?)").unwrap();
+		let new_id = stat.insert(rusqlite::params![address.to_string(), keypair.to_bytes()]).unwrap();
+		stat = g.db.prepare(r#"
+			INSERT INTO my_identity (label, identity_id, publish_trust)
+			VALUES (?, ?, FALSE)
+		"#).unwrap();
+		stat.insert(rusqlite::params![form_data.label, new_id]).unwrap();
+	}
 
-    my_identities(g).await
+	my_identities(g).await
 }
 
 #[get("/static/<file..>")]
 async fn static_(file: PathBuf) -> Option<NamedFile> {
-    NamedFile::open(Path::new("static/").join(file)).await.ok()
+	NamedFile::open(Path::new("static/").join(file)).await.ok()
 }
 
 #[get("/search?<query>")]
 async fn search(query: &str, g: &State<Global>) -> Template {
-    #[derive(rocket::serde::Serialize)]
-    struct SearchResult {
-        
-    }
+	#[derive(rocket::serde::Serialize)]
+	struct SearchResult {
+		
+	}
 
-    let mut error_message: Option<String> = None;
-    let result = match query.from_base58() {
-        Err(e) => {
-            error_message = Some("not a valid base58 encoded string".into()); None
-        },
-        Ok(data) => {
-            if data.len() < 32 {
-                error_message = Some("address too short".into()); None
-            }
-            else if data.len() > 32 {
-                error_message = Some("address too long".into()); None
-            }
-            else {
-                let actor_id = IdType::from_slice(&data).unwrap();
-                g.node.find_actor(
-                    &actor_id,
-                    100,
-                    false
-                ).await
-            }
-        }
-    };
+	let mut error_message: Option<String> = None;
+	let result = match query.from_base58() {
+		Err(e) => {
+			error_message = Some("not a valid base58 encoded string".into()); None
+		},
+		Ok(data) => {
+			if data.len() < 32 {
+				error_message = Some("address too short".into()); None
+			}
+			else if data.len() > 32 {
+				error_message = Some("address too long".into()); None
+			}
+			else {
+				let actor_id = IdType::from_slice(&data).unwrap();
+				g.node.find_actor(
+					&actor_id,
+					100,
+					false
+				).await
+			}
+		}
+	};
 
-    Template::render("search", context! {
-        query,
-        posts: Vec::<SearchResult>::new(),
-        error_message,
-        result
-    })
+	Template::render("search", context! {
+		query,
+		posts: Vec::<SearchResult>::new(),
+		error_message,
+		result
+	})
 }

@@ -4,6 +4,7 @@ mod db;
 mod global;
 mod identity;
 mod limited_store;
+mod model;
 mod net;
 mod ui;
 
@@ -12,9 +13,7 @@ use std::{
 	fs::File,
 	io::prelude::*,
 	process,
-	rc::Rc,
-	sync::{Arc, atomic::AtomicBool},
-	thread
+	sync::{Arc, atomic::AtomicBool}
 };
 
 use db::Database;
@@ -25,7 +24,6 @@ use net::overlay::OverlayNode;
 use env_logger;
 use global::Global;
 use log::*;
-use serde::Deserialize;
 use signal_hook::flag;
 use tokio;
 use toml;

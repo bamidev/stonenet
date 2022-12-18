@@ -1,7 +1,6 @@
 use super::{
 	actor::*,
 	actor_store::*,
-	distance,
 	exchange_manager::ExchangeManager,
 	KADEMLIA_K,
 	message::*,
@@ -23,7 +22,7 @@ use std::{
 	str::FromStr,
 	sync::{
 		Arc,
-		atomic::{AtomicBool, Ordering},
+		atomic::*,
 		Mutex as StdMutex
 	}
 };
@@ -46,9 +45,10 @@ pub const OVERLAY_MESSAGE_TYPE_ID_STORE_ACTOR_REQUEST: u8 = 6;
 pub const OVERLAY_MESSAGE_TYPE_ID_STORE_ACTOR_RESPONSE: u8 = 7;
 
 
+pub struct FindActorIter<'a> (FindValueIter<'a, OverlayInterface>);
+
 pub struct OverlayNode {
 	base: Arc<Node<OverlayInterface>>,
-	exch: Arc<ExchangeManager>,
 	actor_nodes: HashMap<IdType, Arc<Node<ActorInterface>>>,
 	db: Arc<Database>,
 	bootstrap_nodes: Vec<SocketAddr>
@@ -96,6 +96,18 @@ impl NodeInterface for OverlayInterface {
 	}
 }
 
+#[async_trait]
+impl<'a> AsyncIterator for FindActorIter<'a> {
+	type Item = Box<(PublicKey, Vec<NodeContactInfo>)>;
+
+	async fn next(&mut self) -> Option<Self::Item> {
+		let result = self.0.next().await;
+		result.map(|p| unsafe {
+			Box::from_raw(p.into_inner() as *mut (PublicKey, Vec<NodeContactInfo>))
+		})
+	}
+}
+
 impl OverlayNode {
 
 	pub async fn bind<A: ToSocketAddrs>(
@@ -122,79 +134,81 @@ impl OverlayNode {
 				last_request_time: StdMutex::new(SystemTime::now()),
 				max_idle_time: config.udp_max_idle_time
 			})),
-			exch: exchange_manager,
 			actor_nodes: HashMap::new(),
 			db,
 			bootstrap_nodes
 		})
 	}
 
+	/// Tries to connect to the actor network of the given actor ID, but in
+	/// 'lurking' mode. Meaning, the nodes of the network won't considuer you
+	/// as part of it.
+	pub async fn lurk_actor_network(&self,
+		actor_id: &IdType
+	) -> Option<ActorNode> {
+		let mut iter = self.find_actor_iter(actor_id, 100, true).await;
+		while let Some(result) = iter.next().await {
+			let public_key = result.0;
+			for node in result.1 {
+				let actor_node = ActorNode::new_lurker(
+					self.base.interface.exch.clone(),
+					actor_id.clone()
+				);
+				// Ping node on actor network to see if they are still online
+				// and following the actor.
+				if let Ok(_) = actor_node.base.request_ping(&node.address).await {
+					return Some(actor_node);
+				}
+			}
+		}
+		None
+	}
+
 	pub async fn find_actor(&self,
 		id: &IdType,
 		hop_limit: usize,
-		only_narrow_down: bool
-	) -> Option<FindActorResult> {
-		fn verify_pubkey(id: &IdType, data: &[u8]) -> bool {
-			match bincode::deserialize::<PublicKey>(&data) {
+		narrow_down: bool
+	) -> Option<Box<(PublicKey, Vec<NodeContactInfo>)>> {
+		self.find_actor_iter(id, hop_limit, narrow_down).await.next().await
+	}
+
+	/// Tries to find the 
+	pub async fn find_actor_iter(&self,
+		id: &IdType,
+		hop_limit: usize,
+		narrow_down: bool
+	) -> FindActorIter {
+		fn verify_pubkey(id: &IdType, peer: &NodeContactInfo, data: &[u8]) -> Option<AtomicPtr<()>> {
+			match bincode::deserialize::<FindActorResult>(&data) {
 				Err(e) => {
 					warn!("Received invalid actor public key from node: {}", e);
-					false
+					None
 				},
-				Ok(pub_key) => {
-					&pub_key.generate_address() == id
+				Ok(result) => {
+					if &result.public_key.generate_address() == id {
+						return None;
+					}
+					let mut peers: Vec<NodeContactInfo> = result.peers;
+					if result.i_am_available {
+						peers.insert(0, peer.clone());
+					}
+					let value: Box<(PublicKey, Vec<NodeContactInfo>)> = Box::new((result.public_key, peers));
+					Some(AtomicPtr::new(Box::into_raw(value) as _))
 				}
 			}
 		}
 
-		{
-			match NODE_ACTOR_STORE.lock().await.find(id) {
-				None => {},
-				Some(entry) => {
-					return Some(FindActorResult {
-						public_key: entry.public_key.clone(),
-						i_am_available: entry.i_am_available,
-						peers: entry.available_nodes.clone().into()
-					});
-				}
-			}
-		}
-
-		// TODO: Check if you follow this actor. If so, return a FindActorResult
-		// with i_am_available set to true.
-
-		let fingers = self.base.find_nearest_fingers(id).await;
-		if fingers.len() == 0 { return None; }
-		
-		let result = self.base.find_value_from_fingers(
+		let fingers = self.base.find_nearest_fingers(id).await;		
+		let iter = self.base.find_value_from_fingers_iter(
 			id,
 			OVERLAY_MESSAGE_TYPE_ID_FIND_ACTOR_REQUEST,
 			&fingers,
 			hop_limit, 
-			only_narrow_down,
+			narrow_down,
 			verify_pubkey
-		).await;
-		
-		match result {
-			None => None,
-			Some(buffer) => Some(
-				bincode::deserialize(&buffer).expect("error not properly handled")
-			)
-		}
+		);
+		FindActorIter (iter)
 	}
-
-	/*pub async fn find_actor_from_fingers(&self,
-		id: &IdType,
-		fingers: &[NodeContactInfo]
-	) -> Result<FindActorResult, Vec<NodeContactInfo>> {
-		for finger in fingers {
-			let result = match self.request_find_actor(&finger.address, &id).await {
-				Err(e) => {},
-				Ok(response) => return response.result
-			};
-		}
-
-		Err(Vec::new())
-	}*/
 
 	/// Joins the network by trying to connect to old peers. If that doesn't
 	/// work, try to connect to bootstrap nodes.
@@ -233,7 +247,7 @@ impl OverlayNode {
 		
 		// Keep finding new fingers until we have not been able to get any
 		// closer to our own ID.
-		let current_distance = distance(&first_contact.node_id, &self.base.node_id);
+		//let current_distance = distance(&first_contact.node_id, &self.base.node_id);
 		let fingers = vec![first_contact; 1];
 		let neighbours = self.base.find_node_from_fingers(
 			&self.base.node_id,
@@ -281,9 +295,8 @@ impl OverlayNode {
 				while !stop_flag.load(Ordering::Relaxed) {
 					match peer_iter.next().await {
 						Some(peer) => {
-							match self.base.ping(&peer.address).await {
-								Err(e) => {},
-								Ok(_) => break
+							if self.base.ping(&peer.address).await.is_ok() {
+								break
 							}
 						}
 						// If not a single peer was available, reconnect to the
@@ -341,7 +354,6 @@ impl OverlayNode {
 				&sender_node_id,
 				&address,
 				message_type_id,
-				exchange_id,
 				&sub_buffer
 			).await {
 				None => {},
@@ -352,7 +364,7 @@ impl OverlayNode {
 						exchange_id,
 						&buffer
 					).await {
-						Err(e) => error!("Unable to respond back to request {}", exchange_id),
+						Err(e) => error!("Unable to respond back to request {}: {}", exchange_id, e),
 						Ok(()) => {}
 					}
 				}
@@ -381,11 +393,12 @@ impl OverlayNode {
 	async fn process_find_actor_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
 		let request: FindActorRequest = match bincode::deserialize(buffer) {
 			Err(e) => {
-				error!("Malformed find node request.");
+				error!("Malformed find node request: {}", e);
 				return None;
 			}
 			Ok(r) => r
 		};
+		let nearest_nodes = self.base.find_nearest_fingers(&request.node_id).await;
 
 		// If we follow this actor, reply with us as a peer node, and possibly
 		// our other contacts.
@@ -396,7 +409,8 @@ impl OverlayNode {
 				// TODO: Add other known peers of the subnetwork to this list:
 				let other_peers = Vec::new();
 				FindActorResponse {
-					result: Ok(FindActorResult {
+					fingers: nearest_nodes.clone(),
+					result: Some(FindActorResult {
 						public_key: public_key.clone(),
 						i_am_available: true,
 						peers: other_peers
@@ -411,7 +425,8 @@ impl OverlayNode {
 				.find(&request.node_id)
 				.map(|entry| {
 					FindActorResponse {
-						result: Ok(FindActorResult {
+						fingers: nearest_nodes.clone(),
+						result: Some(FindActorResult {
 							public_key: entry.public_key.clone(),
 							i_am_available: false,
 							peers: entry.available_nodes.clone().into()
@@ -424,18 +439,12 @@ impl OverlayNode {
 		match response {
 			// Otherwise, just respond with the nearest node/finger
 			None => {
-				let nearest_nodes = self.base.find_nearest_fingers(&request.node_id).await;
-				let x = bincode::serialize(&FindActorResponse {
-					result: Err(nearest_nodes.clone())
-				}).unwrap();
-				let y = [1u8; 2];
-
 				Some(bincode::serialize(&FindActorResponse {
-					result: Err(nearest_nodes)
+					fingers: nearest_nodes,
+					result: None
 				}).unwrap())
 			},
 			Some(r) => {
-				error!("SOME");
 				Some(bincode::serialize(&r).unwrap())
 			}
 		}
@@ -444,7 +453,7 @@ impl OverlayNode {
 	async fn process_find_node_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
 		let request: FindNodeRequest = match bincode::deserialize(buffer) {
 			Err(e) => {
-				error!("Malformed find node request.");
+				error!("Malformed find node request: {}", e);
 				return None;
 			}
 			Ok(r) => r
@@ -463,8 +472,8 @@ impl OverlayNode {
 		debug!("Received ping request from {}", address); Some(Vec::new())
 	}
 
-	async fn process_response(&self, sender_node_id: &IdType, message_type_id: u8, exchange_id: u32, buffer: &[u8]) {
-		let success = self.exch.trigger_response(sender_node_id, exchange_id, buffer).await;
+	async fn process_response(&self, sender_node_id: &IdType, _message_type_id: u8, exchange_id: u32, buffer: &[u8]) {
+		let success = self.base.interface.exch.trigger_response(sender_node_id, exchange_id, buffer).await;
 		if !success {
 			error!("Unable to trigger response with exchange ID {}.", exchange_id)
 		}
@@ -474,7 +483,6 @@ impl OverlayNode {
 		sender_node_id: &IdType,
 		address: &SocketAddr,
 		message_type_id: u8,
-		exchange_id: u32,
 		buffer: &[u8]
 	) -> Option<Vec<u8>> {
 		match message_type_id {
@@ -490,11 +498,11 @@ impl OverlayNode {
 	}
 
 	async fn process_actornet_request(&self,
-		sender_node_id: &IdType,
-		address: &SocketAddr,
-		message_type_id: u8,
-		exchange_id: u32,
-		buffer: &[u8]
+		_sender_node_id: &IdType,
+		_address: &SocketAddr,
+		_message_type_id: u8,
+		_exchange_id: u32,
+		_buffer: &[u8]
 	) -> Option<Vec<u8>> {
 		// TODO: Implement, 
 		None
@@ -585,7 +593,7 @@ impl OverlayNode {
 		if self.bootstrap_nodes.len() > 0 {
 			tokio::spawn(self.clone().keep_hole_open(stop_flag.clone()));
 		}
-		self.exch.clone().serve(stop_flag, move |address, buffer| {
+		self.base.interface.exch.clone().serve(stop_flag, move |address, buffer| {
 			let this = self.clone();
 			tokio::task::spawn(async move {
 				this.process_message(address, buffer).await;

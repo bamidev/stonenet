@@ -5,21 +5,17 @@
 //! The collective network stores currently available peers for a particular
 //! actor network. Most notably, a few of the top ones of the network tree.
 
-mod actor;
+pub mod actor;
 mod actor_store;
 mod bincode;
 pub mod exchange_manager;
 mod message;
-mod object;
 pub mod overlay;
 
 
 use crate::{
 	common::*,
-	//identity::*,
-	limited_store::LimitedVec,
 	net::{
-		exchange_manager::ExchangeManager,
 		message::*
 	}
 };
@@ -28,11 +24,10 @@ use std::{
 	collections::VecDeque,
 	io,
 	net::SocketAddr,
-	sync::Arc,
+	sync::{atomic::AtomicPtr, Arc},
 	time::{Duration, SystemTime}
 };
 
-use async_recursion::async_recursion;
 use async_trait::async_trait;
 //use futures::future::join_all;
 use log::*;
@@ -66,6 +61,20 @@ pub struct AllFingersIter<'a> {
 	buckets: &'a Vec<Mutex<Bucket>>
 }
 
+pub struct FindValueIter<'a, I> where I: NodeInterface + Send + Sync {
+	node: &'a Node<I>,
+
+	id: IdType,
+	message_type_id: u8,
+	// TODO: Make this Sync without the mutex. Right now I'm too tired to really dive into this...
+	do_verify: Box<dyn Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a>,
+	narrow_down: bool,
+
+	visited: Vec<SocketAddr>,
+	candidates: VecDeque<(BigUint, NodeContactInfo)>,
+	visit_count: usize
+}
+
 type SerializedNodeId = [u8; 32];
 
 // TODO: Use k>1, and keep prioritize the nodes with the best ping & uptime.
@@ -83,8 +92,8 @@ struct BucketEntry {
 	last_ping: SystemTime
 }
 
-pub struct Node<I> where I: NodeInterface + Send {
-	pub node_id: IdType,
+pub struct Node<I> where I: NodeInterface {
+	node_id: IdType,
 	buckets: Vec<Mutex<Bucket>>,
 	interface: I
 }
@@ -125,7 +134,7 @@ fn distance(a: &IdType, b: &IdType) -> BigUint {
 	// the first byte would be the most significant.
 	let mut c = IdType::default();
 	for i in 0..32 {
-		let mut ci = &mut c.0[i];
+		let ci = &mut c.0[i];
 		*ci = a.0[i] ^ b.0[i];
 		// Mirror the bits
 		*ci =
@@ -162,7 +171,62 @@ impl<'a> AsyncIterator for AllFingersIter<'a> {
 					Some(e) => return Some(e.contact_info.clone())
 				}
 			}
-			else { panic!("Unreachable"); }
+			else {
+				eprintln!("XXXXXXX {} {}", self.global_index, self.bucket_index);
+				panic!("Unreachable");
+			}
+		}
+		None
+	}
+}
+
+#[async_trait]
+impl<'a, I> AsyncIterator for FindValueIter<'a, I> where
+	I: NodeInterface + Send + Sync
+{
+	type Item = AtomicPtr<()>;
+
+	async fn next(&mut self) -> Option<Self::Item> {
+		if self.candidates.len() == 0 || self.visit_count >= self.visited.capacity() {
+			return None;
+		}
+		self.visit_count += 1;
+
+		while self.candidates.len() > 0 && self.visit_count < self.visited.capacity() {
+			let (dist, candidate_contact) = self.candidates.pop_front().unwrap();
+			if self.visited.contains(&candidate_contact.address) {
+				continue;
+			}
+			self.visited.push(candidate_contact.address.clone());
+
+			match self.node.request_find_value(
+				&candidate_contact.address,
+				&self.id,
+				self.message_type_id
+			).await {
+				Err(e) => warn!("Disregarding finger {} due to network error: {}", &candidate_contact.address, e),
+				Ok((value, mut new_fingers)) => {
+					match value {
+						// If node returned new nodes, append them to the candidate list
+						None => {
+							new_fingers.retain(|f| !self.visited.contains(&f.address));
+							if self.narrow_down {
+								new_fingers.retain(|f| &distance(&self.id, &f.node_id) < &dist);
+							}
+							Node::<I>::append_candidates(&self.id, &mut self.candidates, &new_fingers);
+							if self.narrow_down {
+								while self.candidates.len() > KADEMLIA_K as usize { self.candidates.pop_back(); }
+							}
+						}
+						Some(value) => {
+							match (self.do_verify)(&self.id, &candidate_contact, &value) {
+								Some(p) => return Some(p),
+								None => continue
+							}
+						}
+					}
+				}
+			}
 		}
 		None
 	}
@@ -187,6 +251,12 @@ impl From<NodeContactInfo> for BucketEntry {
 }
 
 impl<I> Node<I> where I: NodeInterface + Send + Sync {
+	fn append_candidates(id: &IdType, candidates: &mut VecDeque<(BigUint, NodeContactInfo)>, fingers: &[NodeContactInfo]) {
+		for finger in fingers {
+			Self::insert_candidate(id, candidates, finger);
+		}
+	}
+
 	fn differs_at_bit(a: &IdType, b: &IdType) -> Option<u8> {
 		for i in 0..32 {
 			let x = Self::differs_at_bit_u8(a.0[i] as _, b.0[i] as _) as usize;
@@ -261,119 +331,6 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		).await
 	}
 
-	/// Gets the k closest nodes it can find to the given id.
-	/// `fingers` - The nodes to start searching at.
-	/// `hop_limit` - The maximum number of hops to make. It may go over it,
-	///     but not more than k times.
-	/// `only_narrow_down` - Whether to only look for nodes that are closer to
-	///     the target than the previous node. If set to `false`, will only
-	///     continue with nodes that are further away if none other can be
-	///     found. Keep in mind that setting this to `false` is very
-	///     ineffecient.
-	/*pub async fn find_node_from_fingers(&self,
-		id: &IdType,
-		result_limit: usize,
-		fingers: &[NodeContactInfo],
-		hop_limit: usize,
-		only_narrow_down: bool
-	) -> Vec<NodeContactInfo> {
-		let mut visited = Vec::with_capacity(hop_limit);
-		let mut found = LimitedVec::new(result_limit);
-		let initial_distance = distance(id, &self.node_id);
-		for finger in fingers.iter().rev() {
-			if distance(id, &finger.node_id) < initial_distance {
-				found.push_front(finger.clone());
-			}
-		}
-
-		self._find_node_from_fingers(id, fingers, true, &mut visited, hop_limit, &mut found).await;
-		found.into()
-	}*/
-
-	/*async fn _find_node_from_fingers(&self,
-		id: &IdType,
-		fingers: &[NodeContactInfo],
-		visited: &mut Vec<SocketAddr>,
-		visited_limit: usize,
-		found: &mut LimitedVec<NodeContactInfo>
-	) {
-		let current_distance = if found.len() == 0 {
-			distance(id, &self.node_id)
-		}
-		else {
-			distance(id, &found[0].node_id)
-		};
-		for finger in fingers {
-			// Don't try nodes that have already been visited
-			if visited.contains(&finger.address) {
-				continue
-			}
-			visited.push(finger.address.clone());
-
-			let result = match self.request_find_node(&finger.address, &id).await {
-				Err(e) => {},
-				Ok(response) => {
-					let mut sub_fingers = response.fingers;
-					// Don't use the fingers that are further away if narrowing down
-					sub_fingers.retain(|f| {
-						distance(&f.node_id, &self.node_id) < current_distance &&
-						!visited.contains(&f.address)
-					});
-					if sub_fingers.len() == 0 { continue }
-					// Start with the closest one first
-					sub_fingers.sort_by(|a, b| {
-						distance(&a.node_id, &self.node_id).cmp(
-							&distance(&b.node_id, &self.node_id)
-						)
-					});
-					// Add to found list if closer
-					for sub_finger in sub_fingers.iter().rev() {
-						found.push_front(sub_finger.clone());
-					}
-
-					// Only go deeper if we haven't reached our limit yet.
-					if (visited.len() + sub_fingers.len()) < visited_limit {
-						self._find_node_from_fingers(
-							id,
-							&sub_fingers,
-							narrowing_down,
-							visited,
-							visited_limit,
-							found
-						);
-					}
-				}
-			};
-		}
-	}*/
-
-	// TODO: Add a `impl Fn` argument that validates and deserializes the data.
-	/*pub async fn find_value_from_fingers(&self,
-		id: &IdType,
-		message_type_id: u8,
-		fingers: &[NodeContactInfo],
-		hop_limit: usize
-	) -> Option<Vec<u8>> {
-		let mut visited = Vec::with_capacity(hop_limit);
-		let initial_distance = distance(id, &self.node_id);
-		error!("INITIAL Dist: {}", initial_distance);
-		error!("TEST: {} {}", id, &self.node_id);
-		self._find_value_from_fingers(
-			id,
-			message_type_id,
-			fingers,
-			&mut visited,
-			hop_limit,
-			&initial_distance
-		).await
-	}*/
-
-	fn append_candidates(id: &IdType, candidates: &mut VecDeque<(BigUint, NodeContactInfo)>, fingers: &[NodeContactInfo]) {
-		for finger in fingers {
-			Self::insert_candidate(id, candidates, finger);
-		}
-	}
-
 	fn insert_candidate(id: &IdType, candidates: &mut VecDeque<(BigUint, NodeContactInfo)>, finger: &NodeContactInfo) {
 		let distance = distance(id, &finger.node_id);
 		for i in 0..candidates.len() {
@@ -387,8 +344,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 	}
 
 	fn sort_fingers(id: &IdType, fingers: &[NodeContactInfo]) -> VecDeque<(BigUint, NodeContactInfo)> {
-		let mut fingers2 = Vec::<(BigUint, NodeContactInfo)>::with_capacity(fingers.len() * 2);
-		fingers2 = fingers.into_iter().map(|f| {
+		let mut fingers2: Vec<(BigUint, NodeContactInfo)> = fingers.into_iter().map(|f| {
 			let dist = distance(id, &f.node_id);
 			(dist, f.clone())
 		}).collect();
@@ -417,8 +373,6 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 				continue;
 			}
 			visited.push(candidate_contact.address.clone());
-			//error!("VISIT {} - {} {}", &candidate_contact.address, i, candidates.len());
-			//error!("DIST: {}", &found[0].0);
 
 			match self.request_find_node(
 				&candidate_contact.address,
@@ -442,154 +396,43 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		found.into_iter().map(|c| c.1).collect()
 	}
 
-	pub async fn find_value_from_fingers(&self,
+	pub async fn find_value_from_fingers<'a>(&'a self,
 		id: &IdType,
 		message_type_id: u8,
 		fingers: &[NodeContactInfo],
 		visit_limit: usize,
 		narrow_down: bool,
-		do_verify: impl Fn(&IdType, &[u8]) -> bool
-	) -> Option<Vec<u8>> {
-		let mut visited = Vec::<SocketAddr>::with_capacity(visit_limit);
-		let mut candidates = Self::sort_fingers(id, fingers);
-		
-		let mut i = 0;
-		while candidates.len() > 0 && i < visit_limit {
-			let (dist, candidate_contact) = candidates.pop_front().unwrap();
-			if visited.contains(&candidate_contact.address) {
-				continue;
-			}
-			visited.push(candidate_contact.address.clone());
-
-			error!("VISIT {} {}", i, &candidate_contact.address);
-			error!("dist {}", &dist);
-
-			match self.request_find_value(
-				&candidate_contact.address,
-				&id,
-				message_type_id
-			).await {
-				Err(e) => warn!("Disregarding finger {} due to error: {}", &candidate_contact.address, e),
-				Ok(response) => {
-					match response {
-						// If node returned new nodes, append them to the candidate list
-						Err(mut new_fingers) => {
-							new_fingers.retain(|f| !visited.contains(&f.address));
-							if narrow_down {
-								new_fingers.retain(|f| &distance(id, &f.node_id) < &dist);
-							}
-							Self::append_candidates(id, &mut candidates, &new_fingers);
-							if narrow_down {
-								while candidates.len() > KADEMLIA_K as usize { candidates.pop_back(); }
-							}
-						}
-						Ok(value) => {
-							if do_verify(id, &value) {
-								error!("VALUE");
-								return Some(value)
-							}
-							// If data is invalid, skip candidate
-							else {
-								continue;
-							}
-						}
-					}
-				}
-			}
-			i += 1;
-		}
-		None
+		do_verify: impl Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a
+	) -> Option<AtomicPtr<()>> {
+		self.find_value_from_fingers_iter(
+			id,
+			message_type_id,
+			fingers,
+			visit_limit,
+			narrow_down,
+			do_verify
+		).next().await
 	}
-	
-	/*#[async_recursion]
-	async fn _find_value_from_fingers(&self,
+
+	pub fn find_value_from_fingers_iter<'a>(&'a self,
 		id: &IdType,
 		message_type_id: u8,
 		fingers: &[NodeContactInfo],
-		visited: &mut Vec<SocketAddr>,
-		visited_limit: usize,
-		current_distance: &BigUint
-	) -> Option<(Vec<u8>, usize)> {
-		error!("NEXT Dist: {}", current_distance);
-		
-		for finger in fingers {
-			// Don't try nodes that have already been visited
-			if visited.contains(&finger.address) {
-				error!("Already visited");
-				continue
-			}
-			visited.push(finger.address.clone());
-
-			let result = match self.request_find_value(
-				&finger.address,
-				&id,
-				message_type_id
-			).await {
-				Err(e) => error!(
-					"Disregarding finger {} due to error: {}",
-					&finger.address,
-					e
-				),
-				Ok(response) => {
-					let mut sub_fingers = match response {
-						Err(f) => f,
-						Ok(value) => {
-							error!("Found");
-							// TODO: Verify data by checking hash/id
-							return (Some(value), KADEMLIA_K);
-						}
-					};
-					// Don't use the fingers that are further away
-					sub_fingers.retain(|f| {
-						distance(&f.node_id, &self.node_id) < *current_distance &&
-						!visited.contains(&f.address)
-					});
-					if sub_fingers.len() == 0 { error!("Finger got nothing"); continue }
-					// Start with the closest one first
-					sub_fingers.sort_by(|a, b| {
-						distance(&a.node_id, &self.node_id).cmp(
-							&distance(&b.node_id, &self.node_id)
-						)
-					});
-
-					// Only go deeper if we haven't reached our limit yet.
-					if (visited.len() + sub_fingers.len()) < visited_limit {
-						let result = self._find_value_from_fingers(
-							id,
-							message_type_id,
-							&sub_fingers,
-							narrowing_down,
-							visited,
-							visited_limit,
-							&distance(&sub_fingers[0].node_id, id)
-						).await;
-						match result {
-							None => {},
-							Some((value, mut duplicates)) => {
-								// If a value is found, try to duplicate the
-								// value at nodes that are slightly less close.
-								if duplicates > 0 {
-									for sub_finger in sub_fingers {
-										if duplicates > 0 {
-											tokio::spawn(async {
-												self.base.request_store_actor(
-
-												).await:
-											});
-											duplicates -= 1;
-										}
-									}
-								}
-								return (value, duplicates)
-							}
-						}
-					}
-				}
-			};
+		visit_limit: usize,
+		narrow_down: bool,
+		do_verify: impl Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a
+	) -> FindValueIter<'a, I> {
+		FindValueIter {
+			node: self,
+			id: id.clone(),
+			message_type_id,
+			do_verify: Box::new(do_verify),
+			narrow_down,
+			visited: Vec::with_capacity(visit_limit),
+			candidates: Self::sort_fingers(id, fingers),
+			visit_count: 0
 		}
-		error!("End none");
-		None
-	}*/
+	}
 
 	pub fn iter_all_fingers(&self) -> AllFingersIter<'_> {
 		AllFingersIter { global_index: 0, bucket_index: 0, buckets: &self.buckets }
@@ -610,7 +453,6 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 
 	/// Pings a node and returns its latency and node ID .
 	pub async fn ping(&self, target: &SocketAddr) -> io::Result<(u32, IdType)> {
-		debug!("Pinging {}...", target);
 		let start = SystemTime::now();
 		let node_id = self.request_ping(target).await?;
 		let stop = SystemTime::now();
@@ -633,6 +475,13 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 			}
 			if index != usize::MAX {
 				bucket.main.remove(index);
+				// Put backup back up front again if we still have it. The
+				// backup node is considered the most stable.
+				match bucket.backup.take() {
+					None => {},
+					Some(c) => bucket.main.push_front(c)
+				}
+				
 				return true;
 			}
 			else {
@@ -689,7 +538,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 			).unwrap() < Duration::from_millis(MINIMUM_PING_INTERVAL as _);
 		if !front_node_is_alive {
 			match self.ping(&bucket.main[0].contact_info.address).await {
-				Err(e) => {},
+				Err(_) => {},
 				Ok(_) => front_node_is_alive = true
 			}
 		}
@@ -706,7 +555,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 				).unwrap() < Duration::from_millis(MINIMUM_PING_INTERVAL as _);
 			if !backup_node_is_alive {
 				match self.ping(&bucket.main[0].contact_info.address).await {
-					Err(e) => {},
+					Err(_) => {},
 					Ok(_) => backup_node_is_alive = true
 				}
 			}
@@ -768,19 +617,20 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		target: &SocketAddr,
 		node_id: &IdType,
 		message_type_id: u8
-	) -> io::Result<Result<Vec<u8>, Vec<NodeContactInfo>>> {
+	) -> io::Result<(Option<Vec<u8>>, Vec<NodeContactInfo>)> {
 		let response = self.request_find_x(target, node_id, message_type_id).await?;
-		if response[0] == 0 {
-			return Ok(Ok(response[1..].to_vec()));
+		let contacts = bincode::deserialize(&response).map_err(|e| {
+			io::Error::new(
+				io::ErrorKind::InvalidData,
+				e
+			)
+		})?;
+		let contacts_len = bincode::serialized_size(&contacts).unwrap();
+		if response[contacts_len] == 0 {
+			return Ok((Some(response[(contacts_len+1)..].to_vec()), contacts));
 		}
 		else if response[0] == 1 {
-			return Ok(Err(bincode::deserialize(&response[1..]).map_err(|e| {
-				error!("HOI");
-				io::Error::new(
-					io::ErrorKind::InvalidData,
-					e
-				)
-			})?));
+			return Ok((None, contacts));
 		}
 		else {
 			return Err(io::Error::from(io::ErrorKind::InvalidData));
