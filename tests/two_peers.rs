@@ -14,7 +14,7 @@ use stonenet::{
 	common::*,
 	config::Config,
 	db::Database,
-	identity::MyIdentity,
+	identity::Keypair,
 	net::{
 		overlay::OverlayNode
 	}
@@ -54,7 +54,7 @@ fn two_peers() {
 		.enable_time()
 		.build().unwrap();
 	rt.block_on(async {
-		let keypair = MyIdentity::generate();
+		let keypair = Keypair::generate();
 		let public_key = keypair.public();
 		let test_address = public_key.generate_address();
 

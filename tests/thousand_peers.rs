@@ -59,7 +59,7 @@ fn main() {
 			&config
 		).await;
 
-		let keypair = MyIdentity::generate();
+		let keypair = Keypair::generate();
 		let public_key = keypair.public();
 		let address = public_key.generate_address();
 

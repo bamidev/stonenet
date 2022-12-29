@@ -8,10 +8,15 @@
 pub mod actor;
 mod actor_store;
 mod bincode;
-pub mod exchange_manager;
+//pub mod exchange_manager;
 mod message;
 pub mod overlay;
+mod socket;
+mod sstp;
 
+
+use socket::UdpSocket;
+use sstp::Connection;
 
 use crate::{
 	common::*,
@@ -112,18 +117,21 @@ struct RequestHeader {
 #[async_trait]
 pub trait NodeInterface {
 
-	async fn respond(&self,
+	async fn connect(&self,
 		target: &SocketAddr,
-		message_type_id: u8,
-		exchange_id: u32,
-		message: &[u8]
-	) -> io::Result<()>;
+		node_id: Option<&IdType>
+	) -> io::Result<Connection<UdpSocket>>;
 
-	async fn request(&self,
-		target: &SocketAddr,
-		message_id: u8,
+	async fn exchange(&self,
+		connection: &mut Connection<UdpSocket>,
+		message_type: u8,
 		request: &[u8]
-	) -> io::Result<(IdType, Vec<u8>)>;
+	) -> io::Result<Vec<u8>>;
+
+	async fn respond(&self,
+		message_type: u8,
+		message: &[u8]
+	) -> Vec<u8>;
 }
 
 
@@ -526,12 +534,12 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 			}
 		}
 
-		// If bucket is full, decide what to do after a ping
 		if bucket.main.len() < KADEMLIA_K as usize {
-			bucket.main.push_back(contact_info.into());
-			return;
+			bucket.main.push_back(contact_info.clone().into());
 		}
 
+		// If bucket is full, decide what to do after a ping
+		let mut bucket = self.buckets[bucket_pos].lock().await;
 		let mut front_node_is_alive = 
 			SystemTime::now().duration_since(
 				bucket.main[0].last_ping
@@ -570,20 +578,49 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 			bucket.main.push_back(contact_info.into());
 		}
 	}
+
+	async fn remember_node_silently(self: &Arc<Self>, contact_info: NodeContactInfo) {
+		let bucket_pos = match Self::differs_at_bit(&self.node_id, &contact_info.node_id) {
+			None => {
+				warn!("Found same node ID as us, ignoring...");
+				return;
+			},
+			Some(p) => p as usize
+		};
+
+		let mut bucket = self.buckets[bucket_pos].lock().await;
+
+		// If peer is already in our bucket, only update node id
+		match bucket.main.iter()
+			.position(|e| e.contact_info.address == contact_info.address)
+		{
+			None => debug!("Remember node {}.", &contact_info.address),
+			Some(index) => {
+				bucket.main[index].contact_info.node_id = contact_info.node_id;
+				debug!("Node ID updated for {}.", &contact_info.address);
+				return;
+			}
+		}
+
+		if bucket.main.len() < KADEMLIA_K as usize {
+			bucket.main.push_back(contact_info.into());
+		}
+	}
 	
-	pub async fn request(&self,
+	pub async fn exchange(&self,
 		target: &SocketAddr,
 		message_type_id: u8,
 		buffer: &[u8]
 	) -> io::Result<(IdType, Vec<u8>)> {
-		let result = self.interface.request(target, message_type_id, buffer).await;
+		let mut connection = self.interface.connect(target, None).await?;
+		let result = self.interface.exchange(&mut connection, message_type_id, buffer).await;
 		
 		// Reject the node from our routing table if it has proven
 		// unresponsive.
 		if !result.is_ok() {
 			self.reject_node(target).await;
 		}
-		result
+		Ok((connection.their_node_id().clone(), result?))
 	}
 
 	pub async fn request_find_x(&self,
@@ -594,7 +631,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		let request = FindNodeRequest {
 			node_id: node_id.clone()
 		};
-		self.request(
+		self.exchange(
 			target,
 			message_type_id,
 			&bincode::serialize(&request).unwrap()
@@ -643,7 +680,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		target: &SocketAddr
 	) -> io::Result<IdType> {
 		let message = PingRequest {};
-		let result = self.request(
+		let result = self.exchange(
 			target,
 			NETWORK_MESSAGE_TYPE_ID_PING_REQUEST,
 			&bincode::serialize(&message).unwrap()
@@ -653,7 +690,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 	}
 }
 
-/*#[cfg(test)]
+#[cfg(test)]
 mod tests {
 	use super::*;
 
@@ -661,6 +698,5 @@ mod tests {
 fn test_distance() {
 	let a1 = IdType::from_base58("DSLVRnqejmzQXKmoZ4KtfvvGLBSFwKJxKEQxnXJq1A8b").unwrap();
 	let a2 = IdType::from_base58("E7hinjgaQ7WfsNjos1FHYvHNCgHJfC9f29arA5QqtZw1").unwrap();
-	assert!(distance(&a1, &a2) > 0.into());
+	assert!(distance(&a1, &a2) > 0u32.into());
 }}
-*/

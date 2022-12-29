@@ -1,9 +1,10 @@
 use super::{
 	actor::*,
 	actor_store::*,
-	exchange_manager::ExchangeManager,
 	KADEMLIA_K,
 	message::*,
+	socket::UdpSocket,
+	sstp::*
 };
 
 use crate::{
@@ -32,7 +33,6 @@ use futures::future::join_all;
 use log::*;
 use tokio::{
 	self,
-	net::ToSocketAddrs,
 	time::sleep
 };
 
@@ -55,44 +55,59 @@ pub struct OverlayNode {
 }
 
 struct OverlayInterface {
-	node_id: IdType,
-	exch: Arc<ExchangeManager>,
+	socket: SstpSocket<UdpSocket>,
 	max_idle_time: usize,
-	last_request_time: StdMutex<SystemTime>
+	last_message_time: StdMutex<SystemTime>
 }
 
 
 #[async_trait]
 impl NodeInterface for OverlayInterface {
-	
-	async fn request(&self,
+
+	async fn connect(&self,
 		target: &SocketAddr,
+		node_id: Option<&IdType>
+	) -> io::Result<Connection<UdpSocket>> {
+		self.socket.connect(target.clone(), node_id).await
+	}
+	
+	async fn exchange(&self,
+		connection: &mut Connection<UdpSocket>,
 		message_type_id: u8,
 		buffer: &[u8]
-	) -> io::Result<(IdType, Vec<u8>)> {
-		*self.last_request_time.lock().unwrap() = SystemTime::now();
-		self.exch.request(
-			&self.node_id,
-			target,
-			message_type_id,
-			buffer,
-			Some(NODE_COMMUNICATION_TIMEOUT)
-		).await
+	) -> io::Result<Vec<u8>> {
+		*self.last_message_time.lock().unwrap() = SystemTime::now();
+		
+		// Send request
+		let mut real_buffer = Vec::with_capacity(1 + buffer.len());
+		real_buffer[0] = message_type_id;
+		real_buffer.extend(buffer);
+		connection.send(
+			&real_buffer
+		).await?;
+
+		// Receive response
+		let mut response = connection.receive().await?;
+		if response[0] != (message_type_id + 1) {
+			return Err(sstp::Error::InvalidResponseMessageType((
+				response[0],
+				message_type_id + 1
+			)).into());
+		}
+		response.remove(0);
+		return Ok(response)
 	}
 
 	async fn respond(&self,
-		target: &SocketAddr,
 		message_type_id: u8,
-		exchange_id: u32,
 		buffer: &[u8]
-	) -> io::Result<()> {
-		self.exch.send_message(
-			&self.node_id,
-			target,
-			message_type_id,
-			exchange_id,
-			buffer
-		).await
+	) -> Vec<u8> {
+		*self.last_message_time.lock().unwrap() = SystemTime::now();
+
+		let mut real_buffer = Vec::with_capacity(1 + buffer.len());
+		real_buffer[0] = message_type_id;
+		real_buffer.extend(buffer);
+		real_buffer
 	}
 }
 
@@ -110,9 +125,9 @@ impl<'a> AsyncIterator for FindActorIter<'a> {
 
 impl OverlayNode {
 
-	pub async fn bind<A: ToSocketAddrs>(
+	pub async fn bind(
 		node_id: IdType,
-		addr: A,
+		addr: &SocketAddr,
 		db: Arc<Database>,
 		config: &Config
 	) -> io::Result<Self> {
@@ -126,12 +141,12 @@ impl OverlayNode {
 			}
 		}
 
-		let exchange_manager = Arc::new(ExchangeManager::bind(addr).await?);
+		let keypair = Keypair::generate();
+		let socket = SstpSocket::bind(addr, keypair).await?;
 		Ok(Self {
 			base: Arc::new(Node::new(node_id.clone(), OverlayInterface {
-				exch: exchange_manager.clone(),
-				node_id: node_id,
-				last_request_time: StdMutex::new(SystemTime::now()),
+				socket,
+				last_message_time: StdMutex::new(SystemTime::now()),
 				max_idle_time: config.udp_max_idle_time
 			})),
 			actor_nodes: HashMap::new(),
@@ -148,10 +163,10 @@ impl OverlayNode {
 	) -> Option<ActorNode> {
 		let mut iter = self.find_actor_iter(actor_id, 100, true).await;
 		while let Some(result) = iter.next().await {
-			let public_key = result.0;
+			//let public_key = result.0;
 			for node in result.1 {
 				let actor_node = ActorNode::new_lurker(
-					self.base.interface.exch.clone(),
+					self.base.interface.socket.clone(),
 					actor_id.clone()
 				);
 				// Ping node on actor network to see if they are still online
@@ -273,19 +288,36 @@ impl OverlayNode {
 		Ok(())
 	}
 
+	async fn handle_connection(&self,
+		connection: &mut Connection<UdpSocket>
+	) -> io::Result<()> {
+		let message = connection.receive().await?;
+		let result = self.process_request_message(
+			connection.target(),
+			connection.their_node_id(),
+			&message
+		).await;
+		match result {
+			None => Ok(()),
+			Some(response) => {
+				connection.send(&response).await
+			}
+		}
+	}
+
 	async fn keep_hole_open(self: Arc<Self>, stop_flag: Arc<AtomicBool>) {
 		while !stop_flag.load(Ordering::Relaxed) {
 			sleep(Duration::from_secs(1)).await;
 
 			let is_inactive = {
-				let mut last_request_time = self.base.interface.last_request_time.lock().unwrap();
+				let mut last_message_time = self.base.interface.last_message_time.lock().unwrap();
 				let is_inactive = SystemTime::now()
-				                    .duration_since(*last_request_time).unwrap() >
+				                    .duration_since(*last_message_time).unwrap() >
 				                Duration::from_secs(
 				                    self.base.interface.max_idle_time as _
 				                );
 				if is_inactive {
-					*last_request_time = SystemTime::now();
+					*last_message_time = SystemTime::now();
 				}
 				is_inactive
 			};
@@ -322,71 +354,75 @@ impl OverlayNode {
 		&self.base.node_id
 	}
 
-	async fn process_message(&self, address: SocketAddr, buffer: Vec<u8>) {
-		if buffer.len() < 37 {
-			error!(
-				"Packet received from {} smaller than header: only {} bytes.",
-				address, buffer.len()
-			);
-			return;
-		}
+	async fn process_request_message(&self,
+		address: &SocketAddr,
+		sender_node_id: &IdType,
+		buffer: &[u8]
+	) -> Option<Vec<u8>> {
 		let mut message_type_id = buffer[0];
-		let exchange_id = u32::from_le_bytes(buffer[1..5].try_into().unwrap());
-		let sender_node_id: IdType = bincode::deserialize(&buffer[5..37]).unwrap();
-
-		let mut sub_buffer = &buffer[37..];
-		let node_interface: &(dyn NodeInterface + Sync) = if message_type_id >= 0x80 {
+		let response = if message_type_id >= 0x80 {
 			message_type_id ^= 0x80;
-			let actor_id: IdType = bincode::deserialize(&buffer[37..69]).unwrap();
+			let actor_id: IdType = bincode::deserialize(&buffer[1..33]).unwrap();
 			let actor_node = match self.actor_nodes.get(&actor_id) {
-				None => return, // Don't respond to requests for networks we are not connected to.
+				None => return None, // Don't respond to requests for networks we are not connected to.
 				Some(n) => &n.interface,
 			};
-			sub_buffer = &buffer[69..];
-			actor_node
-		}
-		else {
-			&self.base.interface
-		};
 
-		if message_type_id % 2 == 0 {
-			match self.process_request(
-				&sender_node_id,
-				&address,
+			let r = self.process_request(
+				address,
+				sender_node_id,
 				message_type_id,
-				&sub_buffer
-			).await {
-				None => {},
-				Some(buffer) => {
-					match node_interface.respond(
-						&address,
-						message_type_id + 1,
-						exchange_id,
-						&buffer
-					).await {
-						Err(e) => error!("Unable to respond back to request {}: {}", exchange_id, e),
-						Ok(()) => {}
-					}
-				}
+				&buffer[33..]
+			).await;
+	
+			match r {
+				None => None,
+				Some(x) => Some(actor_node.respond(
+					message_type_id + 1,
+					&x
+				).await)
 			}
 		}
 		else {
-			self.process_response(&sender_node_id, message_type_id, exchange_id, &sub_buffer).await;
-		}
+			let r = self.process_request(
+				address,
+				sender_node_id,
+				message_type_id,
+				&buffer[1..]
+			).await;
+	
+			match r {
+				None => None,
+				Some(x) => Some(self.base.interface.respond(
+					message_type_id + 1,
+					&x
+				).await)
+			}
+		};
 
 		// Let us remember the node that send the message, but lets not wait
 		// for the whole process to finish before we return the response.
-		// Except for ping request, so it won't cause a never ending ping chain.
+		let address_copy = address.clone();
+		let node = self.base.clone();
+		let sender_node_id2 = sender_node_id.clone();
 		if message_type_id > NETWORK_MESSAGE_TYPE_ID_PING_REQUEST + 1 {
-			let address_copy = address.clone();
-			let node = self.base.clone();
-			tokio::task::spawn(async move {
+			tokio::spawn(async move {
 				node.remember_node(NodeContactInfo {
 					address: address_copy,
-					node_id: sender_node_id
+					node_id: sender_node_id2
 				}).await;
 			});
 		}
+		// Except for ping messages, we only remember if we have space so as not
+		// to cause infinite ping chains in the network.
+		else {
+			node.remember_node_silently(NodeContactInfo {
+				address: address_copy,
+				node_id: sender_node_id2
+			}).await;
+		}
+
+		response
 	}
 
 
@@ -472,16 +508,9 @@ impl OverlayNode {
 		debug!("Received ping request from {}", address); Some(Vec::new())
 	}
 
-	async fn process_response(&self, sender_node_id: &IdType, _message_type_id: u8, exchange_id: u32, buffer: &[u8]) {
-		let success = self.base.interface.exch.trigger_response(sender_node_id, exchange_id, buffer).await;
-		if !success {
-			error!("Unable to trigger response with exchange ID {}.", exchange_id)
-		}
-	}
-
 	async fn process_request(&self,
-		sender_node_id: &IdType,
 		address: &SocketAddr,
+		sender_node_id: &IdType,
 		message_type_id: u8,
 		buffer: &[u8]
 	) -> Option<Vec<u8>> {
@@ -579,7 +608,7 @@ impl OverlayNode {
 			i_am_available,
 			nodes
 		};
-		self.base.request(
+		self.base.exchange(
 			target,
 			OVERLAY_MESSAGE_TYPE_ID_STORE_ACTOR_REQUEST,
 			&bincode::serialize(&request).unwrap()
@@ -593,12 +622,19 @@ impl OverlayNode {
 		if self.bootstrap_nodes.len() > 0 {
 			tokio::spawn(self.clone().keep_hole_open(stop_flag.clone()));
 		}
-		self.base.interface.exch.clone().serve(stop_flag, move |address, buffer| {
-			let this = self.clone();
-			tokio::task::spawn(async move {
-				this.process_message(address, buffer).await;
-			});
-		}).await;
+		let this = self.clone();
+		self.base.interface.socket.listen(
+			stop_flag,
+			move |mut connection| {
+				let this2 = this.clone();
+				tokio::task::spawn(async move {
+					match this2.handle_connection(&mut connection).await {
+						Ok(()) => {},
+						Err(e) => error!("Node io error: {}", e)
+					}
+				});
+			}
+		).await.serve().await
 	}
 
 	pub async fn store_actor(&self,

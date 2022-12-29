@@ -57,7 +57,7 @@ impl Database {
 		if let Some(row) = rows.next()? {
 			let object_type = row.get(0)?;
 			let signature_blob: Vec<u8> = row.get(1)?;
-			let signature = Signature::from_bytes(&signature_blob)?;
+			let signature = Signature::from_bytes(signature_blob.try_into().unwrap());
 
 			let payload = match object_type {
 				0 => self.fetch_post_object(index).map(|o| o.map(|p|
@@ -235,7 +235,7 @@ impl Database {
 	}*/
 
 	pub fn fetch_my_identities(&self) -> 
-		Result<Vec<(String, IdType, MyIdentity)>>
+		Result<Vec<(String, IdType, Keypair)>>
 	{
 		let mut stat = self.0.prepare(r#"
 			SELECT label, i.address, i.keypair FROM my_identity AS mi
@@ -254,7 +254,7 @@ impl Database {
 				Ok(a) => a
 			};
 			let blob: Vec<u8> = row.get(2)?;
-			let id = match MyIdentity::from_bytes(&blob) {
+			let id = match Keypair::from_bytes(&blob) {
 				Err(e) => {
 					error!("Unable to load identity from DB: {}", e);
 					continue;

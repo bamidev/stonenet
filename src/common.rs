@@ -8,6 +8,7 @@ use serde::{
 	Serialize,
 	Deserialize
 };
+use sha2::{Digest, Sha256};
 use rand_core::{RngCore, OsRng};
 
 
@@ -46,6 +47,10 @@ impl IdType {
 		else { Ok(Self (buffer.try_into().unwrap())) }
 	}
 
+	pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+		Self (bytes.clone())
+	}
+
 	pub fn from_slice(bytes: &[u8]) -> Option<Self> {
 		if bytes.len() != 32 {
 			None
@@ -53,6 +58,13 @@ impl IdType {
 		else {
 			Some(Self (bytes.try_into().unwrap()))
 		}
+	}
+
+	pub fn hash(bytes: &[u8]) -> Self {
+		let mut hasher = Sha256::new();
+		hasher.update(bytes);
+		let buffer: [u8; 32] = hasher.finalize().into();
+		buffer.into()
 	}
 
 	pub fn new(bytes: [u8; 32]) -> Self {
@@ -74,6 +86,8 @@ impl IdType {
 		rng.fill_bytes(&mut buf);
 		IdType (buf)
 	}
+
+	pub fn as_bytes(&self) -> &[u8; 32] { &self.0 }
 }
 
 impl From<[u8; 32]> for IdType {

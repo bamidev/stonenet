@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate arrayref;
+
 mod common;
 mod config;
 mod db;
@@ -12,6 +15,7 @@ mod ui;
 use std::{
 	fs::File,
 	io::prelude::*,
+	net::{SocketAddr, ToSocketAddrs},
 	process,
 	sync::{Arc, atomic::AtomicBool}
 };
@@ -105,7 +109,8 @@ async fn main() {
 
 async fn load_node(db: Arc<Database>, config: &Config) -> OverlayNode {
 	let node_id = IdType::random();
-	match net::overlay::OverlayNode::bind(node_id, &config.address, db, config).await {
+	let address: SocketAddr = ToSocketAddrs::to_socket_addrs(&config.address).unwrap().next().unwrap();
+	match net::overlay::OverlayNode::bind(node_id, &address, db, config).await {
 		Err(e) => {
 			error!("Unable to bind to address {}: {}", config.address, e);
 			process::exit(1)

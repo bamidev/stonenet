@@ -9,16 +9,21 @@ readme = "README"
 rust-version = "1.59"
 
 [dependencies]
+arrayref = "0"
 async-recursion = "1"
+async-std = "1"
 async-trait = "0"
 base58 = "0"
 bincode = "1"
 dirs = "4"
+chacha20 = ">=0.9, <1.0"
 ed25519 = { version = "1", features = ["serde"] }
 ed25519-dalek = { version = "1", features = ["serde"] }
 env_logger = "0"
 fallible-iterator = "0"
 futures = "0"
+generic-array = "0"
+hmac = ">=0.12, <1.0"
 lazy_static = "1"
 log = "0"
 num = "0"
@@ -32,3 +37,4 @@ signal-hook = "0"
 tokio = { version = "1", features = ["rt", "macros", "net", "sync", "time"] }
 toml = "0"
 unsafe-send-sync = "0"
+x25519-dalek = { version = ">=1.2, <2", features = ["serde"] }

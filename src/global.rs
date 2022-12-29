@@ -12,8 +12,6 @@ use super::{
 	db::{self, Database}
 };
 
-use futures::future::join_all;
-
 
 /*#[derive(Debug)]
 pub enum Error {

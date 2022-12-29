@@ -1,7 +1,8 @@
 use super::{
 	*,
-	exchange_manager::ExchangeManager,
-	message::*
+	message::*,
+	socket::*,
+	sstp::*,
 };
 
 use crate::{
@@ -35,7 +36,7 @@ pub struct ActorNode {
 }
 
 pub struct ActorInterface {
-	exch: Arc<ExchangeManager>,
+	socket: SstpSocket<UdpSocket>,
 	node_id: IdType,
 	keypair: Keypair,
 	actor_id: IdType,
@@ -46,40 +47,50 @@ pub struct ActorInterface {
 #[async_trait]
 impl NodeInterface for ActorInterface {
 
-	async fn request(&self,
+	async fn connect(&self,
 		target: &SocketAddr,
-		message_type_id: u8,
+		node_id: Option<&IdType>
+	) -> io::Result<Connection<UdpSocket>> {
+		self.socket.connect(target.clone(), node_id).await
+	}
+
+	async fn exchange(&self,
+		connection: &mut Connection<UdpSocket>,
+		mut message_type_id: u8,
 		buffer: &[u8]
-	) -> io::Result<(IdType, Vec<u8>)> {
-		let mut actual_buffer = vec![0u8; 33 + buffer.len()];
-		actual_buffer[..32].clone_from_slice(&bincode::serialize(&self.actor_id).unwrap());
-		actual_buffer[32] = self.is_lurker as _;
-		actual_buffer[33..].clone_from_slice(buffer);
-		self.exch.request(
-			&self.node_id,
-			target,
-			message_type_id + 0x80,
-			&actual_buffer,
-			Some(NODE_COMMUNICATION_TIMEOUT)
-		).await
+	) -> io::Result<Vec<u8>> {
+		message_type_id &= 0x80;
+		
+		// Send request
+		let mut real_buffer = Vec::with_capacity(33 + buffer.len());
+		real_buffer[0] = message_type_id;
+		real_buffer[1..33].copy_from_slice(self.actor_id.as_bytes());
+		real_buffer[33..].copy_from_slice(self.actor_id.as_bytes());
+		real_buffer.extend(buffer);
+		connection.send(
+			&real_buffer
+		).await?;
+
+		// Receive response
+		let mut response = connection.receive().await?;
+		if response[0] != (message_type_id + 1) {
+			return Err(Error::InvalidResponseMessageType((
+				response[0],
+				message_type_id + 1
+			)).into());
+		}
+		response.remove(0);
+		return Ok(response)
 	}
 
 	async fn respond(&self,
-		target: &SocketAddr,
 		message_type_id: u8,
-		exchange_id: u32,
 		buffer: &[u8]
-	) -> io::Result<()> {
-		let mut actual_buffer = vec![0u8; 32 + buffer.len()];
-		actual_buffer[..32].clone_from_slice(&bincode::serialize(&self.actor_id).unwrap());
-		actual_buffer[32..].clone_from_slice(buffer);
-		self.exch.send_message(
-			&self.node_id,
-			target,
-			message_type_id + 0x80,
-			exchange_id,
-			&actual_buffer
-		).await
+	) -> Vec<u8> {
+		let mut real_buffer = Vec::with_capacity(1 + buffer.len());
+		real_buffer[0] = message_type_id & 0x80;
+		real_buffer.extend(buffer);
+		real_buffer
 	}
 }
 
@@ -183,7 +194,7 @@ impl ActorNode {
 	}
 
 	pub(super) fn new_lurker(
-		exch: Arc<ExchangeManager>,
+		socket: SstpSocket<UdpSocket>,
 		actor_id: IdType
 	) -> Self {
 		let keypair = Keypair::generate();
@@ -191,7 +202,7 @@ impl ActorNode {
 		let address = public_key.generate_address();
 		
 		let interface = ActorInterface {
-			exch,
+			socket,
 			node_id: address.clone(),
 			keypair,
 			actor_id,
@@ -203,7 +214,7 @@ impl ActorNode {
 	}
 
 	pub async fn request_head(&self, target: &SocketAddr) -> io::Result<u64> {
-		let (_, response) = self.base.request(
+		let (_, response) = self.base.exchange(
 			target,
 			ACTOR_MESSAGE_TYPE_ID_HEAD_REQUEST,
 			&[]

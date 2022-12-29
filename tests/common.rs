@@ -1,4 +1,5 @@
 use std::{
+	net::{SocketAddr, ToSocketAddrs},
 	process,
 	sync::{
 		atomic::AtomicBool,
@@ -19,7 +20,6 @@ use stonenet::{
 use log::*;
 use tokio::{
 	self,
-	net::ToSocketAddrs
 };
 
 
@@ -29,7 +29,8 @@ pub async fn launch_node<A: ToSocketAddrs>(
 	db: Arc<Database>,
 	config: &Config
 ) -> Arc<OverlayNode> {
-	let node = match OverlayNode::bind(IdType::random(), addr, db, config).await {
+	let a: SocketAddr = addr.to_socket_addrs().unwrap().next().unwrap();
+	let node = match OverlayNode::bind(IdType::random(), &a, db, config).await {
 		Err(e) => {
 			error!("Unable to bind to port 8337: {}", e);
 			process::exit(1)

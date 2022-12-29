@@ -1,3 +1,5 @@
+//! Connections in Stonenet are 
+
 use std::{
 	collections::HashMap,
 	io,
@@ -21,24 +23,24 @@ use tokio::{
 
 
 pub const DEFAULT_TIMEOUT: u32 = 10;    // 10 seconds
-const UDP_PACKET_MAX: usize = 65507;
+//const UDP_PACKET_MAX: usize = 65507;
 
 
 pub type ResultCallback = dyn FnOnce(io::Result<(IdType, Vec<u8>)>) + Send;
 
-pub struct ExchangeManager {
+pub struct ConnectionManager {
 	socket: UdpSocket,
-	exchanges: Mutex<ExchangesData>
+	connections: Mutex<ConnectionInfo>
 }
 
-struct ExchangeData {
+struct ConnectionInfo {
 	/// The callback to be called with either the error or the response.
 	callback: Box<ResultCallback>,
 	/// The moment in time when a timeout error should occur
 	timeout_moment: SystemTime
 }
 
-struct ExchangesData {
+struct ExchangeData {
 	sessions: HashMap<u32, ExchangeData>,
 	next_exchange_id: u32
 }
@@ -78,7 +80,7 @@ impl ExchangeManager {
 		}
 	}
 
-	pub async fn trigger_response(&self,
+	async fn trigger_response(&self,
 		sender_node_id: &IdType,
 		exchange_id: u32,
 		buffer: &[u8]
@@ -95,8 +97,8 @@ impl ExchangeManager {
 
 	pub async fn serve<'a, F: 'a>(self: Arc<Self>,
 		stop_flag: Arc<AtomicBool>,
-		handle_message: F
-	) where F: Fn(SocketAddr, Vec<u8>) {
+		handle_request: F
+	) where F: Fn(SocketAddr, IdType, u8, u32, Vec<u8>) {
 		let mut buffer = [0u8; UDP_PACKET_MAX];
 
 		self.clone().spawn_garbage_collector(stop_flag.clone());
@@ -111,7 +113,36 @@ impl ExchangeManager {
 							continue;
 						},
 						Ok((received, address)) => {
-							(handle_message)(address, buffer[..received].to_vec());
+							if buffer.len() < 35 {
+								error!(
+									"Packet received from {} smaller than header: only {} bytes.",
+									address, buffer.len()
+								);
+								continue;
+							}
+							let message_type = buffer[0];
+							if message_type == 0xFF {	// Transport messages
+								self.trans.process_message(address, &buffer[1..]);
+							}
+							else if message_type == 0xFE {
+								self.trans.process_ack(address, &buffer[1..]);
+							}
+							else {
+								let sender_node_id: IdType = bincode::deserialize(&buffer[1..33]).unwrap();
+								let exchange_id = u32::from_le_bytes(buffer[33..37].try_into().unwrap());
+								if message_type %2 == 0 {
+									(handle_request)(
+										address,
+										sender_node_id,
+										message_type,
+										exchange_id,
+										buffer[37..received].to_vec()
+									);
+								}
+								else {
+									self.trigger_response(&sender_node_id, exchange_id, &buffer).await;
+								}
+							}
 						}
 					}
 				},
