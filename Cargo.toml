@@ -9,6 +9,7 @@ readme = "README"
 rust-version = "1.59"
 
 [dependencies]
+format-bytes = "0"
 arrayref = "0"
 async-recursion = "1"
 async-std = "1"
@@ -18,7 +19,7 @@ bincode = "1"
 dirs = "4"
 chacha20 = ">=0.9, <1.0"
 ed25519 = { version = "1", features = ["serde"] }
-ed25519-dalek = { version = "1", features = ["serde"] }
+ed25519-dalek = { version = "1", features = ["serde", "std"] }
 env_logger = "0"
 fallible-iterator = "0"
 futures = "0"

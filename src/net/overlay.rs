@@ -80,7 +80,7 @@ impl NodeInterface for OverlayInterface {
 		
 		// Send request
 		let mut real_buffer = Vec::with_capacity(1 + buffer.len());
-		real_buffer[0] = message_type_id;
+		real_buffer.push(message_type_id);
 		real_buffer.extend(buffer);
 		connection.send(
 			&real_buffer
@@ -634,7 +634,7 @@ impl OverlayNode {
 					}
 				});
 			}
-		).await.serve().await
+		).serve("").await
 	}
 
 	pub async fn store_actor(&self,

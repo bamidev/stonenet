@@ -13,7 +13,7 @@ use ed25519_dalek::{
 		}
 	}
 };
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use serde::{Serialize, Deserialize};
 use sha2::{Digest, Sha256};
 
@@ -31,10 +31,10 @@ pub struct Keypair (ed25519_dalek::Keypair);
 
 
 
-impl Identity {
+impl PublicKey {
 
-	pub fn from_bytes(bytes: [u8; 32]) -> Self {
-		Self (ed25519_dalek::PublicKey::from_bytes(&bytes).unwrap())
+	pub fn from_bytes(bytes: [u8; 32]) -> Option<Self> {
+		ed25519_dalek::PublicKey::from_bytes(&bytes).ok().map(|k| Self(k))
 	}
 
 	pub fn generate_address(&self) -> IdType {
@@ -111,4 +111,19 @@ impl DerefMut for PublicKey {
 	fn deref_mut(&mut self) -> &mut Self::Target {
 		&mut self.0
 	}
+}
+
+
+#[test]
+fn test_signature() {
+	let mut buffer = vec![0u8; 1024];
+	OsRng.fill_bytes(&mut buffer);
+
+	let keypair = Keypair::generate();
+	let signature = keypair.sign(&buffer);
+	assert!(keypair.public().verify(&buffer, &signature), "can't verify own signature");
+
+	let signature_bytes = signature.as_bytes();
+	let signature2 = Signature::from_bytes(signature_bytes.clone());
+	assert!(keypair.public().verify(&buffer, &signature2), "can't verify own signature after encoding+decoding it");
 }

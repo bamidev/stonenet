@@ -52,11 +52,11 @@ impl IdType {
 	}
 
 	pub fn from_slice(bytes: &[u8]) -> Option<Self> {
-		if bytes.len() != 32 {
+		if bytes.len() < 32 {
 			None
 		}
 		else {
-			Some(Self (bytes.try_into().unwrap()))
+			Some(Self (bytes[..32].try_into().unwrap()))
 		}
 	}
 
