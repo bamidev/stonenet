@@ -76,8 +76,7 @@ pub struct FindValueIter<'a, I> where I: NodeInterface + Send + Sync {
 	narrow_down: bool,
 
 	visited: Vec<SocketAddr>,
-	candidates: VecDeque<(BigUint, NodeContactInfo)>,
-	visit_count: usize
+	candidates: VecDeque<(BigUint, NodeContactInfo)>
 }
 
 type SerializedNodeId = [u8; 32];
@@ -103,7 +102,7 @@ pub struct Node<I> where I: NodeInterface {
 	interface: I
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeContactInfo {
 	address: SocketAddr,
 	node_id: IdType
@@ -171,7 +170,7 @@ impl<'a> AsyncIterator for AllFingersIter<'a> {
 				self.bucket_index += 1;
 				return result;
 			}
-			else if self.bucket_index == bucket.main.len() {
+			else if self.bucket_index >= bucket.main.len() {
 				self.bucket_index = 0;
 				self.global_index += 1;
 				match bucket.backup.as_ref() {
@@ -180,7 +179,7 @@ impl<'a> AsyncIterator for AllFingersIter<'a> {
 				}
 			}
 			else {
-				eprintln!("XXXXXXX {} {}", self.global_index, self.bucket_index);
+				debug!("global_index = {}, bucket_index = {}", self.global_index, self.bucket_index);
 				panic!("Unreachable");
 			}
 		}
@@ -195,12 +194,8 @@ impl<'a, I> AsyncIterator for FindValueIter<'a, I> where
 	type Item = AtomicPtr<()>;
 
 	async fn next(&mut self) -> Option<Self::Item> {
-		if self.candidates.len() == 0 || self.visit_count >= self.visited.capacity() {
-			return None;
-		}
-		self.visit_count += 1;
 
-		while self.candidates.len() > 0 && self.visit_count < self.visited.capacity() {
+		while self.candidates.len() > 0 && self.visited.len() < self.visited.capacity() {
 			let (dist, candidate_contact) = self.candidates.pop_front().unwrap();
 			if self.visited.contains(&candidate_contact.address) {
 				continue;
@@ -221,6 +216,7 @@ impl<'a, I> AsyncIterator for FindValueIter<'a, I> where
 							if self.narrow_down {
 								new_fingers.retain(|f| &distance(&self.id, &f.node_id) < &dist);
 							}
+							
 							Node::<I>::append_candidates(&self.id, &mut self.candidates, &new_fingers);
 							if self.narrow_down {
 								while self.candidates.len() > KADEMLIA_K as usize { self.candidates.pop_back(); }
@@ -265,6 +261,13 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		}
 	}
 
+	pub async fn connect(&self,
+		target: &SocketAddr,
+		node_id: Option<&IdType>
+	) -> io::Result<Connection<UdpSocket>> {
+		self.interface.connect(target, node_id).await
+	}
+
 	fn differs_at_bit(a: &IdType, b: &IdType) -> Option<u8> {
 		for i in 0..32 {
 			let x = Self::differs_at_bit_u8(a.0[i] as _, b.0[i] as _) as usize;
@@ -297,10 +300,11 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 			Some(p) => p as usize
 		};
 		let mut fingers = Vec::with_capacity(KADEMLIA_K as _);
-
-		// Return the fingers of the first non-empty bucket lowest in the
-		// binary tree.
-		for i in (0..bucket_pos).rev() {
+		
+		// Return the fingers lower down the binary tree first, as they differ
+		// at the same bit as our ID.
+		// Then return the fingers otherwise lowest in the binary tree.
+		for i in ((bucket_pos)..256).chain((0..bucket_pos).rev()) {
 			let additional_fingers: Vec<NodeContactInfo> = {
 				let bucket = self.buckets[i].lock().await;
 				bucket.main.iter()
@@ -437,8 +441,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 			do_verify: Box::new(do_verify),
 			narrow_down,
 			visited: Vec::with_capacity(visit_limit),
-			candidates: Self::sort_fingers(id, fingers),
-			visit_count: 0
+			candidates: Self::sort_fingers(id, fingers)
 		}
 	}
 
@@ -460,20 +463,21 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 	}
 
 	/// Pings a node and returns its latency and node ID .
-	pub async fn ping(&self, target: &SocketAddr) -> io::Result<(u32, IdType)> {
+	pub async fn ping(&self, target: &SocketAddr) -> io::Result<u32> {
 		let start = SystemTime::now();
 		let node_id = self.request_ping(target).await?;
 		let stop = SystemTime::now();
 		let latency = stop.duration_since(start).unwrap().as_millis() as u32;
-		Ok((latency, node_id))
+		Ok(latency)
 	}
 
 	/// Removes the node from our k-buckets. Returns false if the node wasn't in
 	/// our k-buckets.
 	async fn reject_node(&self, address: &SocketAddr) -> bool {
-		debug!("Rejecting node {}.", address);
-		for bucket_mutex in self.buckets.iter() {
+		let mut i = 0;
+		for bucket_mutex in self.buckets.iter() { i += 1;
 			let mut bucket = bucket_mutex.lock().await;
+			
 			let mut index: usize = usize::MAX;
 			for i in 0..bucket.main.len() {
 				if bucket.main[i].contact_info.address == *address {
@@ -528,24 +532,26 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		{
 			None => debug!("Remember node {}.", &contact_info.address),
 			Some(index) => {
-				bucket.main[index].contact_info.node_id = contact_info.node_id;
-				debug!("Node ID updated for {}.", &contact_info.address);
+				if bucket.main[index].contact_info.node_id != contact_info.node_id {
+					bucket.main[index].contact_info.node_id = contact_info.node_id;
+					debug!("Node ID updated for {}.", &contact_info.address);
+				}
 				return;
 			}
 		}
 
 		if bucket.main.len() < KADEMLIA_K as usize {
 			bucket.main.push_back(contact_info.clone().into());
+			return;
 		}
 
 		// If bucket is full, decide what to do after a ping
-		let mut bucket = self.buckets[bucket_pos].lock().await;
 		let mut front_node_is_alive = 
 			SystemTime::now().duration_since(
 				bucket.main[0].last_ping
 			).unwrap() < Duration::from_millis(MINIMUM_PING_INTERVAL as _);
 		if !front_node_is_alive {
-			match self.ping(&bucket.main[0].contact_info.address).await {
+			match self.test_presence(&bucket.main[0].contact_info.address).await {
 				Err(_) => {},
 				Ok(_) => front_node_is_alive = true
 			}
@@ -553,27 +559,27 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		if !front_node_is_alive {
 			bucket.main.pop_front();
 			bucket.main.push_back(contact_info.into());
-			warn!("Replaced old peer with new peer.");
+			debug!("Replaced old peer with new peer.");
 		}
 		else {
-			// Check if backup is still before we eject it
+			// Check if backup is still alive before we eject it
 			let mut backup_node_is_alive = !bucket.backup.is_none() &&
 				SystemTime::now().duration_since(
 					bucket.backup.as_ref().unwrap().last_ping
 				).unwrap() < Duration::from_millis(MINIMUM_PING_INTERVAL as _);
 			if !backup_node_is_alive {
-				match self.ping(&bucket.main[0].contact_info.address).await {
+				match self.test_presence(&bucket.main[0].contact_info.address).await {
 					Err(_) => {},
 					Ok(_) => backup_node_is_alive = true
 				}
 			}
 			if !backup_node_is_alive {
 				bucket.backup = bucket.main.pop_front();
-				warn!("Moved old peer to backup.");
+				debug!("Moved old peer to backup.");
 			}
 			else {
 				bucket.main.pop_front();
-				warn!("Replaced old peer with new peer.2 {} - {}", self.node_id.to_string(), contact_info.node_id.to_string());
+				debug!("Replaced old peer with new peer.");
 			}
 			bucket.main.push_back(contact_info.into());
 		}
@@ -582,7 +588,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 	async fn remember_node_silently(self: &Arc<Self>, contact_info: NodeContactInfo) {
 		let bucket_pos = match Self::differs_at_bit(&self.node_id, &contact_info.node_id) {
 			None => {
-				warn!("Found same node ID as us, ignoring...");
+				debug!("Found same node ID as us, ignoring...");
 				return;
 			},
 			Some(p) => p as usize
@@ -596,8 +602,10 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		{
 			None => debug!("Remember node {}.", &contact_info.address),
 			Some(index) => {
-				bucket.main[index].contact_info.node_id = contact_info.node_id;
-				debug!("Node ID updated for {}.", &contact_info.address);
+				if bucket.main[index].contact_info.node_id != contact_info.node_id {
+					bucket.main[index].contact_info.node_id = contact_info.node_id;
+					debug!("Node ID updated for {}.", &contact_info.address);
+				}
 				return;
 			}
 		}
@@ -611,16 +619,23 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		target: &SocketAddr,
 		message_type_id: u8,
 		buffer: &[u8]
-	) -> io::Result<(IdType, Vec<u8>)> {
+	) -> io::Result<Vec<u8>> {
 		let mut connection = self.interface.connect(target, None).await?;
 		let result = self.interface.exchange(&mut connection, message_type_id, buffer).await;
+		connection.close().await;
 		
 		// Reject the node from our routing table if it has proven
 		// unresponsive.
-		if !result.is_ok() {
-			self.reject_node(target).await;
-		}
-		Ok((connection.their_node_id().clone(), result?))
+		let r = match result {
+			Err(e) => {
+				debug!("Rejecting node {}: {}", target, e);
+				self.reject_node(target).await;
+				Err(e)
+			},
+			Ok(response) => Ok(response)
+		};
+		
+		r
 	}
 
 	pub async fn request_find_x(&self,
@@ -635,7 +650,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 			target,
 			message_type_id,
 			&bincode::serialize(&request).unwrap()
-		).await.map(|r| r.1)
+		).await
 	}
 
 	/// In the paper, this is described as the 'FIND_NODE' RPC.
@@ -656,21 +671,22 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 		message_type_id: u8
 	) -> io::Result<(Option<Vec<u8>>, Vec<NodeContactInfo>)> {
 		let response = self.request_find_x(target, node_id, message_type_id).await?;
-		let contacts = bincode::deserialize(&response).map_err(|e| {
+		let contacts = bincode::deserialize_with_trailing(&response).map_err(|e| {
 			io::Error::new(
 				io::ErrorKind::InvalidData,
 				e
 			)
 		})?;
 		let contacts_len = bincode::serialized_size(&contacts).unwrap();
-		if response[contacts_len] == 0 {
+		
+		if response[contacts_len] == 1 {
 			return Ok((Some(response[(contacts_len+1)..].to_vec()), contacts));
 		}
-		else if response[0] == 1 {
+		else if response[contacts_len] == 0 {
 			return Ok((None, contacts));
 		}
 		else {
-			return Err(io::Error::from(io::ErrorKind::InvalidData));
+			return Err(io::ErrorKind::InvalidData.into());
 		}
 	}
 
@@ -678,15 +694,23 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 	/// RPC.
 	async fn request_ping(&self,
 		target: &SocketAddr
-	) -> io::Result<IdType> {
+	) -> io::Result<()> {
 		let message = PingRequest {};
-		let result = self.exchange(
+		self.exchange(
 			target,
 			NETWORK_MESSAGE_TYPE_ID_PING_REQUEST,
 			&bincode::serialize(&message).unwrap()
 		).await?;
-		
-		Ok(result.0)
+		Ok(())
+	}
+
+	pub async fn test_presence(&self,
+		target: &SocketAddr
+	) -> io::Result<IdType> {
+		let connection = self.interface.connect(target, None).await?;
+		let their_node_id = connection.their_node_id().clone();
+		connection.close().await;
+		Ok(their_node_id)
 	}
 }
 

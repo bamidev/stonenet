@@ -1,6 +1,7 @@
 use super::{
 	actor::*,
 	actor_store::*,
+	bincode,
 	KADEMLIA_K,
 	message::*,
 	socket::UdpSocket,
@@ -12,7 +13,6 @@ use crate::{
 	config::Config,
 	db::*,
 	identity::*,
-	limited_store::LimitedVec,
 	net::*
 };
 
@@ -38,7 +38,6 @@ use tokio::{
 
 
 // Messages for the overlay network:
-
 pub const OVERLAY_MESSAGE_TYPE_ID_FIND_ACTOR_REQUEST: u8 = 4;
 pub const OVERLAY_MESSAGE_TYPE_ID_FIND_ACTOR_RESPONSE: u8 = 5;
 pub const OVERLAY_MESSAGE_TYPE_ID_STORE_ACTOR_REQUEST: u8 = 6;
@@ -105,7 +104,7 @@ impl NodeInterface for OverlayInterface {
 		*self.last_message_time.lock().unwrap() = SystemTime::now();
 
 		let mut real_buffer = Vec::with_capacity(1 + buffer.len());
-		real_buffer[0] = message_type_id;
+		real_buffer.push(message_type_id);
 		real_buffer.extend(buffer);
 		real_buffer
 	}
@@ -200,10 +199,11 @@ impl OverlayNode {
 					None
 				},
 				Ok(result) => {
-					if &result.public_key.generate_address() == id {
+					if &result.public_key.generate_address() != id {
 						return None;
 					}
 					let mut peers: Vec<NodeContactInfo> = result.peers;
+					
 					if result.i_am_available {
 						peers.insert(0, peer.clone());
 					}
@@ -213,7 +213,7 @@ impl OverlayNode {
 			}
 		}
 
-		let fingers = self.base.find_nearest_fingers(id).await;		
+		let fingers = self.base.find_nearest_fingers(id).await;
 		let iter = self.base.find_value_from_fingers_iter(
 			id,
 			OVERLAY_MESSAGE_TYPE_ID_FIND_ACTOR_REQUEST,
@@ -251,10 +251,10 @@ impl OverlayNode {
 	/// Joins the network via a peer. If pinging that peer fails, returns an
 	/// I/O error.
 	pub async fn join_network_starting_at(&self, node_address: &SocketAddr) -> io::Result<()> {
-		// FIXME: It would save 1 request if we would just take the node_id from
+		// FIXME: It would save a few packets if we would just take the node_id from
 		// the first 'FIND_NODE' request. But that would require some
 		// restructuring of the code base.
-		let (_, node_id) = self.base.ping(node_address).await?;
+		let node_id = self.base.test_presence(node_address).await?;
 		let first_contact = NodeContactInfo {
 			address: node_address.clone(),
 			node_id
@@ -270,21 +270,21 @@ impl OverlayNode {
 			KADEMLIA_K as _,
 			100,	// TODO: Make configuration variable
 		).await;
-
-		// Our neighbours haven't been informed yet of our presence, talk to
-		// them too. Send a request to them to do that.
-		let futs = neighbours.iter().map(|n| async {
-			match self.base.request_find_node(&n.address, &n.node_id).await {
+		
+		// Add our neighbours to our buckets
+		let futs = neighbours.iter().map(|n| async move {
+			match self.base.connect(&n.address, Some(&n.node_id)).await {
 				Err(e) => warn!(
-					"Saying 'hi' to neighbour {} failed: {}",
+					"Connecting to neighbour {} failed: {}",
 					&n.address,
 					e
 				),
-				Ok(_) => {}
+				Ok(_) => {
+					self.base.remember_node_silently(n.clone()).await;
+				}
 			}
 		});
 		join_all(futs).await;
-
 		Ok(())
 	}
 
@@ -405,22 +405,12 @@ impl OverlayNode {
 		let address_copy = address.clone();
 		let node = self.base.clone();
 		let sender_node_id2 = sender_node_id.clone();
-		if message_type_id > NETWORK_MESSAGE_TYPE_ID_PING_REQUEST + 1 {
-			tokio::spawn(async move {
-				node.remember_node(NodeContactInfo {
-					address: address_copy,
-					node_id: sender_node_id2
-				}).await;
-			});
-		}
-		// Except for ping messages, we only remember if we have space so as not
-		// to cause infinite ping chains in the network.
-		else {
-			node.remember_node_silently(NodeContactInfo {
+		tokio::spawn(async move {
+			node.remember_node(NodeContactInfo {
 				address: address_copy,
 				node_id: sender_node_id2
 			}).await;
-		}
+		});
 
 		response
 	}
@@ -429,61 +419,54 @@ impl OverlayNode {
 	async fn process_find_actor_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
 		let request: FindActorRequest = match bincode::deserialize(buffer) {
 			Err(e) => {
-				error!("Malformed find node request: {}", e);
+				error!("Malformed find actor request: {}", e);
 				return None;
 			}
 			Ok(r) => r
 		};
 		let nearest_nodes = self.base.find_nearest_fingers(&request.node_id).await;
+		let mut response = FindActorResponse {
+			fingers: nearest_nodes.clone(),
+			result: None
+		};
 
-		// If we follow this actor, reply with us as a peer node, and possibly
-		// our other contacts.
-		let mut response: Option<FindActorResponse> = FOLLOW_ACTOR_STORE
-			.lock().await
-			.get(&request.node_id)
-			.map(|public_key| {
-				// TODO: Add other known peers of the subnetwork to this list:
-				let other_peers = Vec::new();
-				FindActorResponse {
-					fingers: nearest_nodes.clone(),
-					result: Some(FindActorResult {
-						public_key: public_key.clone(),
-						i_am_available: true,
-						peers: other_peers
-					})
+		// Load the public key and available nodes from our cache
+		{
+			let store = NODE_ACTOR_STORE.lock().await;
+			match store.find(&request.node_id) {
+				None => {},
+				Some(entry) => {
+					response.result = Some(FindActorResult {
+						public_key: entry.public_key.clone(),
+						i_am_available: false,
+						peers: entry.available_nodes.clone().into()
+					});
 				}
-			});
-		
-		// If we don't follow this actor, check if we have stored in our node's
-		// DHT store.
-		if response.is_none() {
-			response = NODE_ACTOR_STORE.lock().await
-				.find(&request.node_id)
-				.map(|entry| {
-					FindActorResponse {
-						fingers: nearest_nodes.clone(),
-						result: Some(FindActorResult {
-							public_key: entry.public_key.clone(),
-							i_am_available: false,
-							peers: entry.available_nodes.clone().into()
-						})
-					}
-				}
-			);
-		}
-
-		match response {
-			// Otherwise, just respond with the nearest node/finger
-			None => {
-				Some(bincode::serialize(&FindActorResponse {
-					fingers: nearest_nodes,
-					result: None
-				}).unwrap())
-			},
-			Some(r) => {
-				Some(bincode::serialize(&r).unwrap())
 			}
 		}
+
+		// Load the public key and available nodes from our own follow list
+		{
+			let store = FOLLOW_ACTOR_STORE.lock().await;
+			if response.result.is_none() {
+				response.result = store.get(&request.node_id).map(|public_key| {
+					FindActorResult {
+						public_key: public_key.clone(),
+						i_am_available: true,
+						peers: Vec::new()
+					}
+				});
+			}
+			else {
+				if store.contains_key(&request.node_id) {
+					let r = response.result.as_mut().unwrap();
+					r.i_am_available = true;
+				}
+			}
+		}
+		
+		// Deserialize response
+		Some(bincode::serialize(&response).unwrap())
 	}
 
 	async fn process_find_node_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
@@ -540,7 +523,7 @@ impl OverlayNode {
 	async fn process_store_actor_request(&self,
 		sender_node_id: &IdType,
 		address: &SocketAddr,
-		buffer:&[u8]
+		buffer: &[u8]
 	) -> Option<Vec<u8>> {
 		let request: StoreActorRequest = match bincode::deserialize(buffer) {
 			Err(e) => {
@@ -550,27 +533,30 @@ impl OverlayNode {
 			Ok(r) => r
 		};
 
-		// TODO: Check if actor_id is indeed the hash of the public_key.
+		// Check if actor_id is indeed the hash of the public_key.
+		if request.public_key.generate_address() != request.actor_id {
+			warn!("Actor store request invalid: public key doesn't match actor ID.");
+			return None;
+		}
 
+		// Add actor to store
+		let contact_info = NodeContactInfo {
+			address: address.clone(),
+			node_id: sender_node_id.clone()
+		};
 		let mut node_store = NODE_ACTOR_STORE.lock().await;
 		match node_store.find_mut(&request.actor_id) {
 			None => {
-				let mut new_list = LimitedVec::new(10); // TODO: Use a constant for array size
-				new_list.push_front(NodeContactInfo {
-					address: address.clone(),
-					node_id: sender_node_id.clone()
-				});
-				node_store.add(request.actor_id.clone(), ActorStoreEntry {
-					public_key: request.public_key.clone(),
-					i_am_available: false,
-					available_nodes: new_list
-				});
+				node_store.add(
+					request.actor_id.clone(),
+					ActorStoreEntry::new_with_contact(
+						request.public_key,
+						contact_info
+					)
+				);
 			},
 			Some(entry) => {
-				entry.available_nodes.push_front(NodeContactInfo {
-					address: address.clone(),
-					node_id: sender_node_id.clone()
-				});
+				entry.add_available_node(contact_info);
 			}
 		}
 
@@ -588,6 +574,7 @@ impl OverlayNode {
 			node_id,
 			OVERLAY_MESSAGE_TYPE_ID_FIND_ACTOR_REQUEST
 		).await?;
+		println!("request_find_actor {:?}", &response);
 		bincode::deserialize(&response).map_err(|e| io::Error::new(
 			io::ErrorKind::InvalidData,
 			e
@@ -598,15 +585,11 @@ impl OverlayNode {
 	pub async fn request_store_actor(&self,
 		target: &SocketAddr,
 		actor_id: IdType,
-		public_key: PublicKey,
-		i_am_available: bool,
-		nodes: Vec<NodeContactInfo>
+		public_key: PublicKey
 	) -> io::Result<()> {
 		let request = StoreActorRequest {
 			actor_id,
-			public_key,
-			i_am_available,
-			nodes
+			public_key
 		};
 		self.base.exchange(
 			target,
@@ -640,43 +623,28 @@ impl OverlayNode {
 	pub async fn store_actor(&self,
 		actor_id: &IdType,
 		duplicates: usize,
-		public_key: &PublicKey,
-		i_am_available: bool,
-		nodes: Vec<NodeContactInfo>
+		public_key: &PublicKey
 	) -> bool {
+		println!("store_actor");
 		let contacts = self.base.find_node(
 			&actor_id,
 			duplicates*2,
 			100
 		).await;
-		// If we coudn't find a node that was closer to the ID than us, we store
-		// it ourselves.
-		if contacts.len() == 0 {
-			let mut store = NODE_ACTOR_STORE.lock().await;
-			store.store_personal(actor_id, public_key);
-			false
-		}
-		else {
-			let mut store_count = 0;
-			for contact in contacts {
-				if self.request_store_actor(
-					&contact.address,
-					contact.node_id.clone(),
-					public_key.clone(),
-					i_am_available,
-					nodes.clone()
-				).await.is_ok() {
-					store_count += 1;
-				}
+		println!("store_actor find_node {}", contacts.len());
+		
+		let mut store_count = 0;
+		for contact in contacts {
+			if self.request_store_actor(
+				&contact.address,
+				actor_id.clone(),
+				public_key.clone()
+			).await.is_ok() {
+				store_count += 1;
 			}
-			// If no nodes were found, store it ourselves
-			if store_count == 0 {
-				let mut store = NODE_ACTOR_STORE.lock().await;
-				store.store_personal(actor_id, public_key);
-				false
-			}
-			else { true }
+			println!("Stored actor at {}", &contact.address);
 		}
+		store_count > 0
 	}
 
 	/// Publishes the identities that are stored in the DB
@@ -701,9 +669,7 @@ impl OverlayNode {
 				match self.request_store_actor(
 					&contact.address,
 					node_id.clone(),
-					public_key.clone(),
-					true,
-					Vec::new()
+					public_key.clone()
 				).await {
 					Err(e) => error!(
 						"Unable to store personal identity {}={}: {}",

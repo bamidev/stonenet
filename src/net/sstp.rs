@@ -25,8 +25,8 @@ use std::{
 	cmp,
 	collections::HashMap,
 	fmt,
-	net::*,
 	io,
+	net::*,
 	sync::{
 		atomic::{AtomicBool, Ordering},
 		Arc
@@ -45,11 +45,13 @@ use chacha20::{
 use generic_array::{GenericArray, typenum::*};
 use hmac::*;
 use log::*;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+	self,
+	sync::{mpsc::{self, error::*}, oneshot}
+};
 use x25519_dalek as x25519;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
-use tokio;
 
 const MESSAGE_TYPE_HELLO_REQUEST: u8 = 0;
 const MESSAGE_TYPE_HELLO_RESPONSE: u8 = 1;
@@ -72,8 +74,7 @@ pub struct Connection<S> where S: LinkSocket {
 	/// The next data packet that is send or received is expected to have this
 	/// sequence number.
 	next_sequence: u16,
-	data_queue: mpsc::UnboundedReceiver<(u16, Vec<u8>)>,
-	ack_queue: mpsc::UnboundedReceiver<(u16, Vec<u8>)>,
+	queues: QueueReceivers,
 	session: Arc<Mutex<SessionData>>,
 	key_state: KeyState,
 	receive_window: WindowInfo,
@@ -116,8 +117,7 @@ struct SessionData {
 	their_session_id: Option<u16>,
 	last_message_time: SystemTime,
 	hello_oneshot: Option<oneshot::Sender<io::Result<(IdType, u16, x25519::PublicKey)>>>,
-	data_queue: mpsc::UnboundedSender<(u16, Vec<u8>)>,
-	ack_queue: mpsc::UnboundedSender<(u16, Vec<u8>)>
+	queues: QueueSenders
 }
 
 struct Sessions {
@@ -153,6 +153,23 @@ pub struct Server<S, L> where
 	socket: SstpSocket<S>,
 	stop_flag: Arc<AtomicBool>,
 	on_connect: L,
+}
+
+struct Queues;
+
+type QueueReceiver = mpsc::UnboundedReceiver<(u16, Vec<u8>)>;
+type QueueSender = mpsc::UnboundedSender<(u16, Vec<u8>)>;
+
+pub struct QueueReceivers {
+	data: QueueReceiver,
+	ack: QueueReceiver,
+	close: QueueReceiver
+}
+
+pub struct QueueSenders {
+	data: QueueSender,
+	ack: QueueSender,
+	close: QueueSender
 }
 
 
@@ -250,7 +267,18 @@ impl Into<io::Error> for Error {
 
 impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 
-	pub fn close(self) {}
+	pub async fn close(mut self) {
+		let _ = self.send_close_packet().await;
+	}
+
+	async fn send_close_packet(&mut self) -> io::Result<()> {
+		self.send_crypted_packet(
+			MESSAGE_TYPE_CLOSE,
+			self.next_sequence,
+			0,
+			self.socket.node_id.as_bytes()
+		).await
+	}
 
 	fn decrypt_packet(&mut self, sequence: u16, key_sequence: u16, data: &mut [u8]) -> bool {
 		debug_assert!(
@@ -453,7 +481,7 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 		new_dh_key: &x25519::PublicKey
 	) -> io::Result<(x25519::PublicKey, bool)> {
 		let bytes_needed = buffer.capacity() - buffer.len() + 32;
-		let mut max_packets_needed = cmp::min(
+		let max_packets_needed = cmp::min(
 			window_size as usize,
 			bytes_needed / Self::max_data_packet_length() + (bytes_needed % Self::max_data_packet_length() > 0) as usize
 		) as u16;
@@ -464,7 +492,7 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 		let mut sent_missing_packet = false;
 		let window_start_sequence = self.next_sequence;
 		let mut their_dh_key = None;
-		let mut ack_not_received_count = 0;
+		
 		loop {
 			let mut timeout = TIMEOUT;
 			loop {
@@ -580,8 +608,13 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 	}
 
 	async fn receive_ack_packet(&mut self, timeout: Duration) -> io::Result<(u16, Vec<u8>)> {
+		if self.receive_close_packet() {
+			println!("received close packet in receive_ack_packet");
+			return Err(Error::ConnectionClosed.into());
+		}
+
 		tokio::select! {
-			result = self.ack_queue.recv() => {
+			result = self.queues.ack.recv() => {
 				if result.is_none() {
 					return Err(Error::ConnectionClosed.into())
 				}
@@ -593,9 +626,39 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 		}
 	}
 
+	fn receive_close_packet(&mut self) -> bool {
+		match self.queues.close.try_recv() {
+			Err(e) => match e {
+				TryRecvError::Empty => false,
+				TryRecvError::Disconnected => true
+			},
+			Ok((sequence, mut data)) => {
+				if !self.decrypt_packet(sequence, 0, &mut data) {
+					warn!("Received malformed close packet: checksum didn't match");
+					return false;
+				}
+
+				if data.len() < 36 {
+					warn!("Received malformed close packet: packet too small");
+					return false;
+				}
+
+				if &data[2..34] != self.socket.node_id.as_bytes() {
+					warn!("Received malformed close packet: node ID didn't match.");
+					return false;
+				}
+				true
+			}
+		}
+	}
+
 	async fn receive_data_packet(&mut self, timeout: Duration) -> io::Result<(u16, Vec<u8>)> {
+		if self.receive_close_packet() {
+			return Err(Error::ConnectionClosed.into());
+		}
+
 		tokio::select! {
-			result = self.data_queue.recv() => {
+			result = self.queues.data.recv() => {
 				if result.is_none() {
 					return Err(Error::ConnectionClosed.into())
 				}
@@ -677,7 +740,7 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 		for i in 0..window_size {
 			// The first packet of the window always contains the next DH pubkey
 			// to use.
-			let mut end = send + if i == 0 {first_packet_length} else {packet_length};
+			let end = send + if i == 0 {first_packet_length} else {packet_length};
 			if i == 0 {
 				if buffer.len() < first_packet_length {
 					real_buffer[32..][..buffer.len()].copy_from_slice(buffer);
@@ -932,15 +995,13 @@ impl SessionData {
 	pub fn new(
 		node_id: IdType,
 		hello_oneshot: oneshot::Sender<io::Result<(IdType, u16, x25519::PublicKey)>>,
-		data_queue: mpsc::UnboundedSender<(u16, Vec<u8>)>,
-		ack_queue: mpsc::UnboundedSender<(u16, Vec<u8>)>,
+		queues: QueueSenders
 	) -> Self {
 		Self {
 			client_node_id: node_id,
 			their_session_id: None,
 			hello_oneshot: Some(hello_oneshot),
-			data_queue,
-			ack_queue,
+			queues,
 			last_message_time: SystemTime::now(),
 
 		}
@@ -949,16 +1010,14 @@ impl SessionData {
 	pub fn new_with_their_session(
 		their_session_id: u16,
 		node_id: IdType,
-		data_queue: mpsc::UnboundedSender<(u16, Vec<u8>)>,
-		ack_queue: mpsc::UnboundedSender<(u16, Vec<u8>)>,
+		queues: QueueSenders,
 	) -> Self {
 		let (dummy_tx, _) = oneshot::channel();
 		Self {
 			client_node_id: node_id,
 			their_session_id: Some(their_session_id),
 			hello_oneshot: Some(dummy_tx),
-			data_queue,
-			ack_queue,
+			queues,
 			last_message_time: SystemTime::now()
 		}
 	}
@@ -1021,8 +1080,7 @@ impl<S> SstpSocket<S> where S: LinkSocket, S::Target: fmt::Debug {
 			our_session_id,
 			session,
 			hello_oneshot,
-			data_queue,
-			ack_queue
+			queues
 		) = self.new_outgoing_session(self.node_id.clone()).await
 			.ok_or::<io::Error>(Error::OutOfSessions.into())?;
 
@@ -1049,8 +1107,7 @@ impl<S> SstpSocket<S> where S: LinkSocket, S::Target: fmt::Debug {
 					their_session_id,
 					our_session_id,
 					next_sequence: 0,
-					data_queue,
-					ack_queue,
+					queues,
 					session,
 					key_state: KeyState::new(secret_key, their_public_key, 1),
 					receive_window: WindowInfo::default(),
@@ -1066,19 +1123,18 @@ impl<S> SstpSocket<S> where S: LinkSocket, S::Target: fmt::Debug {
 	pub fn listen<L>(&self,
 		stop_flag: Arc<AtomicBool>,
 		on_connect: L
-	) -> Server<S, L>  where L: Fn(Connection<S>) {
-		Server {
+	) -> Arc<Server<S, L>>  where L: Fn(Connection<S>) {
+		Arc::new(Server {
 			socket: self.clone(),
 			stop_flag,
 			on_connect
-		}
+		})
 	}
 
 	async fn new_incomming_session(&self,
 		their_node_id: IdType,
 		their_session_id: u16,
-		data_queue: mpsc::UnboundedSender<(u16, Vec<u8>)>,
-		ack_queue: mpsc::UnboundedSender<(u16, Vec<u8>)>,
+		queues: QueueSenders
 	) -> Option<(u16, Arc<Mutex<SessionData>>)> {
 		let mut sessions = self.sessions.lock().await;
 		let session_id = match sessions.next_id() {
@@ -1089,36 +1145,33 @@ impl<S> SstpSocket<S> where S: LinkSocket, S::Target: fmt::Debug {
 			SessionData::new_with_their_session(
 				their_session_id,
 				their_node_id,
-				data_queue,
-				ack_queue
+				queues
 			)
 		));
 		sessions.map.insert(session_id, session_data.clone());
 		return Some((session_id, session_data));
 	}
 
-	async fn new_outgoing_session(&self, client_node_id: IdType) -> Option<(u16,
+	async fn new_outgoing_session(&self, client_node_id: IdType) -> Option<(
+		u16,
 		Arc<Mutex<SessionData>>,
 		oneshot::Receiver<io::Result<(IdType, u16, x25519::PublicKey)>>,
-		mpsc::UnboundedReceiver<(u16, Vec<u8>)>,
-		mpsc::UnboundedReceiver<(u16, Vec<u8>)>)>
-	{
+		QueueReceivers
+	)> {
 		let mut sessions = self.sessions.lock().await;
 		let session_id = match sessions.next_id() {
 			None => return None,
 			Some(id) => id
 		};
 		let (hello_tx, hello_rx) = oneshot::channel();
-		let (data_tx, data_rx) = mpsc::unbounded_channel();
-		let (ack_tx, ack_rx) = mpsc::unbounded_channel();
+		let (tx_queues, rx_queues) = Queues::channel();
 		let session_data = Arc::new(Mutex::new(SessionData::new(
 			client_node_id,
 			hello_tx,
-			data_tx,
-			ack_tx
+			tx_queues
 		)));
 		sessions.map.insert(session_id, session_data.clone());
-		return Some((session_id, session_data, hello_rx, data_rx, ack_rx));
+		return Some((session_id, session_data, hello_rx, rx_queues));
 	}
 
 	async fn send_hello(&self,
@@ -1154,50 +1207,81 @@ impl<S> Clone for SstpSocket<S> where S: LinkSocket {
 }
 
 impl<S, L> Server<S, L> where
-	S: LinkSocket,
+	S: LinkSocket + Send + Sync + 'static,
 	S::Target: Clone + fmt::Debug,
-	L: Fn(Connection<S>)
+	L: Fn(Connection<S>) + Send + Sync + 'static
 {
-	async fn process_ack(&self,
-		packet: &[u8]
+	pub async fn clean_sessions(self: &Arc<Self>) {
+		let mut sessions = self.socket.sessions.lock().await;
+		let mut done_ids = Vec::with_capacity(0);
+		for (session_id, session_mutex) in sessions.map.iter() {
+			if SystemTime::now().duration_since(
+			       session_mutex.lock().await.last_message_time
+			   ).unwrap() >= Duration::from_secs(2)
+			{
+				done_ids.push(*session_id)
+			}
+		}
+
+		for done_id in done_ids {
+			let info = sessions.map.remove(&done_id).unwrap();
+		}
+	}
+
+	async fn process_sequenced_packet(&self,
+		packet: &[u8],
+		handle_queue: impl FnOnce(
+			&QueueSenders,
+			u16,
+			Vec<u8>
+		) -> Result<(), SendError<(u16, Vec<u8>)>>
 	) -> io::Result<()> {
 		let our_session_id = u16::from_le_bytes(*array_ref![packet, 0, 2]);
 		let sequence = u16::from_le_bytes(*array_ref![packet, 2, 2]);
 		let data = packet[4..].to_vec();
 
-		let sessions = self.socket.sessions.lock().await;
+		let mut sessions = self.socket.sessions.lock().await;
+		let mut handled_correctly = bool::default();
 		if let Some(s) = sessions.map.get(&our_session_id) {
 			let mut session = s.lock().await;
 			session.last_message_time = SystemTime::now();
-			if session.ack_queue.send((sequence, data)).is_err() {
-				return Err(Error::ConnectionClosed.into());
-			}
-			Ok(())
+			handled_correctly = handle_queue(&session.queues, sequence, data).is_ok();
 		}
 		else {
-			Err(Error::InvalidSessionId(our_session_id).into())
+			return Err(Error::InvalidSessionId(our_session_id).into());
 		}
+
+		if !handled_correctly {
+			sessions.map.remove(&our_session_id);
+			return Err(Error::ConnectionClosed.into());
+		}
+		Ok(())
+	}
+
+	async fn process_ack(&self,
+		packet: &[u8]
+	) -> io::Result<()> {
+		self.process_sequenced_packet(packet, |queues, seq, data| {
+			queues.ack.send((seq, data))
+		}).await
+	}
+	async fn process_close(&self,
+		packet: &[u8]
+	) -> io::Result<()> {
+		self.process_sequenced_packet(packet, |queues, seq, data| {
+			queues.close.send((seq, data));
+			// Don't warn if connection is already closed.
+			Ok(())
+		}).await
 	}
 
 	async fn process_data(&self, packet: &[u8]) -> io::Result<()> {
 		if packet.len() != (S::max_packet_length() - 1) {
 			return Err(Error::MalformedPacket.into());
 		}
-		let session_id = u16::from_le_bytes(*array_ref![packet, 0, 2]);
-		let sequence_number = u16::from_le_bytes(*array_ref![packet, 2, 2]);
-
-		let session_mutex = {
-			let sessions = self.socket.sessions.lock().await;
-			match sessions.map.get(&session_id) {
-				Some(s) => s.clone(),
-				None => return Err(Error::InvalidSessionId(session_id).into())
-			}
-		};
-		let session = session_mutex.lock().await;
-		match session.data_queue.send((sequence_number, packet[4..].to_vec())) {
-			Ok(()) => Ok(()),
-			Err(_) => Err(Error::ConnectionClosed.into())
-		}
+		self.process_sequenced_packet(packet, |queues, seq, data| {
+			queues.data.send((seq, data))
+		}).await
 	}
 
 	async fn process_hello_request(&self, sender: &S::Target, packet: &[u8]) -> io::Result<()> {
@@ -1229,13 +1313,11 @@ impl<S, L> Server<S, L> where
 		let own_public_key = x25519::PublicKey::from(&own_secret_key);
 		let their_session_id = u16::from_le_bytes(*array_ref![packet, 160, 2]);
 
-		let (data_tx, data_rx) = mpsc::unbounded_channel();
-		let (ack_tx, ack_rx) = mpsc::unbounded_channel();
+		let (tx_queues, rx_queues) = Queues::channel();
 		let (our_session_id, session) = self.socket.new_incomming_session(
 			node_id.clone(),
 			their_session_id,
-			data_tx,
-			ack_tx
+			tx_queues
 		).await.ok_or::<io::Error>(Error::OutOfSessions.into())?;
 		
 		let mut response = vec![0u8; 165];
@@ -1259,8 +1341,7 @@ impl<S, L> Server<S, L> where
 			their_session_id,
 			our_session_id,
 			session,
-			data_queue: data_rx,
-			ack_queue: ack_rx,
+			queues: rx_queues,
 			key_state: KeyState::new(own_secret_key, their_public_key, 1),
 			next_sequence: 0,
 			receive_window: WindowInfo::default(),
@@ -1332,11 +1413,14 @@ impl<S, L> Server<S, L> where
 			MESSAGE_TYPE_HELLO_RESPONSE => self.process_hello_response(&packet[1..]).await,
 			MESSAGE_TYPE_DATA => self.process_data(&packet[1..]).await,
 			MESSAGE_TYPE_ACK => self.process_ack(&packet[1..]).await,
+			MESSAGE_TYPE_CLOSE => self.process_close(&packet[1..]).await,
 			other => Err::<(), io::Error>(Error::InvalidMessageType(other).into())
 		}
 	}
 
-	pub async fn serve(&self, x: &str) {
+	pub async fn serve(self: Arc<Self>, x: &str) {
+		self.clone().spawn_garbage_collector();
+
 		while !self.stop_flag.load(Ordering::Relaxed) {
 			match self.socket.receive().await {
 				Err(e) => warn!("[{}] Sstp io error on receiving packet: {}", x, e),
@@ -1348,6 +1432,17 @@ impl<S, L> Server<S, L> where
 				}
 			}
 		}
+	}
+
+	/// Starts garbage collecting the unresponded requests.
+	pub fn spawn_garbage_collector(self: Arc<Self>) {
+		tokio::task::spawn(async move {
+			let this = self.clone();
+			while !self.stop_flag.load(Ordering::Relaxed) {
+				sleep(Duration::from_secs(1)).await;
+				this.clean_sessions().await;
+			}
+		});
 	}
 }
 
@@ -1385,75 +1480,101 @@ impl Default for WindowInfo {
 	}
 }
 
+impl Queues {
+	fn channel() -> (QueueSenders, QueueReceivers) {
+		let (data_tx, data_rx) = mpsc::unbounded_channel();
+		let (ack_tx, ack_rx) = mpsc::unbounded_channel();
+		let (close_tx, close_rx) = mpsc::unbounded_channel();
 
-#[test]
-fn test_encryption() {
-	let mut key = GenericArray::<u8, U32>::default();
-	let mut original = [0u8; 46*32];
-	OsRng.fill_bytes(key.as_mut());
-	OsRng.fill_bytes(&mut original);
-	
-	let mut buffer = original.clone();
-	encrypt(321, 123, &mut buffer, &key);
-	assert!(buffer != original);
-	decrypt(321, 123, &mut buffer, &key);
-	assert!(buffer == original);
+		(
+			QueueSenders {
+				data: data_tx,
+				ack: ack_tx,
+				close: close_tx
+			},
+			QueueReceivers {
+				data: data_rx,
+				ack: ack_rx,
+				close: close_rx
+			}
+		)
+	}
 }
 
-#[tokio::test]
-async fn test_connection() {
-	env_logger::init();
-	let ip = Ipv4Addr::new(0, 0, 0, 0);
-	let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10000));
-	let slave_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10001));
-	let master = SstpSocket::<UdpSocket>::bind(
-		&master_addr,
-		Keypair::generate()
-	).await.expect("unable to bind master");
-	let slave = SstpSocket::<UdpSocket>::bind(
-		&slave_addr,
-		Keypair::generate()
-	).await.expect("unable to bind slave");
-	let stop_flag = Arc::new(AtomicBool::new(false));
 
-	let stop_flag_slave = stop_flag.clone();
-	let slave2 = slave.clone();
-	tokio::spawn(async move {
-		slave2.listen(stop_flag_slave, |_| {}).serve("CLIENT").await;
-	});
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-	let mut small_message = vec![0u8; 1000];
-	OsRng.fill_bytes(&mut small_message);
-	let mut big_message = vec![0u8; 1000000]; // One MB of data
-	OsRng.fill_bytes(&mut big_message);
+	#[test]
+	fn test_encryption() {
+		let mut key = GenericArray::<u8, U32>::default();
+		let mut original = [0u8; 46*32];
+		OsRng.fill_bytes(key.as_mut());
+		OsRng.fill_bytes(&mut original);
+		
+		let mut buffer = original.clone();
+		encrypt(321, 123, &mut buffer, &key);
+		assert!(buffer != original);
+		decrypt(321, 123, &mut buffer, &key);
+		assert!(buffer == original);
+	}
 
-	let small_message2 = small_message.clone();
-	let big_message2 = big_message.clone();
-	let stop_flag2 = stop_flag.clone();
-	let join_handle = tokio::spawn(async move {
-		master.listen(stop_flag2, move |mut connection| {
-			let small = small_message2.clone();
-			let big = big_message2.clone();
-			tokio::spawn(async move {
-				let received_message = connection.receive().await.expect("master unable to receive small message ");
-				debug!("Received small message");
-				assert!(received_message == small, "small message got corrupted");
+	#[tokio::test]
+	async fn test_connection() {
+		env_logger::init();
+		let ip = Ipv4Addr::new(0, 0, 0, 0);
+		let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10000));
+		let slave_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10001));
+		let master = SstpSocket::<UdpSocket>::bind(
+			&master_addr,
+			Keypair::generate()
+		).await.expect("unable to bind master");
+		let slave = SstpSocket::<UdpSocket>::bind(
+			&slave_addr,
+			Keypair::generate()
+		).await.expect("unable to bind slave");
+		let stop_flag = Arc::new(AtomicBool::new(false));
 
-				connection.send(&big).await.expect("master unable to send big message");
-				debug!("Send big message");
-			});
-		}).serve("SERVER").await;
-	});
+		let stop_flag_slave = stop_flag.clone();
+		let slave2 = slave.clone();
+		tokio::spawn(async move {
+			slave2.listen(stop_flag_slave, |_| {}).serve("CLIENT").await;
+		});
 
-	let mut connection = slave.connect(master_addr, None).await
-		.expect("unable to connect to master");
+		let mut small_message = vec![0u8; 1000];
+		OsRng.fill_bytes(&mut small_message);
+		let mut big_message = vec![0u8; 1000000]; // One MB of data
+		OsRng.fill_bytes(&mut big_message);
 
-	connection.send(&small_message).await.expect("slave unable to send small message");
-	debug!("Send small message");
-	let received_message = connection.receive().await.expect("slave unable to receive big message");
-	debug!("Received big message");
-	assert!(received_message == big_message, "big message got corrupted {} {}", received_message.len(), big_message.len());
+		let small_message2 = small_message.clone();
+		let big_message2 = big_message.clone();
+		let stop_flag2 = stop_flag.clone();
+		let join_handle = tokio::spawn(async move {
+			master.listen(stop_flag2, move |mut connection| {
+				let small = small_message2.clone();
+				let big = big_message2.clone();
+				tokio::spawn(async move {
+					let received_message = connection.receive().await.expect("master unable to receive small message ");
+					debug!("Received small message");
+					assert!(received_message == small, "small message got corrupted");
 
-	stop_flag.store(true, Ordering::Relaxed);
-	join_handle.await;
+					connection.send(&big).await.expect("master unable to send big message");
+					debug!("Send big message");
+				});
+			}).serve("SERVER").await;
+		});
+
+		let mut connection = slave.connect(master_addr, None).await
+			.expect("unable to connect to master");
+
+		connection.send(&small_message).await.expect("slave unable to send small message");
+		debug!("Send small message");
+		let received_message = connection.receive().await.expect("slave unable to receive big message");
+		debug!("Received big message");
+		assert!(received_message == big_message, "big message got corrupted {} {}", received_message.len(), big_message.len());
+
+		stop_flag.store(true, Ordering::Relaxed);
+		join_handle.await;
+	}
 }

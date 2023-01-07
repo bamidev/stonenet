@@ -214,7 +214,7 @@ impl ActorNode {
 	}
 
 	pub async fn request_head(&self, target: &SocketAddr) -> io::Result<u64> {
-		let (_, response) = self.base.exchange(
+		let response = self.base.exchange(
 			target,
 			ACTOR_MESSAGE_TYPE_ID_HEAD_REQUEST,
 			&[]

@@ -64,9 +64,7 @@ pub struct HeadResponse {
 #[derive(Serialize, Deserialize)]
 pub struct StoreActorRequest {
 	pub actor_id: IdType,
-	pub public_key: PublicKey,
-	pub i_am_available: bool,
-	pub nodes: Vec<NodeContactInfo>
+	pub public_key: PublicKey
 }
 
 #[derive(Serialize, Deserialize)]

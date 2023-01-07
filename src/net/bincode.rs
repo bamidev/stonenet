@@ -12,6 +12,15 @@ pub fn deserialize<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> bincode::Result<T
 	options.deserialize(bytes)
 }
 
+pub fn deserialize_with_trailing<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> bincode::Result<T> {
+	let options = bincode::options()
+		.with_varint_encoding()
+		.allow_trailing_bytes()
+		.with_limit(65507);
+
+	options.deserialize(bytes)
+}
+
 pub fn serialize<S: ?Sized + Serialize>(t: &S) -> bincode::Result<Vec<u8>> {
 	let options = bincode::options()
 		.with_varint_encoding()

@@ -64,7 +64,7 @@ fn main() {
 		let address = public_key.generate_address();
 
 		let mut first_peer = master.clone();
-		for i in 0..1000 {
+		for i in 0..10 {
 			let peer = common::launch_node(
 				stop_flag.clone(),
 				"0.0.0.0:".to_string() + &(10000u16 + i).to_string(),
@@ -79,20 +79,16 @@ fn main() {
 			if i == 0 {
 				first_peer = peer.clone();
 			}
-			else if i == 999 {
-				if !peer.store_actor(
+			else if i == 9 {
+				assert!(peer.store_actor(
 					&address,
 					4,
-					&public_key,
-					true,
-					Vec::new()
-				).await {
-					info!("public key got stored by own node");
-				}
+					&public_key
+				).await, "actor not stored");
 			}
 		}
 		// Will not always be able to find the actor, considering that the
 		// nodes' buckets are not be filled enough yet in this situation.
-		let _ = first_peer.find_actor(&address, 1001, false).await;
+		first_peer.find_actor(&address, 1001, false).await.expect("actor not found");
 	});
 }

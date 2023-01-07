@@ -76,15 +76,17 @@ fn two_peers() {
 			slave.join_network(stop_flag.clone()).await,
 			"slave unable to join network"
 		);
-
-		slave.store_actor(
+		debug!("Network created.");
+		println!("2 {} {}", public_key.generate_address(), &test_address);
+		let stored = slave.store_actor(
 			&test_address,
 			4,
-			&public_key,
-			true,
-			Vec::new()
+			&public_key
 		).await;
+		assert!(stored, "actor not stored");
+		debug!("Stored actor.");
 
-		let _actor = master.find_actor(&test_address, 2, false).await.expect("actor not found");
+		let _actor = slave.find_actor(&test_address, 2, false).await
+			.expect("actor not found");
 	});
 }
