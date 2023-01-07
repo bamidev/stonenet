@@ -18,12 +18,12 @@ StoneNet is currently in an early stage of development.
 
 Currently, the following features are being worked on/to be expected:
 
-- [ ] Node-to-node traffic encryption
+- [x] Node-to-node traffic encryption
 - [ ] A decent looking (Web) UI
 - [ ] A friends list
 - [ ] A systray icon
-- [ ] Ability to encrypt posts to limit visibility to your friends
-- [ ] An ActivityPub 'bridge' to allow people from the fediverse to follow your feed
+- [ ] Ability to encrypt posts to limit visibility to only your friends
+- [ ] An ActivityPub 'bridge' to allow people from the fediverse to follow your feed.
 - [ ] A Raspberry Pi image with Stonenet preinstalled, to easily keep your feed alive
 - [ ] Ability to 'inject' your posts into the network anonymously.
 - [ ] Ability to 'lurk' on a network anonymously.
