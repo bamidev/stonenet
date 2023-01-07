@@ -625,13 +625,11 @@ impl OverlayNode {
 		duplicates: usize,
 		public_key: &PublicKey
 	) -> bool {
-		println!("store_actor");
 		let contacts = self.base.find_node(
 			&actor_id,
 			duplicates*2,
 			100
 		).await;
-		println!("store_actor find_node {}", contacts.len());
 		
 		let mut store_count = 0;
 		for contact in contacts {
@@ -642,7 +640,6 @@ impl OverlayNode {
 			).await.is_ok() {
 				store_count += 1;
 			}
-			println!("Stored actor at {}", &contact.address);
 		}
 		store_count > 0
 	}
@@ -658,27 +655,15 @@ impl OverlayNode {
 		};
 
 		for (label, node_id, keypair) in identities {
-			let contacts = self.base.find_node(
+
+			let public_key = keypair.public();
+			let success = self.store_actor(
 				&node_id,
 				KADEMLIA_K as _,
-				100
+				&public_key
 			).await;
-
-			for contact in contacts {
-				let public_key = keypair.public();
-				match self.request_store_actor(
-					&contact.address,
-					node_id.clone(),
-					public_key.clone()
-				).await {
-					Err(e) => error!(
-						"Unable to store personal identity {}={}: {}",
-						&label,
-						&node_id,
-						e
-					),
-					Ok(()) => {}
-				}
+			if !success {
+				warn!("Unable to store identity {} in network.", node_id.to_string());
 			}
 		}
 	}

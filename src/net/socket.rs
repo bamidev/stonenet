@@ -1,8 +1,10 @@
 use std::{
 	io,
-	net::*
+	net::*,
+	time::Duration
 };
 
+use async_std::task;
 use async_trait::async_trait;
 
 
@@ -17,7 +19,7 @@ pub trait LinkSocket: Sized {
 	fn max_packet_length() -> usize;
 
 	/// Should be implemented to wait and return one packet.
-	async fn receive(&self) -> io::Result<(Self::Target, Vec<u8>)>;
+	async fn receive(&self, timeout: Duration) -> io::Result<(Self::Target, Vec<u8>)>;
 
 	async fn send(&self, target: &Self::Target, message: &[u8]) -> io::Result<()>;
 
@@ -39,11 +41,18 @@ impl LinkSocket for UdpSocket {
 		))
 	}
 
-	async fn receive(&self) -> io::Result<(Self::Target, Vec<u8>)> {
+	async fn receive(&self, timeout: Duration) -> io::Result<(Self::Target, Vec<u8>)> {
 		let mut buffer = vec![0u8; Self::max_packet_length()];
-		let (read, peer) = self.0.recv_from(&mut buffer).await?;
-		buffer.resize(read, 0);
-		Ok((peer, buffer))
+		tokio::select! {
+			result = self.0.recv_from(&mut buffer) => {
+				let (read, peer) = result?;
+				buffer.resize(read, 0);
+				Ok((peer, buffer))
+			},
+			_ = task::sleep(timeout) => {
+				Err(io::ErrorKind::TimedOut.into())
+			}
+		}
 	}
 
 	async fn send(&self, target: &Self::Target, message: &[u8]) -> io::Result<()> {

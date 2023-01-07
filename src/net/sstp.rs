@@ -1063,8 +1063,8 @@ impl<S> SstpSocket<S> where S: LinkSocket, S::Target: fmt::Debug {
 		S::max_packet_length()
 	}
 
-	async fn receive(&self) -> io::Result<(S::Target, Vec<u8>)> {
-		self.inner.receive().await
+	async fn receive(&self, timeout: Duration) -> io::Result<(S::Target, Vec<u8>)> {
+		self.inner.receive(timeout).await
 	}
 
 	async fn send(&self, target: &S::Target, message: &[u8]) -> io::Result<()> {
@@ -1269,7 +1269,7 @@ impl<S, L> Server<S, L> where
 		packet: &[u8]
 	) -> io::Result<()> {
 		self.process_sequenced_packet(packet, |queues, seq, data| {
-			queues.close.send((seq, data));
+			let _ = queues.close.send((seq, data));
 			// Don't warn if connection is already closed.
 			Ok(())
 		}).await
@@ -1422,8 +1422,12 @@ impl<S, L> Server<S, L> where
 		self.clone().spawn_garbage_collector();
 
 		while !self.stop_flag.load(Ordering::Relaxed) {
-			match self.socket.receive().await {
-				Err(e) => warn!("[{}] Sstp io error on receiving packet: {}", x, e),
+			match self.socket.receive(Duration::from_secs(1)).await {
+				Err(e) => {
+					if e.kind() != io::ErrorKind::TimedOut {
+						warn!("[{}] Sstp io error on receiving packet: {}", x, e)
+					}
+				},
 				Ok((address, packet)) => {
 					match self.process_packet(&address, &packet).await {
 						Ok(()) => {},
