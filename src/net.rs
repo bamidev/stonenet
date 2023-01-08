@@ -465,7 +465,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 	/// Pings a node and returns its latency and node ID .
 	pub async fn ping(&self, target: &SocketAddr) -> io::Result<u32> {
 		let start = SystemTime::now();
-		let node_id = self.request_ping(target).await?;
+		self.request_ping(target).await?;
 		let stop = SystemTime::now();
 		let latency = stop.duration_since(start).unwrap().as_millis() as u32;
 		Ok(latency)
@@ -474,8 +474,7 @@ impl<I> Node<I> where I: NodeInterface + Send + Sync {
 	/// Removes the node from our k-buckets. Returns false if the node wasn't in
 	/// our k-buckets.
 	async fn reject_node(&self, address: &SocketAddr) -> bool {
-		let mut i = 0;
-		for bucket_mutex in self.buckets.iter() { i += 1;
+		for bucket_mutex in self.buckets.iter() {
 			let mut bucket = bucket_mutex.lock().await;
 			
 			let mut index: usize = usize::MAX;

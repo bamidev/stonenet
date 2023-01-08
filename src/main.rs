@@ -4,7 +4,7 @@ extern crate arrayref;
 mod common;
 mod config;
 mod db;
-mod global;
+mod api;
 mod identity;
 mod limited_store;
 mod model;
@@ -26,7 +26,7 @@ use config::Config;
 use net::overlay::OverlayNode;
 
 use env_logger;
-use global::Global;
+use api::Api;
 use log::*;
 use signal_hook::flag;
 use tokio;
@@ -83,14 +83,14 @@ async fn main() {
 			error!("Unable to load database: {}", e);
 			return;
 		},
-		Ok(c) => Arc::new(c)
+		Ok(c) => c
 	};
 
 	// Load node
 	let node = Arc::new(load_node(db.clone(), &config).await);
 
 	// Spawn threads
-	let globals = Global { node, db };
+	let globals = Api { node, db };
 	if config.load_web_interface {
 		let g2 = globals.clone();
 		let ui = tokio::spawn(async {
@@ -107,7 +107,7 @@ async fn main() {
 	info!("Finished.");
 }
 
-async fn load_node(db: Arc<Database>, config: &Config) -> OverlayNode {
+async fn load_node(db: Database, config: &Config) -> OverlayNode {
 	let node_id = IdType::random();
 	let address: SocketAddr = ToSocketAddrs::to_socket_addrs(&config.address).unwrap().next().unwrap();
 	match net::overlay::OverlayNode::bind(node_id, &address, db, config).await {
@@ -119,7 +119,7 @@ async fn load_node(db: Arc<Database>, config: &Config) -> OverlayNode {
 	}
 }
 
-async fn node_main(stop_flag: Arc<AtomicBool>, g: &Global, config: &Config) {
+async fn node_main(stop_flag: Arc<AtomicBool>, g: &Api, config: &Config) {
 	info!("Network node started.");
 
 	// Join the network
@@ -134,7 +134,7 @@ async fn node_main(stop_flag: Arc<AtomicBool>, g: &Global, config: &Config) {
 				info!("Joined network.");
 
 				// Publish own identities
-				node.store_my_identities().await;
+				node.publish_my_identities().await;
 			}
 		});
 	}

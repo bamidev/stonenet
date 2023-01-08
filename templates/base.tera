@@ -19,6 +19,13 @@
 				</form>
 			</div>
 		</div>
-		<div class="content">{% block content %}{% endblock content %}</div>
+
+		<div class="body">
+			<div class="column-left">
+				{% block column_left %}{% endblock column_left %}
+			</div>
+
+			<div class="content">{% block content %}{% endblock content %}</div>
+		</div>
 	</body>
 </html>

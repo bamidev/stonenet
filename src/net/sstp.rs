@@ -14,7 +14,7 @@
 //! often. Actually, a new shared secret is recomputed every ack packet exchange.
 
 
-use super::socket::{*, UdpSocket};
+use super::socket::*;
 
 use crate::{
 	common::*,
@@ -26,7 +26,7 @@ use std::{
 	collections::HashMap,
 	fmt,
 	io,
-	net::*,
+	//net::*,
 	sync::{
 		atomic::{AtomicBool, Ordering},
 		Arc
@@ -75,7 +75,7 @@ pub struct Connection<S> where S: LinkSocket {
 	/// sequence number.
 	next_sequence: u16,
 	queues: QueueReceivers,
-	session: Arc<Mutex<SessionData>>,
+	//session: Arc<Mutex<SessionData>>,
 	key_state: KeyState,
 	receive_window: WindowInfo,
 	send_window: WindowInfo
@@ -113,7 +113,7 @@ pub enum Error {
 }
 
 struct SessionData {
-	client_node_id: IdType, 
+	//client_node_id: IdType, 
 	their_session_id: Option<u16>,
 	last_message_time: SystemTime,
 	hello_oneshot: Option<oneshot::Sender<io::Result<(IdType, u16, x25519::PublicKey)>>>,
@@ -346,10 +346,10 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 		}
 	}
 
-	async fn receive_ack(&mut self, window_size: u16, window_start_sequence: u16, timeout: Duration) -> io::Result<Result<x25519::PublicKey, (u16, Vec<u8>)>> {
-		let mut sequence = 0u16;
-		let mut window_sequence = 0u16;
-		let mut packet: Vec<u8> = Vec::new();
+	async fn receive_ack(&mut self, window_start_sequence: u16, timeout: Duration) -> io::Result<Result<x25519::PublicKey, (u16, Vec<u8>)>> {
+		let mut sequence;
+		let mut window_sequence;
+		let mut packet: Vec<u8>;
 		loop {
 			(sequence, packet) = self.receive_ack_packet(timeout).await?;
 			window_sequence = sequence.wrapping_sub(window_start_sequence);
@@ -391,14 +391,13 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 	/// Wait for an ack packet, re-sends the last packet a few times if the
 	/// other side is unresponsive.
 	async fn receive_ack_patiently(&mut self,
-		window_size: u16,
 		window_start_sequence: u16,
 		last_sequence: u16,
 		last_key_sequence: u16,
 		last_packet: &[u8]
 	) -> io::Result<Result<x25519::PublicKey, (u16, Vec<u8>)>> {
 		for _ in 0..1 {
-			match self.receive_ack(window_size, window_start_sequence, TIMEOUT/2).await {
+			match self.receive_ack(window_start_sequence, TIMEOUT/2).await {
 				Ok(r) => return Ok(r),
 				Err(e) => if e.kind() != io::ErrorKind::TimedOut {
 					return Err(e)
@@ -409,7 +408,7 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 			// but it should only re-send a packet.
 			self.send_data_packet(last_sequence, last_key_sequence, last_packet, false).await?;
 		}
-		self.receive_ack(window_size, window_start_sequence, TIMEOUT/2).await
+		self.receive_ack(window_start_sequence, TIMEOUT/2).await
 	}
 
 	fn process_packet(&mut self,
@@ -779,7 +778,6 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 			let mut last_needed_packet_index = window_sequence.wrapping_sub(1);
 			let mut last_needed_packet_sequence = self.next_sequence.wrapping_sub(1);
 			let (completed, received_mask) = match self.receive_ack_patiently(
-				window_size,
 				window_start_sequence,
 				last_needed_packet_sequence,
 				last_needed_packet_index,
@@ -834,7 +832,7 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 			packet.len(),
 			Self::max_data_packet_length() + 1
 		);
-		let outer_size = 5 + 2 + packet.len();
+		//let outer_size = 5 + 2 + packet.len();
 		let mut buffer = vec![0u8; 7 + Self::max_data_packet_length()];
 		buffer[0] = message_type;
 		buffer[1..3].copy_from_slice(&self.their_session_id.to_le_bytes());
@@ -859,7 +857,7 @@ impl<S> Connection<S> where S: LinkSocket, S::Target: fmt::Debug {
 		key_sequence: u16,
 		packet: &[u8]
 	) -> io::Result<()> {
-		let mut buffer = Vec::new();
+		let mut buffer;
 		let slice = if packet.len() == Self::max_data_packet_length() {
 			packet
 		}
@@ -976,7 +974,6 @@ impl KeyState {
 			self.keychain.clear();
 		}
 		self.keychain.push(initial_key);
-		let our_public = x25519::PublicKey::from(&self.our_dh_key);
 	}
 
 	/// Generates a new key
@@ -998,7 +995,7 @@ impl SessionData {
 		queues: QueueSenders
 	) -> Self {
 		Self {
-			client_node_id: node_id,
+			//client_node_id: node_id,
 			their_session_id: None,
 			hello_oneshot: Some(hello_oneshot),
 			queues,
@@ -1014,7 +1011,7 @@ impl SessionData {
 	) -> Self {
 		let (dummy_tx, _) = oneshot::channel();
 		Self {
-			client_node_id: node_id,
+			//client_node_id: node_id,
 			their_session_id: Some(their_session_id),
 			hello_oneshot: Some(dummy_tx),
 			queues,
@@ -1108,7 +1105,7 @@ impl<S> SstpSocket<S> where S: LinkSocket, S::Target: fmt::Debug {
 					our_session_id,
 					next_sequence: 0,
 					queues,
-					session,
+					//session,
 					key_state: KeyState::new(secret_key, their_public_key, 1),
 					receive_window: WindowInfo::default(),
 					send_window: WindowInfo::default(),
@@ -1224,7 +1221,7 @@ impl<S, L> Server<S, L> where
 		}
 
 		for done_id in done_ids {
-			let info = sessions.map.remove(&done_id).unwrap();
+			sessions.map.remove(&done_id).unwrap();
 		}
 	}
 
@@ -1241,7 +1238,7 @@ impl<S, L> Server<S, L> where
 		let data = packet[4..].to_vec();
 
 		let mut sessions = self.socket.sessions.lock().await;
-		let mut handled_correctly = bool::default();
+		let handled_correctly;
 		if let Some(s) = sessions.map.get(&our_session_id) {
 			let mut session = s.lock().await;
 			session.last_message_time = SystemTime::now();
@@ -1340,7 +1337,7 @@ impl<S, L> Server<S, L> where
 			their_node_id: node_id,
 			their_session_id,
 			our_session_id,
-			session,
+			//session,
 			queues: rx_queues,
 			key_state: KeyState::new(own_secret_key, their_public_key, 1),
 			next_sequence: 0,
@@ -1508,7 +1505,8 @@ impl Queues {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
+	use super::socket::UdpSocket;
 
 	#[test]
 	fn test_encryption() {

@@ -11,7 +11,7 @@ use super::{
 use crate::{
 	common::*,
 	config::Config,
-	db::*,
+	db::Database,
 	identity::*,
 	net::*
 };
@@ -49,7 +49,7 @@ pub struct FindActorIter<'a> (FindValueIter<'a, OverlayInterface>);
 pub struct OverlayNode {
 	base: Arc<Node<OverlayInterface>>,
 	actor_nodes: HashMap<IdType, Arc<Node<ActorInterface>>>,
-	db: Arc<Database>,
+	db: Database,
 	bootstrap_nodes: Vec<SocketAddr>
 }
 
@@ -127,7 +127,7 @@ impl OverlayNode {
 	pub async fn bind(
 		node_id: IdType,
 		addr: &SocketAddr,
-		db: Arc<Database>,
+		db: Database,
 		config: &Config
 	) -> io::Result<Self> {
 		let mut bootstrap_nodes = Vec::<SocketAddr>::with_capacity(
@@ -645,8 +645,15 @@ impl OverlayNode {
 	}
 
 	/// Publishes the identities that are stored in the DB
-	pub async fn store_my_identities(&self) {
-		let identities = match self.db.fetch_my_identities() {
+	pub async fn publish_my_identities(&self) {
+		let c = match self.db.connect() {
+			Ok(c) => c,
+			Err(e) => {
+				error!("Unable to connect to database: {}", e);
+				return;
+			}
+		};
+		let identities = match c.fetch_my_identities() {
 			Err(e) => {
 				error!("Unable to fetch my identities: {}", e);
 				return;
@@ -663,7 +670,7 @@ impl OverlayNode {
 				&public_key
 			).await;
 			if !success {
-				warn!("Unable to store identity {} in network.", node_id.to_string());
+				warn!("Unable to store identity {} in network.", label);
 			}
 		}
 	}

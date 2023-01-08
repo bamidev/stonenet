@@ -1,5 +1,6 @@
 use std::{
-	fmt
+	fmt,
+	ops
 };
 
 use async_trait::async_trait;
@@ -88,6 +89,26 @@ impl IdType {
 	}
 
 	pub fn as_bytes(&self) -> &[u8; 32] { &self.0 }
+}
+
+impl ops::BitXor<&IdType> for IdType {
+	type Output = Self;
+
+	fn bitxor(self, other: &Self) -> Self::Output {
+		let mut result = Self::default();
+		for i in 0..32 {
+			result.0[i] = self.0[i] ^ other.0[i];
+		}
+		result
+	}
+}
+
+impl ops::BitXorAssign for IdType {
+	fn bitxor_assign(&mut self, other: Self) {
+		for i in 0..32 {
+			self.0[i] ^= other.0[i];
+		}
+	}
 }
 
 impl From<[u8; 32]> for IdType {

@@ -13,9 +13,10 @@ use ed25519_dalek::{
 		}
 	}
 };
-use rand_core::{OsRng, RngCore};
+use rand_core::OsRng;
 use serde::{Serialize, Deserialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 
 #[derive(Serialize, Deserialize)]
@@ -23,12 +24,22 @@ pub struct PublicKey (ed25519_dalek::PublicKey);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Signature (ed25519_dalek::Signature);
+pub type SignatureError = ed25519_dalek::SignatureError;
 
 pub type Identity = PublicKey;
 
-#[derive(Deserialize, Serialize)]
-pub struct Keypair (ed25519_dalek::Keypair);
+#[derive(Serialize)]
+pub struct Keypair {
+	inner: ed25519_dalek::Keypair,
+	//#[serde(serialize_with = "<[_]>::serialize")]
+	#[serde(skip_serializing)]
+	copy: KeypairCopy,
+}
+pub type KeypairError = ed25519_dalek::SignatureError;
 
+#[derive(Zeroize)]
+#[zeroize(drop)]
+struct KeypairCopy ([u8; ed25519_dalek::KEYPAIR_LENGTH]);
 
 
 impl PublicKey {
@@ -50,29 +61,46 @@ impl PublicKey {
 }
 
 impl Keypair {
+	pub fn as_bytes(&self) -> &[u8; 64] {
+		&self.copy.0
+	}
+
+	pub fn to_bytes(&self) -> [u8; 64] {
+		self.inner.to_bytes()
+	}
+
 	pub fn from_bytes(bytes: &[u8]) -> Result<Self, ed25519_dalek::SignatureError> {
-		Ok(Self(ed25519_dalek::Keypair::from_bytes(bytes)?))
+		Ok(Self::new(ed25519_dalek::Keypair::from_bytes(bytes)?))
 	}
 
 	pub fn generate() -> Self {
 		let mut rng = OsRng {};
-		Self (ed25519_dalek::Keypair::generate(&mut rng))
+		Self::new(ed25519_dalek::Keypair::generate(&mut rng))
+	}
+
+	fn new(inner: ed25519_dalek::Keypair) -> Self {
+		Self {
+			copy: KeypairCopy(inner.to_bytes()),
+			inner
+		}
 	}
 
 	pub fn public(&self) -> PublicKey {
-		PublicKey (self.0.public)
+		PublicKey (self.inner.public)
 	}
 
 	pub fn sign(&self, message: &[u8]) -> Signature {
 		Signature (
-			self.0.sign(message)
+			self.inner.sign(message)
 		)
 	}
 }
 
 impl Clone for Keypair {
 	fn clone(&self) -> Self {
-		Self (ed25519_dalek::Keypair::from_bytes(&self.0.to_bytes()).unwrap())
+		Self::new(
+			ed25519_dalek::Keypair::from_bytes(&self.inner.to_bytes()).unwrap()
+		)
 	}
 }
 
@@ -114,16 +142,21 @@ impl DerefMut for PublicKey {
 }
 
 
-#[test]
-fn test_signature() {
-	let mut buffer = vec![0u8; 1024];
-	OsRng.fill_bytes(&mut buffer);
+mod tests {
+	use super::*;
+	use rand_core::RngCore;
 
-	let keypair = Keypair::generate();
-	let signature = keypair.sign(&buffer);
-	assert!(keypair.public().verify(&buffer, &signature), "can't verify own signature");
+	#[test]
+	fn test_signature() {
+		let mut buffer = vec![0u8; 1024];
+		OsRng.fill_bytes(&mut buffer);
 
-	let signature_bytes = signature.as_bytes();
-	let signature2 = Signature::from_bytes(signature_bytes.clone());
-	assert!(keypair.public().verify(&buffer, &signature2), "can't verify own signature after encoding+decoding it");
+		let keypair = Keypair::generate();
+		let signature = keypair.sign(&buffer);
+		assert!(keypair.public().verify(&buffer, &signature), "can't verify own signature");
+
+		let signature_bytes = signature.as_bytes();
+		let signature2 = Signature::from_bytes(signature_bytes.clone());
+		assert!(keypair.public().verify(&buffer, &signature2), "can't verify own signature after encoding+decoding it");
+	}
 }

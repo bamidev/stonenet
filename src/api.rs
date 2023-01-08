@@ -1,9 +1,12 @@
+//! TODO: Rename this module to "Api".
+
 use std::{
 	sync::Arc
 };
 
 use super::{
 	common::*,
+	identity::*,
 	model::*,
 	net::{
 		actor::ActorNode,
@@ -20,15 +23,34 @@ pub enum Error {
 }*/
 
 #[derive(Clone)]
-pub struct Global {
+pub struct Api {
 	pub node: Arc<OverlayNode>,
-	pub db: Arc<Database>
+	pub db: Database
 }
 
 //pub type Result<T> = std::result::Result<T, self::Error>;
 
 
-impl Global {
+impl Api {
+
+	pub fn create_my_identity(&self,
+		label: &str,
+		identity: &IdType,
+		keypair: &Keypair
+	) -> db::Result<()> {
+		let this = self.clone();
+		tokio::task::block_in_place(|| {
+			let mut c = this.db.connect()?;
+			c.store_my_identity(label, identity, keypair).map_err(|e| e.into())
+		})
+	}
+
+	pub fn fetch_home_feed(&self,
+		count: usize,
+		offset: usize
+	) -> db::Result<Vec<Object>> {
+		
+	}
 
 	pub async fn fetch_latest_objects(&self,
 		actor_id: &IdType,
@@ -52,6 +74,25 @@ impl Global {
 		})
 	}
 
+	pub fn fetch_my_identity(&self,
+		address: &IdType
+	) -> db::Result<Option<(String, Keypair)>> {
+		let this = self.clone();
+		tokio::task::block_in_place(|| {
+			let c = this.db.connect()?;
+			c.fetch_my_identity(address)
+		})
+	}
+
+	pub fn fetch_my_identities(&self
+	) -> db::Result<Vec<(String, IdType, Keypair)>> {
+		let this = self.clone();
+		tokio::task::block_in_place(|| {
+			let c = this.db.connect()?;
+			c.fetch_my_identities()
+		})
+	}
+	
 	/*pub async fn fetch_latest_objects_with_preview_data(&self,
 		actor_id: &IdType,
 		count: usize,
@@ -86,11 +127,16 @@ impl Global {
 		})
 	}*/
 
-	async fn fetch_object(&self,
+	pub async fn fetch_object(&self,
 		actor_node: &ActorNode,
 		index: u64
 	) -> db::Result<Option<Object>> {
-		match self.db.fetch_object(index)? {
+		let this = self.clone();
+		let result = tokio::task::block_in_place(|| {
+			let c = self.db.connect()?;
+			c.fetch_object(index)
+		});
+		match result? {
 			Some(object) => Ok(Some(object)),
 			None => {
 				Ok(actor_node.find_object(index, 100, true).await)
@@ -98,7 +144,7 @@ impl Global {
 		}
 	}
 
-	async fn fetch_objects(&self,
+	pub async fn fetch_objects(&self,
 		actor_node: &ActorNode,
 		last_post_index: u64,
 		count: u64
@@ -116,6 +162,47 @@ impl Global {
 			objects.push(result);
 		}
 		Ok(objects)
+	}
+
+	pub async fn publish_post(&self,
+		identity: &IdType,
+		keypair: &Keypair,
+		message: &str,
+		tags: Vec<String>,
+		attachments: &[(&str, &[u8])]
+	) -> db::Result<()> {
+		let mut c = self.db.connect()?;
+		let identity_id = c.find_identity(identity)?.expect("unknown identity");
+
+		// Store all files
+		let mut files = Vec::with_capacity(attachments.len() + 1);
+		let file_id = c.store_file("text/plain", message.as_bytes())?;
+		files.push(FileHeader { hash: file_id, mime_type: "text/plain".into() });
+		for (mime_type, data) in attachments {
+			let file_id = c.store_file(mime_type, data)?;
+			files.push(FileHeader { hash: file_id, mime_type: mime_type.to_string() });
+		}
+
+		// Sign the post
+		let next_object_sequence = c.next_object_sequence(identity_id)?;
+		let object_payload = ObjectPayload::Post(PostObject {
+			in_reply_to: None,
+			tags: tags.clone(),
+			files: files.clone()
+		});
+		let payload_raw = bincode::serialize(&object_payload).expect("serialization error");
+		let signature = keypair.sign(&payload_raw);
+
+		c.store_post(identity_id, &tags, &files, &signature)?;
+
+		let object = Object {
+			sequence: next_object_sequence,
+			signature,
+			payload: object_payload
+		};
+		//self.node.publish_post()
+
+		Ok(())
 	}
 }
 

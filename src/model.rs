@@ -42,10 +42,15 @@ pub struct ProfileObject {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Object {
-	pub index: u64,
+	pub sequence: u64,
 	pub signature: Signature,
 	pub payload: ObjectPayload
 }
+
+pub const OBJECT_TYPE_POST: u8 = 0;
+pub const OBJECT_TYPE_BOOST: u8 = 1;
+pub const OBJECT_TYPE_PROFILE: u8 = 2;
+pub const OBJECT_TYPE_MOVE: u8 = 3;
 
 #[derive(Clone, Deserialize, Serialize)]
 pub enum ObjectPayload {

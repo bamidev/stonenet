@@ -1,6 +1,24 @@
 {% extends "base" %}
 {% block title %}StoneNet - Home{% endblock %}
 
+{% block column_left %}
+<form method="post">
+	<div class="post-input">
+		<textarea name="message" rows="5" cols="30" placeholder="Write a message..."></textarea>
+	</div>
+	<div class="post-identity">
+		<select name="identity">
+			{% for identity in identities %}
+				<option value="{{identity.address}}">{{identity.label}}</option>
+			{% endfor %}
+		</select>
+	</div>
+	<div class="post-submit">
+		<button type="submit">Submit</button>
+	</div>
+</form>
+{% endblock column_left %}
+
 {% block content %}
 Welcome to StoneNet!
 {% endblock content %}

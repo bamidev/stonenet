@@ -16,17 +16,17 @@ pub const QUERY: &'static str = r#"
 	INSERT INTO version VALUES (0, 0, 0);
 
 	CREATE TABLE identity (
-		address TEXT,
-		keypair BLOB
+		address TEXT NOT NULL UNIQUE,
+		public_key BLOB NOT NULL
 	);
 
 	CREATE TABLE my_identity (
 		label TEXT PRIMARY KEY,
-		identity_id INTEGER UNIQUE,
-		publish_trust INTEGER NOT NULL
+		identity_id INTEGER NOT NULL UNIQUE,
+		keypair BLOB NOT NULL
 	);
 
-	CREATE TABLE feed_followed (
+	CREATE TABLE following (
 		address TEXT PRIMARY KEY,
 		identity_id INTEGER NOT NULL,
 		UNIQUE(address, identity_id)
@@ -55,23 +55,21 @@ pub const QUERY: &'static str = r#"
 
 	CREATE TABLE object (
 		actor_id INTEGER NOT NULL,
-		index INTEGER NOT NULL,
+		sequence INTEGER NOT NULL,
 		signature BLOB NOT NULL,
 		type INTEGER NOT NULL,
-		UNIQUE(feed_id, index),
+		UNIQUE(actor_id, sequence),
 		FOREIGN KEY(actor_id) REFERENCES identity(rowid)
 	);
 
 	CREATE TABLE post_object (
 		object_id INTEGER NOT NULL,
 		in_reply_to_id INTEGER,
-		UNIQUE(feed_id, number),
-		UNIQUE(feed_id, hash),
 		FOREIGN KEY(object_id) REFERENCES object(rowid),
 		FOREIGN KEY(in_reply_to_id) REFERENCES post_object(rowid)
 	);
 
-	CREATE TABLE post_object_files (
+	CREATE TABLE post_files (
 		post_object_id INTEGER NOT NULL,
 		file_id INTEGER NOT NULL,
 		UNIQUE(post_object_id, file_id),
@@ -80,24 +78,33 @@ pub const QUERY: &'static str = r#"
 	);
 
 	CREATE TABLE post_tag (
-		post_id INTEGER NOT NULL,
+		post_object_id INTEGER NOT NULL,
 		tag TEXT NOT NULL,
-		UNIQUE(post_id, tag)
+		UNIQUE(post_object_id, tag)
 	);
 
 	CREATE TABLE file (
 		hash BLOB NOT NULL UNIQUE,
 		mime_type TEXT NOT NULL,
-		blocks INTEGER
+		block_count INTEGER
+	);
+
+	CREATE TABLE file_blocks (
+		file_id INTEGER NOT NULL,
+		block_id INTEGER NOT NULL,
+		UNIQUE(file_id, block_id),
+		FOREIGN KEY(file_id) REFERENCES file(rowid),
+		FOREIGN KEY(block_id) REFERENCES block(rowid)
 	);
 
 	CREATE TABLE block (
 		file_id INTEGER NOT NULL,
-		number INTEGER NOT NULL,
 		hash BLOB NOT NULL,
+		sequence INTEGER NOT NULL,
 		size INTEGER NOT NULL,
 		data BLOB NOT NULL,
-		UNIQUE(file_id, hash)
+		UNIQUE(file_id, hash),
+		UNIQUE(file_id, sequence)
 	);
 
 	CREATE TABLE profile_object (

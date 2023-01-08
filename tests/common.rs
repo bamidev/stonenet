@@ -26,7 +26,7 @@ use tokio::{
 pub async fn launch_node<A: ToSocketAddrs>(
 	stop_flag: Arc<AtomicBool>,
 	addr: A,
-	db: Arc<Database>,
+	db: Database,
 	config: &Config
 ) -> Arc<OverlayNode> {
 	let a: SocketAddr = addr.to_socket_addrs().unwrap().next().unwrap();

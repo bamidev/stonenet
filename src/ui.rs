@@ -1,23 +1,32 @@
 use std::{
+	//error::Error as StdError,
 	path::{Path, PathBuf}
 };
 
 use crate::{
 	common::*,
-	global::Global,
+	api::Api,
+	db,
 	identity::*,
 	model::*
 };
 
 use base58::FromBase58;
-use ed25519_dalek::Keypair;
 use futures::future::join_all;
-use rand_core::OsRng;
 use rocket::*;
 use rocket::form::Form;
 use rocket::fs::NamedFile;
+use rocket::serde::Serialize;
 use rocket_dyn_templates::{Template, context};
 
+
+fn render_db_error(error: db::Error, message: &str) -> Template {
+	error!("Database error: {}: {}", message, error);
+	Template::render("error", context! {
+		title: "Database error",
+		message
+	})
+}
 
 fn render_error<E>(error: E, title: &str, message: &str) -> Template {
 	Template::render("error", context! {
@@ -26,14 +35,63 @@ fn render_error<E>(error: E, title: &str, message: &str) -> Template {
 	})
 }
 
+#[derive(Serialize)]
+struct IdentityData {
+	label: String,
+	address: String
+}
+
 #[get("/")]
-async fn index() -> Template {
+async fn index(api: &State<Api>) -> Template {
+	let identities = match api.fetch_my_identities() {
+		Ok(i) => i,
+		Err(e) => return render_db_error(e, "unable to fetch my identities")
+	};
+	let identities_data: Vec<IdentityData> = identities.iter().map(|i| {
+		let (label, address, _) = i;
+		IdentityData {
+			label: label.clone(),
+			address: address.to_string()
+		}
+	}).collect();
+
 	Template::render("home", context! {
-		test: "Test"
+		identities: identities_data
 	})
 }
 
-pub async fn main(g: Global) {
+#[derive(FromForm)]
+struct PostPostData {
+	message: String,
+	identity: String,
+}
+
+#[post("/", data = "<form_data>")]
+async fn index_post(
+	form_data: Form<PostPostData>,
+	api: &State<Api>
+) -> Template {
+	let identity_address = IdType::from_base58(&form_data.identity).expect("unable to parse post identity");
+	let (_label, keypair) = match api.fetch_my_identity(&identity_address) {
+		Ok(k) => k.expect("my identity not found"),
+		Err(e) => return render_db_error(e, "unable to fetch my identity")
+	};
+	// TODO: Parse tags from post.
+	match api.publish_post(
+		&identity_address,
+		&keypair,
+		&form_data.message,
+		Vec::new(),
+		&Vec::new()
+	).await {
+		Ok(()) => {},
+		Err(e) => return render_db_error(e, "unable to publish post")
+	}
+
+	index(api).await
+}
+
+pub async fn main(g: Api) {
 	let _ = rocket::build()
 		.attach(Template::fairing())
 		.manage(g)
@@ -41,6 +99,7 @@ pub async fn main(g: Global) {
 			feed,
 			static_,
 			index,
+			index_post,
 			my_identities,
 			my_identities_post,
 			search
@@ -50,7 +109,7 @@ pub async fn main(g: Global) {
 }
 
 #[get("/feed/<address_str>")]
-async fn feed(address_str: &str, g: &State<Global>) -> Template {
+async fn feed(address_str: &str, g: &State<Api>) -> Template {
 	#[derive(rocket::serde::Serialize)]
 	struct Object {
 		body: String
@@ -93,7 +152,7 @@ async fn feed(address_str: &str, g: &State<Global>) -> Template {
 }
 
 #[get("/my-identities")]
-async fn my_identities(g: &State<Global>) -> Template {
+async fn my_identities(api: &State<Api>) -> Template {
 	#[derive(rocket::serde::Serialize)]
 	struct Object {
 		id: u64,
@@ -101,23 +160,20 @@ async fn my_identities(g: &State<Global>) -> Template {
 		address: String
 	}
 	
-	let mut stat = g.db.prepare(r#"
-		SELECT label, identity_id, i.address FROM my_identity AS mi
-		LEFT JOIN identity AS i ON mi.identity_id = i.rowid
-	"#).expect("sql error");
-	let mut rows = stat.query([]).expect("sql error");
-
-	let mut identities = Vec::new();
-	while let Some(row) = rows.next().unwrap() {
-		identities.push(Object {
-			id: row.get(1).unwrap(),
-			label: row.get(0).unwrap(),
-			address: row.get(2).unwrap()
-		});
-	}
+	let identities = match api.fetch_my_identities() {
+		Ok(i) => i,
+		Err(e) => return render_db_error(e, "unable to fetch identities")
+	};
+	let identities_data: Vec<IdentityData> = identities.iter().map(|i| {
+		let (label, address, _) = i;
+		IdentityData {
+			label: label.clone(),
+			address: address.to_string()
+		}
+	}).collect();
 
 	Template::render("my_identities", context! {
-		identities: identities
+		identities: identities_data
 	})
 }
 
@@ -127,25 +183,19 @@ struct MyIdentitiesPostData {
 }
 
 #[post("/my-identities", data = "<form_data>")]
-async fn my_identities_post(form_data: Form<MyIdentitiesPostData>, g: &State<Global>) -> Template {
+async fn my_identities_post(form_data: Form<MyIdentitiesPostData>, api: &State<Api>) -> Template {
 	assert!(form_data.label.len() > 0, "Invalid label received");
 	
-	let mut rng = OsRng{};
-	let keypair = Keypair::generate(&mut rng);
-	let identity: Identity = keypair.public.into();
+	let keypair = Keypair::generate();
+	let identity: Identity = keypair.public().into();
 	let address = identity.generate_address();
 	
-	{
-		let mut stat = g.db.prepare("INSERT INTO identity (address, keypair) VALUES(?, ?)").unwrap();
-		let new_id = stat.insert(rusqlite::params![address.to_string(), keypair.to_bytes()]).unwrap();
-		stat = g.db.prepare(r#"
-			INSERT INTO my_identity (label, identity_id, publish_trust)
-			VALUES (?, ?, FALSE)
-		"#).unwrap();
-		stat.insert(rusqlite::params![form_data.label, new_id]).unwrap();
+	match api.create_my_identity(&form_data.label, &address, &keypair) {
+		Ok(()) => {},
+		Err(e) => return render_db_error(e, "unable to create my identity")
 	}
 
-	my_identities(g).await
+	my_identities(api).await
 }
 
 #[get("/static/<file..>")]
@@ -154,7 +204,7 @@ async fn static_(file: PathBuf) -> Option<NamedFile> {
 }
 
 #[get("/search?<query>")]
-async fn search(query: &str, g: &State<Global>) -> Template {
+async fn search(query: &str, g: &State<Api>) -> Template {
 	#[derive(rocket::serde::Serialize)]
 	struct SearchResult {
 		
@@ -162,7 +212,7 @@ async fn search(query: &str, g: &State<Global>) -> Template {
 
 	let mut error_message: Option<String> = None;
 	let result = match query.from_base58() {
-		Err(e) => {
+		Err(_) => {
 			error_message = Some("not a valid base58 encoded string".into()); None
 		},
 		Ok(data) => {
