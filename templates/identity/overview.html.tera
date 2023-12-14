@@ -1,0 +1,32 @@
+{% extends "base" %}
+{% block title %}My Identities{% endblock %}
+
+{% block content %}
+<div class="card bg-dark-subtle text-dark">
+	<div class="card-header">
+		<h1>My identities</h1>
+	</div>
+	<div class="card-body">
+		<table class="table table-striped table-light">
+			<thead>
+				<tr>
+					<th>Label</th>
+					<th>Address</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for identity in identities %}
+					<tr>
+						<td>{{ identity.label }}</td>
+						<td><a href="/actor/{{identity.address}}">{{ identity.address }}</a></td>
+					</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+	<div class="card-footer">
+		<a class="btn btn-secondary float-end" href="/my-identity/new">Create new identity</a>
+	</div>
+</div>
+
+{% endblock content %}

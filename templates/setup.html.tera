@@ -1,0 +1,34 @@
+{% extends "base" %}
+{% import "macros" as macros %}
+{% block title %}Setup{% endblock %}
+
+{% block content %}
+	<h1>Stonenet Setup</h1>
+	<p>
+		Stonenet is a peer-to-peer social media platform resistant to censorship.
+		This means that all messages and content published here, can't be undone so easily.
+		That is a great thing, but potentionally could also be a bad thing.
+		So be mindfull of what you post, as it may be eternal.
+	</p>
+	<p>
+		Also, for all content that you follow, you will help out the network by
+		storing and redistributing a part of it. So be careful of who you follow,
+		as not all content may be deemed legal to download/upload in your own jurisdiction.
+	</p>
+
+	<form method="post">
+		<h2>Database location</h2>
+		<p>
+			Choose a location for the database file:<br/>
+			<input type="text" name="database_file" value="~/.stonenet/db.sqlite" />
+		</p>
+
+		<h2>Default disk-space allocation</h2>
+		<p>
+			The default amount of disk space that you will provide to the network for each person you follow:<br/>
+			<input type="number" name="default_space_allocation" value="100" /> MiB
+		</p>
+
+		<button class="btn btn-primary" type="submit">Install</button>
+	</form>
+{% endblock content %}

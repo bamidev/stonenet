@@ -1,0 +1,37 @@
+{% extends "base" %}
+{% block title %}New Identity{% endblock %}
+
+{% block content %}
+<form method="post" enctype="multipart/form-data">
+	<div class="card bg-dark-subtle text-dark">
+		<div class="card-header">
+			<h1>New Identity</h1>
+		</div>
+		<div class="card-body">
+			<div class="mb-1 row">
+				<div class="col-3">Label:</div>
+				<div class="col"><input class="form-control" type="text" name="label" /></div>
+			</div>
+			<div class="mb-1 row">
+				<div class="col-3">Name:</div>
+				<div class="col"><input class="form-control" type="text" name="name" /></div>
+			</div>
+			<div class="mb-1 row">
+				<div class="col-3">Avatar:</div>
+				<div class="col"><input class="form-control" type="file" name="avatar" /></div>
+			</div>
+			<div class="mb-1 row">
+				<div class="col-3">Wallpaper:</div>
+				<div class="col"><input class="form-control" type="file" name="wallpaper" /></div>
+			</div>
+			<div class="mb-1 row">
+				<div class="col-3">Description: <span class="text-muted">(Markdown supported)</span></div>
+				<div class="col"><textarea class="form-control" name="description" rows="5"></textarea></div>
+			</div>
+		</div>
+		<div class="card-footer">
+			<button class="btn btn-primary float-end" type="submit">Create</button>
+		</div>
+	</div>
+</form>
+{% endblock content %}

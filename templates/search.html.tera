@@ -1,0 +1,26 @@
+{% extends "base" %}
+{% block title %}Search{% endblock %}
+
+{% block content %}
+<div class="query">
+	Query: {{ query }}
+</div>
+{% if error_message %}
+	<div class="search-error">
+		Search error: {{ error_message }}
+	</div>
+{% endif %}
+<div class="search-results">
+	<ul>
+		{% if result %}
+			<li>
+				Search success:
+				{{ result.i_am_available }}
+			</li>
+		{% else %}
+			Address not found. The address either does not exist, or is
+			currently offline. Try again later.
+		{% endif %}
+	</ul>
+</div>
+{% endblock content %}

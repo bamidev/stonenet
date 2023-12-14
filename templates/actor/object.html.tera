@@ -1,0 +1,12 @@
+{% extends "base" %}
+{% import "macros" as macros %}
+{% block title %}Object{% endblock %}
+
+{% block content %}
+	<p>
+		{{macros::object(object=object, footer=false)}}
+	</p>
+	<p>
+		{{macros::post_form(title="Reply", identities=identities)}}
+	</p>
+{% endblock content %}

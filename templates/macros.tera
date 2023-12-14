@@ -1,0 +1,225 @@
+{% macro object(index=0, object, footer=true) %}
+	<div class="card bg-dark-subtle text-dark mb-3">
+		{{macros::compose_object_header(
+			hash=object.actor_id,
+			name=object.actor_name,
+			avatar=object.actor_avatar,
+			created=object.created,
+			time_ago=object.time_ago,
+		)}}
+		{{macros::compose_object_payload(
+			index=index,
+			actor_id=object.actor_id,
+			payload=object.payload
+		)}}
+		{% if footer %}
+			{% if "Post" in object.payload %}
+				{{macros::compose_object_footer(
+					actor=object.actor_id,
+					sequence=object.payload["Post"].sequence
+				)}}
+			{% elif "Boost" in object.payload %}
+				{{macros::compose_object_footer(
+					actor=payload["Boost"].original_post.actor_id,
+					sequence=payload["Boost"].original_post.sequence
+				)}}
+			{% endif %}
+		{% endif %}
+	</div>
+{% endmacro %}
+
+{% macro post_form(title, identities) %}
+	<form method="post" enctype="multipart/form-data">
+		<div class="card bg-dark-subtle text-dark">
+			<div class="card-header">
+				<h5 class="card-title">{{title}}</h5>
+			</div>
+			<div class="card-body">
+				<textarea name="message" rows="5" style="width: 100%" placeholder="Write a message..."></textarea>
+				<input name="attachments" type="file" multiple="multiple" />
+			</div>
+			<div class="card-footer">
+				{% if identities %}
+					<label class="justify-content-start" for="identity">Post as:</label>
+					<select class="form-select form-select-sm w-50 d-inline" id="identity" name="identity">
+						{% for identity in identities %}
+							<option value="{{identity.address}}">{{identity.label}}</option>
+						{% endfor %}
+					</select>
+					<button class="btn btn-primary float-end" type="submit">Post</button>
+				{% else %}
+					Unable to post without an identity.
+					<a href="/my-identity/new">Create one</a>. 
+				{% endif %}
+			</div>
+		</div>
+	</form>
+{% endmacro %}
+
+{% macro feed(objects, page) %}
+	<div class="feed">
+		{% for object in objects %}
+			{{macros::object(actor_id=actor_id, index=loop.index, object=object)}}
+		{% endfor %}
+		
+		<nav class="float-end">
+			<ul class="pagination">
+				{% if page == 0 %}
+					<li class="page-item disabled"><a class="page-link" href="/">Next</a></li>
+				{% else %}
+					<li class="page-item"><a class="page-link" href="/?page={{page-1}}">Next</a></li>
+				{% endif %}
+				<li class="page-item"><a class="page-link" href="/?page={{page+1}}">Previous</a></li>
+			</ul>
+		  </nav>
+	</div>
+{% endmacro feed %}
+
+{% macro compose_object_footer(actor, sequence) %}
+	<div class="card-footer text-right">
+		<form class="d-inline" method="post" action="/actor/{{actor}}/object/{{sequence}}/boost">
+			<button class="btn btn-secondary disabled" type="submit">Boost</button>
+		</form>
+		<a class="btn btn-secondary float-end" href="/actor/{{actor}}/object/{{sequence}}">Open</a>
+	</div>
+{% endmacro %}
+
+{% macro compose_object_header(hash, name, avatar, created=false, time_ago=false, small=false) %}
+	{% set avatar_size = 75 %}
+	{% if small %}
+		{% set avatar_size = 50 %}
+	{% endif %}
+	<div class="card-header d-flex align-items-center">
+		<span class="flex-grow-1">
+			<img class="rounded-circle" width="{{avatar_size}}" height="{{avatar_size}}" src="/actor/{{hash}}/file/{{avatar}}" alt="Avatar of {{name}}" />
+			<a class="m-2" href="/actor/{{hash}}" target="_blank">{{name}}</a>
+		</span>
+		{% if created and time_ago %}
+			<span title="{{created}}">
+				{{time_ago}} ago
+			</span>
+		{% endif %}
+	</div>
+{% endmacro %}
+
+{% macro compose_object_payload(index, actor_id, payload) %}
+	{% for key, value in payload %}
+		{% if key == "Post" %}
+			{{macros::compose_post_object_payload(index=index, actor_id=actor_id, payload=payload["Post"])}}
+		{% elif key == "Boost" %}
+			{{macros::compose_boost_object_payload(index=index, actor_id=actor_id, payload=payload["Boost"])}}
+		{% elif key == "Profile" %}
+			{{macros::compose_profile_object_payload(payload=payload["Profile"])}}
+		{% elif key == "Move" %}
+			{{macros::compose_move_object_payload(payload=payload["Move"])}}
+		{% endif %}
+	{% endfor %}
+{% endmacro compose_object %}
+
+{% macro compose_boost_object_payload(index, actor_id, payload) %}
+	{% set use_markdown = false %}
+	{% if payload.mime_type == 'text/markdown' %}
+		{% set use_markdown = true %}
+	{% endif %}
+
+	<div class="card-body">
+		{{macros::compose_post_object_body(
+			index=index,
+			actor_id=actor_id,
+			message=payload.message,
+			attachments=payload.attachments,
+			use_markdown=use_markdown
+		)}}
+	</div>
+{% endmacro %}
+
+{% macro compose_move_object_payload(payload) %}
+	<div class="card-body">
+		I moved to a new address: {{payload.new_actor.id}}<br />
+		Please follow me there!
+	</div>
+{% endmacro %}
+
+{% macro compose_post_object_payload(index, actor_id, payload) %}
+	{% if payload.in_reply_to %}
+		{% set use_markdown = false %}
+		{% if payload.in_reply_to.mime_type == 'text/markdown' %}
+			{% set use_markdown = true %}
+		{% endif %}
+
+		<div class="card-body">
+			<div class="card bg-dark-subtle">
+				{{macros::compose_object_header(
+					hash=payload.in_reply_to.actor_id,
+					name=payload.in_reply_to.actor_name,
+					avatar=payload.in_reply_to.actor_avatar,
+					small=true
+				)}}
+				{{macros::compose_post_object_body(
+					index=index + 100,
+					actor_id=actor_id,
+					message=payload.in_reply_to.message,
+					attachments=payload.in_reply_to.attachments,
+					use_markdown=use_markdown
+				)}}
+			</div>
+		</div>
+	{% endif %}
+
+		{% set use_markdown = false %}
+		{% if payload.mime_type == 'text/markdown' %}
+			{% set use_markdown = true %}
+		{% endif %}
+
+		{{macros::compose_post_object_body(
+			index=index,
+			actor_id=actor_id,
+			message=payload.message,
+			attachments=payload.attachments,
+			use_markdown=use_markdown
+		)}}
+{% endmacro %}
+
+{% macro compose_profile_object_payload(payload) %}
+	<div class="card-body" 
+		{% if payload.actor.wallpaper_id %}
+			style="
+				background-image: url('/actor/{{payload.actor.id}}/file/{{payload.actor.wallpaper_id}}');
+				background-position: center;
+				background-size: cover;
+				max-height: 200px;
+			"
+		{% endif %}
+	>
+		<span class="m-3 p-1 bg-white bg-opacity-50 text-dark rounded">
+			<a href="/actor/{{payload.actor.id}}" target="_blank">Updated my profile.</a>
+		</span>
+	</div>
+{% endmacro %}
+
+{% macro compose_post_object_body(index, actor_id, message, use_markdown=false, attachments) %}
+	<div class="card-body">
+		<div class="overflow-scroll" style="display: block; max-height: 200px;">
+			<div id="message-{{index}}">
+				{{message | escape | linebreaksbr | safe}}
+			</div>
+			{% if use_markdown %}
+				<script type="text/javascript">
+					var element = document.getElementById("message-{{index}}")
+					element.innerHTML = marked.parse(element.innerText)
+				</script>
+			{% endif %}
+		</div>
+		<div class="attachments">
+			{% for file in attachments %}
+				<a href="/actor/{{actor_id}}/file/{{file.hash}}" target="_blank">
+					{% if file.mime_type is starting_with("image/") %}
+						<img class="attachment" src="/actor/{{actor_id}}/file/{{file.hash}}" />
+					{% else %}
+						Attachment {{loop.index}}
+					{% endif %}
+				</a>
+			{% endfor %}
+		</div>
+	</div>
+{% endmacro %}
