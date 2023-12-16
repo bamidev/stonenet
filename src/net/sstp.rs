@@ -99,7 +99,7 @@ pub struct Connection {
 	their_session_id: u16,
 	our_session_id: u16,
 	node_id: IdType,
-	keypair: identity::Keypair,
+	private_key: identity::PrivateKey,
 	/// The next data packet that is send or received is expected to have this
 	/// sequence number.
 	next_sequence: u16,
@@ -226,7 +226,7 @@ pub struct Server {
 	our_contact_info: Mutex<ContactInfo>,
 	sessions: Mutex<Sessions>,
 	node_id: IdType,
-	keypair: identity::Keypair,
+	private_key: identity::PrivateKey,
 	on_connect: OnceCell<Box<dyn Fn(Box<Connection>) + Send + Sync>>,
 }
 
@@ -582,7 +582,7 @@ impl Connection {
 		let mut window_size = self.receive_window.size;
 		let mut first = true;
 		loop {
-			self.key_state.our_dh_key = x25519::StaticSecret::new(OsRng);
+			self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
 			let dh_public_key = x25519::PublicKey::from(&self.key_state.our_dh_key);
 			let (new_public_key, clean, window_full) = self
 				.receive_window(&mut buffer, window_size, first, &dh_public_key)
@@ -616,7 +616,7 @@ impl Connection {
 			window_size as usize * self.max_data_packet_length()
 		});
 
-		self.key_state.our_dh_key = x25519::StaticSecret::new(OsRng);
+		self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let dh_public_key = x25519::PublicKey::from(&self.key_state.our_dh_key);
 		let (new_public_key, clean, window_full) = self
 			.receive_window(&mut buffer, window_size, is_first, &dh_public_key)
@@ -1103,7 +1103,7 @@ impl Connection {
 		let mut window_size = self.send_window.size;
 
 		loop {
-			self.key_state.our_dh_key = x25519::StaticSecret::new(OsRng);
+			self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
 			let (s, clean, their_dh_key, window_full) = self
 				.send_window(
 					&buffer[send..],
@@ -1617,7 +1617,8 @@ impl Default for SocketCollection {
 
 impl Server {
 	pub async fn bind(
-		stop_flag: Arc<AtomicBool>, node_id: IdType, contact_info: ContactInfo, keypair: Keypair,
+		stop_flag: Arc<AtomicBool>, node_id: IdType, contact_info: ContactInfo,
+		private_key: PrivateKey,
 	) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			stop_flag,
@@ -1625,7 +1626,7 @@ impl Server {
 			our_contact_info: Mutex::new(contact_info),
 			sessions: Mutex::new(Sessions::new()),
 			node_id,
-			keypair,
+			private_key,
 			on_connect: OnceCell::new(),
 		}))
 	}
@@ -1680,7 +1681,7 @@ impl Server {
 			}));
 		}
 
-		let secret_key = x25519::StaticSecret::new(OsRng);
+		let secret_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let (our_session_id, _session, mut hello_watch, queues) = self
 			.new_outgoing_session(self.node_id.clone())
 			.await
@@ -1726,7 +1727,7 @@ impl Server {
 							contact_info: their_contact_info,
 						},
 						node_id: self.node_id.clone(),
-						keypair: self.keypair.clone(),
+						private_key: self.private_key.clone(),
 						next_sequence: 0,
 						queues,
 						//session,
@@ -1808,15 +1809,15 @@ impl Server {
 		let mut buffer = vec![0u8; 163 + my_contact_info_len];
 		buffer[0] = MESSAGE_TYPE_HELLO_REQUEST;
 		buffer[1..33].copy_from_slice(self.node_id.as_bytes());
-		buffer[33..65].copy_from_slice(self.keypair.public().as_bytes());
+		buffer[33..65].copy_from_slice(self.private_key.public().as_bytes());
 		let public_key = x25519::PublicKey::from(private_key);
 		buffer[129..161].copy_from_slice(public_key.as_bytes());
 		buffer[161..163].copy_from_slice(&u16::to_le_bytes(my_session_id));
 		buffer[163..].copy_from_slice(&bincode::serialize(&my_contact_info).unwrap());
 
 		// Sign request
-		let signature = self.keypair.sign(&buffer[129..]);
-		buffer[65..129].copy_from_slice(signature.as_bytes());
+		let signature = self.private_key.sign(&buffer[129..]);
+		buffer[65..129].copy_from_slice(&signature.to_bytes());
 
 		socket.send(&buffer, TIMEOUT).await?;
 		Ok(())
@@ -2327,7 +2328,7 @@ impl Server {
 		let dh_pubkey_bytes: [u8; 32] = packet[128..160].try_into().unwrap();
 
 		let their_public_key = x25519::PublicKey::from(dh_pubkey_bytes);
-		let own_secret_key = x25519::StaticSecret::new(OsRng);
+		let own_secret_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let own_public_key = x25519::PublicKey::from(&own_secret_key);
 		let their_session_id = u16::from_le_bytes(*array_ref![packet, 160, 2]);
 		let mut their_contact_info: ContactInfo = bincode::deserialize(&packet[162..])?;
@@ -2353,7 +2354,7 @@ impl Server {
 		// Send back the sender's node ID to verify that both nodes share the
 		// same secret.
 		response[1..33].copy_from_slice(node_id.as_bytes());
-		response[33..65].copy_from_slice(self.keypair.public().as_bytes());
+		response[33..65].copy_from_slice(self.private_key.public().as_bytes());
 		response[129..161].copy_from_slice(own_public_key.as_bytes());
 		response[161..163].copy_from_slice(&their_session_id.to_le_bytes());
 		response[163..165].copy_from_slice(&our_session_id.to_le_bytes());
@@ -2371,8 +2372,8 @@ impl Server {
 		}
 
 		// Sign DH public key, and write it to the response buffer
-		let signature = self.keypair.sign(&response[129..]);
-		response[65..129].clone_from_slice(signature.as_bytes());
+		let signature = self.private_key.sign(&response[129..]);
+		response[65..129].clone_from_slice(&signature.to_bytes());
 
 		let connection = Box::new(Connection {
 			keep_alive_flag: AtomicBool::new(false),
@@ -2388,7 +2389,7 @@ impl Server {
 				contact_info: their_contact_info,
 			},
 			node_id: self.node_id.clone(),
-			keypair: self.keypair.clone(),
+			private_key: self.private_key.clone(),
 			//session,
 			queues: rx_queues,
 			key_state: KeyState::new(own_secret_key, their_public_key, 1),
@@ -2713,24 +2714,24 @@ mod tests {
 		let master_contact_info: ContactInfo = (&master_addr).into();
 		let slave_contact_info: ContactInfo = (&slave_addr).into();
 		let stop_flag = Arc::new(AtomicBool::new(false));
-		let master_keypair = Keypair::generate();
-		let master_node_id = master_keypair.public().generate_address();
+		let master_private_key = PrivateKey::generate();
+		let master_node_id = master_private_key.public().generate_address();
 		let master = sstp::Server::bind(
 			stop_flag.clone(),
 			master_node_id,
 			master_contact_info.clone(),
-			master_keypair,
+			master_private_key,
 		)
 		.await
 		.expect("unable to bind master");
-		let slave_keypair = Keypair::generate();
-		let slave_node_id = slave_keypair.public().generate_address();
+		let slave_private_key = PrivateKey::generate();
+		let slave_node_id = slave_private_key.public().generate_address();
 		let slave = Arc::new(
 			sstp::Server::bind(
 				stop_flag.clone(),
 				slave_node_id,
 				slave_contact_info.clone(),
-				slave_keypair,
+				slave_private_key,
 			)
 			.await
 			.expect("unable to bind slave"),

@@ -1,36 +1,58 @@
 use std::{
 	fs::remove_file,
+	io,
 	net::Ipv4Addr,
 	path::PathBuf,
-	sync::{atomic::AtomicBool, Arc},
+	sync::{
+		atomic::{AtomicBool, Ordering},
+		Arc,
+	},
 };
 
 use log::*;
+use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
+use rand_core::CryptoRngCore;
 use stonenetd::{
 	api::Api,
 	config::Config,
 	db::*,
-	identity::Keypair,
+	identity::PrivateKey,
+	model::*,
 	net::{overlay::*, ContactInfo, *},
 };
 
 
+fn initialize_rng() -> ChaCha8Rng {
+	let seed: <ChaCha8Rng as SeedableRng>::Seed = Default::default();
+	ChaCha8Rng::from_seed(seed)
+}
+
 async fn load_test_node(
-	stop_flag: Arc<AtomicBool>, config: &Config, filename: &str, port: u16,
+	stop_flag: Arc<AtomicBool>, rng: &mut impl CryptoRngCore, config: &Config, port: u16,
+	openness: Openness, filename: &str,
 ) -> Api {
 	// FIXME: Generate proper random temporary file names.
 	let file = PathBuf::from(filename);
+	match remove_file(&file) {
+		Ok(()) => {}
+		Err(e) =>
+			if e.kind() != io::ErrorKind::NotFound {
+				panic!(
+					"unable to remove database file {}: {}",
+					file.to_string_lossy(),
+					e
+				);
+			},
+	}
 	let db = Database::load(file).expect("unable to load database");
-	let keypair = Keypair::generate();
-	let node_id = keypair.public().generate_address();
+	let private_key = PrivateKey::generate_with_rng(rng);
+	let node_id = private_key.public().generate_address();
 	let contact_info = ContactInfo {
 		ipv4: Some(Ipv4ContactInfo {
 			addr: Ipv4Addr::new(127, 0, 0, 1),
 			availability: IpAvailability {
-				udp: Some(TransportAvailabilityEntry {
-					port,
-					openness: Openness::Bidirectional,
-				}),
+				udp: Some(TransportAvailabilityEntry { port, openness }),
 				tcp: None,
 			},
 		}),
@@ -40,7 +62,7 @@ async fn load_test_node(
 		stop_flag.clone(),
 		node_id,
 		contact_info,
-		keypair,
+		private_key,
 		db.clone(),
 		&config,
 	)
@@ -53,22 +75,33 @@ async fn load_test_node(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_communication() {
-	env_logger::init();
-
-	use rand_core::{OsRng, RngCore};
-	use stonenetd::model::*;
+async fn test_data_synchronization() {
+	//env_logger::init();
+	let mut rng = initialize_rng();
 
 	// Set up two nodes
 	let stop_flag = Arc::new(AtomicBool::new(false));
-	let mut config1 = Config::default();
-	config1.bootstrap_nodes = vec![];
+	let config1 = Config::default();
 	let mut config2 = Config::default();
 	config2.bootstrap_nodes = vec!["127.0.0.1:37337".to_string()];
-	let _ = remove_file("/tmp/node1.sqlite");
-	let _ = remove_file("/tmp/node2.sqlite");
-	let node1 = load_test_node(stop_flag.clone(), &config1, "/tmp/node1.sqlite", 37337).await;
-	let node2 = load_test_node(stop_flag.clone(), &config2, "/tmp/node2.sqlite", 37338).await;
+	let node1 = load_test_node(
+		stop_flag.clone(),
+		&mut rng,
+		&config1,
+		37337,
+		Openness::Bidirectional,
+		"/tmp/node1.sqlite",
+	)
+	.await;
+	let node2 = load_test_node(
+		stop_flag.clone(),
+		&mut rng,
+		&config2,
+		37338,
+		Openness::Bidirectional,
+		"/tmp/node2.sqlite",
+	)
+	.await;
 	node2.node.join_network(stop_flag.clone()).await;
 
 	// Create a profile for node 1
@@ -79,12 +112,12 @@ Hoi ik ben Kees!
 		mime_type: "image/png".to_string(),
 		data: vec![0u8; 1000],
 	};
-	OsRng.fill_bytes(&mut avatar_file_data.data);
+	rng.fill_bytes(&mut avatar_file_data.data);
 	let mut wallpaper_file_data = FileData {
 		mime_type: "image/jpeg".to_string(),
 		data: vec![0u8; 10000000],
 	};
-	OsRng.fill_bytes(&mut wallpaper_file_data.data);
+	rng.fill_bytes(&mut wallpaper_file_data.data);
 	let (actor_id, actor_info) = node1
 		.create_my_identity(
 			"kees",
@@ -260,6 +293,7 @@ Hoi ik ben Kees!
 		}
 	}
 
+	stop_flag.store(true, Ordering::Relaxed);
 	remove_file("/tmp/node1.sqlite").unwrap();
 	remove_file("/tmp/node2.sqlite").unwrap();
 }

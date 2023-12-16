@@ -26,12 +26,12 @@ pub const QUERY: &'static str = r#"
 	CREATE TABLE my_identity (
 		label TEXT PRIMARY KEY,
 		identity_id INTEGER NOT NULL UNIQUE,
-		keypair BLOB NOT NULL
+		private_key BLOB NOT NULL
 	);
 
 	CREATE TABLE node_identity (
 		address TEXT NOT NULL,
-		keypair BLOB NOT NULL
+		private_key BLOB NOT NULL
 	);
 
 	CREATE TABLE following (

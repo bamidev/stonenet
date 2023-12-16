@@ -38,7 +38,7 @@ pub enum Error {
 	/// An invalid hash has been found in the database
 	InvalidHash(IdFromBase58Error),
 	InvalidSignature(SignatureError),
-	InvalidKeypair(KeypairError),
+	//InvalidPrivateKey(PrivateKeyError),
 	InvalidPublicKey(Option<PublicKeyError>),
 	/// The data that is stored for a block is corrupt
 	BlockDataCorrupt(i64),
@@ -1257,11 +1257,11 @@ impl Connection {
 	}
 
 	fn _store_my_identity(
-		tx: &impl DerefConnection, label: &str, keypair: &Keypair, first_object: &IdType,
+		tx: &impl DerefConnection, label: &str, private_key: &PrivateKey, first_object: &IdType,
 		actor_type: String,
 	) -> rusqlite::Result<i64> {
 		let actor_info = ActorInfo {
-			public_key: keypair.public(),
+			public_key: private_key.public(),
 			first_object: first_object.clone(),
 			actor_type,
 		};
@@ -1271,10 +1271,10 @@ impl Connection {
 
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO my_identity (label, identity_id, keypair) VALUES (?,?,?)
+			INSERT INTO my_identity (label, identity_id, private_key) VALUES (?,?,?)
 		"#,
 		)?;
-		stat.insert(params![label, identity_id, keypair.as_bytes()])?;
+		stat.insert(params![label, identity_id, private_key.as_bytes()])?;
 		Ok(identity_id)
 	}
 
@@ -1303,7 +1303,7 @@ impl Connection {
 				actor_rowid,
 				object.sequence,
 				id.to_string(),
-				object.signature.as_bytes(),
+				object.signature.to_bytes(),
 				object.created,
 				Utc::now().timestamp_millis(),
 				object.payload.type_id(),
@@ -1338,7 +1338,7 @@ impl Connection {
 			next_sequence,
 			previous_hash.to_string(),
 			hash.to_string(),
-			signature.as_bytes(),
+			signature.to_bytes(),
 			created,
 			created,
 			OBJECT_TYPE_POST,
@@ -1440,7 +1440,7 @@ impl Connection {
 			actor_id,
 			object.sequence,
 			object_id.to_string(),
-			object.signature.as_bytes(),
+			object.signature.to_bytes(),
 			object.created,
 			Utc::now().timestamp_millis(),
 			object.payload.type_id(),
@@ -1480,7 +1480,7 @@ impl Connection {
 	}
 
 	pub fn create_my_identity(
-		&mut self, label: &str, keypair: &Keypair, first_object_hash: &IdType,
+		&mut self, label: &str, private_key: &PrivateKey, first_object_hash: &IdType,
 		first_object: &Object, name: &str, avatar: Option<(&IdType, &str, &[(IdType, Vec<u8>)])>,
 		wallpaper: Option<(&IdType, &str, &[(IdType, Vec<u8>)])>,
 		description: Option<(IdType, &str)>,
@@ -1504,7 +1504,7 @@ impl Connection {
 		let tx = self.0.transaction()?;
 
 		let identity_id =
-			Self::_store_my_identity(&tx, label, keypair, &first_object_hash, "feed".into())?;
+			Self::_store_my_identity(&tx, label, private_key, &first_object_hash, "feed".into())?;
 		let avatar_file_id = store_file(&tx, identity_id, avatar)?;
 		let wallpaper_file_id = store_file(&tx, identity_id, wallpaper)?;
 		let description_block_id = if let Some((hash, description_str)) = &description {
@@ -1854,10 +1854,10 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_my_identity(&self, address: &IdType) -> Result<Option<(String, Keypair)>> {
+	pub fn fetch_my_identity(&self, address: &IdType) -> Result<Option<(String, PrivateKey)>> {
 		let mut stat = self.0.prepare(
 			r#"
-			SELECT label, keypair FROM my_identity AS mi LEFT JOIN identity AS i
+			SELECT label, private_key FROM my_identity AS mi LEFT JOIN identity AS i
 			WHERE i.address = ?
 		"#,
 		)?;
@@ -1866,17 +1866,16 @@ impl Connection {
 			None => Ok(None),
 			Some(row) => {
 				let label = row.get(0)?;
-				let bytes: Vec<u8> = row.get(1)?;
-				let keypair = Keypair::from_bytes(&bytes)?;
-				Ok(Some((label, keypair)))
+				let private_key: PrivateKey = row.get(1)?;
+				Ok(Some((label, private_key)))
 			}
 		}
 	}
 
-	pub fn fetch_my_identity_by_label(&self, label: &str) -> Result<Option<(IdType, Keypair)>> {
+	pub fn fetch_my_identity_by_label(&self, label: &str) -> Result<Option<(IdType, PrivateKey)>> {
 		let mut stat = self.0.prepare(
 			r#"
-			SELECT i.address, mi.keypair
+			SELECT i.address, mi.private_key
 			FROM my_identity AS mi LEFT JOIN identity AS i ON mi.identity_id = i.rowid
 			WHERE label = ?
 		"#,
@@ -1887,17 +1886,16 @@ impl Connection {
 			Some(row) => {
 				let address_str: String = row.get(0)?;
 				let address = IdType::from_base58(&address_str)?;
-				let bytes: Vec<u8> = row.get(1)?;
-				let keypair = Keypair::from_bytes(&bytes)?;
-				Ok(Some((address, keypair)))
+				let private_key: PrivateKey = row.get(1)?;
+				Ok(Some((address, private_key)))
 			}
 		}
 	}
 
-	pub fn fetch_my_identities(&self) -> Result<Vec<(String, IdType, IdType, String, Keypair)>> {
+	pub fn fetch_my_identities(&self) -> Result<Vec<(String, IdType, IdType, String, PrivateKey)>> {
 		let mut stat = self.0.prepare(
 			r#"
-			SELECT label, i.address, i.first_object, i.type, mi.keypair
+			SELECT label, i.address, i.first_object, i.type, mi.private_key
 			FROM my_identity AS mi
 			LEFT JOIN identity AS i ON mi.identity_id = i.rowid
 		"#,
@@ -1911,40 +1909,38 @@ impl Connection {
 			let address = IdType::from_base58(&address_string)?;
 			let first_object = IdType::from_base58(&fo_string)?;
 			let actor_type: String = row.get(3)?;
-			let blob: Vec<u8> = row.get(4)?;
-			let id = Keypair::from_bytes(&blob)?;
-			ids.push((row.get(0)?, address, first_object, actor_type, id));
+			let private_key: PrivateKey = row.get(4)?;
+			ids.push((row.get(0)?, address, first_object, actor_type, private_key));
 		}
 		Ok(ids)
 	}
 
-	pub fn fetch_node_identity(&mut self) -> Result<(IdType, Keypair)> {
+	pub fn fetch_node_identity(&mut self) -> Result<(IdType, PrivateKey)> {
 		let tx = self.0.transaction()?;
 
 		let result = {
 			let mut stat = tx.prepare(
 				r#"
-				SELECT address, keypair FROM node_identity LIMIT 1
+				SELECT address, private_key FROM node_identity LIMIT 1
 			"#,
 			)?;
 			let mut rows = stat.query([])?;
 
 			if let Some(row) = rows.next()? {
 				let address_string: String = row.get(0)?;
-				let keypair_blob: Vec<u8> = row.get(1)?;
+				let private_key: PrivateKey = row.get(1)?;
 				let address = IdType::from_base58(&address_string)?;
-				let keypair = Keypair::from_bytes(&keypair_blob)?;
-				(address, keypair)
+				(address, private_key)
 			} else {
-				let keypair = Keypair::generate();
-				let address = IdType::hash(keypair.public().as_bytes());
+				let private_key = PrivateKey::generate();
+				let address = IdType::hash(&private_key.public().to_bytes());
 				tx.execute(
 					r#"
-					INSERT INTO node_identity (address, keypair) VALUES (?,?)
+					INSERT INTO node_identity (address, private_key) VALUES (?,?)
 				"#,
-					params![address.to_string(), keypair.as_bytes()],
+					params![address.to_string(), private_key.as_bytes()],
 				)?;
-				(address, keypair)
+				(address, private_key)
 			}
 		};
 
@@ -2068,7 +2064,7 @@ impl Connection {
 				)?;
 				stat.insert(params![
 					actor_id.to_string(),
-					actor_info.public_key.as_bytes(),
+					actor_info.public_key.to_bytes(),
 					actor_info.first_object.as_bytes()
 				])?
 			};
@@ -2258,7 +2254,7 @@ impl Connection {
 	}
 
 	pub fn store_my_identity(
-		&mut self, label: &str, address: &IdType, keypair: &Keypair, first_object: &IdType,
+		&mut self, label: &str, address: &IdType, private_key: &PrivateKey, first_object: &IdType,
 	) -> rusqlite::Result<()> {
 		let tx = self.0.transaction()?;
 
@@ -2269,17 +2265,17 @@ impl Connection {
 		)?;
 		let new_id = stat.insert(rusqlite::params![
 			address.to_string(),
-			keypair.public().as_bytes(),
+			private_key.public().as_bytes(),
 			first_object.to_string()
 		])?;
 		stat = tx
 			.prepare(
 				r#"
-			INSERT INTO my_identity (label, identity_id, keypair) VALUES (?,?,?)
+			INSERT INTO my_identity (label, identity_id, private_key) VALUES (?,?,?)
 		"#,
 			)
 			.unwrap();
-		stat.insert(rusqlite::params![label, new_id, keypair.as_bytes()])?;
+		stat.insert(rusqlite::params![label, new_id, private_key.as_bytes()])?;
 
 		drop(stat);
 		tx.commit()?;
@@ -2357,7 +2353,7 @@ impl fmt::Display for Error {
 			Self::InvalidObjectType(code) => {
 				write!(f, "invalid object type found in database: {}", code)
 			}
-			Self::InvalidKeypair(e) => write!(f, "invalid keypair: {}", e),
+			//Self::InvalidPrivateKey(e) => write!(f, "invalid private_key: {}", e),
 			Self::BlockDataCorrupt(block_id) => write!(f, "data of block {} is corrupt", block_id),
 			Self::PostMissingFiles(object_id) => write!(f, "object {} has no files", object_id),
 			Self::FileMissingBlock(file_id, sequence) => {
@@ -2395,7 +2391,7 @@ impl IdFromBase58Error {
 
 #[cfg(test)]
 mod tests {
-	use std::net::*;
+	//use std::net::*;
 
 	use super::*;
 

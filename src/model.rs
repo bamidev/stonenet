@@ -9,7 +9,7 @@ pub const ACTOR_TYPE_FEED: &str = "feed";
 pub const ACTOR_TYPE_SITE: &str = "website";
 
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ActorInfo {
 	pub public_key: PublicKey,
 	pub first_object: IdType,

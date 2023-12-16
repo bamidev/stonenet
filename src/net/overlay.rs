@@ -170,8 +170,8 @@ impl<'a> AsyncIterator for FindActorIter<'a> {
 
 impl OverlayNode {
 	pub async fn start(
-		stop_flag: Arc<AtomicBool>, node_id: IdType, contact_info: ContactInfo, keypair: Keypair,
-		db: Database, config: &Config,
+		stop_flag: Arc<AtomicBool>, node_id: IdType, contact_info: ContactInfo,
+		private_key: PrivateKey, db: Database, config: &Config,
 	) -> sstp::Result<Arc<Self>> {
 		let mut bootstrap_nodes = Vec::<SocketAddr>::with_capacity(config.bootstrap_nodes.len());
 		for address_string in &config.bootstrap_nodes {
@@ -181,8 +181,13 @@ impl OverlayNode {
 			}
 		}
 
-		let socket =
-			sstp::Server::bind(stop_flag.clone(), node_id.clone(), contact_info, keypair).await?;
+		let socket = sstp::Server::bind(
+			stop_flag.clone(),
+			node_id.clone(),
+			contact_info,
+			private_key,
+		)
+		.await?;
 
 		let this = Arc::new(Self {
 			base: Arc::new(Node::new(
@@ -410,7 +415,7 @@ impl OverlayNode {
 	}
 
 	pub async fn join_actor_network(
-		&self, actor_id: IdType, actor_info: ActorInfo,
+		self: &Arc<Self>, actor_id: IdType, actor_info: ActorInfo,
 	) -> Option<Arc<ActorNode>> {
 		// Insert a new - or load the existing node
 		let node = {
@@ -520,12 +525,12 @@ impl OverlayNode {
 		}
 
 		//spawn(async move {
-		node.initialize(&contacts).await;
+		node.initialize(self, &contacts).await;
 		//});
 		Some(node)
 	}
 
-	async fn join_actor_networks(&self, actors: Vec<(IdType, ActorInfo)>) {
+	async fn join_actor_networks(self: &Arc<Self>, actors: Vec<(IdType, ActorInfo)>) {
 		// Join each network in parallel
 		let futs = actors.into_iter().map(|(actor_id, actor_info)| async {
 			if !self
@@ -556,7 +561,7 @@ impl OverlayNode {
 
 	/// Joins the network by trying to connect to old peers. If that doesn't
 	/// work, try to connect to bootstrap nodes.
-	pub async fn join_network(&self, stop_flag: Arc<AtomicBool>) -> bool {
+	pub async fn join_network(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) -> bool {
 		// TODO: Find remembered nodes from the database and try them out first. This is
 		// currently not implemented yet.
 
@@ -581,11 +586,11 @@ impl OverlayNode {
 							let actor_node_infos = tokio::task::block_in_place(|| {
 								let mut list = self.load_following_actor_nodes(&c);
 								list.extend(self.load_my_actor_nodes(&c).into_iter().map(
-									|(id, first_object, actor_type, keypair)| {
+									|(id, first_object, actor_type, private_key)| {
 										(
 											id,
 											ActorInfo {
-												public_key: keypair.public(),
+												public_key: private_key.public(),
 												first_object,
 												actor_type,
 											},
@@ -677,7 +682,7 @@ impl OverlayNode {
 		}
 	}
 
-	fn load_my_actor_nodes(&self, c: &db::Connection) -> Vec<(IdType, IdType, String, Keypair)> {
+	fn load_my_actor_nodes(&self, c: &db::Connection) -> Vec<(IdType, IdType, String, PrivateKey)> {
 		let result = match c.fetch_my_identities() {
 			Ok(r) => r,
 			Err(e) => {
@@ -688,8 +693,8 @@ impl OverlayNode {
 
 		result
 			.into_iter()
-			.map(|(_, actor_id, first_object, actor_type, keypair)| {
-				(actor_id, first_object, actor_type, keypair)
+			.map(|(_, actor_id, first_object, actor_type, private_key)| {
+				(actor_id, first_object, actor_type, private_key)
 			})
 			.collect()
 	}

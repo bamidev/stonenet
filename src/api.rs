@@ -39,7 +39,7 @@ impl Api {
 		&self, label: &str, name: &str, avatar: Option<&FileData>, wallpaper: Option<&FileData>,
 		description: &str,
 	) -> db::Result<(IdType, ActorInfo)> {
-		let keypair = Keypair::generate();
+		let private_key = PrivateKey::generate();
 		let this = self.clone();
 
 		// Prepare profile object
@@ -68,8 +68,8 @@ impl Api {
 				.as_millis() as u64,
 			payload: &payload,
 		};
-		let signature = keypair.sign(&bincode::serialize(&sign_data).unwrap());
-		let object_hash = IdType::hash(signature.as_bytes());
+		let signature = private_key.sign(&bincode::serialize(&sign_data).unwrap());
+		let object_hash = IdType::hash(&signature.to_bytes());
 		let object = Object {
 			signature,
 			previous_hash: IdType::default(),
@@ -80,7 +80,7 @@ impl Api {
 
 		// Generate an actor ID with our new object hash.
 		let actor_info = ActorInfo {
-			public_key: keypair.public(),
+			public_key: private_key.public(),
 			first_object: object_hash.clone(),
 			actor_type: "feed".into(),
 		};
@@ -91,7 +91,7 @@ impl Api {
 			let mut c = this.db.connect()?;
 			c.create_my_identity(
 				label,
-				&keypair,
+				&private_key,
 				&object_hash,
 				&object,
 				name,
@@ -192,7 +192,7 @@ impl Api {
 		})
 	}
 
-	pub fn fetch_my_identity(&self, address: &IdType) -> db::Result<Option<(String, Keypair)>> {
+	pub fn fetch_my_identity(&self, address: &IdType) -> db::Result<Option<(String, PrivateKey)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -200,7 +200,9 @@ impl Api {
 		})
 	}
 
-	pub fn fetch_my_identity_by_label(&self, label: &str) -> db::Result<Option<(IdType, Keypair)>> {
+	pub fn fetch_my_identity_by_label(
+		&self, label: &str,
+	) -> db::Result<Option<(IdType, PrivateKey)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -210,7 +212,7 @@ impl Api {
 
 	pub fn fetch_my_identities(
 		&self,
-	) -> db::Result<Vec<(String, IdType, IdType, String, Keypair)>> {
+	) -> db::Result<Vec<(String, IdType, IdType, String, PrivateKey)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -353,7 +355,7 @@ impl Api {
 			},
 		};
 
-		let _keypair = tokio::task::block_in_place(|| {
+		let _private_key = tokio::task::block_in_place(|| {
 			let mut c = self.db.connect()?;
 			c.follow(actor_id, &actor_info)
 		})?;
@@ -465,7 +467,7 @@ impl Api {
 	}
 
 	pub async fn publish_post(
-		&self, identity: &IdType, keypair: &Keypair, message: &str, tags: Vec<String>,
+		&self, identity: &IdType, private_key: &PrivateKey, message: &str, tags: Vec<String>,
 		attachments: &[FileData], in_reply_to: Option<(IdType, IdType)>,
 	) -> db::Result<IdType> {
 		let (hash, object) = tokio::task::block_in_place(|| {
@@ -509,7 +511,7 @@ impl Api {
 				&previous_hash,
 				created,
 				&object_payload,
-				&keypair,
+				&private_key,
 			)?;
 
 			db::Connection::_store_post(
@@ -550,7 +552,7 @@ impl Api {
 	/// Calculates the signature of the s
 	fn sign_object(
 		tx: &rusqlite::Transaction, actor: &IdType, sequence: u64, previous_hash: &IdType,
-		created: u64, payload: &ObjectPayload, keypair: &Keypair,
+		created: u64, payload: &ObjectPayload, private_key: &PrivateKey,
 	) -> db::Result<(IdType, Signature)> {
 		// Prepare data to be signed
 		let sign_data = ObjectSignData {
@@ -562,8 +564,8 @@ impl Api {
 		let raw_sign_data = bincode::serialize(&sign_data).unwrap();
 
 		// Sign it
-		let signature = keypair.sign(&raw_sign_data);
-		let hash = IdType::hash(signature.as_bytes());
+		let signature = private_key.sign(&raw_sign_data);
+		let hash = IdType::hash(&signature.to_bytes());
 
 		Ok((hash, signature))
 	}

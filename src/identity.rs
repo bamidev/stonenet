@@ -3,19 +3,17 @@ use std::{
 	ops::{Deref, DerefMut},
 };
 
-use ed25519_dalek::{
-	self,
-	ed25519::signature::{Signature as SignatureTrait, Signer, Verifier},
-};
-use rand_core::OsRng;
+use ed25519_dalek::{self, Signer};
+use rand::{prelude::*, rngs::OsRng};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::common::*;
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PublicKey(ed25519_dalek::PublicKey);
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+pub struct PublicKey(ed25519_dalek::VerifyingKey);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Signature(ed25519_dalek::Signature);
@@ -26,61 +24,91 @@ pub type Identity = PublicKey;
 pub struct PublicKeyError(ed25519_dalek::SignatureError);
 
 #[derive(Serialize)]
-pub struct Keypair {
-	inner: ed25519_dalek::Keypair,
-	//#[serde(serialize_with = "<[_]>::serialize")]
+pub struct PrivateKey {
+	inner: ed25519_dalek::SigningKey,
 	#[serde(skip_serializing)]
-	copy: KeypairCopy,
+	copy: PrivateKeyCopy,
 }
 pub type KeypairError = ed25519_dalek::SignatureError;
 
 #[derive(Zeroize)]
 #[zeroize(drop)]
-struct KeypairCopy([u8; ed25519_dalek::KEYPAIR_LENGTH]);
+struct PrivateKeyCopy([u8; ed25519_dalek::SECRET_KEY_LENGTH]);
 
 impl PublicKey {
 	pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, PublicKeyError> {
 		Ok(Self(
-			ed25519_dalek::PublicKey::from_bytes(&bytes).map_err(|e| PublicKeyError(e))?,
+			ed25519_dalek::VerifyingKey::from_bytes(&bytes).map_err(|e| PublicKeyError(e))?,
 		))
 	}
 
 	pub fn generate_address(&self) -> IdType {
 		let mut hasher = Sha256::new();
-		hasher.update(self.to_bytes());
+		hasher.update(self.0.to_bytes());
 		let buffer: [u8; 32] = hasher.finalize().into();
 		buffer.into()
 	}
 
 	pub fn verify(&self, message: &[u8], signature: &Signature) -> bool {
-		self.0.verify(message, &signature.0).is_ok()
+		self.0.verify_strict(message, &signature.0).is_ok()
 	}
 }
 
-impl Keypair {
-	pub fn as_bytes(&self) -> &[u8; 64] { &self.copy.0 }
+impl PrivateKey {
+	pub fn as_bytes(&self) -> &[u8; 32] { &self.copy.0 }
 
-	pub fn to_bytes(&self) -> [u8; 64] { self.inner.to_bytes() }
+	pub fn to_bytes(&self) -> [u8; 32] { self.inner.to_bytes() }
 
-	pub fn from_bytes(bytes: &[u8]) -> Result<Self, KeypairError> {
-		Ok(Self::new(ed25519_dalek::Keypair::from_bytes(bytes)?))
+	pub fn from_bytes(mut bytes: [u8; 32]) -> Self {
+		let this = Self::new(ed25519_dalek::SigningKey::from_bytes(&bytes));
+		bytes.zeroize();
+		this
 	}
 
 	pub fn generate() -> Self {
 		let mut rng = OsRng {};
-		Self::new(ed25519_dalek::Keypair::generate(&mut rng))
+		Self::generate_with_rng(&mut rng)
 	}
 
-	fn new(inner: ed25519_dalek::Keypair) -> Self {
+	pub fn generate_with_rng<R>(rng: &mut R) -> Self
+	where
+		R: CryptoRng + RngCore,
+	{
+		let mut rng = OsRng {};
+		Self::new(ed25519_dalek::SigningKey::generate(&mut rng))
+	}
+
+	fn new(inner: ed25519_dalek::SigningKey) -> Self {
 		Self {
-			copy: KeypairCopy(inner.to_bytes()),
+			copy: PrivateKeyCopy(inner.to_bytes()),
 			inner,
 		}
 	}
 
-	pub fn public(&self) -> PublicKey { PublicKey(self.inner.public) }
+	pub fn public(&self) -> PublicKey { PublicKey(self.inner.verifying_key()) }
 
 	pub fn sign(&self, message: &[u8]) -> Signature { Signature(self.inner.sign(message)) }
+}
+
+impl FromSql for PrivateKey {
+	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+		match value {
+			ValueRef::Blob(bytes) =>
+				if bytes.len() >= ed25519_dalek::SECRET_KEY_LENGTH {
+					FromSqlResult::Ok(PrivateKey::from_bytes(
+						bytes[..ed25519_dalek::SECRET_KEY_LENGTH]
+							.try_into()
+							.unwrap(),
+					))
+				} else {
+					FromSqlResult::Err(FromSqlError::InvalidBlobSize {
+						expected_size: ed25519_dalek::SECRET_KEY_LENGTH,
+						blob_size: bytes.len(),
+					})
+				},
+			_ => FromSqlResult::Err(FromSqlError::InvalidType),
+		}
+	}
 }
 
 impl fmt::Display for PublicKeyError {
@@ -89,34 +117,36 @@ impl fmt::Display for PublicKeyError {
 	}
 }
 
-impl Clone for Keypair {
+impl Clone for PrivateKey {
 	fn clone(&self) -> Self {
-		Self::new(ed25519_dalek::Keypair::from_bytes(&self.inner.to_bytes()).unwrap())
+		Self::new(ed25519_dalek::SigningKey::from_bytes(
+			&self.inner.to_bytes(),
+		))
 	}
 }
 
 impl Signature {
-	pub fn as_bytes(&self) -> &[u8; 64] { self.0.as_bytes().try_into().unwrap() }
+	pub fn to_bytes(&self) -> [u8; 64] { self.0.to_bytes() }
 
 	pub fn from_bytes(bytes: [u8; 64]) -> Self {
-		Self(ed25519_dalek::Signature::from_bytes(&bytes).unwrap())
+		Self(ed25519_dalek::Signature::from_bytes(&bytes))
 	}
 
-	pub fn hash(&self) -> IdType { IdType::hash(self.as_bytes()) }
+	pub fn hash(&self) -> IdType { IdType::hash(&self.to_bytes()) }
 }
 
-impl From<ed25519_dalek::PublicKey> for PublicKey {
-	fn from(other: ed25519_dalek::PublicKey) -> Self { Self(other) }
+impl From<ed25519_dalek::VerifyingKey> for PublicKey {
+	fn from(other: ed25519_dalek::VerifyingKey) -> Self { Self(other) }
 }
 
 impl Clone for PublicKey {
 	fn clone(&self) -> Self {
-		Self(ed25519_dalek::PublicKey::from_bytes(self.0.as_bytes()).unwrap())
+		Self(ed25519_dalek::VerifyingKey::from_bytes(self.0.as_bytes()).unwrap())
 	}
 }
 
 impl Deref for PublicKey {
-	type Target = ed25519_dalek::PublicKey;
+	type Target = ed25519_dalek::VerifyingKey;
 
 	fn deref(&self) -> &Self::Target { &self.0 }
 }
@@ -136,15 +166,15 @@ mod tests {
 		let mut buffer = vec![0u8; 1024];
 		OsRng.fill_bytes(&mut buffer);
 
-		let keypair = Keypair::generate();
+		let keypair = PrivateKey::generate();
 		let signature = keypair.sign(&buffer);
 		assert!(
 			keypair.public().verify(&buffer, &signature),
 			"can't verify own signature"
 		);
 
-		let signature_bytes = signature.as_bytes();
-		let signature2 = Signature::from_bytes(signature_bytes.clone());
+		let signature_bytes = signature.to_bytes();
+		let signature2 = Signature::from_bytes(signature_bytes);
 		assert!(
 			keypair.public().verify(&buffer, &signature2),
 			"can't verify own signature after encoding+decoding it"

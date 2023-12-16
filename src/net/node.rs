@@ -195,9 +195,7 @@ where
 		match node_id {
 			Some(ni) => {
 				let result = self.socket.connect(target, node_id).await;
-				let o = self.handle_connection_issue(result, ni, target).await;
-				if let Some(c) = o.as_ref() {}
-				o
+				self.handle_connection_issue(result, ni, target).await
 			}
 			None => match self.socket.connect(target, node_id).await {
 				Ok(c) => Some(c),
@@ -724,24 +722,6 @@ where
 		found.into_iter().map(|c| c.1).collect()
 	}
 
-	pub async fn find_value<'a>(
-		&'a self, id: &IdType, value_type: u8, expect_fingers_in_response: bool,
-		visit_limit: usize, narrow_down: bool,
-		do_verify: impl Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a,
-	) -> Option<AtomicPtr<()>> {
-		let fingers = self.find_nearest_fingers(id).await;
-		self.find_value_from_fingers(
-			id,
-			value_type,
-			expect_fingers_in_response,
-			&fingers,
-			visit_limit,
-			narrow_down,
-			do_verify,
-		)
-		.await
-	}
-
 	pub async fn find_value_from_fingers<'a>(
 		&'a self, id: &IdType, value_type_id: u8, expect_fingers_in_response: bool,
 		fingers: &[NodeContactInfo], visit_limit: usize, narrow_down: bool,
@@ -942,6 +922,7 @@ where
 		}
 	}
 
+	#[allow(dead_code)]
 	pub fn node_id(&self) -> &IdType { &self.node_id }
 
 	fn pick_contact_option(&self, target: &ContactInfo) -> Option<(ContactOption, Openness)> {
@@ -1339,16 +1320,6 @@ where
 	}
 }
 
-impl<'a> AllFingersIter<'a> {
-	pub fn bucket_index(&self) -> Option<u8> {
-		if self.global_index < 256 {
-			Some(self.global_index as _)
-		} else {
-			None
-		}
-	}
-}
-
 #[async_trait]
 impl<'a> AsyncIterator for AllFingersIter<'a> {
 	type Item = NodeContactInfo;
@@ -1524,7 +1495,6 @@ impl Bucket {
 					let entry = &mut self.replacement_cache[index];
 					entry.failed_attempts += 1;
 					if entry.failed_attempts == 3 {
-						drop(entry);
 						self.replacement_cache.remove(index);
 					}
 				}
@@ -1540,7 +1510,6 @@ impl Bucket {
 				spawn(async move {
 					let _ = c.lock().await.close().await;
 				});
-				drop(node_info);
 				self.connection = None;
 				//return;
 			}
