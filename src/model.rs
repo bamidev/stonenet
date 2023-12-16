@@ -34,7 +34,7 @@ pub struct FileData {
 	pub data: Vec<u8>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct File {
 	pub mime_type: String,
 	pub blocks: Vec<IdType>,

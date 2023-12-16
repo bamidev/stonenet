@@ -9,34 +9,34 @@ pub struct BroadcastNewObject {
 	pub object: Object,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct KeepAliveRequest {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct KeepAliveResponse {
 	pub ok: bool,
 }
 
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PingRequest {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PingResponse {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TunnelFindValueRequest {
 	pub target_node_info: NodeContactInfo,
 	pub source_contact_info: ContactInfo,
 	//pub proof_of_work: ProofOfWork
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TunnelFindValueResponse<T> {
 	pub result: Result<T, Vec<NodeContactInfo>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindNodeRequest {
 	pub node_id: IdType,
 }
@@ -66,36 +66,36 @@ pub struct FindActorResult {
 	pub peers: Vec<NodeContactInfo>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindActorResponse {
 	pub contacts: FindNodeResponse,
 	pub result: Option<FindActorResult>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct HeadRequest {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct HeadResponse {
 	pub hash: IdType,
 	pub object: Object,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StoreActorRequest {
 	pub actor_id: IdType,
 	pub actor_info: ActorInfo,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StoreActorResponse {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindObjectRequest {
 	pub sequence: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindObjectResult {
 	pub object: Object,
 }
@@ -106,32 +106,32 @@ pub struct FindNextObjectResult {
 	pub object: Object,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindNextObjectResponse {
 	pub result: Result<FindNextObjectResult, Vec<NodeContactInfo>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindObjectResponse {
 	pub result: Result<FindObjectResult, Vec<NodeContactInfo>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindFileResponse {
 	pub result: Result<FindFileResult, Vec<NodeContactInfo>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindFileResult {
 	pub file: File,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindBlockResponse {
 	pub result: Result<FindBlockResult, Vec<NodeContactInfo>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FindBlockResult {
 	pub data: Vec<u8>,
 }
@@ -144,33 +144,33 @@ pub struct FindValueRequest {
 
 /// A message that is sent to indicate that the sender has their object meta
 /// store up to date up to this object.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ObjectStoreRequest {
 	pub object: Object,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PublishObjectRequest {
 	pub id: IdType,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PublishObjectResponse {
 	pub needed: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FileUploadMessage {
 	pub mime_type: String,
 	pub blocks: Vec<IdType>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PublishObjectMessage {
 	pub object: Object,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetProfileRequest {}
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -178,39 +178,39 @@ pub struct GetProfileResponse {
 	pub profile: Option<ProfileObject>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PunchHoleMessage {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PunchHoleRequest {
 	pub source_node_id: IdType,
 	pub source: ContactOption,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PunchHoleResponse {
 	pub ok: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RelayPunchHoleRequest {
 	pub target: IdType,
 	pub contact_option: ContactOption,
 }
 
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RelayPunchHoleResponse {
 	pub ok: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RelayRequest {
 	pub target: IdType,
 	pub message_type_id: u8,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RelayResponse {
 	pub ok: bool,
 }

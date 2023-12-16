@@ -1359,6 +1359,10 @@ where
 		while self.candidates.len() > 0 && self.visited.len() < self.visited.capacity() {
 			let (dist, candidate_contact, strategy) = self.candidates.pop_front().unwrap();
 			let contact_option = strategy.contact.clone();
+			// If we ourselves are listed as a candidate, ignore it.
+			if &candidate_contact.node_id == self.node.node_id() {
+				continue;
+			}
 
 			// TODO: Skip if contact_option is ourselves.
 
