@@ -35,10 +35,10 @@ ipv6_tcp_openness = "unidirectional"
 # they are already taken, pick anything else. However, these ports are
 # recommended, as they are the arguably the least blocked ports by firewalls.
 # If this is for some reason not useable, another recommended port is 37337.
-ipv4_udp_port = 53
-ipv6_udp_port = 53
-ipv4_tcp_port = 443
-ipv6_tcp_port = 443
+ipv4_udp_port = 37337
+ipv6_udp_port = 37337
+ipv4_tcp_port = 37337
+ipv6_tcp_port = 37337
 
 # If set to true, will run a web server for the user interface
 load_web_interface = true
