@@ -42,7 +42,7 @@ pub struct Bucket {
 	replacement_cache: LimitedVec<BucketReplacementEntry>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ContactStrategy {
 	contact: ContactOption,
 	method: ContactStrategyMethod,
@@ -147,6 +147,10 @@ impl fmt::Display for ContactStrategy {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "{}, {}", self.contact, self.method)
 	}
+}
+
+impl fmt::Debug for ContactStrategyMethod {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self) }
 }
 
 impl fmt::Display for ContactStrategyMethod {
@@ -1139,6 +1143,8 @@ where
 	async fn punch_hole(
 		&self, relay_connection: &mut Connection, target: &IdType, contact_option: &ContactOption,
 	) -> Option<Box<Connection>> {
+		// FIXME: It would be much faster if we didn't have to wait for a timeout before
+		// we continued.
 		if let Some(connection) = self.connect_at(contact_option, Some(target)).await {
 			return Some(connection);
 		}
