@@ -106,6 +106,8 @@ pub struct Connection {
 	queues: QueueReceivers,
 	//session: Arc<Mutex<SessionData>>,
 	key_state: KeyState,
+	previous_keystate: KeyState,
+	current_keystate_sequence: u16,
 	receive_window: WindowInfo,
 	send_window: WindowInfo,
 
@@ -161,6 +163,7 @@ type HelloWatchResult = Result<(
 )>;
 type HelloWatchSender = watch::Sender<HelloWatchResult>;
 
+#[derive(Clone)]
 struct KeyState {
 	our_dh_key: x25519::StaticSecret,
 	their_dh_key: x25519::PublicKey,
@@ -232,8 +235,8 @@ pub struct Server {
 
 struct Queues;
 
-type QueueReceiver = mpsc::UnboundedReceiver<(u16, Vec<u8>)>;
-type QueueSender = mpsc::UnboundedSender<(u16, Vec<u8>)>;
+type QueueReceiver = mpsc::UnboundedReceiver<(u16, u16, Vec<u8>)>;
+type QueueSender = mpsc::UnboundedSender<(u16, u16, Vec<u8>)>;
 
 pub struct QueueReceivers {
 	data: QueueReceiver,
@@ -462,14 +465,15 @@ impl Connection {
 		.await
 	}
 
-	fn decrypt_packet(&mut self, sequence: u16, key_sequence: u16, data: &mut [u8]) -> bool {
+	/// Decrypts a packet that is expected to have a specific key sequence set on its packet.
+	fn decrypt_packet(&self, key_state: &KeyState, sequence: u16, key_sequence: u16, data: &mut [u8]) -> bool {
 		debug_assert!(
 			key_sequence < self.key_state.keychain.len() as u16,
 			"attempting to decrypt a packet out-of-order: {} >= {}",
 			sequence,
 			self.key_state.keychain.len()
 		);
-		let key = &self.key_state.keychain[key_sequence as usize];
+		let key = &key_state.keychain[key_sequence as usize];
 
 		decrypt(self.our_session_id, sequence, data, key);
 
@@ -588,7 +592,6 @@ impl Connection {
 				.receive_window(&mut buffer, window_size, first, &dh_public_key)
 				.await?;
 			first = false;
-			self.key_state.their_dh_key = new_public_key;
 
 			// Adjust window size
 			if clean && window_full {
@@ -599,7 +602,10 @@ impl Connection {
 			window_size = self.receive_window.size;
 
 			// Update our shared key
+			self.key_state.their_dh_key = new_public_key;
+			self.previous_keystate = self.key_state.clone();
 			self.key_state.reset_key(window_size);
+			let _ = self.current_keystate_sequence.wrapping_add(1);
 
 			debug_assert!(buffer.capacity() > 0, "Message length not set");
 			if buffer.len() == buffer.capacity() {
@@ -651,13 +657,13 @@ impl Connection {
 		let mut window_sequence;
 		let mut packet: Vec<u8>;
 		loop {
-			(sequence, packet) = self.receive_ack_packet(timeout).await?;
+			(_, sequence, packet) = self.receive_ack_packet(timeout).await?;
 			window_sequence = sequence.wrapping_sub(window_start_sequence);
 			if window_sequence as usize >= self.key_state.keychain.len() {
 				return Err(Error::InvalidSequenceNumber(sequence).into());
 			}
 
-			if self.decrypt_packet(sequence, window_sequence, &mut packet) {
+			if self.decrypt_packet(&self.key_state, sequence, window_sequence, &mut packet) {
 				break;
 			} else {
 				warn!("Invalid checksum received for packet, dropping it...");
@@ -811,7 +817,7 @@ impl Connection {
 		loop {
 			let mut timeout = TIMEOUT;
 			loop {
-				let (mut sequence, mut packet) = match self.receive_data_packet(timeout).await {
+				let (_keystate_sequence, mut sequence, mut packet) = match self.receive_data_packet(timeout).await {
 					Ok(r) => {
 						sent_missing_packet = false;
 						r
@@ -847,7 +853,7 @@ impl Connection {
 				// Fill the buffer, possibly with as much cached data as is
 				// available as well.
 				if packets_collected == window_sequence {
-					if self.decrypt_packet(sequence, window_sequence, &mut packet) {
+					if self.decrypt_packet(&self.key_state, sequence, window_sequence, &mut packet) {
 						match self.process_packet(
 							buffer,
 							&packet[2..],
@@ -889,6 +895,7 @@ impl Connection {
 									sequence = sequence.wrapping_add(1);
 									window_sequence = window_sequence.wrapping_add(1);
 									if self.decrypt_packet(
+										&self.key_state,
 										sequence,
 										window_sequence,
 										&mut more_data,
@@ -983,7 +990,7 @@ impl Connection {
 
 	async fn receive_packet(
 		&mut self, timeout: Duration, queue: &mut QueueReceiver,
-	) -> Result<(u16, Vec<u8>)> {
+	) -> Result<(u16, u16, Vec<u8>)> {
 		loop {
 			tokio::select! {
 				result = queue.recv() => {
@@ -1008,7 +1015,7 @@ impl Connection {
 		}
 	}
 
-	async fn receive_ack_packet(&mut self, timeout: Duration) -> Result<(u16, Vec<u8>)> {
+	async fn receive_ack_packet(&mut self, timeout: Duration) -> Result<(u16, u16, Vec<u8>)> {
 		loop {
 			tokio::select! {
 				result = self.queues.ack.recv() => {
@@ -1033,22 +1040,35 @@ impl Connection {
 		}
 	}
 
-	fn process_close_packet(&mut self, item: (u16, Vec<u8>)) -> bool {
+	fn process_close_packet(&mut self, item: (u16, u16, Vec<u8>)) -> bool {
 		let mut result = self.keep_alive_timeout.load(Ordering::Relaxed);
 
 		if !result {
-			let (sequence, mut buffer) = item;
-			if !self.decrypt_packet(sequence, 0, &mut buffer) {
-				warn!("Received malformed close packet: checksum didn't match");
-				result = false;
-			} else if buffer.len() < 34 {
-				warn!("Received malformed close packet: packet too small");
-				result = false;
-			} else if &buffer[2..34] != self.their_node_id().as_bytes() {
-				warn!("Received malformed close packet: node ID didn't match.");
-				result = false;
+			let (keystate_sequence, sequence, mut buffer) = item;
+			let key_state_opt = if keystate_sequence == self.current_keystate_sequence {
+				Some(&self.key_state)
+			} else if keystate_sequence == (self.current_keystate_sequence - 1) {
+				Some(&self.previous_keystate)
 			} else {
-				result = true;
+				warn!("Received malformed close packet: keystate sequence is too old or too new");
+				None
+			};
+
+			if let Some(key_state) = key_state_opt {
+				if !self.decrypt_packet(key_state, sequence, sequence, &mut buffer) {
+					warn!("Received malformed close packet: checksum didn't match");
+					result = false;
+				} else if buffer.len() < 34 {
+					warn!("Received malformed close packet: packet too small");
+					result = false;
+				} else if &buffer[2..34] != self.their_node_id().as_bytes() {
+					warn!("Received malformed close packet: node ID didn't match.");
+					result = false;
+				} else {
+					result = true;
+				}
+			} else {
+				result = false;
 			}
 		}
 
@@ -1062,7 +1082,7 @@ impl Connection {
 		result
 	}
 
-	async fn receive_data_packet(&mut self, timeout: Duration) -> Result<(u16, Vec<u8>)> {
+	async fn receive_data_packet(&mut self, timeout: Duration) -> Result<(u16, u16, Vec<u8>)> {
 		loop {
 			tokio::select! {
 				result = self.queues.data.recv() => {
@@ -1112,7 +1132,6 @@ impl Connection {
 				)
 				.await?;
 			send += s;
-			self.key_state.their_dh_key = their_dh_key;
 			debug_assert!(
 				send <= buffer.len(),
 				"More data send out than exists! {} <= {}",
@@ -1129,7 +1148,10 @@ impl Connection {
 			window_size = self.send_window.size;
 
 			// Apply new ephemeral DH secret.
+			self.key_state.their_dh_key = their_dh_key;
+			self.previous_keystate = self.key_state.clone();
 			self.key_state.reset_key(window_size);
+			let _ = self.current_keystate_sequence.wrapping_add(1);
 
 			if send == buffer.len() {
 				break;
@@ -1294,18 +1316,19 @@ impl Connection {
 			packet.len(),
 			max_len + 1
 		);
-		//let outer_size = 5 + 2 + packet.len();
-		let mut buffer = vec![0u8; 7 + max_len];
+		//let outer_size = 5 + 2 + 2 + packet.len();
+		let mut buffer = vec![0u8; 9 + max_len];
 		buffer[0] = message_type;
 		buffer[1..3].copy_from_slice(&self.their_session_id.to_le_bytes());
-		buffer[3..5].copy_from_slice(&sequence.to_le_bytes());
-		buffer[7..][..(packet.len())].copy_from_slice(&packet);
-		let checksum = calculate_checksum(&buffer[7..]);
-		buffer[5..7].copy_from_slice(&checksum.to_le_bytes());
+		buffer[3..5].copy_from_slice(&self.current_keystate_sequence.to_le_bytes());
+		buffer[5..7].copy_from_slice(&sequence.to_le_bytes());
+		let checksum = calculate_checksum(&packet);
+		buffer[7..9].copy_from_slice(&checksum.to_le_bytes());
+		buffer[9..][..(packet.len())].copy_from_slice(&packet);
 
 		// Encrypt the message
 		let key = &self.key_state.keychain[key_sequence as usize];
-		encrypt(self.their_session_id, sequence, &mut buffer[5..], key);
+		encrypt(self.their_session_id, sequence, &mut buffer[7..], key);
 
 		self.sender.send(&buffer, TIMEOUT).await?;
 		Ok(())
@@ -1616,6 +1639,10 @@ impl Default for SocketCollection {
 }
 
 impl Server {
+	pub fn bidirectional_contact_option(&self, target: &ContactInfo) -> Option<ContactOption> {
+		self.sockets.pick_contact_option_at_openness(target, Openness::Bidirectional)
+	}
+
 	pub async fn bind(
 		stop_flag: Arc<AtomicBool>, node_id: IdType, contact_info: ContactInfo,
 		private_key: PrivateKey,
@@ -1731,7 +1758,9 @@ impl Server {
 						next_sequence: 0,
 						queues,
 						//session,
-						key_state: KeyState::new(secret_key, their_public_key, 1),
+						key_state: KeyState::new(secret_key.clone(), their_public_key.clone(), 1),
+						previous_keystate: KeyState::new(secret_key, their_public_key, 0),
+						current_keystate_sequence: 0,
 						receive_window: WindowInfo::default(),
 						send_window: WindowInfo::default(),
 						last_activity,
@@ -1825,6 +1854,10 @@ impl Server {
 }
 
 impl SocketCollection {
+	pub fn bidirectional_contact_option(&self, target: &ContactInfo) -> Option<ContactOption> {
+		self.pick_contact_option_at_openness(target, Openness::Bidirectional)
+	}
+
 	fn pick_contact_option_at_openness(
 		&self, target: &ContactInfo, openness: Openness,
 	) -> Option<ContactOption> {
@@ -2248,19 +2281,21 @@ impl Server {
 		handle_queue: impl FnOnce(
 			&mut SessionData,
 			u16,
+			u16,
 			Vec<u8>,
-		) -> StdResult<(), SendError<(u16, Vec<u8>)>>,
+		) -> StdResult<(), SendError<(u16, u16, Vec<u8>)>>,
 	) -> Result<()> {
 		let our_session_id = u16::from_le_bytes(*array_ref![packet, 0, 2]);
-		let sequence = u16::from_le_bytes(*array_ref![packet, 2, 2]);
-		let data = packet[4..].to_vec();
+		let keystate_sequence = u16::from_le_bytes(*array_ref![packet, 2, 2]);
+		let sequence = u16::from_le_bytes(*array_ref![packet, 4, 2]);
+		let data = packet[6..].to_vec();
 
 		let mut sessions = self.sessions.lock().await;
 		let mut should_close = false;
 		if let Some(s) = sessions.map.get(&our_session_id) {
 			let mut session = s.lock().await;
 			*session.last_activity.lock().unwrap() = SystemTime::now();
-			let result = handle_queue(&mut session, sequence, data);
+			let result = handle_queue(&mut session, keystate_sequence, sequence, data);
 			// Should only give an error when the mpsc queues have been closed, meaning the
 			// session is not being used anymore.
 			if result.is_err() {
@@ -2282,22 +2317,22 @@ impl Server {
 	}
 
 	async fn process_ack(&self, packet: &[u8]) -> Result<()> {
-		self.process_sequenced_packet(packet, |session, seq, data| {
-			session.queues.ack.send((seq, data))
+		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
+			session.queues.ack.send((ks_seq, seq, data))
 		})
 		.await
 	}
 
 	async fn process_close(&self, packet: &[u8]) -> Result<()> {
-		self.process_sequenced_packet(packet, |session, seq, data| {
-			session.queues.close.send((seq, data))
+		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
+			session.queues.close.send((ks_seq, seq, data))
 		})
 		.await
 	}
 
 	async fn process_data(&self, packet: &[u8]) -> Result<()> {
-		self.process_sequenced_packet(packet, |session, seq, data| {
-			session.queues.data.send((seq, data))
+		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
+			session.queues.data.send((ks_seq, seq, data))
 		})
 		.await
 	}
@@ -2392,7 +2427,9 @@ impl Server {
 			private_key: self.private_key.clone(),
 			//session,
 			queues: rx_queues,
-			key_state: KeyState::new(own_secret_key, their_public_key, 1),
+			key_state: KeyState::new(own_secret_key.clone(), their_public_key.clone(), 1),
+			previous_keystate: KeyState::new(own_secret_key, their_public_key, 0),
+			current_keystate_sequence: 0,
 			next_sequence: 0,
 			receive_window: WindowInfo::default(),
 			send_window: WindowInfo::default(),
@@ -2759,14 +2796,14 @@ mod tests {
 				let received_message = connection
 					.receive()
 					.await
-					.expect("master unable to receive small message ");
+					.expect("master unable to receive small message");
 				debug!("Received small message");
 				assert!(received_message == small, "small message got corrupted");
 
 				let received_message2 = connection
 					.receive()
 					.await
-					.expect("master unable to receive second small message ");
+					.expect("master unable to receive second small message");
 				debug!("Received second small message");
 				assert!(
 					received_message2 == small2,
