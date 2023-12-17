@@ -84,20 +84,30 @@ async fn test_data_synchronization() {
 	let config1 = Config::default();
 	let mut config2 = Config::default();
 	config2.bootstrap_nodes = vec!["127.0.0.1:37337".to_string()];
-	let node1 = load_test_node(
+	let _bootstrap_node = load_test_node(
 		stop_flag.clone(),
 		&mut rng,
 		&config1,
 		37337,
 		Openness::Bidirectional,
-		"/tmp/node1.sqlite",
+		"/tmp/bootstrap.sqlite",
 	)
 	.await;
-	let node2 = load_test_node(
+	let node1 = load_test_node(
 		stop_flag.clone(),
 		&mut rng,
 		&config2,
 		37338,
+		Openness::Punchable,
+		"/tmp/node1.sqlite",
+	)
+	.await;
+	node1.node.join_network(stop_flag.clone()).await;
+	let node2 = load_test_node(
+		stop_flag.clone(),
+		&mut rng,
+		&config2,
+		37339,
 		Openness::Bidirectional,
 		"/tmp/node2.sqlite",
 	)
@@ -294,6 +304,7 @@ Hoi ik ben Kees!
 	}
 
 	stop_flag.store(true, Ordering::Relaxed);
+	remove_file("/tmp/bootstrap.sqlite").unwrap();
 	remove_file("/tmp/node1.sqlite").unwrap();
 	remove_file("/tmp/node2.sqlite").unwrap();
 }

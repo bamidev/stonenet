@@ -52,7 +52,7 @@ pub struct ContactStrategy {
 pub enum ContactStrategyMethod {
 	Direct,
 	// Punch a hole through a relay node for which a connection is provided.
-	PunchHole(Arc<Mutex<Box<Connection>>>),
+	PunchHole,
 	// TODO: Generally speaking, a contact strategy is not accessed from multiple threads. It is
 	// just that the connection, once chosen, needs to be used across possibly another thread.
 	// That's what the mutex is for. Check to see if this design can be made more efficient in
@@ -71,6 +71,7 @@ where
 	I: NodeInterface + Send + Sync,
 {
 	node: &'a Node<I>,
+	overlay_node: Arc<OverlayNode>,
 	expect_fingers_in_response: bool,
 
 	id: IdType,
@@ -81,6 +82,8 @@ where
 
 	visited: Vec<(IdType, ContactOption)>,
 	candidates: VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
+	connection_for_hole_punching: Option<(IdType, Box<Connection>)>,
+	open_for_hole_punching: bool,
 }
 
 pub struct Node<I>
@@ -130,10 +133,7 @@ impl ContactStrategy {
 			contact,
 			method: match openness {
 				Openness::Bidirectional => ContactStrategyMethod::Direct,
-				Openness::Punchable => match connection {
-					Some(c) => ContactStrategyMethod::PunchHole(c.clone()),
-					None => return None,
-				},
+				Openness::Punchable => ContactStrategyMethod::PunchHole,
 				Openness::Unidirectional => match connection {
 					Some(c) => ContactStrategyMethod::Relay(c.clone()),
 					None => return None,
@@ -149,6 +149,20 @@ impl fmt::Display for ContactStrategy {
 	}
 }
 
+impl ContactStrategyMethod {
+	pub fn to_byte(&self) -> u8 {
+		match self {
+			Self::Direct => 0,
+			Self::PunchHole => 1,
+			Self::Relay(_) => 2,
+		}
+	}
+}
+
+impl PartialEq for ContactStrategyMethod {
+	fn eq(&self, other: &Self) -> bool { self.to_byte() == other.to_byte() }
+}
+
 impl fmt::Debug for ContactStrategyMethod {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self) }
 }
@@ -158,7 +172,7 @@ impl fmt::Display for ContactStrategyMethod {
 		match self {
 			Self::Direct => write!(f, "direct"),
 			Self::Relay(_) => write!(f, "relay"),
-			Self::PunchHole(_) => write!(f, "punch hole"),
+			Self::PunchHole => write!(f, "punch hole"),
 		}
 	}
 }
@@ -168,6 +182,25 @@ where
 	I: NodeInterface + Send + Sync,
 {
 	pub fn visited(&self) -> &[(IdType, ContactOption)] { &self.visited }
+
+	pub async fn close(&mut self) {
+		if let Some((_, connection)) = self.connection_for_hole_punching.as_mut() {
+			connection.close().await;
+			self.connection_for_hole_punching = None;
+		}
+	}
+}
+
+#[cfg(debug_assertions)]
+impl<'a, I> Drop for FindValueIter<'a, I>
+where
+	I: NodeInterface + Send + Sync,
+{
+	fn drop(&mut self) {
+		if self.connection_for_hole_punching.is_some() {
+			panic!("FindValueIter not closed before drop");
+		}
+	}
 }
 
 impl<I> Node<I>
@@ -181,6 +214,10 @@ where
 		for finger in fingers {
 			Self::insert_candidate(id, candidates, finger);
 		}
+	}
+
+	fn bidirectional_contact_option(&self, target: &ContactInfo) -> Option<ContactOption> {
+		self.socket.bidirectional_contact_option(target)
 	}
 
 	pub async fn connect(
@@ -213,30 +250,34 @@ where
 
 	pub async fn connect_node(
 		&self, node_id: &IdType, strategy: &ContactStrategy,
+		last_open_connection: Option<&mut Connection>,
 	) -> Option<Box<Connection>> {
 		match &strategy.method {
 			ContactStrategyMethod::Direct =>
 				self.connect_at(&strategy.contact, Some(node_id)).await,
-			ContactStrategyMethod::PunchHole(relay_connection_guard) => {
-				let mut relay_connection = relay_connection_guard.lock().await;
-				if let Some(target_connection) = self
-					.punch_hole(&mut relay_connection, node_id, &strategy.contact)
-					.await
-				{
-					let _ = relay_connection.close().await;
-					Some(target_connection)
+			ContactStrategyMethod::PunchHole => {
+				if let Some(mut relay_connection) = last_open_connection {
+					if let Some(target_connection) = self
+						.punch_hole(&mut relay_connection, node_id, &strategy.contact)
+						.await
+					{
+						Some(target_connection)
+					} else {
+						None
+					}
 				} else {
-					let _ = relay_connection.close().await;
 					None
 				}
 			}
-			ContactStrategyMethod::Relay(intermediary_connection) => {
+			ContactStrategyMethod::Relay(_intermediary_connection) => {
 				// TODO: Return some sort of wrapper that locks the mutex and provides the
 				// connection
 				None
 			}
 		}
 	}
+
+	pub async fn contact_info(&self) -> ContactInfo { self.socket.our_contact_info().await.clone() }
 
 	pub fn differs_at_bit(&self, other_id: &IdType) -> Option<u8> {
 		differs_at_bit(&self.node_id, other_id)
@@ -312,19 +353,12 @@ where
 	}
 
 	/// In the paper, this is described as the 'FIND_NODE' RPC.
-	pub async fn exchange_find_node_and_close(
-		&self, mut connection: Box<Connection>, node_id: &IdType,
+	pub async fn exchange_find_node(
+		&self, connection: &mut Connection, node_id: &IdType,
 	) -> Option<FindNodeResponse> {
 		let raw_response_result = self
-			.exchange_find_x(
-				&mut connection,
-				node_id,
-				NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST,
-			)
+			.exchange_find_x(connection, node_id, NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST)
 			.await;
-		if let Err(e) = connection.close().await {
-			warn!("Unable to close connection: {}", e);
-		}
 		let raw_response = raw_response_result?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: FindNodeResponse = self
@@ -337,30 +371,22 @@ where
 		Some(response)
 	}
 
-	pub async fn exchange_find_value_on_connection_and_close(
-		&self, mut connection: Box<Connection>, id: IdType, value_type: u8,
+	pub async fn exchange_find_value_on_connection(
+		&self, connection: &mut Connection, id: IdType, value_type: u8,
 		expect_fingers_in_response: bool,
 	) -> Option<(Option<Vec<u8>>, Option<FindNodeResponse>)> {
 		let request = FindValueRequest { id, value_type };
 		let raw_request = bincode::serialize(&request).unwrap();
 		let response_result: Option<Vec<u8>> = self
 			.exchange_on_connection(
-				&mut connection,
+				connection,
 				NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST,
 				&raw_request,
 			)
 			.await;
 		let their_node_id = connection.their_node_id().clone();
 		let contact_option = connection.peer_contact_option().clone();
-		if let Err(e) = connection.close().await {
-			warn!(
-				"Unable to close connection {}: {}",
-				connection.our_session_id(),
-				e
-			);
-		}
 		let response = response_result?;
-
 		self.process_find_value_response(
 			&their_node_id,
 			&contact_option,
@@ -412,8 +438,27 @@ where
 		}
 	}
 
+	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
+	/// RPC.
+	pub async fn exchange_keep_alive_on_connection(
+		&self, connection: &mut Connection,
+	) -> Option<bool> {
+		let raw_response = self
+			.exchange_on_connection(connection, NETWORK_MESSAGE_TYPE_KEEP_ALIVE_REQUEST, &[])
+			.await?;
+		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let response: KeepAliveResponse = self
+			.handle_connection_issue(
+				result,
+				connection.their_node_id(),
+				&connection.peer_contact_option(),
+			)
+			.await?;
+		Some(response.ok)
+	}
+
 	pub async fn exchange_on_connection(
-		&self, connection: &mut sstp::Connection, message_type_id: u8, buffer: &[u8],
+		&self, connection: &mut Connection, message_type_id: u8, buffer: &[u8],
 	) -> Option<Vec<u8>> {
 		let result = self
 			.interface
@@ -441,31 +486,33 @@ where
 		Some(())
 	}
 
-	async fn exchange_punch_hole(
-		&self, target: &NodeContactInfo, source_node_id: IdType, source: ContactOption,
-	) -> Option<bool> {
-		let mut connection =
-			if let Some(connection) = self.connect_at(&source, Some(&source_node_id)).await {
-				connection
-			} else {
-				warn!("Unable to connect to source of punch hole request!");
-				return None;
-			};
+	pub async fn exchange_ping_on_connection(&self, connection: &mut Connection) -> Option<()> {
+		self.exchange_on_connection(connection, NETWORK_MESSAGE_TYPE_PING_REQUEST, &[])
+			.await?;
+		Some(())
+	}
 
+	async fn exchange_punch_hole_on_connection(
+		&self, connection: &mut Connection, source_node_id: IdType, source: ContactOption,
+	) -> Option<bool> {
 		let request = PunchHoleRequest {
 			source_node_id,
 			source,
 		};
 		let raw_response = self
 			.exchange_on_connection(
-				&mut connection,
+				connection,
 				NETWORK_MESSAGE_TYPE_PUNCH_HOLE_REQUEST,
 				&bincode::serialize(&request).unwrap(),
 			)
 			.await?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: PunchHoleResponse = self
-			.handle_connection_issue2(result, &target.node_id, &target.contact_info)
+			.handle_connection_issue(
+				result,
+				connection.their_node_id(),
+				&connection.peer_contact_option(),
+			)
 			.await?;
 		Some(response.ok)
 	}
@@ -500,36 +547,48 @@ where
 	/// Extracts a list of fingers to contact, and the corresponding strategy to
 	/// contact the node.
 	fn extract_fingers_from_response(
-		&self, connection: Option<&Arc<Mutex<Box<Connection>>>>, response: &FindNodeResponse,
-		visited: &[(IdType, ContactOption)],
+		&self, response: &FindNodeResponse, visited: &[(IdType, ContactOption)],
 	) -> Vec<(NodeContactInfo, ContactStrategy)> {
 		let mut new_fingers =
 			Vec::with_capacity(response.fingers.len() + response.connection.is_some() as usize);
-		match &response.connection {
-			None => {}
-			Some(c) => match self.pick_contact_option(&c.contact_info) {
-				None => {}
-				Some((option, openness)) =>
-					if visited.iter().find(|v| v.1 == option).is_none() {
-						if let Some(strategy) = ContactStrategy::new(connection, option, openness) {
-							new_fingers.push((c.clone(), strategy));
-						}
-					},
-			},
-		}
 
 		for f in &response.fingers {
 			match self.pick_contact_option(&f.contact_info) {
 				None => {}
 				Some((option, openness)) =>
 					if visited.iter().find(|v| v.1 == option).is_none() {
-						if let Some(strategy) = ContactStrategy::new(connection, option, openness) {
+						if let Some(strategy) = ContactStrategy::new(None, option, openness) {
 							new_fingers.push((f.clone(), strategy));
 						}
 					},
 			}
 		}
+
+		match &response.connection {
+			None => {}
+			Some(c) => match self.pick_contact_option(&c.contact_info) {
+				None => {}
+				Some((option, openness)) =>
+					if visited.iter().find(|v| v.1 == option).is_none() {
+						if let Some(strategy) = ContactStrategy::new(None, option, openness) {
+							new_fingers.push((c.clone(), strategy));
+						}
+					},
+			},
+		}
+
 		new_fingers
+	}
+
+	/// Returns the first node with bidirectional contact options known to us
+	async fn find_any_bidirectional_contact_option(&self) -> Option<(IdType, ContactOption)> {
+		let mut iter = self.iter_all_fingers().await;
+		while let Some(finger) = iter.next().await {
+			if let Some(contact_option) = self.bidirectional_contact_option(&finger.contact_info) {
+				return Some((finger.node_id, contact_option));
+			}
+		}
+		None
 	}
 
 	async fn find_bucket(&self, node_id: &IdType) -> Option<&Mutex<Bucket>> {
@@ -558,7 +617,7 @@ where
 	}
 
 	pub(super) async fn find_nearest_contacts(
-		&self, id: &IdType, actor_id: Option<&IdType>,
+		&self, id: &IdType,
 	) -> (Option<NodeContactInfo>, Vec<NodeContactInfo>) {
 		let bucket_pos = match self.differs_at_bit(id) {
 			// If ID is the same as ours, don't give any other contacts
@@ -566,17 +625,18 @@ where
 			Some(p) => p as usize,
 		};
 
-		// Find the connection and fingers in parallel.
-		let connection = self.interface.find_near_connection(bucket_pos as u8).await;
-		let mut fingers = Vec::with_capacity(KADEMLIA_K as _);
-
 		// Return the fingers lower down the binary tree first, as they differ
 		// at the same bit as our ID.
 		// Then return the fingers otherwise lowest in the binary tree.
-		for i in ((bucket_pos)..256).chain((0..bucket_pos).rev()) {
+		let mut connection: Option<NodeContactInfo> = None;
+		let mut fingers = Vec::with_capacity(KADEMLIA_K as _);
+		for i in (0..(bucket_pos + 1)).rev() {
 			let additional_fingers: Vec<NodeContactInfo> = {
 				let bucket = self.buckets[i].lock().await;
 				let new_fingers = bucket.all();
+				if bucket.connection.is_some() {
+					connection = bucket.connection.as_ref().map(|(n, _)| n.clone());
+				}
 				new_fingers
 			};
 
@@ -643,12 +703,14 @@ where
 			.await
 	}
 
-	async fn find_node_in_buckets(&self, id: &IdType) -> Option<NodeContactInfo> {
+	async fn find_connection_in_buckets(&self, id: &IdType) -> Option<Arc<Mutex<Box<Connection>>>> {
 		for i in (0..256).rev() {
 			let bucket_mutex = &self.buckets[i];
 			let bucket = bucket_mutex.lock().await;
-			if let Some(contact) = bucket.find(id) {
-				return Some(contact.clone());
+			if let Some((node_info, connection_mutex)) = &bucket.connection {
+				if &node_info.node_id == id {
+					return Some(connection_mutex.clone());
+				}
 			}
 		}
 		None
@@ -671,6 +733,9 @@ where
 		}
 
 		let mut i = 0;
+		// FIXME: The first candidate node may not have a bidirectional contact option.
+		// If a punchable candidate is encountered and we don't have an open connection
+		// yet, open a connection to the first bidirectional candidate.
 		while candidates.len() > 0 && i < visit_limit {
 			let (dist, candidate_contact, strategy) = candidates[0].clone();
 			if visited
@@ -684,22 +749,21 @@ where
 			visited.push((candidate_contact.node_id.clone(), strategy.contact.clone()));
 
 			match self
-				.connect_node(&candidate_contact.node_id, &strategy)
+				.connect_node(&candidate_contact.node_id, &strategy, None)
 				.await
 			{
 				None => warn!(
 					"Disregarding finger {}, unable to connect...",
 					&candidate_contact.contact_info
 				),
-				Some(connection) => {
-					let osd = connection.our_session_id();
-					match self.exchange_find_node_and_close(connection, &id).await {
+				Some(mut connection) => {
+					match self.exchange_find_node(&mut connection, &id).await {
 						None => {
 							warn!("Disregarding finger {}", &candidate_contact.contact_info);
 						}
 						Some(response) => {
 							let mut new_fingers =
-								self.extract_fingers_from_response(None, &response, &visited);
+								self.extract_fingers_from_response(&response, &visited);
 							new_fingers.retain(|f| &distance(id, &f.0.node_id) < &dist);
 							Self::append_candidates(id, &mut found, &new_fingers);
 							while found.len() > result_limit {
@@ -707,7 +771,8 @@ where
 							}
 							// If the exact ID has been found, we stop
 							if new_fingers.iter().find(|f| &f.0.node_id == id).is_some() {
-								return found.into_iter().map(|c| c.1).collect();
+								connection.close().await;
+								break;
 							}
 							Self::append_candidates(id, &mut candidates, &new_fingers);
 							// Prevent using candidates that were found too far back. We
@@ -718,20 +783,24 @@ where
 							}
 						}
 					}
+					connection.close().await;
 				}
 			}
 
 			i += 1;
 		}
+
 		found.into_iter().map(|c| c.1).collect()
 	}
 
 	pub async fn find_value_from_fingers<'a>(
-		&'a self, id: &IdType, value_type_id: u8, expect_fingers_in_response: bool,
-		fingers: &[NodeContactInfo], visit_limit: usize, narrow_down: bool,
+		&'a self, overlay_node: Arc<OverlayNode>, id: &IdType, value_type_id: u8,
+		expect_fingers_in_response: bool, fingers: &[NodeContactInfo], visit_limit: usize,
+		narrow_down: bool,
 		do_verify: impl Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a,
 	) -> Option<AtomicPtr<()>> {
 		self.find_value_from_fingers_iter(
+			overlay_node,
 			id,
 			value_type_id,
 			expect_fingers_in_response,
@@ -740,13 +809,15 @@ where
 			narrow_down,
 			do_verify,
 		)
+		.await
 		.next()
 		.await
 	}
 
-	pub fn find_value_from_fingers_iter<'a>(
-		&'a self, id: &IdType, value_type_id: u8, expect_fingers_in_response: bool,
-		fingers: &[NodeContactInfo], visit_limit: usize, narrow_down: bool,
+	pub async fn find_value_from_fingers_iter<'a>(
+		&'a self, overlay_node: Arc<OverlayNode>, id: &IdType, value_type_id: u8,
+		expect_fingers_in_response: bool, fingers: &[NodeContactInfo], visit_limit: usize,
+		narrow_down: bool,
 		do_verify: impl Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a,
 	) -> FindValueIter<'a, I> {
 		// Initialize the candidates by picking a contact strategy for each candidate.
@@ -754,12 +825,15 @@ where
 		for (d, n) in Self::sort_fingers(id, fingers).into_iter() {
 			match self.pick_contact_strategy(&n.contact_info, None) {
 				None => {}
-				Some(strategy) => candidates.push_back((d, n, strategy)),
+				Some(strategy) => {
+					candidates.push_back((d, n, strategy));
+				}
 			}
 		}
 
 		FindValueIter {
 			node: self,
+			overlay_node,
 			expect_fingers_in_response,
 			id: id.clone(),
 			value_type_id,
@@ -767,6 +841,8 @@ where
 			narrow_down,
 			visited: Vec::with_capacity(visit_limit),
 			candidates,
+			connection_for_hole_punching: None,
+			open_for_hole_punching: self.contact_info().await.is_open_to_hole_punching(),
 		}
 	}
 
@@ -871,7 +947,8 @@ where
 			)
 			.await;
 
-		// Add our neighbours to our buckets as well, they are not automatically added.
+		// Add the last encountered fingers (neighbours) to our buckets as well, as they
+		// have not been automatically added.
 		let futs = neighbours.into_iter().map(|n| async move {
 			if self.test_id(&n).await {
 				self.remember_node_nondestructive(n).await;
@@ -880,6 +957,7 @@ where
 			}
 		});
 		join_all(futs).await;
+
 		true
 	}
 
@@ -926,7 +1004,6 @@ where
 		}
 	}
 
-	#[allow(dead_code)]
 	pub fn node_id(&self) -> &IdType { &self.node_id }
 
 	fn pick_contact_option(&self, target: &ContactInfo) -> Option<(ContactOption, Openness)> {
@@ -952,7 +1029,7 @@ where
 		};
 
 		// Collect all fingers we have
-		let (connection, fingers) = self.find_nearest_contacts(&request.node_id, actor_id).await;
+		let (connection, fingers) = self.find_nearest_contacts(&request.node_id).await;
 		let response = FindNodeResponse {
 			connection,
 			fingers,
@@ -1042,7 +1119,7 @@ where
 
 		let value_result = match result {
 			Err(e) => {
-				error!(
+				panic!(
 					"Database error occurred processing find value request for value {} (type \
 					 {}): {}",
 					&request.id, request.value_type, e
@@ -1055,7 +1132,7 @@ where
 		// Start response with a FindNodeResponse if not found or expected anyway
 		if force_including_fingers {
 			// Collect all fingers we have
-			let (connection, fingers) = self.find_nearest_contacts(&request.id, actor_id).await;
+			let (connection, fingers) = self.find_nearest_contacts(&request.id).await;
 			let response = FindNodeResponse {
 				connection,
 				fingers,
@@ -1070,7 +1147,7 @@ where
 			if let Some(value) = value_result {
 				buffer.extend(value);
 			} else {
-				let (connection, fingers) = self.find_nearest_contacts(&request.id, actor_id).await;
+				let (connection, fingers) = self.find_nearest_contacts(&request.id).await;
 				let response = FindNodeResponse {
 					connection,
 					fingers,
@@ -1082,14 +1159,39 @@ where
 		}
 	}
 
+	async fn process_keep_alive_request(
+		&self, connection: &Arc<Mutex<Box<Connection>>>, buffer: &[u8], node_info: &NodeContactInfo,
+	) -> Option<Vec<u8>> {
+		// The keep alive request is empty
+		if buffer.len() > 0 {
+			return None;
+		}
+
+		let ok = if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
+			let mut bucket = self.buckets[bucket_index as usize].lock().await;
+
+			if bucket.connection.is_none() {
+				bucket.connection = Some((node_info.clone(), connection.clone()));
+				true
+			} else {
+				false
+			}
+		} else {
+			false
+		};
+
+		Some(bincode::serialize(&KeepAliveResponse { ok }).unwrap())
+	}
+
 	async fn process_ping_request(&self, address: &SocketAddr) -> Option<Vec<u8>> {
 		debug!("Received ping request from {}", address);
 		Some(Vec::new())
 	}
 
 	pub(super) async fn process_request(
-		self: &Arc<Self>, overlay_node: Arc<OverlayNode>, address: &SocketAddr, message_type: u8,
-		buffer: &[u8], actor_id: Option<&IdType>,
+		self: &Arc<Self>, connection: Arc<Mutex<Box<Connection>>>, overlay_node: Arc<OverlayNode>,
+		address: &SocketAddr, node_info: &NodeContactInfo, message_type: u8, buffer: &[u8],
+		actor_id: Option<&IdType>,
 	) -> Option<Option<Vec<u8>>> {
 		let result = match message_type {
 			NETWORK_MESSAGE_TYPE_PING_REQUEST => self.process_ping_request(address).await,
@@ -1102,6 +1204,9 @@ where
 				self.process_punch_hole_request(buffer, overlay_node).await,
 			NETWORK_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST =>
 				self.process_relay_punch_hole_request(buffer).await,
+			NETWORK_MESSAGE_TYPE_KEEP_ALIVE_REQUEST =>
+				self.process_keep_alive_request(&connection, buffer, node_info)
+					.await,
 			_ => return None,
 		};
 		Some(result)
@@ -1211,9 +1316,14 @@ where
 		};
 		let mut response = RelayPunchHoleResponse { ok: true };
 
-		if let Some(target_contact_info) = self.find_node_in_buckets(&request.target).await {
-			self.exchange_punch_hole(&target_contact_info, request.target, request.contact_option)
-				.await;
+		if let Some(connection_mutex) = self.find_connection_in_buckets(&request.target).await {
+			let mut connection = connection_mutex.lock().await;
+			self.exchange_punch_hole_on_connection(
+				&mut connection,
+				request.target,
+				request.contact_option,
+			)
+			.await;
 		} else {
 			response.ok = false;
 		}
@@ -1331,17 +1441,20 @@ impl<'a> AsyncIterator for AllFingersIter<'a> {
 	type Item = NodeContactInfo;
 
 	async fn next(&mut self) -> Option<NodeContactInfo> {
-		while self.global_index != 256 {
+		loop {
 			if let Some(contact) = self.bucket_iter.next() {
 				return Some(contact);
 			} else {
-				self.global_index = if self.global_index > 0 {
-					let new_index = self.global_index - 1;
-					self.bucket_iter = self.buckets[new_index].lock().await.all().into_iter();
-					new_index
+				self.bucket_iter = self.buckets[self.global_index]
+					.lock()
+					.await
+					.all()
+					.into_iter();
+				if self.global_index > 0 {
+					self.global_index -= 1;
 				} else {
-					256
-				};
+					break;
+				}
 			}
 		}
 		None
@@ -1364,8 +1477,7 @@ where
 				continue;
 			}
 
-			// TODO: Skip if contact_option is ourselves.
-
+			// If already visited before, ignore it.
 			if self
 				.visited
 				.iter()
@@ -1377,19 +1489,58 @@ where
 			self.visited
 				.push((candidate_contact.node_id.clone(), contact_option));
 
-			// Use the already found contact option to exchange the find value
-			// request.
+			// Use the already found contact option to exchange the find value request.
+			let mut special_connection: Option<Box<Connection>> = None;
+			let mut connection_for_hole_punching = if self.open_for_hole_punching
+				&& strategy.method != ContactStrategyMethod::Direct
+			{
+				let mut result =
+					if let Some((node_id, connection)) = &mut self.connection_for_hole_punching {
+						if node_id == &candidate_contact.node_id {
+							Some(connection)
+						} else {
+							None
+						}
+					} else {
+						None
+					};
+				if result.is_none() {
+					special_connection = self
+						.overlay_node
+						.find_connection_for_node(&candidate_contact.node_id)
+						.await;
+					result = special_connection.as_mut();
+				}
+				result
+			} else {
+				None
+			};
 			match self
 				.node
-				.connect_node(&candidate_contact.node_id, &strategy)
+				.connect_node(
+					&candidate_contact.node_id,
+					&strategy,
+					connection_for_hole_punching
+						.as_deref_mut()
+						.map(|c| c.as_mut()),
+				)
 				.await
 			{
-				None => warn!("Disregarding finger {}", &candidate_contact.contact_info),
-				Some(connection) => {
+				None => {
+					if let Some(mut sc) = special_connection.as_mut() {
+						sc.close().await;
+					}
+					warn!("Disregarding finger {}", &candidate_contact.contact_info)
+				}
+				Some(mut connection) => {
+					if let Some(mut sc) = special_connection.as_mut() {
+						sc.close().await;
+					}
+
 					match self
 						.node
-						.exchange_find_value_on_connection_and_close(
-							connection,
+						.exchange_find_value_on_connection(
+							&mut connection,
 							self.id.clone(),
 							self.value_type_id,
 							self.expect_fingers_in_response,
@@ -1397,12 +1548,13 @@ where
 						.await
 					{
 						// If node didn't respond right, ignore it
-						None => {}
+						None => {
+							connection.close().await;
+						}
 						Some((possible_value, possible_contacts)) => {
 							// If node returned new fingers, append them to our list
 							if let Some(find_node_response) = possible_contacts {
 								let mut new_fingers = self.node.extract_fingers_from_response(
-									None,
 									&find_node_response,
 									&self.visited,
 								);
@@ -1421,6 +1573,20 @@ where
 										self.candidates.pop_back();
 									}
 								}
+
+								if let Some(connected_contact) = find_node_response.connection {
+									if let Some((_, previous_connection)) =
+										self.connection_for_hole_punching.as_mut()
+									{
+										previous_connection.close().await;
+									}
+									self.connection_for_hole_punching =
+										Some((connected_contact.node_id, connection));
+								} else {
+									connection.close().await;
+								}
+							} else {
+								connection.close().await;
 							}
 
 							// If a value was found, return it, otherwise keep the search loop going
@@ -1663,6 +1829,43 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 	}
 }
 
+
+pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, c: Box<Connection>) {
+	let mutex: Arc<Mutex<Box<Connection>>> = Arc::new(Mutex::new(c));
+	loop {
+		let message = {
+			let mut connection = mutex.lock().await;
+			match connection
+				.receive_with_timeout(Duration::from_secs(120))
+				.await
+			{
+				Ok(m) => m,
+				Err(e) => {
+					match e {
+						// If the node hasn't send any pings for 120 seconds, we're done.
+						sstp::Error::Timeout => return,
+						// Opening and immediately closing connections is done to test presence, so
+						// ignore these two errors for now:
+						sstp::Error::ConnectionClosed => return,
+						other => {
+							// For the other errors the connection may have not been closed already.
+							let _ = connection.close().await;
+							error!(
+								"Unable to properly receive full request from {}: {}",
+								connection.peer_address(),
+								other
+							);
+							return;
+						}
+					}
+				}
+			}
+		};
+
+		process_request_message(overlay_node.clone(), mutex.clone(), &message).await;
+	}
+}
+
 async fn process_request_message(
 	overlay_node: Arc<OverlayNode>, connection: Arc<Mutex<Box<Connection>>>, buffer: &[u8],
 ) {
@@ -1682,8 +1885,10 @@ async fn process_request_message(
 		let r = match overlay_node
 			.base
 			.process_request(
+				connection.clone(),
 				overlay_node.clone(),
 				c.peer_address(),
+				c.their_node_info(),
 				message_type_id,
 				&buffer[33..],
 				Some(&actor_id),
@@ -1727,8 +1932,10 @@ async fn process_request_message(
 		let r = match overlay_node
 			.base
 			.process_request(
+				connection.clone(),
 				overlay_node.clone(),
 				&c.peer_address(),
+				c.their_node_info(),
 				message_type_id,
 				&buffer[1..],
 				None,

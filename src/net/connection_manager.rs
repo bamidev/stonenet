@@ -58,14 +58,14 @@ impl ConnectionManager {
 		let this = self.clone();
 		let node_id2 = node_info.node_id.clone();
 		let connection2 = connection.clone();
-		spawn(async move {
+		/*spawn(async move {
 			Connection::keep_alive(&connection2, move |_| {
 				spawn(async move {
 					this.map.lock().await.remove(&node_id2);
 				});
 			})
 			.await;
-		});
+		});*/
 		true
 	}
 

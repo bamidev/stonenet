@@ -23,6 +23,7 @@ pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE: u8 = 71;
 
 pub struct ActorNode {
 	pub(super) base: Arc<Node<ActorInterface>>,
+	overlay_node: Arc<OverlayNode>,
 	downloading_objects: Mutex<Vec<IdType>>,
 	is_synchonizing: Arc<AtomicBool>,
 }
@@ -390,7 +391,14 @@ impl ActorNode {
 				Some(profile) => return Some(profile),
 			}
 		}
-		None
+		// Try again. The 'find value' procedure is able to connect to 'punchable'
+		// nodes.
+		self.find_object(&self.base.interface.actor_info.first_object)
+			.await
+			.map(|r| match r.object.payload {
+				ObjectPayload::Profile(profile_object) => Some(profile_object),
+				_ => None,
+			})?
 	}
 
 	pub async fn find_block(&self, id: &IdType) -> Option<FindBlockResult> {
@@ -450,6 +458,7 @@ impl ActorNode {
 		let result = self
 			.base
 			.find_value_from_fingers(
+				self.overlay_node.clone(),
 				id,
 				value_type as _,
 				false,
@@ -616,8 +625,9 @@ impl ActorNode {
 	}
 
 	pub fn new(
-		stop_flag: Arc<AtomicBool>, node_id: IdType, socket: Arc<sstp::Server>, actor_id: IdType,
-		actor_info: ActorInfo, db: Database, bucket_size: usize,
+		stop_flag: Arc<AtomicBool>, overlay_node: Arc<OverlayNode>, node_id: IdType,
+		socket: Arc<sstp::Server>, actor_id: IdType, actor_info: ActorInfo, db: Database,
+		bucket_size: usize,
 	) -> Self {
 		let interface = ActorInterface {
 			db,
@@ -628,6 +638,7 @@ impl ActorNode {
 		};
 		Self {
 			is_synchonizing: Arc::new(AtomicBool::new(false)),
+			overlay_node,
 			base: Arc::new(Node::new(
 				stop_flag,
 				node_id,
@@ -640,8 +651,8 @@ impl ActorNode {
 	}
 
 	pub(super) fn new_lurker(
-		stop_flag: Arc<AtomicBool>, socket: Arc<sstp::Server>, actor_id: IdType,
-		actor_info: ActorInfo, db: Database, bucket_size: usize,
+		stop_flag: Arc<AtomicBool>, overlay_node: Arc<OverlayNode>, socket: Arc<sstp::Server>,
+		actor_id: IdType, actor_info: ActorInfo, db: Database, bucket_size: usize,
 	) -> Self {
 		let keypair = PrivateKey::generate();
 		let public_key = keypair.public();
@@ -656,6 +667,7 @@ impl ActorNode {
 		};
 		Self {
 			is_synchonizing: Arc::new(AtomicBool::new(false)),
+			overlay_node,
 			base: Arc::new(Node::new(
 				stop_flag,
 				address,
@@ -1490,7 +1502,7 @@ impl ActorNode {
 	}
 
 	/// Will run the
-	fn start_synchronization(self: &Arc<Self>) -> bool {
+	pub fn start_synchronization(self: &Arc<Self>) -> bool {
 		if !self.is_synchonizing.load(Ordering::Acquire) {
 			self.is_synchonizing.store(true, Ordering::Release);
 			let this = self.clone();

@@ -76,8 +76,6 @@ const MESSAGE_TYPE_HELLO_RESPONSE: u8 = 1;
 const MESSAGE_TYPE_DATA: u8 = 2;
 const MESSAGE_TYPE_ACK: u8 = 3;
 const MESSAGE_TYPE_CLOSE: u8 = 4;
-const MESSAGE_TYPE_PING: u8 = 5;
-const MESSAGE_TYPE_PONG: u8 = 6;
 /// If nothing was received on a TCP connection for 2 minutes, assume the
 /// connection is broken.
 const TCP_CONNECTION_TIMEOUT: u64 = 120;
@@ -112,6 +110,7 @@ pub struct Connection {
 	send_window: WindowInfo,
 
 	last_activity: Arc<StdMutex<SystemTime>>,
+	unprocessed_close_packets: Vec<(u16, u16, Vec<u8>)>,
 
 	#[cfg(debug_assertions)]
 	pub should_be_closed: AtomicBool,
@@ -241,14 +240,12 @@ type QueueSender = mpsc::UnboundedSender<(u16, u16, Vec<u8>)>;
 pub struct QueueReceivers {
 	data: QueueReceiver,
 	ack: QueueReceiver,
-	ping: PingReceiver,
 	close: QueueReceiver,
 }
 
 pub struct QueueSenders {
 	data: QueueSender,
 	ack: QueueSender,
-	ping: PingSender,
 	close: QueueSender,
 	session_id: u16,
 }
@@ -465,12 +462,15 @@ impl Connection {
 		.await
 	}
 
-	/// Decrypts a packet that is expected to have a specific key sequence set on its packet.
-	fn decrypt_packet(&self, key_state: &KeyState, sequence: u16, key_sequence: u16, data: &mut [u8]) -> bool {
+	/// Decrypts a packet that is expected to have a specific key sequence set
+	/// on its packet.
+	fn decrypt_packet(
+		&self, key_state: &KeyState, sequence: u16, key_sequence: u16, data: &mut [u8],
+	) -> bool {
 		debug_assert!(
 			key_sequence < self.key_state.keychain.len() as u16,
 			"attempting to decrypt a packet out-of-order: {} >= {}",
-			sequence,
+			key_sequence,
 			self.key_state.keychain.len()
 		);
 		let key = &key_state.keychain[key_sequence as usize];
@@ -484,58 +484,6 @@ impl Connection {
 		true
 	}
 
-	pub async fn keep_alive(
-		this: &Arc<Mutex<Box<Self>>>,
-		on_timeout: impl FnOnce(Arc<Mutex<Box<Self>>>) + Send + 'static,
-	) {
-		let lock = this.lock().await;
-
-		if lock.keep_alive_flag.load(Ordering::Relaxed) == false {
-			let this2 = this.clone();
-			spawn(async move {
-				let lock = this2.lock().await;
-				// Keep sending pings over the connection if there was no activity for too long
-				while !lock.keep_alive_timeout.load(Ordering::Relaxed)
-					&& lock.keep_alive_flag.load(Ordering::Relaxed)
-				{
-					let wait = {
-						let g = lock.last_activity.lock().unwrap();
-						let now = SystemTime::now();
-						if let Ok(elapsed) = now.duration_since(*g) {
-							if elapsed
-								>= KEEP_ALIVE_IDLE_TIME
-									.checked_sub(Duration::from_millis(10))
-									.unwrap()
-							{
-								None
-							} else {
-								Some(KEEP_ALIVE_IDLE_TIME.checked_sub(elapsed).unwrap())
-							}
-						} else {
-							Some(KEEP_ALIVE_IDLE_TIME)
-						}
-					};
-
-					if let Some(wait_time) = wait {
-						sleep(wait_time).await;
-					} else {
-						if let Err(_e) = lock.ping().await {
-							// Disconnect the close queue in order to signify that the connection is
-							// closed.
-							lock.keep_alive_timeout.store(true, Ordering::Relaxed);
-							break;
-						}
-					}
-				}
-
-				if lock.keep_alive_timeout.load(Ordering::Relaxed) {
-					on_timeout(this2.clone());
-				}
-			});
-		}
-		lock.keep_alive_flag.store(true, Ordering::Relaxed);
-	}
-
 	pub fn peer_contact_option(&self) -> ContactOption {
 		ContactOption {
 			target: self.peer_address.clone(),
@@ -544,11 +492,6 @@ impl Connection {
 	}
 
 	pub fn peer_address(&self) -> &SocketAddr { &self.peer_address }
-
-	pub async fn ping(&self) -> Result<()> {
-		self.send_ping_packet().await?;
-		self.receive_pong_packet().await
-	}
 
 	pub async fn pipe(&mut self, other: &mut Connection) -> Result<()> {
 		// FIXME: Don't wait on the send_data function. It introduces unnecessary
@@ -575,9 +518,29 @@ impl Connection {
 
 	pub fn our_session_id(&self) -> u16 { self.our_session_id }
 
-	fn max_data_packet_length(&self) -> usize { self.sender.max_packet_length() - 5 - 2 }
+	fn max_data_packet_length(&self) -> usize { self.sender.max_packet_length() - 5 - 2 - 2 }
 
-	pub async fn receive(&mut self) -> Result<Vec<u8>> {
+	/// Processes all the stored close packets that are left to be processed
+	async fn process_unprocessed_close_packets(&mut self) {
+		if self.unprocessed_close_packets.len() == 0 {
+			return;
+		}
+
+		let mut i = 0;
+		while i < self.unprocessed_close_packets.len() {
+			let item = &self.unprocessed_close_packets[i];
+			if item.0 <= self.current_keystate_sequence {
+				let item = self.unprocessed_close_packets.remove(i);
+				self.process_close_packet(item);
+			} else {
+				i += 1;
+			}
+		}
+	}
+
+	pub async fn receive(&mut self) -> Result<Vec<u8>> { self.receive_with_timeout(TIMEOUT).await }
+
+	pub async fn receive_with_timeout(&mut self, timeout: Duration) -> Result<Vec<u8>> {
 		if self.is_closing.load(Ordering::Relaxed) {
 			return Err(Error::ConnectionClosed);
 		}
@@ -589,7 +552,7 @@ impl Connection {
 			self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
 			let dh_public_key = x25519::PublicKey::from(&self.key_state.our_dh_key);
 			let (new_public_key, clean, window_full) = self
-				.receive_window(&mut buffer, window_size, first, &dh_public_key)
+				.receive_window(timeout, &mut buffer, window_size, first, &dh_public_key)
 				.await?;
 			first = false;
 
@@ -606,6 +569,7 @@ impl Connection {
 			self.previous_keystate = self.key_state.clone();
 			self.key_state.reset_key(window_size);
 			let _ = self.current_keystate_sequence.wrapping_add(1);
+			self.process_unprocessed_close_packets().await;
 
 			debug_assert!(buffer.capacity() > 0, "Message length not set");
 			if buffer.len() == buffer.capacity() {
@@ -625,7 +589,7 @@ impl Connection {
 		self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let dh_public_key = x25519::PublicKey::from(&self.key_state.our_dh_key);
 		let (new_public_key, clean, window_full) = self
-			.receive_window(&mut buffer, window_size, is_first, &dh_public_key)
+			.receive_window(TIMEOUT, &mut buffer, window_size, is_first, &dh_public_key)
 			.await?;
 		self.key_state.their_dh_key = new_public_key;
 
@@ -709,30 +673,6 @@ impl Connection {
 		self.receive_ack(window_start_sequence, TIMEOUT / 2).await
 	}
 
-	async fn receive_pong_packet(&self) -> Result<()> {
-		let mut queue = self.queues.ping.lock().await;
-
-		// This loop throws all pongs away that where queued too early in order to
-		// prevent a DoS attack.
-		loop {
-			match queue.try_recv() {
-				Err(e) => match e {
-					TryRecvError::Empty => {
-						select! {
-							_ = queue.recv() => return Ok(()),
-							_ = sleep(TIMEOUT) => return Err(Error::Timeout)
-						}
-					}
-					TryRecvError::Disconnected => return Err(Error::ConnectionClosed),
-				},
-				Ok(time) =>
-					if SystemTime::now().duration_since(time).unwrap() < TIMEOUT {
-						return Ok(());
-					},
-			}
-		}
-	}
-
 	fn process_packet(
 		&mut self, buffer: &mut Vec<u8>, packet: &[u8], first_window: bool, first_packet: bool,
 		completed: &mut u16,
@@ -785,8 +725,8 @@ impl Connection {
 	}
 
 	async fn receive_window(
-		&mut self, buffer: &mut Vec<u8>, window_size: u16, first_window: bool,
-		new_dh_key: &x25519::PublicKey,
+		&mut self, requested_timeout: Duration, buffer: &mut Vec<u8>, window_size: u16,
+		first_window: bool, new_dh_key: &x25519::PublicKey,
 	) -> Result<(x25519::PublicKey, bool, bool)> {
 		// The buffer should be either not yet allocated, or allocated to accomodate for
 		// the amount of bytes that this window will provide.
@@ -815,31 +755,32 @@ impl Connection {
 		}
 
 		loop {
-			let mut timeout = TIMEOUT;
+			let mut timeout = requested_timeout;
 			loop {
-				let (_keystate_sequence, mut sequence, mut packet) = match self.receive_data_packet(timeout).await {
-					Ok(r) => {
-						sent_missing_packet = false;
-						r
-					}
-					Err(e) => {
-						match e {
-							Error::Timeout => {
-								// If `timeout` is less than `TIMEOUT`, we are just waiting
-								// one some possible out-of-order messages to still
-								// arive.
-								if timeout != TIMEOUT && !sent_missing_packet {
-									break;
-								} else {
-									return Err(e);
-								}
-							}
-							_ => return Err(e),
+				let (_keystate_sequence, mut sequence, mut packet) =
+					match self.receive_data_packet(timeout).await {
+						Ok(r) => {
+							sent_missing_packet = false;
+							r
 						}
-					}
-				};
+						Err(e) => {
+							match e {
+								Error::Timeout => {
+									// If `timeout` is less than `TIMEOUT`, we are just waiting
+									// one some possible out-of-order messages to still
+									// arive.
+									if timeout < TIMEOUT && !sent_missing_packet {
+										break;
+									} else {
+										return Err(e);
+									}
+								}
+								_ => return Err(e),
+							}
+						}
+					};
 				// Halve timeout after first packet
-				if timeout == TIMEOUT {
+				if timeout == requested_timeout {
 					timeout /= 2;
 				}
 
@@ -853,7 +794,8 @@ impl Connection {
 				// Fill the buffer, possibly with as much cached data as is
 				// available as well.
 				if packets_collected == window_sequence {
-					if self.decrypt_packet(&self.key_state, sequence, window_sequence, &mut packet) {
+					if self.decrypt_packet(&self.key_state, sequence, window_sequence, &mut packet)
+					{
 						match self.process_packet(
 							buffer,
 							&packet[2..],
@@ -1049,13 +991,17 @@ impl Connection {
 				Some(&self.key_state)
 			} else if keystate_sequence == (self.current_keystate_sequence - 1) {
 				Some(&self.previous_keystate)
+			} else if keystate_sequence > self.current_keystate_sequence {
+				self.unprocessed_close_packets
+					.push((keystate_sequence, sequence, buffer.clone()));
+				None
 			} else {
-				warn!("Received malformed close packet: keystate sequence is too old or too new");
+				warn!("Received malformed close packet: keystate sequence is too old");
 				None
 			};
 
 			if let Some(key_state) = key_state_opt {
-				if !self.decrypt_packet(key_state, sequence, sequence, &mut buffer) {
+				if !self.decrypt_packet(key_state, sequence, 0, &mut buffer) {
 					warn!("Received malformed close packet: checksum didn't match");
 					result = false;
 				} else if buffer.len() < 34 {
@@ -1067,8 +1013,6 @@ impl Connection {
 				} else {
 					result = true;
 				}
-			} else {
-				result = false;
 			}
 		}
 
@@ -1168,14 +1112,6 @@ impl Connection {
 		buffer[1..33].copy_from_slice(dh_key.as_bytes());
 		self.send_crypted_packet_filled(MESSAGE_TYPE_ACK, sequence, key_sequence, &buffer)
 			.await
-	}
-
-	async fn send_ping_packet(&self) -> Result<()> {
-		let mut buffer = vec![0u8; 3];
-		buffer[0] = MESSAGE_TYPE_PING;
-		buffer[1..3].copy_from_slice(&self.their_session_id.to_le_bytes());
-		self.sender.send(&[MESSAGE_TYPE_PING], TIMEOUT).await?;
-		Ok(())
 	}
 
 	/// Tries to send as much as of the buffer as made possible by the window
@@ -1640,7 +1576,8 @@ impl Default for SocketCollection {
 
 impl Server {
 	pub fn bidirectional_contact_option(&self, target: &ContactInfo) -> Option<ContactOption> {
-		self.sockets.pick_contact_option_at_openness(target, Openness::Bidirectional)
+		self.sockets
+			.pick_contact_option_at_openness(target, Openness::Bidirectional)
 	}
 
 	pub async fn bind(
@@ -1765,6 +1702,7 @@ impl Server {
 						send_window: WindowInfo::default(),
 						last_activity,
 						should_be_closed: AtomicBool::new(true),
+						unprocessed_close_packets: Vec::new()
 					}))
 				},
 				_ = sleep(TIMEOUT/2) => {
@@ -2435,6 +2373,7 @@ impl Server {
 			send_window: WindowInfo::default(),
 			last_activity: Arc::new(StdMutex::new(SystemTime::now())),
 			should_be_closed: AtomicBool::new(false),
+			unprocessed_close_packets: Vec::new(),
 		});
 		match self.on_connect.get() {
 			None => {}
@@ -2559,8 +2498,6 @@ impl Server {
 			MESSAGE_TYPE_DATA => self.process_data(&packet[1..]).await,
 			MESSAGE_TYPE_ACK => self.process_ack(&packet[1..]).await,
 			MESSAGE_TYPE_CLOSE => self.process_close(&packet[1..]).await,
-			MESSAGE_TYPE_PING => self.process_ping(link_socket, &packet[1..]).await,
-			MESSAGE_TYPE_PONG => self.process_pong(&packet[1..]).await,
 			other => Err(Error::InvalidMessageType(other)),
 		};
 
@@ -2573,57 +2510,6 @@ impl Server {
 				other => Err(other),
 			},
 			Ok(()) => Ok(()),
-		}
-	}
-
-	async fn process_ping(&self, socket: Arc<dyn LinkSocketSender>, packet: &[u8]) -> Result<()> {
-		if packet.len() != 2 {
-			return Err(Error::MalformedPacket);
-		}
-
-		let our_session_id = u16::from_le_bytes(*array_ref![packet, 0, 2]);
-		let sessions = self.sessions.lock().await;
-		let session = sessions.map.get(&our_session_id);
-		match session {
-			None => Err(Error::InvalidSessionIdOurs(our_session_id)),
-			Some(s) => {
-				let their_session_id = s.lock().await.their_session_id.expect("missing session id");
-
-				// Send pong
-				let mut buffer = vec![0u8; 3];
-				buffer[0] = MESSAGE_TYPE_PONG;
-				buffer[1..3].copy_from_slice(&u16::to_le_bytes(their_session_id));
-				socket.send(&buffer, TIMEOUT).await?;
-				Ok(())
-			}
-		}
-	}
-
-	async fn process_pong(&self, packet: &[u8]) -> Result<()> {
-		if packet.len() != 2 {
-			return Err(Error::MalformedPacket);
-		}
-
-		let session_id = u16::from_le_bytes(*array_ref![packet, 0, 2]);
-
-		let sessions = self.sessions.lock().await;
-		if let Some(session) = sessions.map.get(&session_id) {
-			let s = session.clone();
-			drop(sessions);
-
-			let tx = &s.lock().await.queues.ping;
-			match tx.try_send(SystemTime::now()) {
-				Ok(()) => Ok(()),
-				Err(e) => match e {
-					TrySendError::Full(_) => {
-						warn!("Pong queue is full, probably a DoS attack!");
-						Ok(())
-					}
-					TrySendError::Closed(_) => Err(Error::ConnectionClosed),
-				},
-			}
-		} else {
-			Err(Error::InvalidSessionIdOurs(session_id))
 		}
 	}
 
@@ -2701,20 +2587,17 @@ impl Queues {
 		let (data_tx, data_rx) = mpsc::unbounded_channel();
 		let (ack_tx, ack_rx) = mpsc::unbounded_channel();
 		let (close_tx, close_rx) = mpsc::unbounded_channel();
-		let (ping_tx, ping_rx) = mpsc::channel(1000);
 
 		(
 			QueueSenders {
 				data: data_tx,
 				ack: ack_tx,
-				ping: ping_tx,
 				close: close_tx,
 				session_id,
 			},
 			QueueReceivers {
 				data: data_rx,
 				ack: ack_rx,
-				ping: Mutex::new(ping_rx),
 				close: close_rx,
 			},
 		)

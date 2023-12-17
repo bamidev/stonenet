@@ -45,6 +45,8 @@ pub const NETWORK_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST: u8 = 8;
 //pub const NETWORK_MESSAGE_TYPE_RELAY_RESPONSE: u8 = 9;
 pub const NETWORK_MESSAGE_TYPE_RELAY_REQUEST: u8 = 10;
 //pub const NETWORK_MESSAGE_TYPE_RELAY_RESPONSE: u8 = 11;
+pub const NETWORK_MESSAGE_TYPE_KEEP_ALIVE_REQUEST: u8 = 12;
+//pub const NETWORK_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE: u8 = 13;
 
 
 /// All the info that advertises in what way this node is approachable over the
@@ -75,16 +77,6 @@ where
 	pub addr: A,
 	pub availability: IpAvailability,
 }
-
-/// The method you can use to contact a node
-/*pub enum ContactMethod {
-	/// The node can be contacted directly using a supported internet protocol.
-	Direct(ContactInfo),
-	/// The node can not be contacted directly, but a connection can be made via hole-punching.
-	HolePunching(ContactInfo, NodeContactInfo)
-	/// The node can not be contacted directly, the traffic has to be routed through other nodes.
-	Relay(NodeContactInfo)
-}*/
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ContactOption {
@@ -146,6 +138,36 @@ fn distance(a: &IdType, b: &IdType) -> BigUint { a.distance(b) }
 
 
 impl ContactInfo {
+	pub fn is_open_to_hole_punching(&self) -> bool {
+		if let Some(entry) = &self.ipv4 {
+			if let Some(a) = &entry.availability.udp {
+				if a.openness != Openness::Unidirectional {
+					return true;
+				}
+			}
+			if let Some(a) = &entry.availability.tcp {
+				if a.openness != Openness::Unidirectional {
+					return true;
+				}
+			}
+		}
+
+		if let Some(entry) = &self.ipv6 {
+			if let Some(a) = &entry.availability.udp {
+				if a.openness != Openness::Unidirectional {
+					return true;
+				}
+			}
+			if let Some(a) = &entry.availability.tcp {
+				if a.openness != Openness::Unidirectional {
+					return true;
+				}
+			}
+		}
+
+		false
+	}
+
 	pub fn update(&mut self, addr: &SocketAddr, for_tcp: bool) {
 		match addr {
 			SocketAddr::V4(a) => self.update_v4(a.ip(), a.port(), for_tcp),

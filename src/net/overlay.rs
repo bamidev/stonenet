@@ -12,7 +12,7 @@ use std::{
 use async_trait::async_trait;
 use futures::future::join_all;
 use log::*;
-use tokio::{self, time::sleep};
+use tokio::{self, spawn, time::sleep};
 
 use super::{actor::*, actor_store::*, bincode, message::*, node::*, sstp, KADEMLIA_K};
 use crate::{
@@ -75,19 +75,8 @@ impl NodeInterface for OverlayInterface {
 		return Ok(response);
 	}
 
-	/// Goes through all the connection managers of all actor nodes, in order to
-	/// find a connection that is close enough. Returns the first one that
-	/// is found.
-	async fn find_near_connection(&self, bit: u8) -> Option<NodeContactInfo> {
-		let actor_nodes = self.actor_nodes.lock().await;
-		for actor_node in actor_nodes.values() {
-			let result = actor_node.base.interface.find_near_connection(bit).await;
-			if result.is_some() {
-				return result;
-			}
-		}
-		None
-	}
+	///
+	async fn find_near_connection(&self, bit: u8) -> Option<NodeContactInfo> { None }
 
 	async fn find_value(&self, value_type: u8, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		if value_type > 0 {
@@ -154,6 +143,8 @@ impl NodeInterface for OverlayInterface {
 
 impl<'a> FindActorIter<'a> {
 	pub fn visited(&self) -> &[(IdType, ContactOption)] { self.0.visited() }
+
+	pub async fn close(&mut self) { self.0.close().await; }
 }
 
 #[async_trait]
@@ -184,7 +175,7 @@ impl OverlayNode {
 		let socket = sstp::Server::bind(
 			stop_flag.clone(),
 			node_id.clone(),
-			contact_info,
+			contact_info.clone(),
 			private_key,
 		)
 		.await?;
@@ -192,7 +183,7 @@ impl OverlayNode {
 		let this = Arc::new(Self {
 			base: Arc::new(Node::new(
 				stop_flag,
-				node_id.clone(),
+				node_id,
 				socket.clone(),
 				OverlayInterface {
 					db,
@@ -329,13 +320,14 @@ impl OverlayNode {
 	/// Tries to connect to the actor network of the given actor ID, but in
 	/// 'lurking' mode. Meaning, the nodes of the network won't consider you as
 	/// a part of it.
-	pub async fn lurk_actor_network(&self, actor_id: &IdType) -> Option<ActorNode> {
+	pub async fn lurk_actor_network(self: &Arc<Self>, actor_id: &IdType) -> Option<ActorNode> {
 		let mut iter = self.find_actor_iter(actor_id, 100, true).await;
 		while let Some(result) = iter.next().await {
 			let (actor_info, nodes) = &*result;
 			for contact in nodes {
 				let actor_node = ActorNode::new_lurker(
 					self.base.stop_flag.clone(),
+					self.clone(),
 					self.base.socket.clone(),
 					actor_id.clone(),
 					actor_info.clone(),
@@ -347,27 +339,29 @@ impl OverlayNode {
 						.base
 						.remember_node_nondestructive(contact.clone())
 						.await;
+					iter.close().await;
 					return Some(actor_node);
 				}
 			}
 		}
 
+		iter.close().await;
 		None
 	}
 
 	pub async fn find_actor(
-		&self, id: &IdType, hop_limit: usize, narrow_down: bool,
+		self: &Arc<Self>, id: &IdType, hop_limit: usize, narrow_down: bool,
 	) -> Option<Box<(ActorInfo, Vec<NodeContactInfo>)>> {
-		self.find_actor_iter(id, hop_limit, narrow_down)
-			.await
-			.next()
-			.await
+		let mut iter = self.find_actor_iter(id, hop_limit, narrow_down).await;
+		let result = iter.next().await;
+		iter.close().await;
+		result
 	}
 
 	/// Tries to find the
-	pub async fn find_actor_iter(
-		&self, id: &IdType, hop_limit: usize, narrow_down: bool,
-	) -> FindActorIter {
+	pub async fn find_actor_iter<'a>(
+		self: &'a Arc<Self>, id: &IdType, hop_limit: usize, narrow_down: bool,
+	) -> FindActorIter<'a> {
 		fn verify_pubkey(
 			id: &IdType, peer: &NodeContactInfo, data: &[u8],
 		) -> Option<AtomicPtr<()>> {
@@ -390,23 +384,93 @@ impl OverlayNode {
 					}
 					let value: Box<(ActorInfo, Vec<NodeContactInfo>)> =
 						Box::new((result.actor_info, peers));
-					let x = AtomicPtr::new(Box::into_raw(value) as _);
-					Some(x)
+					let value_ptr = AtomicPtr::new(Box::into_raw(value) as _);
+					Some(value_ptr)
 				}
 			}
 		}
 
 		let fingers = self.base.find_nearest_fingers(id).await;
-		let iter = self.base.find_value_from_fingers_iter(
-			id,
-			0,
-			true,
-			&fingers,
-			hop_limit,
-			narrow_down,
-			verify_pubkey,
-		);
+		let this = self.clone();
+		let iter = self
+			.base
+			.find_value_from_fingers_iter(
+				this,
+				id,
+				0,
+				true,
+				&fingers,
+				hop_limit,
+				narrow_down,
+				verify_pubkey,
+			)
+			.await;
 		FindActorIter(iter)
+	}
+
+	// Does a simple search on the overlay network to find a node that is connected
+	// to the given node_id, and returns the connection to that node.
+	pub async fn find_connection_for_node(&self, node_id: &IdType) -> Option<Box<Connection>> {
+		let fingers = self.base.find_nearest_fingers(node_id).await;
+		if fingers.len() == 0 {
+			return None;
+		}
+
+		let mut fingers_iter = fingers.into_iter();
+		let mut higest_bit_found = 0u8;
+		loop {
+			let new_fingers = loop {
+				if let Some(finger) = fingers_iter.next() {
+					match self
+						.base
+						.connect(&finger.contact_info, Some(&finger.node_id))
+						.await
+					{
+						None => {}
+						Some(mut connection) => {
+							if let Some(response) = self
+								.base
+								.exchange_find_node(&mut *connection, &node_id)
+								.await
+							{
+								if let Some(node_info) = response.connection {
+									if &node_info.node_id == node_id {
+										return Some(connection);
+									}
+								}
+
+								connection.close().await;
+								let mut fingers = response.fingers;
+								fingers.retain(|f| {
+									if &f.node_id == self.node_id() {
+										false
+									} else if let Some(bit) = differs_at_bit(node_id, &f.node_id) {
+										if bit > higest_bit_found {
+											higest_bit_found = bit;
+											true
+										} else {
+											false
+										}
+									} else {
+										true
+									}
+								});
+								if fingers.len() > 0 {
+									break fingers;
+								}
+							} else {
+								connection.close().await;
+							}
+						}
+					}
+				} else {
+					return None;
+				}
+			};
+
+			fingers_iter = new_fingers.into_iter();
+		}
+		None
 	}
 
 	pub async fn get_actor_node(&self, actor_id: &IdType) -> Option<Arc<ActorNode>> {
@@ -426,6 +490,7 @@ impl OverlayNode {
 				// Start up a new node for the actor network
 				let node = Arc::new(ActorNode::new(
 					self.base.stop_flag.clone(),
+					self.clone(),
 					self.node_id().clone(),
 					self.base.socket.clone(),
 					actor_id.clone(),
@@ -459,6 +524,7 @@ impl OverlayNode {
 				break;
 			}
 			if self.base.has_stopped() {
+				actor_iter.close().await;
 				return None;
 			}
 		}
@@ -477,6 +543,7 @@ impl OverlayNode {
 
 			// If we don't have it, we can't join the network.
 			if actor_info.is_none() {
+				actor_iter.close().await;
 				return None;
 			}
 		}
@@ -519,10 +586,12 @@ impl OverlayNode {
 
 				if actually_stored == 0 {
 					warn!("Unable to store actor at any nodes.");
+					actor_iter.close().await;
 					return None;
 				}
 			}
 		}
+		actor_iter.close().await;
 
 		//spawn(async move {
 		node.initialize(self, &contacts).await;
@@ -565,6 +634,8 @@ impl OverlayNode {
 		// TODO: Find remembered nodes from the database and try them out first. This is
 		// currently not implemented yet.
 
+		self.maintain_node_connections(stop_flag.clone());
+
 		let mut i = 0;
 		// TODO: Contact all bootstrap nodes
 		while i < self.bootstrap_nodes.len() && !stop_flag.load(Ordering::Relaxed) {
@@ -574,7 +645,7 @@ impl OverlayNode {
 				.join_network_starting_at(&bootstrap_node.into())
 				.await
 			{
-				false => error!("Bootstrap node {} wasn't available", bootstrap_node),
+				false => warn!("Bootstrap node {} wasn't available", bootstrap_node),
 				true => {
 					match self.db().connect() {
 						Err(e) => {
@@ -600,7 +671,20 @@ impl OverlayNode {
 								list
 							});
 
+							// Open and maintain a connection to a bidirectional node
+							// TODO: Do the same thing for IPv6
+							if let Some(ipv4_contact_info) =
+								self.base.socket.our_contact_info().await.ipv4
+							{
+								if let Some(availability) = ipv4_contact_info.availability.udp {
+									if availability.openness == Openness::Punchable {
+										self.start_connection_for_hole_punching(stop_flag.clone());
+									}
+								}
+							}
+
 							self.join_actor_networks(actor_node_infos).await;
+							self.maintain_synchronization(stop_flag);
 
 							return true;
 						}
@@ -699,6 +783,113 @@ impl OverlayNode {
 			.collect()
 	}
 
+	fn maintain_connection_for_hole_punching(
+		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, mut connection: Box<Connection>,
+	) {
+		let this = self.clone();
+		spawn(async move {
+			node::keep_alive_connection(this.clone(), connection).await;
+
+			// After the connection has closed, try to find a new one.
+			if !stop_flag.load(Ordering::Relaxed) {
+				this.start_connection_for_hole_punching(stop_flag);
+			}
+		});
+	}
+
+	/// Will send a ping request every minute or so to all connections that are
+	/// maintained on the overlay network.
+	fn maintain_node_connections(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) {
+		let this = self.clone();
+		spawn(async move {
+			loop {
+				sleep(Duration::from_secs(60)).await;
+				for i in 0..256 {
+					let mut bucket = this.base.buckets[i].lock().await;
+					if let Some((_, connection_mutex)) = &bucket.connection {
+						let mut connection = connection_mutex.lock().await;
+						if this
+							.base
+							.exchange_ping_on_connection(&mut connection)
+							.await
+							.is_none()
+						{
+							warn!(
+								"Unable to ping on keep alive node connection of node {}",
+								connection.their_node_id()
+							);
+							connection.close().await;
+							drop(connection);
+							bucket.connection = None;
+						}
+					}
+				}
+			}
+		});
+	}
+
+	fn maintain_synchronization(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) {
+		let this = self.clone();
+		spawn(async move {
+			while stop_flag.load(Ordering::Relaxed) {
+				let actor_nodes: Vec<Arc<ActorNode>> = this
+					.base
+					.actor_nodes
+					.lock()
+					.await
+					.values()
+					.map(|a| a.clone())
+					.collect();
+				for actor_node in actor_nodes {
+					actor_node.start_synchronization();
+				}
+
+				sleep(Duration::from_secs(3600)).await;
+			}
+		});
+	}
+
+	fn start_connection_for_hole_punching(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) {
+		let this = self.clone();
+		spawn(async move {
+			// Try to find a bidirectional node to open a connection to it
+			let mut iter = this.base.iter_all_fingers().await;
+			while let Some(finger) = iter.next().await {
+				if let Some(ipv4_contact_info) = finger.contact_info.ipv4 {
+					if let Some(udpv4_availability) = ipv4_contact_info.availability.udp {
+						if udpv4_availability.openness == Openness::Bidirectional {
+							let contact_option = ContactOption::new(
+								SocketAddr::V4(SocketAddrV4::new(
+									ipv4_contact_info.addr,
+									udpv4_availability.port,
+								)),
+								false,
+							);
+							if let Some(mut c) = this
+								.base
+								.connect_at(&contact_option, Some(&finger.node_id))
+								.await
+							{
+								if let Some(success) =
+									this.base.exchange_keep_alive_on_connection(&mut c).await
+								{
+									if success {
+										this.maintain_connection_for_hole_punching(stop_flag, c);
+										break;
+									} else {
+										c.close().await;
+									}
+								} else {
+									c.close().await;
+								}
+							}
+						}
+					}
+				}
+			}
+		});
+	}
+
 	pub fn node_id(&self) -> &IdType { &self.base.node_id }
 
 	//pub fn node_info(&self) -> &NodeContactInfo {
@@ -713,10 +904,7 @@ impl OverlayNode {
 			Ok(r) => r,
 		};
 
-		let (connection, fingers) = self
-			.base
-			.find_nearest_contacts(&request.node_id, None)
-			.await;
+		let (connection, fingers) = self.base.find_nearest_contacts(&request.node_id).await;
 		let mut response = FindActorResponse {
 			contacts: FindNodeResponse {
 				connection,
