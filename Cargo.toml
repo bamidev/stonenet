@@ -62,14 +62,12 @@ windows = { version = "0", features = [
 
 [package.metadata.deb]
 assets = [
-	["conf/base.toml", "etc/stonenet/config.toml", "644"],
+	["target/release/stonenetd", "usr/bin/", "755"],
+	["conf/debian.toml", "etc/stonenet/config.toml", "644"],
 	["assets/empty", "var/lib/stonenet/db.sqlite", "644"],
+	["static/**/*", "usr/share/stonenet/static", "644"],
+	["templates/**/*", "usr/share/stonenet/templates", "644"],
 ]
 depends = ["libsqlite3-0"]
-maintainer-scripts = "assets/debian/"
-systemd-units = { unit-scripts = "assets/debian/systemd.service" }
-
-[package.metadata.deb.variants.mergedest]
-merge-assets.by.dest = [
-	["conf/debian.toml", "etc/stonenet/config.toml", "644"],
-]
+maintainer-scripts = "assets/debian"
+systemd-units = { unit-scripts = "assets/debian/systemd" }

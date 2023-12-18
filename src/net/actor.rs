@@ -1227,6 +1227,7 @@ impl ActorNode {
 				}
 				// Keep the connection open so that the other side can continue to make
 				// requests to us, and once (s)he closes, we return our function.
+				#[cfg(debug_assertions)]
 				connection.should_be_closed.store(false, Ordering::Relaxed);
 				node::handle_connection(overlay_node.clone(), connection).await;
 			} else {

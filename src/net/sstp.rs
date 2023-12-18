@@ -45,7 +45,7 @@ use once_cell::sync::OnceCell;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use tokio::{
-	self, select, spawn,
+	self, spawn,
 	sync::{
 		mpsc::{self, error::*},
 		watch, Mutex,
@@ -1701,6 +1701,7 @@ impl Server {
 						receive_window: WindowInfo::default(),
 						send_window: WindowInfo::default(),
 						last_activity,
+						#[cfg(debug_assertions)]
 						should_be_closed: AtomicBool::new(true),
 						unprocessed_close_packets: Vec::new()
 					}))
@@ -2372,6 +2373,7 @@ impl Server {
 			receive_window: WindowInfo::default(),
 			send_window: WindowInfo::default(),
 			last_activity: Arc::new(StdMutex::new(SystemTime::now())),
+			#[cfg(debug_assertions)]
 			should_be_closed: AtomicBool::new(false),
 			unprocessed_close_packets: Vec::new(),
 		});

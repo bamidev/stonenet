@@ -130,6 +130,8 @@ pub enum Openness {
 	/// circumstances. However, a connection can be opened through a hole-punch
 	/// technique.
 	Punchable      = 2,
+	// FIXME: THe Punchable level can go. Only the connection initiator needs to support hole punching, not the recipient node.
+	// It can be a configuration option
 }
 
 

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use tokio::{spawn, sync::Mutex};
+use tokio::sync::Mutex;
 
 use super::sstp;
 use crate::{common::*, net::*};
