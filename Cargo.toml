@@ -50,6 +50,8 @@ unsafe-send-sync = { git = "https://github.com/bamidev/unsafe-send-sync" }
 x25519-dalek = { version = "2.0", features = ["serde", "static_secrets"] }
 zeroize = ">=1.3, <2"
 
+[features]
+bundled = ["rusqlite/bundled"]
 
 [target.'cfg(target_family = "windows")'.dependencies]
 rusqlite = { version = "0", features = ["bundled"] }
