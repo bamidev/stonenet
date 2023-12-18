@@ -102,11 +102,15 @@ where
 
 #[async_trait]
 pub trait NodeInterface {
+	async fn close(&self);
+
 	async fn exchange(
 		&self, connection: &mut Connection, message_type: u8, request: &[u8],
 	) -> sstp::Result<Vec<u8>>;
 
 	async fn find_value(&self, value_type: u8, id: &IdType) -> db::Result<Option<Vec<u8>>>;
+
+	fn overlay_node(&self) -> Arc<OverlayNode>;
 
 	async fn send(
 		&self, connection: &mut Connection, message_type: u8, request: &[u8],
@@ -115,8 +119,6 @@ pub trait NodeInterface {
 	async fn respond(
 		&self, connection: &mut Connection, message_type: u8, message: &[u8],
 	) -> sstp::Result<()>;
-
-	async fn find_near_connection(&self, pos: u8) -> Option<NodeContactInfo>;
 }
 
 pub fn differs_at_bit(a: &IdType, b: &IdType) -> Option<u8> { a.differs_at_bit(b) }
@@ -220,6 +222,11 @@ where
 		self.socket.bidirectional_contact_option(target)
 	}
 
+	pub async fn close(&self) {
+		self.stop_flag.store(true, Ordering::Relaxed);
+		self.interface.close().await;
+	}
+
 	pub async fn connect(
 		&self, target: &ContactInfo, node_id: Option<&IdType>,
 	) -> Option<Box<Connection>> {
@@ -250,7 +257,7 @@ where
 
 	pub async fn connect_node(
 		&self, node_id: &IdType, strategy: &ContactStrategy,
-		last_open_connection: Option<&mut Connection>,
+		last_open_connection: Option<&mut Connection>, overlay_node: &Arc<OverlayNode>,
 	) -> Option<Box<Connection>> {
 		match &strategy.method {
 			ContactStrategyMethod::Direct =>
@@ -265,8 +272,25 @@ where
 					} else {
 						None
 					}
+				// If no connection to perform the hole punching on is provided,
+				// try to obtain one from the overlay network
 				} else {
-					None
+					if let Some(mut relay_connection) =
+						overlay_node.find_connection_for_node(node_id).await
+					{
+						let tc = if let Some(target_connection) = self
+							.punch_hole(&mut relay_connection, node_id, &strategy.contact)
+							.await
+						{
+							Some(target_connection)
+						} else {
+							None
+						};
+						relay_connection.close().await;
+						tc
+					} else {
+						None
+					}
 				}
 			}
 			ContactStrategyMethod::Relay(_intermediary_connection) => {
@@ -733,6 +757,7 @@ where
 		}
 
 		let mut i = 0;
+		let overlay_node = self.interface.overlay_node();
 		// FIXME: The first candidate node may not have a bidirectional contact option.
 		// If a punchable candidate is encountered and we don't have an open connection
 		// yet, open a connection to the first bidirectional candidate.
@@ -749,7 +774,7 @@ where
 			visited.push((candidate_contact.node_id.clone(), strategy.contact.clone()));
 
 			match self
-				.connect_node(&candidate_contact.node_id, &strategy, None)
+				.connect_node(&candidate_contact.node_id, &strategy, None, &overlay_node)
 				.await
 			{
 				None => warn!(
@@ -1494,24 +1519,15 @@ where
 			let mut connection_for_hole_punching = if self.open_for_hole_punching
 				&& strategy.method != ContactStrategyMethod::Direct
 			{
-				let mut result =
-					if let Some((node_id, connection)) = &mut self.connection_for_hole_punching {
-						if node_id == &candidate_contact.node_id {
-							Some(connection)
-						} else {
-							None
-						}
+				if let Some((node_id, connection)) = &mut self.connection_for_hole_punching {
+					if node_id == &candidate_contact.node_id {
+						Some(connection)
 					} else {
 						None
-					};
-				if result.is_none() {
-					special_connection = self
-						.overlay_node
-						.find_connection_for_node(&candidate_contact.node_id)
-						.await;
-					result = special_connection.as_mut();
+					}
+				} else {
+					None
 				}
-				result
 			} else {
 				None
 			};
@@ -1523,6 +1539,7 @@ where
 					connection_for_hole_punching
 						.as_deref_mut()
 						.map(|c| c.as_mut()),
+					&self.overlay_node,
 				)
 				.await
 			{
@@ -1843,10 +1860,10 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, c: Box
 				Err(e) => {
 					match e {
 						// If the node hasn't send any pings for 120 seconds, we're done.
-						sstp::Error::Timeout => return,
+						sstp::Error::Timeout => break,
 						// Opening and immediately closing connections is done to test presence, so
 						// ignore these two errors for now:
-						sstp::Error::ConnectionClosed => return,
+						sstp::Error::ConnectionClosed => break,
 						other => {
 							// For the other errors the connection may have not been closed already.
 							let _ = connection.close().await;
@@ -1855,7 +1872,7 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, c: Box
 								connection.peer_address(),
 								other
 							);
-							return;
+							break;
 						}
 					}
 				}
@@ -1864,6 +1881,8 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, c: Box
 
 		process_request_message(overlay_node.clone(), mutex.clone(), &message).await;
 	}
+	let mut connection = mutex.lock().await;
+	connection.close().await;
 }
 
 async fn process_request_message(

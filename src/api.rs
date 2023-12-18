@@ -35,6 +35,8 @@ pub struct Api {
 //pub type Result<T> = std::result::Result<T, self::Error>;
 
 impl Api {
+	pub async fn close(self) { self.node.close().await; }
+
 	pub fn create_my_identity(
 		&self, label: &str, name: &str, avatar: Option<&FileData>, wallpaper: Option<&FileData>,
 		description: &str,

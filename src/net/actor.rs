@@ -23,12 +23,12 @@ pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE: u8 = 71;
 
 pub struct ActorNode {
 	pub(super) base: Arc<Node<ActorInterface>>,
-	overlay_node: Arc<OverlayNode>,
 	downloading_objects: Mutex<Vec<IdType>>,
 	is_synchonizing: Arc<AtomicBool>,
 }
 
 pub struct ActorInterface {
+	overlay_node: Arc<OverlayNode>,
 	db: Database,
 	actor_id: IdType,
 	actor_info: ActorInfo,
@@ -79,6 +79,8 @@ impl ActorInterface {
 
 #[async_trait]
 impl NodeInterface for ActorInterface {
+	async fn close(&self) {}
+
 	async fn exchange(
 		&self, connection: &mut Connection, mut message_type: u8, buffer: &[u8],
 	) -> sstp::Result<Vec<u8>> {
@@ -101,10 +103,6 @@ impl NodeInterface for ActorInterface {
 		return Ok(response);
 	}
 
-	async fn find_near_connection(&self, bit: u8) -> Option<NodeContactInfo> {
-		self.connection_manager.find_near(bit).await.map(|r| r.0)
-	}
-
 	async fn find_value(&self, value_type: u8, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		const VALUE_TYPE_BLOCK: u8 = ValueType::Block as _;
 		const VALUE_TYPE_FILE: u8 = ValueType::File as _;
@@ -121,6 +119,8 @@ impl NodeInterface for ActorInterface {
 			}
 		}
 	}
+
+	fn overlay_node(&self) -> Arc<OverlayNode> { self.overlay_node.clone() }
 
 	async fn send(
 		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
@@ -172,6 +172,8 @@ impl ActorNode {
 			}
 		}
 	}*/
+
+	pub async fn close(self: Arc<Self>) { self.base.close().await; }
 
 	/// Attempts to collect as much blocks of this file on the given connection.
 	async fn collect_block(
@@ -458,7 +460,7 @@ impl ActorNode {
 		let result = self
 			.base
 			.find_value_from_fingers(
-				self.overlay_node.clone(),
+				self.base.interface.overlay_node.clone(),
 				id,
 				value_type as _,
 				false,
@@ -630,6 +632,7 @@ impl ActorNode {
 		bucket_size: usize,
 	) -> Self {
 		let interface = ActorInterface {
+			overlay_node,
 			db,
 			actor_id,
 			actor_info,
@@ -638,7 +641,6 @@ impl ActorNode {
 		};
 		Self {
 			is_synchonizing: Arc::new(AtomicBool::new(false)),
-			overlay_node,
 			base: Arc::new(Node::new(
 				stop_flag,
 				node_id,
@@ -659,6 +661,7 @@ impl ActorNode {
 		let address = public_key.generate_address();
 
 		let interface = ActorInterface {
+			overlay_node,
 			db,
 			actor_id,
 			actor_info,
@@ -667,7 +670,6 @@ impl ActorNode {
 		};
 		Self {
 			is_synchonizing: Arc::new(AtomicBool::new(false)),
-			overlay_node,
 			base: Arc::new(Node::new(
 				stop_flag,
 				address,

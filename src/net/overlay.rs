@@ -6,7 +6,7 @@ use std::{
 	collections::HashMap,
 	net::SocketAddr,
 	str::FromStr,
-	sync::{atomic::*, Arc, Mutex as StdMutex},
+	sync::{atomic::*, Arc, Mutex as StdMutex, OnceLock},
 };
 
 use async_trait::async_trait;
@@ -50,6 +50,7 @@ pub struct OverlayNode {
 }
 
 pub(super) struct OverlayInterface {
+	node: OnceLock<Option<Arc<OverlayNode>>>,
 	db: Database,
 	pub(super) actor_nodes: Mutex<HashMap<IdType, Arc<ActorNode>>>,
 	max_idle_time: usize,
@@ -59,6 +60,14 @@ pub(super) struct OverlayInterface {
 
 #[async_trait]
 impl NodeInterface for OverlayInterface {
+	async fn close(&self) {
+		let mut actor_nodes = self.actor_nodes.lock().await;
+		for (_, actor_node) in actor_nodes.drain() {
+			actor_node.close().await;
+		}
+		let _ = self.node.set(None);
+	}
+
 	async fn exchange(
 		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
 	) -> sstp::Result<Vec<u8>> {
@@ -74,9 +83,6 @@ impl NodeInterface for OverlayInterface {
 		response.remove(0);
 		return Ok(response);
 	}
-
-	///
-	async fn find_near_connection(&self, bit: u8) -> Option<NodeContactInfo> { None }
 
 	async fn find_value(&self, value_type: u8, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		if value_type > 0 {
@@ -122,6 +128,15 @@ impl NodeInterface for OverlayInterface {
 		Ok(Some(bincode::serialize(&value).unwrap()))
 	}
 
+	fn overlay_node(&self) -> Arc<OverlayNode> {
+		self.node
+			.get()
+			.expect("missing node in overlay interface")
+			.as_ref()
+			.expect("overlay interface already closed")
+			.clone()
+	}
+
 	async fn send(
 		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
 	) -> sstp::Result<()> {
@@ -160,6 +175,8 @@ impl<'a> AsyncIterator for FindActorIter<'a> {
 }
 
 impl OverlayNode {
+	pub async fn close(self: Arc<Self>) { self.base.close().await; }
+
 	pub async fn start(
 		stop_flag: Arc<AtomicBool>, node_id: IdType, contact_info: ContactInfo,
 		private_key: PrivateKey, db: Database, config: &Config,
@@ -186,6 +203,7 @@ impl OverlayNode {
 				node_id,
 				socket.clone(),
 				OverlayInterface {
+					node: OnceLock::new(),
 					db,
 					last_message_time: StdMutex::new(SystemTime::now()),
 					max_idle_time: config.udp_max_idle_time,
@@ -195,6 +213,7 @@ impl OverlayNode {
 			)),
 			bootstrap_nodes,
 		});
+		this.base.interface.node.set(Some(this.clone()));
 
 		let this2 = this.clone();
 		socket.listen(move |connection| {

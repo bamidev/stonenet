@@ -23,7 +23,7 @@ pub type Identity = PublicKey;
 #[derive(Debug)]
 pub struct PublicKeyError(ed25519_dalek::SignatureError);
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct PrivateKey {
 	inner: ed25519_dalek::SigningKey,
 	#[serde(skip_serializing)]
@@ -31,7 +31,7 @@ pub struct PrivateKey {
 }
 pub type KeypairError = ed25519_dalek::SignatureError;
 
-#[derive(Zeroize)]
+#[derive(Debug, Zeroize)]
 #[zeroize(drop)]
 struct PrivateKeyCopy([u8; ed25519_dalek::SECRET_KEY_LENGTH]);
 

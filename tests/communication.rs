@@ -24,7 +24,7 @@ use stonenetd::{
 
 
 fn initialize_rng() -> ChaCha8Rng {
-	let seed: <ChaCha8Rng as SeedableRng>::Seed = Default::default();
+	let seed = <ChaCha8Rng as SeedableRng>::Seed::default();
 	ChaCha8Rng::from_seed(seed)
 }
 
@@ -304,6 +304,9 @@ Hoi ik ben Kees!
 	}
 
 	stop_flag.store(true, Ordering::Relaxed);
+	node1.close().await;
+	node2.close().await;
+	bootstrap_node.close().await;
 	remove_file("/tmp/bootstrap.sqlite").unwrap();
 	remove_file("/tmp/node1.sqlite").unwrap();
 	remove_file("/tmp/node2.sqlite").unwrap();
