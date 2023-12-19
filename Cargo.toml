@@ -69,6 +69,7 @@ assets = [
 	["assets/empty", "var/lib/stonenet/db.sqlite", "644"],
 	["static/**/*", "usr/share/stonenet/static", "644"],
 	["templates/**/*", "usr/share/stonenet/templates", "644"],
+	["assets/generic/xdg/stonenet.desktop", "usr/share/applications/", "644"],
 ]
 depends = ["libsqlite3-0"]
 maintainer-scripts = "assets/debian"

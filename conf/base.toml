@@ -1,3 +1,6 @@
+# The filepath of the SQLite database that stores all media content.
+database_path = "/var/lib/stonenet/db.sqlite"
+
 # The IPv4 address to bind to.
 ipv4_address = "0.0.0.0"
 

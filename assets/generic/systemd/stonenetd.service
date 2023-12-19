@@ -1,0 +1,14 @@
+[Unit]
+Description=Stonenet Daemon
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+WorkingDirectory=/usr/local/share/stonenet
+Type=simple
+ExecStart=/usr/local/bin/stonenetd
+Environment=RUST_LOG=info
+StandardError=file:/var/log/stonenet.log
+SyslogIdentifier=stonenetd
