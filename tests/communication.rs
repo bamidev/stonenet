@@ -84,7 +84,7 @@ async fn test_data_synchronization() {
 	let config1 = Config::default();
 	let mut config2 = Config::default();
 	config2.bootstrap_nodes = vec!["127.0.0.1:37337".to_string()];
-	let _bootstrap_node = load_test_node(
+	let bootstrap_node = load_test_node(
 		stop_flag.clone(),
 		&mut rng,
 		&config1,
@@ -98,7 +98,7 @@ async fn test_data_synchronization() {
 		&mut rng,
 		&config2,
 		37338,
-		Openness::Punchable,
+		Openness::Unidirectional,
 		"/tmp/node1.sqlite",
 	)
 	.await;

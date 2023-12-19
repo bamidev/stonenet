@@ -126,12 +126,6 @@ pub enum Openness {
 	Bidirectional  = 0,
 	/// Allowed to initiate connections, but not able to accept any.
 	Unidirectional = 1,
-	/// Allowed to initiate connections, but not able to accept any under normal
-	/// circumstances. However, a connection can be opened through a hole-punch
-	/// technique.
-	Punchable      = 2,
-	// FIXME: THe Punchable level can go. Only the connection initiator needs to support hole punching, not the recipient node.
-	// It can be a configuration option
 }
 
 
@@ -140,29 +134,33 @@ fn distance(a: &IdType, b: &IdType) -> BigUint { a.distance(b) }
 
 
 impl ContactInfo {
-	pub fn is_open_to_hole_punching(&self) -> bool {
-		if let Some(entry) = &self.ipv4 {
-			if let Some(a) = &entry.availability.udp {
-				if a.openness != Openness::Unidirectional {
-					return true;
+	pub fn is_open_to_reversed_connections(&self, other: &ContactInfo) -> bool {
+		if let Some(entry_a) = &self.ipv4 {
+			if let Some(entry_b) = &other.ipv4 {
+				if let Some(a) = &entry_a.availability.udp {
+					if entry_b.availability.udp.is_some() && a.openness == Openness::Bidirectional {
+						return true;
+					}
 				}
-			}
-			if let Some(a) = &entry.availability.tcp {
-				if a.openness != Openness::Unidirectional {
-					return true;
+				if let Some(a) = &entry_a.availability.tcp {
+					if entry_b.availability.tcp.is_some() && a.openness == Openness::Bidirectional {
+						return true;
+					}
 				}
 			}
 		}
 
-		if let Some(entry) = &self.ipv6 {
-			if let Some(a) = &entry.availability.udp {
-				if a.openness != Openness::Unidirectional {
-					return true;
+		if let Some(entry_a) = &self.ipv6 {
+			if let Some(entry_b) = &other.ipv6 {
+				if let Some(a) = &entry_a.availability.udp {
+					if entry_b.availability.udp.is_some() && a.openness == Openness::Bidirectional {
+						return true;
+					}
 				}
-			}
-			if let Some(a) = &entry.availability.tcp {
-				if a.openness != Openness::Unidirectional {
-					return true;
+				if let Some(a) = &entry_a.availability.tcp {
+					if entry_b.availability.tcp.is_some() && a.openness == Openness::Bidirectional {
+						return true;
+					}
 				}
 			}
 		}
@@ -340,7 +338,6 @@ impl fmt::Display for Openness {
 		match self {
 			Openness::Bidirectional => write!(f, "bidirectional"),
 			Openness::Unidirectional => write!(f, "unidirectional"),
-			Openness::Punchable => write!(f, "punchable"),
 		}
 	}
 }

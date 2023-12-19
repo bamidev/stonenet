@@ -393,7 +393,7 @@ impl ActorNode {
 				Some(profile) => return Some(profile),
 			}
 		}
-		// Try again. The 'find value' procedure is able to connect to 'punchable'
+		// Try again. The 'find value' procedure is able to connect to 'unidirectional'
 		// nodes.
 		self.find_object(&self.base.interface.actor_info.first_object)
 			.await

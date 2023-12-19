@@ -219,12 +219,12 @@ impl OverlayNode {
 		socket.listen(move |connection| {
 			let this3 = this2.clone();
 			tokio::spawn(async move {
-				// Check if connection is expected by a hole punch request
+				// Check if reversed connection is expected
 				{
 					let mut expected = this3.base.expected_connections.lock().await;
 					if let Some(tx) = expected.remove(connection.their_node_id()) {
 						if tx.send(connection).is_err() {
-							error!("Unable to send connection to hole punch origin node.")
+							error!("Unable to send requested reverse connection to origin node.")
 						}
 						return;
 					}
@@ -489,7 +489,7 @@ impl OverlayNode {
 
 			fingers_iter = new_fingers.into_iter();
 		}
-		None
+		//None
 	}
 
 	pub async fn get_actor_node(&self, actor_id: &IdType) -> Option<Arc<ActorNode>> {
@@ -696,8 +696,8 @@ impl OverlayNode {
 								self.base.socket.our_contact_info().await.ipv4
 							{
 								if let Some(availability) = ipv4_contact_info.availability.udp {
-									if availability.openness == Openness::Punchable {
-										self.start_connection_for_hole_punching(stop_flag.clone());
+									if availability.openness == Openness::Unidirectional {
+										self.start_reverse_connection(stop_flag.clone());
 									}
 								}
 							}
@@ -802,7 +802,7 @@ impl OverlayNode {
 			.collect()
 	}
 
-	fn maintain_connection_for_hole_punching(
+	fn maintain_reverse_connection(
 		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, mut connection: Box<Connection>,
 	) {
 		let this = self.clone();
@@ -811,7 +811,7 @@ impl OverlayNode {
 
 			// After the connection has closed, try to find a new one.
 			if !stop_flag.load(Ordering::Relaxed) {
-				this.start_connection_for_hole_punching(stop_flag);
+				this.start_reverse_connection(stop_flag);
 			}
 		});
 	}
@@ -868,7 +868,7 @@ impl OverlayNode {
 		});
 	}
 
-	fn start_connection_for_hole_punching(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) {
+	fn start_reverse_connection(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) {
 		let this = self.clone();
 		spawn(async move {
 			// Try to find a bidirectional node to open a connection to it
@@ -893,7 +893,7 @@ impl OverlayNode {
 									this.base.exchange_keep_alive_on_connection(&mut c).await
 								{
 									if success {
-										this.maintain_connection_for_hole_punching(stop_flag, c);
+										this.maintain_reverse_connection(stop_flag, c);
 										break;
 									} else {
 										c.close().await;

@@ -51,13 +51,8 @@ pub struct ContactStrategy {
 #[derive(Clone)]
 pub enum ContactStrategyMethod {
 	Direct,
-	// Punch a hole through a relay node for which a connection is provided.
-	PunchHole,
-	// TODO: Generally speaking, a contact strategy is not accessed from multiple threads. It is
-	// just that the connection, once chosen, needs to be used across possibly another thread.
-	// That's what the mutex is for. Check to see if this design can be made more efficient in
-	// some way.
-	Relay(Arc<Mutex<Box<Connection>>>),
+	// Request the other node to contact us
+	Reversed,
 }
 
 #[derive(Clone)]
@@ -82,8 +77,7 @@ where
 
 	visited: Vec<(IdType, ContactOption)>,
 	candidates: VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
-	connection_for_hole_punching: Option<(IdType, Box<Connection>)>,
-	open_for_hole_punching: bool,
+	connection_for_reverse_connection_requests: Option<(IdType, Box<Connection>)>,
 }
 
 pub struct Node<I>
@@ -124,22 +118,12 @@ pub trait NodeInterface {
 pub fn differs_at_bit(a: &IdType, b: &IdType) -> Option<u8> { a.differs_at_bit(b) }
 
 impl ContactStrategy {
-	/// Tries to construct a plan to contact the given target.
-	/// If it is decided that we don't have any contact options, returns None.
-	/// The hole punching strategy is only used when a connection is provided.
-	fn new(
-		connection: Option<&Arc<Mutex<Box<Connection>>>>, contact: ContactOption,
-		openness: Openness,
-	) -> Option<Self> {
+	fn new(contact: ContactOption, openness: Openness) -> Option<Self> {
 		Some(Self {
 			contact,
 			method: match openness {
 				Openness::Bidirectional => ContactStrategyMethod::Direct,
-				Openness::Punchable => ContactStrategyMethod::PunchHole,
-				Openness::Unidirectional => match connection {
-					Some(c) => ContactStrategyMethod::Relay(c.clone()),
-					None => return None,
-				},
+				Openness::Unidirectional => ContactStrategyMethod::Reversed,
 			},
 		})
 	}
@@ -155,8 +139,7 @@ impl ContactStrategyMethod {
 	pub fn to_byte(&self) -> u8 {
 		match self {
 			Self::Direct => 0,
-			Self::PunchHole => 1,
-			Self::Relay(_) => 2,
+			Self::Reversed => 1,
 		}
 	}
 }
@@ -173,8 +156,7 @@ impl fmt::Display for ContactStrategyMethod {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Self::Direct => write!(f, "direct"),
-			Self::Relay(_) => write!(f, "relay"),
-			Self::PunchHole => write!(f, "punch hole"),
+			Self::Reversed => write!(f, "reversed"),
 		}
 	}
 }
@@ -186,9 +168,9 @@ where
 	pub fn visited(&self) -> &[(IdType, ContactOption)] { &self.visited }
 
 	pub async fn close(&mut self) {
-		if let Some((_, connection)) = self.connection_for_hole_punching.as_mut() {
+		if let Some((_, connection)) = self.connection_for_reverse_connection_requests.as_mut() {
 			connection.close().await;
-			self.connection_for_hole_punching = None;
+			self.connection_for_reverse_connection_requests = None;
 		}
 	}
 }
@@ -199,7 +181,7 @@ where
 	I: NodeInterface + Send + Sync,
 {
 	fn drop(&mut self) {
-		if self.connection_for_hole_punching.is_some() {
+		if self.connection_for_reverse_connection_requests.is_some() {
 			panic!("FindValueIter not closed before drop");
 		}
 	}
@@ -262,24 +244,32 @@ where
 		match &strategy.method {
 			ContactStrategyMethod::Direct =>
 				self.connect_at(&strategy.contact, Some(node_id)).await,
-			ContactStrategyMethod::PunchHole => {
+			ContactStrategyMethod::Reversed => {
 				if let Some(mut relay_connection) = last_open_connection {
 					if let Some(target_connection) = self
-						.punch_hole(&mut relay_connection, node_id, &strategy.contact)
+						.request_reversed_connection(
+							&mut relay_connection,
+							node_id,
+							&strategy.contact,
+						)
 						.await
 					{
 						Some(target_connection)
 					} else {
 						None
 					}
-				// If no connection to perform the hole punching on is provided,
-				// try to obtain one from the overlay network
+				// If no connection to perform to obtain reversed connection
+				// with is provided, try to obtain one from the overlay network
 				} else {
 					if let Some(mut relay_connection) =
 						overlay_node.find_connection_for_node(node_id).await
 					{
 						let tc = if let Some(target_connection) = self
-							.punch_hole(&mut relay_connection, node_id, &strategy.contact)
+							.request_reversed_connection(
+								&mut relay_connection,
+								node_id,
+								&strategy.contact,
+							)
 							.await
 						{
 							Some(target_connection)
@@ -292,11 +282,6 @@ where
 						None
 					}
 				}
-			}
-			ContactStrategyMethod::Relay(_intermediary_connection) => {
-				// TODO: Return some sort of wrapper that locks the mutex and provides the
-				// connection
-				None
 			}
 		}
 	}
@@ -516,10 +501,10 @@ where
 		Some(())
 	}
 
-	async fn exchange_punch_hole_on_connection(
+	async fn exchange_initiate_connection_on_connection(
 		&self, connection: &mut Connection, source_node_id: IdType, source: ContactOption,
 	) -> Option<bool> {
-		let request = PunchHoleRequest {
+		let request = InitiateConnectionRequest {
 			source_node_id,
 			source,
 		};
@@ -531,7 +516,7 @@ where
 			)
 			.await?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
-		let response: PunchHoleResponse = self
+		let response: InitiateConnectionResponse = self
 			.handle_connection_issue(
 				result,
 				connection.their_node_id(),
@@ -541,12 +526,12 @@ where
 		Some(response.ok)
 	}
 
-	/// Asks a peer to relay a hole punch request to the destination target for
-	/// you.
-	async fn exchange_relay_punch_hole_request(
+	/// Asks a peer to relay an initiate connection request to the destination
+	/// target for you.
+	async fn exchange_relay_initiate_connection_request(
 		&self, relay_connection: &mut Connection, target: IdType, contact_option: ContactOption,
 	) -> Option<bool> {
-		let message = RelayPunchHoleRequest {
+		let message = RelayInitiateConnectionRequest {
 			target,
 			contact_option,
 		};
@@ -558,7 +543,7 @@ where
 			)
 			.await?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
-		let response: RelayPunchHoleResponse = self
+		let response: RelayInitiateConnectionResponse = self
 			.handle_connection_issue(
 				result,
 				&relay_connection.their_node_id(),
@@ -581,7 +566,7 @@ where
 				None => {}
 				Some((option, openness)) =>
 					if visited.iter().find(|v| v.1 == option).is_none() {
-						if let Some(strategy) = ContactStrategy::new(None, option, openness) {
+						if let Some(strategy) = ContactStrategy::new(option, openness) {
 							new_fingers.push((f.clone(), strategy));
 						}
 					},
@@ -594,7 +579,7 @@ where
 				None => {}
 				Some((option, openness)) =>
 					if visited.iter().find(|v| v.1 == option).is_none() {
-						if let Some(strategy) = ContactStrategy::new(None, option, openness) {
+						if let Some(strategy) = ContactStrategy::new(option, openness) {
 							new_fingers.push((c.clone(), strategy));
 						}
 					},
@@ -746,7 +731,7 @@ where
 		let mut visited = Vec::<(IdType, ContactOption)>::new();
 		let mut candidates = VecDeque::with_capacity(fingers.len());
 		for (d, n) in Self::sort_fingers(id, fingers).into_iter() {
-			match self.pick_contact_strategy(&n.contact_info, None) {
+			match self.pick_contact_strategy(&n.contact_info) {
 				None => {}
 				Some(strategy) => candidates.push_back((d, n, strategy)),
 			}
@@ -758,9 +743,8 @@ where
 
 		let mut i = 0;
 		let overlay_node = self.interface.overlay_node();
-		// FIXME: The first candidate node may not have a bidirectional contact option.
-		// If a punchable candidate is encountered and we don't have an open connection
-		// yet, open a connection to the first bidirectional candidate.
+		// FIXME: Search for a bidirectional node on the overlay network if needed, just
+		// like the find value iterator does already.
 		while candidates.len() > 0 && i < visit_limit {
 			let (dist, candidate_contact, strategy) = candidates[0].clone();
 			if visited
@@ -848,7 +832,7 @@ where
 		// Initialize the candidates by picking a contact strategy for each candidate.
 		let mut candidates = VecDeque::with_capacity(fingers.len());
 		for (d, n) in Self::sort_fingers(id, fingers).into_iter() {
-			match self.pick_contact_strategy(&n.contact_info, None) {
+			match self.pick_contact_strategy(&n.contact_info) {
 				None => {}
 				Some(strategy) => {
 					candidates.push_back((d, n, strategy));
@@ -866,8 +850,7 @@ where
 			narrow_down,
 			visited: Vec::with_capacity(visit_limit),
 			candidates,
-			connection_for_hole_punching: None,
-			open_for_hole_punching: self.contact_info().await.is_open_to_hole_punching(),
+			connection_for_reverse_connection_requests: None,
 		}
 	}
 
@@ -1035,11 +1018,9 @@ where
 		self.socket.pick_contact_option(target)
 	}
 
-	fn pick_contact_strategy(
-		&self, target: &ContactInfo, connection: Option<&Arc<Mutex<Box<Connection>>>>,
-	) -> Option<ContactStrategy> {
+	fn pick_contact_strategy(&self, target: &ContactInfo) -> Option<ContactStrategy> {
 		let (option, openness) = self.pick_contact_option(target)?;
-		ContactStrategy::new(connection, option, openness)
+		ContactStrategy::new(option, openness)
 	}
 
 	async fn process_find_node_request(
@@ -1226,9 +1207,10 @@ where
 				self.process_find_value_request(buffer, overlay_node, actor_id)
 					.await,
 			NETWORK_MESSAGE_TYPE_PUNCH_HOLE_REQUEST =>
-				self.process_punch_hole_request(buffer, overlay_node).await,
+				self.process_initiate_connection_request(buffer, overlay_node)
+					.await,
 			NETWORK_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST =>
-				self.process_relay_punch_hole_request(buffer).await,
+				self.process_relay_initiate_connection_request(buffer).await,
 			NETWORK_MESSAGE_TYPE_KEEP_ALIVE_REQUEST =>
 				self.process_keep_alive_request(&connection, buffer, node_info)
 					.await,
@@ -1237,7 +1219,7 @@ where
 		Some(result)
 	}
 
-	async fn process_punch_hole_request(
+	async fn process_initiate_connection_request(
 		self: &Arc<Self>, buffer: &[u8], overlay_node: Arc<OverlayNode>,
 	) -> Option<Vec<u8>> {
 		#[inline(always)]
@@ -1249,14 +1231,14 @@ where
 			})
 		}
 
-		let request: PunchHoleRequest = match bincode::deserialize(buffer) {
+		let request: InitiateConnectionRequest = match bincode::deserialize(buffer) {
 			Err(e) => {
-				warn!("Malformed punch hole request: {}", e);
+				warn!("Malformed initiate connection request: {}", e);
 				return None;
 			}
 			Ok(r) => r,
 		};
-		let mut response = PunchHoleResponse { ok: true };
+		let mut response = InitiateConnectionResponse { ok: true };
 
 		if let Some(connection) = self
 			.connect_at(&request.source, Some(&request.source_node_id))
@@ -1270,7 +1252,7 @@ where
 		Some(bincode::serialize(&response).unwrap())
 	}
 
-	async fn punch_hole(
+	async fn request_reversed_connection(
 		&self, relay_connection: &mut Connection, target: &IdType, contact_option: &ContactOption,
 	) -> Option<Box<Connection>> {
 		// FIXME: It would be much faster if we didn't have to wait for a timeout before
@@ -1286,7 +1268,10 @@ where
 			// It would leave the other task that's still waiting on the previous connection
 			// hanging.
 			if expected_connections.contains_key(target) {
-				error!("Attempted to punch more than one hole at node {}", target);
+				error!(
+					"Attempted to request reversed connection from same node more than once: {}",
+					target
+				);
 				return None;
 			}
 			expected_connections.insert(target.clone(), tx);
@@ -1294,7 +1279,7 @@ where
 
 		// Contact the relay node
 		let knows_target = self
-			.exchange_relay_punch_hole_request(
+			.exchange_relay_initiate_connection_request(
 				relay_connection,
 				target.clone(),
 				contact_option.clone(),
@@ -1331,19 +1316,19 @@ where
 		Some(latency)
 	}
 
-	async fn process_relay_punch_hole_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
-		let request: RelayPunchHoleRequest = match bincode::deserialize(buffer) {
+	async fn process_relay_initiate_connection_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
+		let request: RelayInitiateConnectionRequest = match bincode::deserialize(buffer) {
 			Err(e) => {
-				warn!("Malformed relay punch hole request: {}", e);
+				warn!("Malformed relay initiate connection request: {}", e);
 				return None;
 			}
 			Ok(r) => r,
 		};
-		let mut response = RelayPunchHoleResponse { ok: true };
+		let mut response = RelayInitiateConnectionResponse { ok: true };
 
 		if let Some(connection_mutex) = self.find_connection_in_buckets(&request.target).await {
 			let mut connection = connection_mutex.lock().await;
-			self.exchange_punch_hole_on_connection(
+			self.exchange_initiate_connection_on_connection(
 				&mut connection,
 				request.target,
 				request.contact_option,
@@ -1516,10 +1501,16 @@ where
 
 			// Use the already found contact option to exchange the find value request.
 			let mut special_connection: Option<Box<Connection>> = None;
-			let mut connection_for_hole_punching = if self.open_for_hole_punching
-				&& strategy.method != ContactStrategyMethod::Direct
+			let mut reversed_connection = if strategy.method == ContactStrategyMethod::Reversed
+				&& self
+					.node
+					.contact_info()
+					.await
+					.is_open_to_reversed_connections(&candidate_contact.contact_info)
 			{
-				if let Some((node_id, connection)) = &mut self.connection_for_hole_punching {
+				if let Some((node_id, connection)) =
+					&mut self.connection_for_reverse_connection_requests
+				{
 					if node_id == &candidate_contact.node_id {
 						Some(connection)
 					} else {
@@ -1536,9 +1527,7 @@ where
 				.connect_node(
 					&candidate_contact.node_id,
 					&strategy,
-					connection_for_hole_punching
-						.as_deref_mut()
-						.map(|c| c.as_mut()),
+					reversed_connection.as_deref_mut().map(|c| c.as_mut()),
 					&self.overlay_node,
 				)
 				.await
@@ -1593,11 +1582,11 @@ where
 
 								if let Some(connected_contact) = find_node_response.connection {
 									if let Some((_, previous_connection)) =
-										self.connection_for_hole_punching.as_mut()
+										self.connection_for_reverse_connection_requests.as_mut()
 									{
 										previous_connection.close().await;
 									}
-									self.connection_for_hole_punching =
+									self.connection_for_reverse_connection_requests =
 										Some((connected_contact.node_id, connection));
 								} else {
 									connection.close().await;

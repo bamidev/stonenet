@@ -300,53 +300,49 @@ pub fn contact_info_from_config(config: &Config) -> ContactInfo {
 	// IPv4
 	match &config.ipv4_address {
 		None => {}
-		Some(address) => {
-			contact_info.ipv4 = Some(ContactInfoEntry {
-				addr: address.parse().expect("invalid IPv4 address configured"),
-				availability: IpAvailability {
-					udp: config
-						.ipv4_udp_openness
-						.as_ref()
-						.map(|o| TransportAvailabilityEntry {
-							port: config.ipv4_udp_port,
-							openness: parse_openness(o),
+		Some(address) =>
+			contact_info.ipv4 =
+				Some(ContactInfoEntry {
+					addr: address.parse().expect("invalid IPv4 address configured"),
+					availability: IpAvailability {
+						udp: config.ipv4_udp_openness.as_ref().map(|o| {
+							TransportAvailabilityEntry {
+								port: config.ipv4_udp_port,
+								openness: parse_openness(o),
+							}
 						}),
-					tcp: config.ipv4_tcp_openness.as_ref().map(|_o| {
-						TransportAvailabilityEntry {
-							port: config.ipv4_tcp_port,
-							openness: Openness::Unidirectional, /* FIXME: TCP hole punching is
-							                                     * not working yet at the moment. */
-						}
-					}),
-				},
-			})
-		}
+						tcp: config.ipv4_tcp_openness.as_ref().map(|o| {
+							TransportAvailabilityEntry {
+								port: config.ipv4_tcp_port,
+								openness: parse_openness(o),
+							}
+						}),
+					},
+				}),
 	}
 
 	// IPv6
 	match &config.ipv6_address {
 		None => {}
-		Some(address) => {
-			contact_info.ipv6 = Some(ContactInfoEntry {
-				addr: address.parse().expect("invalid IPv6 address configured"),
-				availability: IpAvailability {
-					udp: config
-						.ipv6_udp_openness
-						.as_ref()
-						.map(|o| TransportAvailabilityEntry {
-							port: config.ipv6_udp_port,
-							openness: parse_openness(o),
+		Some(address) =>
+			contact_info.ipv6 =
+				Some(ContactInfoEntry {
+					addr: address.parse().expect("invalid IPv6 address configured"),
+					availability: IpAvailability {
+						udp: config.ipv6_udp_openness.as_ref().map(|o| {
+							TransportAvailabilityEntry {
+								port: config.ipv6_udp_port,
+								openness: parse_openness(o),
+							}
 						}),
-					tcp: config.ipv6_tcp_openness.as_ref().map(|_| {
-						TransportAvailabilityEntry {
-							port: config.ipv6_tcp_port,
-							openness: Openness::Unidirectional, /* FIXME: TCP hole punching is
-							                                     * not working yet at the moment. */
-						}
-					}),
-				},
-			})
-		}
+						tcp: config.ipv6_tcp_openness.as_ref().map(|o| {
+							TransportAvailabilityEntry {
+								port: config.ipv6_tcp_port,
+								openness: parse_openness(o),
+							}
+						}),
+					},
+				}),
 	}
 
 	contact_info
@@ -2081,9 +2077,6 @@ impl SocketCollection {
 		if let Some(option) = self.pick_contact_option_at_openness(target, Openness::Bidirectional)
 		{
 			return Some((option, Openness::Bidirectional));
-		}
-		if let Some(option) = self.pick_contact_option_at_openness(target, Openness::Punchable) {
-			return Some((option, Openness::Punchable));
 		}
 		if let Some(option) = self.pick_contact_option_at_openness(target, Openness::Unidirectional)
 		{

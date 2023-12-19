@@ -139,6 +139,7 @@ async fn index_post(
 pub async fn spawn(g: Api) -> (Shutdown, JoinHandle<()>) {
 	// Set up rocket's config to not detect ctrlc itself
 	let mut config = rocket::Config::default();
+	config.port = 37338;
 	config.shutdown.ctrlc = false;
 	#[cfg(unix)]
 	config.shutdown.signals.clear();

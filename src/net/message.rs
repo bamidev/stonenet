@@ -179,28 +179,28 @@ pub struct GetProfileResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PunchHoleMessage {}
+pub struct InitiateConnectionMessage {}
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PunchHoleRequest {
+pub struct InitiateConnectionRequest {
 	pub source_node_id: IdType,
 	pub source: ContactOption,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PunchHoleResponse {
+pub struct InitiateConnectionResponse {
 	pub ok: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RelayPunchHoleRequest {
+pub struct RelayInitiateConnectionRequest {
 	pub target: IdType,
 	pub contact_option: ContactOption,
 }
 
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RelayPunchHoleResponse {
+pub struct RelayInitiateConnectionResponse {
 	pub ok: bool,
 }
 
