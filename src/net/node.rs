@@ -1023,9 +1023,7 @@ where
 		ContactStrategy::new(option, openness)
 	}
 
-	async fn process_find_node_request(
-		&self, buffer: &[u8], actor_id: Option<&IdType>,
-	) -> Option<Vec<u8>> {
+	async fn process_find_node_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
 		let request: FindNodeRequest = match bincode::deserialize(buffer) {
 			Err(e) => {
 				error!("Malformed find node request: {}", e);
@@ -1201,8 +1199,7 @@ where
 	) -> Option<Option<Vec<u8>>> {
 		let result = match message_type {
 			NETWORK_MESSAGE_TYPE_PING_REQUEST => self.process_ping_request(address).await,
-			NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST =>
-				self.process_find_node_request(buffer, actor_id).await,
+			NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST => self.process_find_node_request(buffer).await,
 			NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST =>
 				self.process_find_value_request(buffer, overlay_node, actor_id)
 					.await,
@@ -1455,13 +1452,13 @@ impl<'a> AsyncIterator for AllFingersIter<'a> {
 			if let Some(contact) = self.bucket_iter.next() {
 				return Some(contact);
 			} else {
-				self.bucket_iter = self.buckets[self.global_index]
-					.lock()
-					.await
-					.all()
-					.into_iter();
 				if self.global_index > 0 {
 					self.global_index -= 1;
+					self.bucket_iter = self.buckets[self.global_index]
+						.lock()
+						.await
+						.all()
+						.into_iter();
 				} else {
 					break;
 				}

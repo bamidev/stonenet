@@ -358,5 +358,6 @@ mod tests {
 		let a = IdType::from_base58("DSLVRnqejmzQXKmoZ4KtfvvGLBSFwKJxKEQxnXJq1A8b").unwrap();
 		let b = IdType::from_base58("E7hinjgaQ7WfsNjos1FHYvHNCgHJfC9f29arA5QqtZw1").unwrap();
 		assert!(distance(&a, &b) > 0u32.into());
+		assert_eq!(distance(&a, &b), distance(&b, &a));
 	}
 }
