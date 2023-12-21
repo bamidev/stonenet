@@ -247,13 +247,13 @@ where
 				self.connect_at(&strategy.contact, Some(node_id)).await,
 			ContactStrategyMethod::Reversed => {
 				if let Some(mut relay_connection) = last_open_connection {
-					if let Some(target_connection) = self
 					let my_contact_info = self.contact_info().await;
 						let contact_me_option = ContactOption::new(SocketAddrV4::new(my_contact_info.ipv4.as_ref().unwrap().addr.clone().into(), my_contact_info.ipv4.unwrap().availability.udp.unwrap().port).into(), false);
 					if let Some(target_connection) = self.overlay_node().base
 						.request_reversed_connection(
 							&mut relay_connection,
 							node_id,
+							&contact_me_option,
 						)
 						.await
 					{
@@ -788,7 +788,10 @@ where
 						Some(response) => {
 							let mut new_fingers =
 								self.extract_fingers_from_response(&response, &visited);
-							new_fingers.retain(|f| &distance(id, &f.0.node_id) < &dist);
+							new_fingers.retain(|f| {
+								let finger_dist = distance(id, &f.0.node_id);
+								finger_dist < candidate_dist
+							});
 							Self::append_candidates(id, &mut found, &new_fingers);
 							while found.len() > result_limit {
 								found.pop_back();
