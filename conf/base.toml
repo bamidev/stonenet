@@ -27,9 +27,9 @@ ipv4_address = "0.0.0.0"
 #     works.
 # - unidirectional: This means the device is only capable of initiating outgoing
 #     connections.
-ipv4_udp_openness = "punchable"
+ipv4_udp_openness = "bidirectional"
 ipv4_tcp_openness = "unidirectional"
-ipv6_udp_openness = "punchable"
+ipv6_udp_openness = "bidirectional"
 ipv6_tcp_openness = "unidirectional"
 
 # The ports to bind to. If you comment any of them out, they will use a random

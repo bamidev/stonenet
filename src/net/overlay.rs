@@ -803,7 +803,7 @@ impl OverlayNode {
 	}
 
 	fn maintain_reverse_connection(
-		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, mut connection: Box<Connection>,
+		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, connection: Box<Connection>,
 	) {
 		let this = self.clone();
 		spawn(async move {

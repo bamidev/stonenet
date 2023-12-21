@@ -184,7 +184,7 @@ pub struct InitiateConnectionMessage {}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InitiateConnectionRequest {
 	pub source_node_id: IdType,
-	pub source: ContactOption,
+	pub source_contact_option: ContactOption,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

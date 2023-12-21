@@ -70,17 +70,18 @@ use crate::{
 	net::*,
 };
 
-const KEEP_ALIVE_IDLE_TIME: Duration = Duration::from_secs(10);
+const KEEP_ALIVE_IDLE_TIME: Duration = Duration::from_secs(120);
 const MESSAGE_TYPE_HELLO_REQUEST: u8 = 0;
 const MESSAGE_TYPE_HELLO_RESPONSE: u8 = 1;
 const MESSAGE_TYPE_DATA: u8 = 2;
 const MESSAGE_TYPE_ACK: u8 = 3;
 const MESSAGE_TYPE_CLOSE: u8 = 4;
+const MESSAGE_TYPE_PUNCH_HOLE: u8 = 5;
 /// If nothing was received on a TCP connection for 2 minutes, assume the
 /// connection is broken.
 const TCP_CONNECTION_TIMEOUT: u64 = 120;
 
-pub(super) const TIMEOUT: Duration = Duration::from_secs(2);
+pub(super) const TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Connection {
 	keep_alive_flag: AtomicBool,
@@ -150,6 +151,7 @@ pub enum Error {
 	/// There were less bytes in the packet than was expected.
 	PacketTooSmall,
 	Timeout,
+	DummyError
 }
 
 type HelloWatchReceiver = watch::Receiver<HelloWatchResult>;
@@ -374,6 +376,7 @@ impl fmt::Display for Error {
 		match self {
 			Self::IoError(e) => write!(f, "I/O error: {}", e),
 			Self::ConnectionClosed => write!(f, "connection has already been closed"),
+			Self::DummyError => write!(f, "dummy error"),
 			Self::EmptyAckMask => write!(f, "ack mask did not contain any missing packet bits"),
 			Self::InsecureConnection => write!(f, "connection not secure"),
 			Self::InvalidPublicKey => write!(f, "invalid public key"),
@@ -762,10 +765,10 @@ impl Connection {
 						Err(e) => {
 							match e {
 								Error::Timeout => {
-									// If `timeout` is less than `TIMEOUT`, we are just waiting
+									// If `timeout` is less than `requested_timeout`, we are just waiting
 									// one some possible out-of-order messages to still
 									// arive.
-									if timeout < TIMEOUT && !sent_missing_packet {
+									if timeout < requested_timeout && !sent_missing_packet {
 										break;
 									} else {
 										return Err(e);
@@ -889,7 +892,7 @@ impl Connection {
 				// moment to see if more packets are coming through. Then, we
 				// send our ack packet back.
 				if !sent_missing_packet && window_sequence == last_missing_packet_index {
-					timeout = TIMEOUT / 8;
+					timeout = requested_timeout / 8;
 				}
 
 				if packets_collected == max_packets_needed as u16 {
@@ -1404,7 +1407,7 @@ impl SessionData {
 	pub fn new_with_their_session(
 		their_session_id: u16, node_id: IdType, queues: QueueSenders,
 	) -> Self {
-		let (dummy_tx, _) = watch::channel(Err(Error::ConnectionClosed));
+		let (dummy_tx, _) = watch::channel(Err(Error::DummyError));
 		Self {
 			their_node_id: node_id,
 			their_session_id: Some(their_session_id),
@@ -1750,7 +1753,7 @@ impl Server {
 			None => return None,
 			Some(id) => id,
 		};
-		let (hello_tx, hello_rx) = watch::channel(Err(Error::ConnectionClosed));
+		let (hello_tx, hello_rx) = watch::channel(Err(Error::DummyError));
 		let (tx_queues, rx_queues) = Queues::channel(session_id);
 		let session_data = Arc::new(Mutex::new(SessionData::new(
 			client_node_id,
@@ -1764,6 +1767,15 @@ impl Server {
 	pub async fn our_contact_info(&self) -> ContactInfo {
 		self.our_contact_info.lock().await.clone()
 	}
+
+	pub async fn send_punch_hole_packet(&self, contact: &ContactOption) -> Result<bool> {
+		if let Some((tx, _rx)) = self.sockets.connect(contact).await? {
+			let buffer = vec![MESSAGE_TYPE_PUNCH_HOLE; 1];
+			tx.send(&buffer, TIMEOUT).await?;
+			return Ok(true);
+		}
+		Ok(false)
+}
 
 	async fn send_hello(
 		&self, socket: &dyn LinkSocketSender, private_key: &x25519::StaticSecret,
