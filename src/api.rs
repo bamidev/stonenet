@@ -507,8 +507,6 @@ impl Api {
 				next_object_sequence - 1,
 			)?;
 			let (hash, signature) = Self::sign_object(
-				&tx,
-				identity,
 				next_object_sequence,
 				&previous_hash,
 				created,
@@ -553,7 +551,7 @@ impl Api {
 
 	/// Calculates the signature of the s
 	fn sign_object(
-		tx: &rusqlite::Transaction, actor: &IdType, sequence: u64, previous_hash: &IdType,
+		sequence: u64, previous_hash: &IdType,
 		created: u64, payload: &ObjectPayload, private_key: &PrivateKey,
 	) -> db::Result<(IdType, Signature)> {
 		// Prepare data to be signed
@@ -578,7 +576,7 @@ impl Api {
 		let block_count = data.len() / BLOCK_SIZE + ((data.len() % BLOCK_SIZE) > 0) as usize;
 		let mut blocks: Vec<&[u8]> = Vec::with_capacity(block_count);
 		let mut file = File {
-			mime_type: "".to_string(),
+			mime_type: mime_type.to_string(),
 			blocks: Vec::with_capacity(block_count),
 		};
 		let mut result = Vec::with_capacity(block_count);

@@ -1,6 +1,4 @@
 use std::{
-	alloc::System,
-	cell::UnsafeCell,
 	collections::{HashMap, VecDeque},
 	ops::Deref,
 	sync::{atomic::*, Arc},
@@ -17,7 +15,7 @@ use tokio::{
 	sync::{oneshot, Mutex},
 	time::sleep,
 };
-use unsafe_send_sync::UnsafeSend;
+
 
 use super::{
 	message::*,
@@ -1349,7 +1347,7 @@ where
 		// Wait until a connection is received, and return that.
 		match rx.await {
 			Ok(connection) => Some(connection),
-			Err(e) => {
+			Err(_) => {
 				debug!("Didn't receive reverse connection: timeout.");
 				None
 			}
@@ -1599,13 +1597,13 @@ where
 				.await
 			{
 				None => {
-					if let Some(mut sc) = special_connection.as_mut() {
+					if let Some(sc) = special_connection.as_mut() {
 						sc.close().await;
 					}
 					warn!("Disregarding finger {}", &candidate_contact.contact_info)
 				}
 				Some(mut connection) => {
-					if let Some(mut sc) = special_connection.as_mut() {
+					if let Some(sc) = special_connection.as_mut() {
 						sc.close().await;
 					}
 

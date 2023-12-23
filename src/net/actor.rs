@@ -964,7 +964,6 @@ impl ActorNode {
 		let object_result = self
 			.process_publish_object_request_receive_object(c, &request.id, needed, public_key)
 			.await;
-		debug!("process_publish_object_request3 {:?}", &object_result);
 
 		// Forget we were downloading this object
 		let mut downloading_objects = self.downloading_objects.lock().await;
@@ -975,7 +974,6 @@ impl ActorNode {
 		// Store & rebroadcast object if needed
 		if let Some(object) = object_result {
 			let this = self.clone();
-			debug!("process_publish_object_request4");
 			if let Err(e) = this.process_new_object(c, &request.id, &object).await {
 				error!("Database error while processing new object: {}", e);
 			}

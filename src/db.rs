@@ -1361,7 +1361,7 @@ impl Connection {
 	}
 
 	fn _store_post_files(
-		tx: &impl DerefConnection, actor_id: i64, post_id: i64, files: &[IdType],
+		tx: &impl DerefConnection, _actor_id: i64, post_id: i64, files: &[IdType],
 	) -> rusqlite::Result<()> {
 		for i in 0..files.len() {
 			let file = &files[i];
@@ -1951,8 +1951,7 @@ impl Connection {
 	pub fn fetch_profile(&self, actor_id: &IdType) -> Result<Option<ProfileObject>> {
 		let mut stat = self.prepare(
 			r#"
-			SELECT po.name, po.avatar_file_hash, af.mime_type, af.block_count,
-			       po.wallpaper_file_hash, wf.mime_type, wf.block_count, po.description_block_hash
+			SELECT po.name, po.avatar_file_hash, po.wallpaper_file_hash, po.description_block_hash
 			FROM profile_object AS po
 			INNER JOIN object AS o ON po.object_id = o.rowid
 			INNER JOIN identity AS i ON o.actor_id = i.rowid
@@ -1966,12 +1965,8 @@ impl Connection {
 		if let Some(row) = rows.next()? {
 			let name: String = row.get(0)?;
 			let avatar_hash: Option<String> = row.get(1)?;
-			let avatar_mime_type: Option<String> = row.get(2)?;
-			let avatar_block_count: Option<i64> = row.get(3)?;
-			let wallpaper_hash: Option<String> = row.get(4)?;
-			let wallpaper_mime_type: Option<String> = row.get(5)?;
-			let wallpaper_block_count: Option<i64> = row.get(6)?;
-			let description_hash: Option<String> = row.get(7)?;
+			let wallpaper_hash: Option<String> = row.get(2)?;
+			let description_hash: Option<String> = row.get(3)?;
 			let avatar_id = match avatar_hash.as_ref() {
 				None => None,
 				Some(hash) => Some(IdType::from_base58(&hash)?),
@@ -2286,7 +2281,7 @@ impl Connection {
 		&mut self, actor_id: &IdType, id: &IdType, object: &Object, verified_from_start: bool,
 	) -> self::Result<bool> {
 		let tx = self.0.transaction()?;
-		let object_id = match Self::_store_object(&tx, actor_id, id, object, verified_from_start) {
+		let _object_id = match Self::_store_object(&tx, actor_id, id, object, verified_from_start) {
 			Ok(id) => id,
 			// Just return false if the object already existed
 			Err(e) => match &e {
@@ -2400,7 +2395,7 @@ mod tests {
 		let buffer = vec![2u8; 64];
 		let signature = Signature::from_bytes(buffer.try_into().unwrap());
 
-		let object = Object {
+		let _object = Object {
 			created: Utc::now().timestamp_millis() as _,
 			previous_hash: IdType::default(),
 			signature,
