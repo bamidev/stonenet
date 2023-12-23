@@ -74,8 +74,7 @@ impl PrivateKey {
 	where
 		R: CryptoRng + RngCore,
 	{
-		let mut rng = OsRng {};
-		Self::new(ed25519_dalek::SigningKey::generate(&mut rng))
+		Self::new(ed25519_dalek::SigningKey::generate(rng))
 	}
 
 	fn new(inner: ed25519_dalek::SigningKey) -> Self {

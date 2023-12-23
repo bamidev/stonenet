@@ -194,6 +194,7 @@ impl OverlayNode {
 			node_id.clone(),
 			contact_info.clone(),
 			private_key,
+			sstp::DEFAULT_TIMEOUT,
 		)
 		.await?;
 
@@ -653,7 +654,7 @@ impl OverlayNode {
 		// TODO: Find remembered nodes from the database and try them out first. This is
 		// currently not implemented yet.
 
-		self.maintain_node_connections(stop_flag.clone());
+		self.maintain_node_connections();
 
 		let mut i = 0;
 		// TODO: Contact all bootstrap nodes
@@ -697,7 +698,7 @@ impl OverlayNode {
 							{
 								if let Some(availability) = ipv4_contact_info.availability.udp {
 									if availability.openness == Openness::Unidirectional {
-										self.start_reverse_connection(stop_flag.clone());
+										self.obtain_reverse_connection().await;
 									}
 								}
 							}
@@ -802,26 +803,24 @@ impl OverlayNode {
 			.collect()
 	}
 
-	fn maintain_reverse_connection(
-		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, connection: Box<Connection>,
-	) {
+	fn maintain_reverse_connection(self: &Arc<Self>, connection: Box<Connection>) {
 		let this = self.clone();
 		spawn(async move {
 			node::keep_alive_connection(this.clone(), connection).await;
 
 			// After the connection has closed, try to find a new one.
-			if !stop_flag.load(Ordering::Relaxed) {
-				this.start_reverse_connection(stop_flag);
+			if !this.base.stop_flag.load(Ordering::Relaxed) {
+				this.start_reverse_connection();
 			}
 		});
 	}
 
 	/// Will send a ping request every minute or so to all connections that are
 	/// maintained on the overlay network.
-	fn maintain_node_connections(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) {
+	fn maintain_node_connections(self: &Arc<Self>) {
 		let this = self.clone();
 		spawn(async move {
-			loop {
+			while !this.base.stop_flag.load(Ordering::Relaxed) {
 				sleep(Duration::from_secs(60)).await;
 				for i in 0..256 {
 					let mut bucket = this.base.buckets[i].lock().await;
@@ -868,44 +867,48 @@ impl OverlayNode {
 		});
 	}
 
-	fn start_reverse_connection(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) {
-		let this = self.clone();
-		spawn(async move {
-			// Try to find a bidirectional node to open a connection to it
-			let mut iter = this.base.iter_all_fingers().await;
-			while let Some(finger) = iter.next().await {
-				if let Some(ipv4_contact_info) = finger.contact_info.ipv4 {
-					if let Some(udpv4_availability) = ipv4_contact_info.availability.udp {
-						if udpv4_availability.openness == Openness::Bidirectional {
-							let contact_option = ContactOption::new(
-								SocketAddr::V4(SocketAddrV4::new(
-									ipv4_contact_info.addr,
-									udpv4_availability.port,
-								)),
-								false,
-							);
-							if let Some(mut c) = this
-								.base
-								.connect_at(&contact_option, Some(&finger.node_id))
-								.await
+	async fn obtain_reverse_connection(self: &Arc<Self>) {
+		// Try to find a bidirectional node to open a connection to it
+		let mut iter = self.base.iter_all_fingers().await;
+		while let Some(finger) = iter.next().await {
+			if let Some(ipv4_contact_info) = finger.contact_info.ipv4 {
+				if let Some(udpv4_availability) = ipv4_contact_info.availability.udp {
+					if udpv4_availability.openness == Openness::Bidirectional {
+						let contact_option = ContactOption::new(
+							SocketAddr::V4(SocketAddrV4::new(
+								ipv4_contact_info.addr,
+								udpv4_availability.port,
+							)),
+							false,
+						);
+						if let Some(mut c) = self
+							.base
+							.connect_at(&contact_option, Some(&finger.node_id))
+							.await
+						{
+							if let Some(success) =
+								self.base.exchange_keep_alive_on_connection(&mut c).await
 							{
-								if let Some(success) =
-									this.base.exchange_keep_alive_on_connection(&mut c).await
-								{
-									if success {
-										this.maintain_reverse_connection(stop_flag, c);
-										break;
-									} else {
-										c.close().await;
-									}
+								if success {
+									self.maintain_reverse_connection(c);
+									break;
 								} else {
 									c.close().await;
 								}
+							} else {
+								c.close().await;
 							}
 						}
 					}
 				}
 			}
+		}
+	}
+
+	fn start_reverse_connection(self: &Arc<Self>) {
+		let this = self.clone();
+		spawn(async move {
+			this.obtain_reverse_connection().await;
 		});
 	}
 

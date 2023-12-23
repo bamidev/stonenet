@@ -76,7 +76,7 @@ async fn load_test_node(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_data_synchronization() {
-	//env_logger::init();
+	env_logger::init();
 	let mut rng = initialize_rng();
 
 	// Set up two nodes

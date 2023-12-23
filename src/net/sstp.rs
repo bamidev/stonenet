@@ -81,12 +81,11 @@ const MESSAGE_TYPE_PUNCH_HOLE: u8 = 5;
 /// connection is broken.
 const TCP_CONNECTION_TIMEOUT: u64 = 120;
 
-pub(super) const TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct Connection {
+	server: Arc<Server>,
 	keep_alive_flag: AtomicBool,
-	/// A flag that signifies that a timeout has actually occurred.
-	keep_alive_timeout: AtomicBool,
 	/// A flag that indicates that a close packet has already been received from
 	/// the other side, and that the connection unusable after the last data
 	/// packet has been received.
@@ -115,6 +114,9 @@ pub struct Connection {
 
 	#[cfg(debug_assertions)]
 	pub should_be_closed: AtomicBool,
+
+	timeout: Duration,
+	keep_alive_timeout: Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -151,7 +153,8 @@ pub enum Error {
 	/// There were less bytes in the packet than was expected.
 	PacketTooSmall,
 	Timeout,
-	DummyError
+	DummyError,
+	SenderDropped,
 }
 
 type HelloWatchReceiver = watch::Receiver<HelloWatchResult>;
@@ -188,6 +191,7 @@ struct SessionData {
 	last_activity: Arc<StdMutex<SystemTime>>,
 	hello_watch: Option<HelloWatchSender>,
 	queues: QueueSenders,
+	keep_alive_timeout: Duration,
 }
 
 struct Sessions {
@@ -232,6 +236,7 @@ pub struct Server {
 	node_id: IdType,
 	private_key: identity::PrivateKey,
 	on_connect: OnceCell<Box<dyn Fn(Box<Connection>) + Send + Sync>>,
+	default_timeout: Duration,
 }
 
 struct Queues;
@@ -357,8 +362,10 @@ fn decrypt(session_id: u16, sequence: u16, buffer: &mut [u8], key: &GenericArray
 
 /// Encrypts the given buffer, assuming that the first block is the IV.
 /// Will not decrypt the IV. Also must be the size of 46 blocks.
+/// The sessions_id and sequence are important to be different for each packet,
+/// and act as a sort of salt.
 fn encrypt(session_id: u16, sequence: u16, buffer: &mut [u8], key: &GenericArray<u8, U32>) {
-	// Construct nonce out of sequence number
+	// Construct nonce out of session_id & sequence number.
 	let mut nonce = GenericArray::<u8, U12>::default();
 	nonce[..2].copy_from_slice(&session_id.to_le_bytes());
 	nonce[2..4].copy_from_slice(&sequence.to_le_bytes());
@@ -376,6 +383,7 @@ impl fmt::Display for Error {
 		match self {
 			Self::IoError(e) => write!(f, "I/O error: {}", e),
 			Self::ConnectionClosed => write!(f, "connection has already been closed"),
+			Self::SenderDropped => write!(f, "sender dropped"),
 			Self::DummyError => write!(f, "dummy error"),
 			Self::EmptyAckMask => write!(f, "ack mask did not contain any missing packet bits"),
 			Self::InsecureConnection => write!(f, "connection not secure"),
@@ -473,7 +481,6 @@ impl Connection {
 			self.key_state.keychain.len()
 		);
 		let key = &key_state.keychain[key_sequence as usize];
-
 		decrypt(self.our_session_id, sequence, data, key);
 
 		if !Self::verify_packet(&data) {
@@ -537,8 +544,13 @@ impl Connection {
 		}
 	}
 
-	pub async fn receive(&mut self) -> Result<Vec<u8>> { self.receive_with_timeout(TIMEOUT).await }
+	pub async fn receive(&mut self) -> Result<Vec<u8>> {
+		self.receive_with_timeout(self.timeout).await
+	}
 
+	/// Like `receive`, but waits a different amount of time for the first
+	/// packet, and proceeds to receive the remainder at the connection's
+	/// configured timeout.
 	pub async fn receive_with_timeout(&mut self, timeout: Duration) -> Result<Vec<u8>> {
 		if self.is_closing.load(Ordering::Relaxed) {
 			return Err(Error::ConnectionClosed);
@@ -550,8 +562,15 @@ impl Connection {
 		loop {
 			self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
 			let dh_public_key = x25519::PublicKey::from(&self.key_state.our_dh_key);
+			let current_timeout = if first { timeout } else { self.timeout };
 			let (new_public_key, clean, window_full) = self
-				.receive_window(timeout, &mut buffer, window_size, first, &dh_public_key)
+				.receive_window(
+					current_timeout,
+					&mut buffer,
+					window_size,
+					first,
+					&dh_public_key,
+				)
 				.await?;
 			first = false;
 
@@ -567,7 +586,7 @@ impl Connection {
 			self.key_state.their_dh_key = new_public_key;
 			self.previous_keystate = self.key_state.clone();
 			self.key_state.reset_key(window_size);
-			let _ = self.current_keystate_sequence.wrapping_add(1);
+			self.current_keystate_sequence = self.current_keystate_sequence.wrapping_add(1);
 			self.process_unprocessed_close_packets().await;
 
 			debug_assert!(buffer.capacity() > 0, "Message length not set");
@@ -588,7 +607,13 @@ impl Connection {
 		self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let dh_public_key = x25519::PublicKey::from(&self.key_state.our_dh_key);
 		let (new_public_key, clean, window_full) = self
-			.receive_window(TIMEOUT, &mut buffer, window_size, is_first, &dh_public_key)
+			.receive_window(
+				self.timeout,
+				&mut buffer,
+				window_size,
+				is_first,
+				&dh_public_key,
+			)
 			.await?;
 		self.key_state.their_dh_key = new_public_key;
 
@@ -657,19 +682,22 @@ impl Connection {
 		&mut self, window_start_sequence: u16, last_sequence: u16, last_key_sequence: u16,
 		last_packet: &[u8],
 	) -> Result<StdResult<x25519::PublicKey, (u16, Vec<u8>)>> {
-		for _ in 0..1 {
-			match self.receive_ack(window_start_sequence, TIMEOUT / 2).await {
+		for _i in 0..3 {
+			match self
+				.receive_ack(window_start_sequence, self.timeout / 4)
+				.await
+			{
 				Ok(r) => return Ok(r),
 				Err(e) => match e {
 					Error::Timeout => {}
 					other => return Err(other),
 				},
 			}
-
 			self.send_data_packet(last_sequence, last_key_sequence, last_packet, false)
 				.await?;
 		}
-		self.receive_ack(window_start_sequence, TIMEOUT / 2).await
+		self.receive_ack(window_start_sequence, self.timeout / 4)
+			.await
 	}
 
 	fn process_packet(
@@ -724,7 +752,7 @@ impl Connection {
 	}
 
 	async fn receive_window(
-		&mut self, requested_timeout: Duration, buffer: &mut Vec<u8>, window_size: u16,
+		&mut self, first_timeout: Duration, buffer: &mut Vec<u8>, window_size: u16,
 		first_window: bool, new_dh_key: &x25519::PublicKey,
 	) -> Result<(x25519::PublicKey, bool, bool)> {
 		// The buffer should be either not yet allocated, or allocated to accomodate for
@@ -753,8 +781,9 @@ impl Connection {
 			last_missing_packet_index = (max_packets_needed - 1) as u16;
 		}
 
+		let mut timeout = first_timeout;
 		loop {
-			let mut timeout = requested_timeout;
+			let mut doing_extra_wait = false;
 			loop {
 				let (_keystate_sequence, mut sequence, mut packet) =
 					match self.receive_data_packet(timeout).await {
@@ -765,10 +794,9 @@ impl Connection {
 						Err(e) => {
 							match e {
 								Error::Timeout => {
-									// If `timeout` is less than `requested_timeout`, we are just waiting
-									// one some possible out-of-order messages to still
-									// arive.
-									if timeout < requested_timeout && !sent_missing_packet {
+									// If we were just waiting on some extra out-of-order packages
+									// to possibly arrive, we've now waited long enough
+									if doing_extra_wait && !sent_missing_packet {
 										break;
 									} else {
 										return Err(e);
@@ -778,9 +806,10 @@ impl Connection {
 							}
 						}
 					};
-				// Halve timeout after first packet
-				if timeout == requested_timeout {
-					timeout /= 2;
+
+				// Use regular timeout after the first packet has been received
+				if timeout == first_timeout {
+					timeout = self.timeout;
 				}
 
 				// The actual sequence may not start from 0, but for this window
@@ -888,13 +917,6 @@ impl Connection {
 					ooo_cache.insert(window_sequence, packet);
 				}
 
-				// If we have received the last packet, try to wait for a small
-				// moment to see if more packets are coming through. Then, we
-				// send our ack packet back.
-				if !sent_missing_packet && window_sequence == last_missing_packet_index {
-					timeout = requested_timeout / 8;
-				}
-
 				if packets_collected == max_packets_needed as u16 {
 					self.send_ack_packet(sequence + 1, packets_collected, new_dh_key)
 						.await?;
@@ -903,6 +925,14 @@ impl Connection {
 						error_free,
 						packets_collected == window_size,
 					));
+				}
+
+				// If we have received the last packet in the window, but we don't have
+				// everything yet, try to wait for a small moment to see if more packets are
+				// still coming through. Then, we actually send our ack packet back.
+				if !sent_missing_packet && window_sequence == last_missing_packet_index {
+					timeout = self.timeout / 8;
+					doing_extra_wait = true;
 				}
 			}
 
@@ -926,6 +956,8 @@ impl Connection {
 				);
 				last_missing_packet_index -= 1;
 			}
+
+			timeout = self.timeout;
 		}
 	}
 
@@ -936,7 +968,11 @@ impl Connection {
 			tokio::select! {
 				result = queue.recv() => {
 					if result.is_none() {
-						return Err(Error::ConnectionClosed.into())
+						if self.is_closing.load(Ordering::Relaxed) {
+							return Err(Error::ConnectionClosed.into());
+						} else {
+							return Err(Error::Timeout);
+						}
 					}
 					return Ok(result.unwrap())
 				},
@@ -961,7 +997,11 @@ impl Connection {
 			tokio::select! {
 				result = self.queues.ack.recv() => {
 					if result.is_none() {
-						return Err(Error::ConnectionClosed.into())
+						if self.is_closing.load(Ordering::Relaxed) {
+							return Err(Error::ConnectionClosed.into());
+						} else {
+							return Err(Error::Timeout);
+						}
 					}
 					return Ok(result.unwrap())
 				},
@@ -982,47 +1022,40 @@ impl Connection {
 	}
 
 	fn process_close_packet(&mut self, item: (u16, u16, Vec<u8>)) -> bool {
-		let mut result = self.keep_alive_timeout.load(Ordering::Relaxed);
+		let (keystate_sequence, sequence, mut buffer) = item;
+		let key_state_opt = if keystate_sequence == self.current_keystate_sequence {
+			Some(&self.key_state)
+		} else if keystate_sequence == (self.current_keystate_sequence - 1) {
+			Some(&self.previous_keystate)
+		} else if keystate_sequence > self.current_keystate_sequence {
+			self.unprocessed_close_packets
+				.push((keystate_sequence, sequence, buffer.clone()));
+			None
+		} else {
+			warn!("Received invalid close packet: keystate sequence is too old");
+			None
+		};
 
-		if !result {
-			let (keystate_sequence, sequence, mut buffer) = item;
-			let key_state_opt = if keystate_sequence == self.current_keystate_sequence {
-				Some(&self.key_state)
-			} else if keystate_sequence == (self.current_keystate_sequence - 1) {
-				Some(&self.previous_keystate)
-			} else if keystate_sequence > self.current_keystate_sequence {
-				self.unprocessed_close_packets
-					.push((keystate_sequence, sequence, buffer.clone()));
-				None
+		if let Some(key_state) = key_state_opt {
+			if !self.decrypt_packet(key_state, sequence, 0, &mut buffer) {
+				warn!(
+					"Received malformed close packet: checksum didn't match {} {} [{}]",
+					keystate_sequence, self.current_keystate_sequence, sequence
+				);
+			} else if buffer.len() < 34 {
+				warn!("Received malformed close packet: packet too small");
+			} else if &buffer[2..34] != self.their_node_id().as_bytes() {
+				warn!("Received malformed close packet: node ID didn't match.");
 			} else {
-				warn!("Received malformed close packet: keystate sequence is too old");
-				None
-			};
-
-			if let Some(key_state) = key_state_opt {
-				if !self.decrypt_packet(key_state, sequence, 0, &mut buffer) {
-					warn!("Received malformed close packet: checksum didn't match");
-					result = false;
-				} else if buffer.len() < 34 {
-					warn!("Received malformed close packet: packet too small");
-					result = false;
-				} else if &buffer[2..34] != self.their_node_id().as_bytes() {
-					warn!("Received malformed close packet: node ID didn't match.");
-					result = false;
-				} else {
-					result = true;
-				}
+				self.is_closing.store(true, Ordering::Relaxed);
+				// Close the other queues so that an end of the connection is signified on the
+				// task that may be waiting for those
+				self.queues.ack.close();
+				self.queues.data.close();
+				return true;
 			}
 		}
-
-		if result {
-			self.is_closing.store(true, Ordering::Relaxed);
-			// Close the other queues so that an end of the connection is signified on the
-			// task that may be waiting for those
-			self.queues.ack.close();
-			self.queues.data.close();
-		}
-		result
+		false
 	}
 
 	async fn receive_data_packet(&mut self, timeout: Duration) -> Result<(u16, u16, Vec<u8>)> {
@@ -1030,7 +1063,11 @@ impl Connection {
 			tokio::select! {
 				result = self.queues.data.recv() => {
 					if result.is_none() {
-						return Err(Error::ConnectionClosed.into())
+						if self.is_closing.load(Ordering::Relaxed) {
+							return Err(Error::ConnectionClosed.into());
+						} else {
+							return Err(Error::Timeout);
+						}
 					}
 					return Ok(result.unwrap())
 				},
@@ -1067,13 +1104,14 @@ impl Connection {
 
 		loop {
 			self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
-			let (s, clean, their_dh_key, window_full) = self
+			let result = self
 				.send_window(
 					&buffer[send..],
 					window_size,
 					&x25519::PublicKey::from(&self.key_state.our_dh_key),
 				)
-				.await?;
+				.await;
+			let (s, clean, their_dh_key, window_full) = result?;
 			send += s;
 			debug_assert!(
 				send <= buffer.len(),
@@ -1094,8 +1132,7 @@ impl Connection {
 			self.key_state.their_dh_key = their_dh_key;
 			self.previous_keystate = self.key_state.clone();
 			self.key_state.reset_key(window_size);
-			let _ = self.current_keystate_sequence.wrapping_add(1);
-
+			self.current_keystate_sequence = self.current_keystate_sequence.wrapping_add(1);
 			if send == buffer.len() {
 				break;
 			}
@@ -1265,7 +1302,8 @@ impl Connection {
 		let key = &self.key_state.keychain[key_sequence as usize];
 		encrypt(self.their_session_id, sequence, &mut buffer[7..], key);
 
-		self.sender.send(&buffer, TIMEOUT).await?;
+		*self.last_activity.lock().unwrap() = SystemTime::now();
+		self.sender.send(&buffer, self.timeout).await?;
 		Ok(())
 	}
 
@@ -1329,6 +1367,21 @@ impl Connection {
 			.await
 	}
 
+	/// Updates the cleanup timeout of the connection.
+	pub async fn set_keep_alive_timeout(&mut self, timeout: Duration) -> bool {
+		self.keep_alive_timeout = timeout;
+		let sessions = self.server.sessions.lock().await;
+		if let Some(session_mutex) = sessions.map.get(&self.our_session_id) {
+			let session_mutex2 = session_mutex.clone();
+			drop(sessions);
+			let mut session = session_mutex2.lock().await;
+			session.keep_alive_timeout = timeout;
+			true
+		} else {
+			false
+		}
+	}
+
 	pub fn their_session_id(&self) -> u16 { self.their_session_id }
 
 	fn verify_packet(buffer: &[u8]) -> bool {
@@ -1343,7 +1396,7 @@ impl Connection {
 impl Drop for Connection {
 	fn drop(&mut self) {
 		if self.should_be_closed.load(Ordering::Relaxed) {
-			panic!("connection {} not closed before drop", self.our_session_id);
+			panic!("Connection {} not closed before drop", self.our_session_id);
 		}
 	}
 }
@@ -1394,18 +1447,21 @@ impl KeyState {
 }
 
 impl SessionData {
-	pub fn new(node_id: IdType, hello_watch: HelloWatchSender, queues: QueueSenders) -> Self {
+	pub fn new(
+		node_id: IdType, hello_watch: HelloWatchSender, queues: QueueSenders, timeout: Duration,
+	) -> Self {
 		Self {
 			their_node_id: node_id,
 			their_session_id: None,
 			hello_watch: Some(hello_watch),
 			queues,
 			last_activity: Arc::new(StdMutex::new(SystemTime::now())),
+			keep_alive_timeout: timeout,
 		}
 	}
 
 	pub fn new_with_their_session(
-		their_session_id: u16, node_id: IdType, queues: QueueSenders,
+		their_session_id: u16, node_id: IdType, queues: QueueSenders, timeout: Duration,
 	) -> Self {
 		let (dummy_tx, _) = watch::channel(Err(Error::DummyError));
 		Self {
@@ -1414,6 +1470,7 @@ impl SessionData {
 			hello_watch: Some(dummy_tx),
 			queues,
 			last_activity: Arc::new(StdMutex::new(SystemTime::now())),
+			keep_alive_timeout: timeout,
 		}
 	}
 }
@@ -1452,9 +1509,9 @@ impl Sessions {
 				return None;
 			}
 		}
-		let next_id = self.next_id;
+		let new_id = self.next_id;
 		self.next_id += 1;
-		Some(next_id)
+		Some(new_id)
 	}
 }
 
@@ -1579,9 +1636,12 @@ impl Server {
 			.pick_contact_option_at_openness(target, Openness::Bidirectional)
 	}
 
+	/// Sets up all necessary sockets internally.
+	/// default_timeout: The timeout that incomming connection will be
+	/// configured for
 	pub async fn bind(
 		stop_flag: Arc<AtomicBool>, node_id: IdType, contact_info: ContactInfo,
-		private_key: PrivateKey,
+		private_key: PrivateKey, default_timeout: Duration,
 	) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			stop_flag,
@@ -1591,6 +1651,7 @@ impl Server {
 			node_id,
 			private_key,
 			on_connect: OnceCell::new(),
+			default_timeout,
 		}))
 	}
 
@@ -1607,7 +1668,14 @@ impl Server {
 	pub async fn connect(
 		self: &Arc<Self>, target: &ContactOption, node_id: Option<&IdType>,
 	) -> Result<Box<Connection>> {
-		let (sender, receiver) = match self.sockets.connect(target).await? {
+		self.connect_with_timeout(target, node_id, DEFAULT_TIMEOUT)
+			.await
+	}
+
+	pub async fn connect_with_timeout(
+		self: &Arc<Self>, target: &ContactOption, node_id: Option<&IdType>, timeout: Duration,
+	) -> Result<Box<Connection>> {
+		let (sender, receiver) = match self.sockets.connect(target, timeout).await? {
 			None => return Err(Error::NoConnectionOptions),
 			Some(s) => s,
 		};
@@ -1646,7 +1714,7 @@ impl Server {
 
 		let secret_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let (our_session_id, _session, mut hello_watch, queues) = self
-			.new_outgoing_session(self.node_id.clone())
+			.new_outgoing_session(self.node_id.clone(), timeout)
 			.await
 			.ok_or(Error::OutOfSessions)?;
 
@@ -1658,6 +1726,7 @@ impl Server {
 				&secret_key,
 				our_session_id,
 				&self.our_contact_info().await,
+				timeout / 2,
 			)
 			.await?;
 
@@ -1677,8 +1746,8 @@ impl Server {
 					}
 
 					return Ok(Box::new(Connection {
+						server: self.clone(),
 						keep_alive_flag: AtomicBool::new(false),
-						keep_alive_timeout: AtomicBool::new(false),
 						is_closing: AtomicBool::new(false),
 						sender,
 						receiver_handle: handle,
@@ -1702,10 +1771,12 @@ impl Server {
 						last_activity,
 						#[cfg(debug_assertions)]
 						should_be_closed: AtomicBool::new(true),
-						unprocessed_close_packets: Vec::new()
+						unprocessed_close_packets: Vec::new(),
+						timeout,
+						keep_alive_timeout: timeout
 					}))
 				},
-				_ = sleep(TIMEOUT/2) => {
+				_ = sleep(timeout/2) => {
 					timeouts += 1;
 				}
 			}
@@ -1716,6 +1787,7 @@ impl Server {
 
 	async fn new_incomming_session(
 		&self, their_node_id: IdType, their_session_id: u16, queues: QueueSenders,
+		timeout: Duration,
 	) -> Result<Option<(u16, Arc<Mutex<SessionData>>)>> {
 		let mut sessions = self.sessions.lock().await;
 		// Check if session doesn't already exists
@@ -1735,13 +1807,14 @@ impl Server {
 			their_session_id,
 			their_node_id,
 			queues,
+			timeout,
 		)));
 		sessions.map.insert(session_id, session_data.clone());
 		return Ok(Some((session_id, session_data)));
 	}
 
 	async fn new_outgoing_session(
-		&self, client_node_id: IdType,
+		&self, client_node_id: IdType, timeout: Duration,
 	) -> Option<(
 		u16,
 		Arc<Mutex<SessionData>>,
@@ -1759,6 +1832,7 @@ impl Server {
 			client_node_id,
 			hello_tx,
 			tx_queues,
+			timeout,
 		)));
 		sessions.map.insert(session_id, session_data.clone());
 		return Some((session_id, session_data, hello_rx, rx_queues));
@@ -1769,17 +1843,17 @@ impl Server {
 	}
 
 	pub async fn send_punch_hole_packet(&self, contact: &ContactOption) -> Result<bool> {
-		if let Some((tx, _rx)) = self.sockets.connect(contact).await? {
+		if let Some((tx, _rx)) = self.sockets.connect(contact, self.default_timeout).await? {
 			let buffer = vec![MESSAGE_TYPE_PUNCH_HOLE; 1];
-			tx.send(&buffer, TIMEOUT).await?;
+			tx.send(&buffer, self.default_timeout).await?;
 			return Ok(true);
 		}
 		Ok(false)
-}
+	}
 
 	async fn send_hello(
 		&self, socket: &dyn LinkSocketSender, private_key: &x25519::StaticSecret,
-		my_session_id: u16, my_contact_info: &ContactInfo,
+		my_session_id: u16, my_contact_info: &ContactInfo, timeout: Duration,
 	) -> Result<()> {
 		let my_contact_info_len = bincode::serialized_size(&my_contact_info).unwrap();
 		let mut buffer = vec![0u8; 163 + my_contact_info_len];
@@ -1795,7 +1869,7 @@ impl Server {
 		let signature = self.private_key.sign(&buffer[129..]);
 		buffer[65..129].copy_from_slice(&signature.to_bytes());
 
-		socket.send(&buffer, TIMEOUT).await?;
+		socket.send(&buffer, timeout).await?;
 		Ok(())
 	}
 }
@@ -1904,7 +1978,7 @@ impl SocketCollection {
 	}
 
 	async fn pick_socket(
-		&self, target: &ContactInfo, openness: Openness,
+		&self, target: &ContactInfo, openness: Openness, timeout: Duration,
 	) -> io::Result<
 		Option<(
 			Arc<dyn LinkSocketSender>,
@@ -1956,7 +2030,7 @@ impl SocketCollection {
 								if transport_option.openness == openness {
 									let (tx, rx) = socket_server
 										.inner
-										.connect(addr.clone(), TIMEOUT)
+										.connect(addr.clone(), timeout)
 										.await?
 										.split();
 									return Ok(Some((
@@ -2011,7 +2085,7 @@ impl SocketCollection {
 								if transport_option.openness == openness {
 									let (tx, rx) = socket_server
 										.inner
-										.connect(addr.clone(), TIMEOUT)
+										.connect(addr.clone(), timeout)
 										.await?
 										.split();
 									return Ok(Some((
@@ -2033,7 +2107,7 @@ impl SocketCollection {
 	/// Connects to the best available IP version and transport option. Only
 	/// tries one option. If no matching options were found, returns None.
 	pub async fn connect(
-		&self, contact: &ContactOption,
+		&self, contact: &ContactOption, timeout: Duration,
 	) -> io::Result<Option<(Arc<dyn LinkSocketSender>, Box<dyn LinkSocketReceiver>)>> {
 		match &contact.target {
 			SocketAddr::V4(a) => match &self.ipv4 {
@@ -2052,7 +2126,7 @@ impl SocketCollection {
 							None => Ok(None),
 							Some(server) => {
 								let (tx, rx) =
-									server.inner.connect(a.clone(), TIMEOUT).await?.split();
+									server.inner.connect(a.clone(), timeout).await?.split();
 								Ok(Some((Arc::new(tx), Box::new(rx))))
 							}
 						}
@@ -2074,7 +2148,7 @@ impl SocketCollection {
 							None => Ok(None),
 							Some(server) => {
 								let (tx, rx) =
-									server.inner.connect(a.clone(), TIMEOUT).await?.split();
+									server.inner.connect(a.clone(), timeout).await?.split();
 								Ok(Some((Arc::new(tx), Box::new(rx))))
 							}
 						}
@@ -2207,11 +2281,13 @@ impl Server {
 		let mut sessions = self.sessions.lock().await;
 		let mut done_ids = Vec::with_capacity(0);
 		for (session_id, session_mutex) in sessions.map.iter() {
+			let session = session_mutex.lock().await;
 			if SystemTime::now()
-				.duration_since(*session_mutex.lock().await.last_activity.lock().unwrap())
-				.unwrap() >= Duration::from_secs(2)
+				.duration_since(*session.last_activity.lock().unwrap())
+				.unwrap() >= session.keep_alive_timeout
 			{
-				done_ids.push(*session_id)
+				drop(session);
+				done_ids.push(*session_id);
 			}
 		}
 
@@ -2240,13 +2316,10 @@ impl Server {
 			let mut session = s.lock().await;
 			*session.last_activity.lock().unwrap() = SystemTime::now();
 			let result = handle_queue(&mut session, keystate_sequence, sequence, data);
-			// Should only give an error when the mpsc queues have been closed, meaning the
-			// session is not being used anymore.
+			// If the result is an error, the receiving end of the queue has been closed.
+			// This happens all the time because connections get closed and then dropped
+			// before the other side may be able to send a close packet.
 			if result.is_err() {
-				warn!(
-					"Error while handling queue: {}",
-					result.as_ref().unwrap_err()
-				);
 				should_close = true;
 			}
 		} else {
@@ -2282,7 +2355,7 @@ impl Server {
 	}
 
 	async fn process_hello_request(
-		&self, sender: Arc<dyn LinkSocketSender>, addr: &SocketAddr, packet: &[u8],
+		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, addr: &SocketAddr, packet: &[u8],
 	) -> Result<()> {
 		if packet.len() < 162 {
 			return Err(Error::MalformedPacket.into());
@@ -2315,7 +2388,12 @@ impl Server {
 
 		let (tx_queues, rx_queues) = Queues::channel(their_session_id);
 		let (our_session_id, _session) = match self
-			.new_incomming_session(node_id.clone(), their_session_id, tx_queues)
+			.new_incomming_session(
+				node_id.clone(),
+				their_session_id,
+				tx_queues,
+				self.default_timeout,
+			)
 			.await?
 		{
 			None => return Ok(()),
@@ -2355,8 +2433,8 @@ impl Server {
 		response[65..129].clone_from_slice(&signature.to_bytes());
 
 		let connection = Box::new(Connection {
+			server: self.clone(),
 			keep_alive_flag: AtomicBool::new(false),
-			keep_alive_timeout: AtomicBool::new(false),
 			is_closing: AtomicBool::new(false),
 			sender: sender.clone(),
 			receiver_handle: None,
@@ -2381,12 +2459,14 @@ impl Server {
 			#[cfg(debug_assertions)]
 			should_be_closed: AtomicBool::new(false),
 			unprocessed_close_packets: Vec::new(),
+			timeout: self.default_timeout,
+			keep_alive_timeout: self.default_timeout,
 		});
 		match self.on_connect.get() {
 			None => {}
 			Some(closure) => {
 				closure(connection);
-				sender.send(&response, TIMEOUT).await?;
+				sender.send(&response, self.default_timeout).await?;
 			}
 		}
 
@@ -2492,7 +2572,8 @@ impl Server {
 	}
 
 	async fn process_packet(
-		&self, link_socket: Arc<dyn LinkSocketSender>, sender: &SocketAddr, packet: &[u8],
+		self: &Arc<Self>, link_socket: Arc<dyn LinkSocketSender>, sender: &SocketAddr,
+		packet: &[u8],
 	) -> Result<()> {
 		let message_type = packet[0];
 		let result = match message_type {
@@ -2505,6 +2586,9 @@ impl Server {
 			MESSAGE_TYPE_DATA => self.process_data(&packet[1..]).await,
 			MESSAGE_TYPE_ACK => self.process_ack(&packet[1..]).await,
 			MESSAGE_TYPE_CLOSE => self.process_close(&packet[1..]).await,
+			// Hole punching packets don't need to be responded to. They don't have any data other
+			// than the message type anyway.
+			MESSAGE_TYPE_PUNCH_HOLE => Ok(()),
 			other => Err(Error::InvalidMessageType(other)),
 		};
 
@@ -2513,7 +2597,17 @@ impl Server {
 			// the sender might resend some of their packets if they are still waiting on a
 			// response.
 			Err(e) => match e {
-				Error::InvalidSessionIdOurs(_) => Ok(()),
+				Error::InvalidSessionIdOurs(session_id) => {
+					// Close packets may be received after we've already closed the connection
+					// ourselves, at which point we've forgotten about the session ID already. So
+					// ignore this error for close packets.
+					if message_type == MESSAGE_TYPE_CLOSE {
+						Ok(())
+					} else {
+						warn!("InvalidSessionIdOurs for {}: {}", message_type, session_id);
+						Err(Error::InvalidSessionIdOurs(session_id))
+					}
+				}
 				other => Err(other),
 			},
 			Ok(()) => Ok(()),
@@ -2590,7 +2684,7 @@ impl Default for WindowInfo {
 }
 
 impl Queues {
-	fn channel(session_id: u16) -> (QueueSenders, QueueReceivers) {
+	fn channel(sending_session_id: u16) -> (QueueSenders, QueueReceivers) {
 		let (data_tx, data_rx) = mpsc::unbounded_channel();
 		let (ack_tx, ack_rx) = mpsc::unbounded_channel();
 		let (close_tx, close_rx) = mpsc::unbounded_channel();
@@ -2600,7 +2694,7 @@ impl Queues {
 				data: data_tx,
 				ack: ack_tx,
 				close: close_tx,
-				session_id,
+				session_id: sending_session_id,
 			},
 			QueueReceivers {
 				data: data_rx,
@@ -2634,7 +2728,7 @@ mod tests {
 	#[tokio::test]
 	/// Sent and receive a bunch of messages.
 	async fn test_connection() {
-		env_logger::init();
+		//env_logger::init();
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
 		let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10000));
 		let slave_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10001));
@@ -2648,6 +2742,7 @@ mod tests {
 			master_node_id,
 			master_contact_info.clone(),
 			master_private_key,
+			DEFAULT_TIMEOUT,
 		)
 		.await
 		.expect("unable to bind master");
@@ -2659,6 +2754,7 @@ mod tests {
 				slave_node_id,
 				slave_contact_info.clone(),
 				slave_private_key,
+				DEFAULT_TIMEOUT,
 			)
 			.await
 			.expect("unable to bind slave"),
