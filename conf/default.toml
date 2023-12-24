@@ -27,9 +27,9 @@ ipv4_address = "0.0.0.0"
 #     works.
 # - unidirectional: This means the device is only capable of initiating outgoing
 #     connections.
-ipv4_udp_openness = "punchable"
+ipv4_udp_openness = "bidirectional"
 ipv4_tcp_openness = "unidirectional"
-ipv6_udp_openness = "punchable"
+ipv6_udp_openness = "bidirectional"
 ipv6_tcp_openness = "unidirectional"
 
 # The ports to bind to. If you comment any of them out, they will use a random
@@ -58,6 +58,6 @@ udp_max_idle_time = 60
 # The number of nodes to remember in each 'bucket'. This is a technical feature
 # that generally does not need to be changed. However, increasing this number
 # makes it less likely to be disconnected from the network. Decreasing this
-# number saves memory.
-# Needs to be 1 or higher.
+# number saves a tiny amount of memory.
+# Needs to be 1 or more.
 bucket_size = 4

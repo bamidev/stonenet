@@ -1,27 +1,17 @@
 # Stonenet
 
-Stonenet is a censorship-resistant peer-to-peer network for (micro-)blogging or
-publishing media.
-It is designed with the preservation of free-speech in mind, trusting in the
-concept of the "Marketplace of Idea's".
+Stonenet is a completely decentralized & censorship-resistant media publishing
+platform & peer-to-peer network. It is designed to protect free speech, and does
+this by putting all data in the hands of the people, rather than one (or a
+handful) of servers.
+Moreover, all content is only ever shared by those peers that have chosen to
+follow the channel that it belongs to, so as to prevent participating in the
+sharing of disagreeable content.
 
-Stonenet's highest priority is preserving the data of one's feed, so that it's
-messages cannot be taken down by any one person, institution or goverment.
-In order to accomplish this, Stonenet is completely decentralized, and stores
-the posts of a feed among a network of its followers.
+It has a simple user interface, which supports the idea of using it as a
+micro-blogging platform. But there are no practical limits to the content that
+can be published.
+
+Stonenet is still in early development, and a stable release is just around the corner!
 
 See the doc/ABOUT page for more info.
-
-StoneNet is currently in an early stage of development.
-
-## Roadmap
-
-Currently, the following features are being worked on/to be expected:
-
-- [x] Node-to-node traffic encryption
-- [x] A decent looking (Web) UI
-- [ ] An ActivityPub 'bridge' to allow people from the fediverse to follow your feed
-- [ ] A friends list
-- [ ] Ability to encrypt posts to limit visibility to only your friends
-- [ ] Seperate stonenet-dedicated onion routing network for anonimising IP.
-- [ ] A Raspberry Pi image with Stonenet preinstalled, to easily keep your feed alive

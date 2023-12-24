@@ -2,7 +2,7 @@
 name = "stonenetd"
 version = "0.0.0"
 authors = ["Danny de Jong"]
-description = "The client for the censorship-resistant P2P blog, StoneNet."
+description = "The daemon for the completely decentralized & censorship-resistant media platform."
 edition = "2021"
 homepage = "https://stonenet.org"
 license = "MIT"
@@ -63,10 +63,13 @@ windows = { version = "0", features = [
 
 
 [package.metadata.deb]
+name = "stonenet"
+section = "net"
+priority = "optional"
 assets = [
 	["target/release/stonenetd", "usr/bin/", "755"],
-	["conf/debian.toml", "etc/stonenet/config.toml", "644"],
-	["assets/empty", "var/lib/stonenet/db.sqlite", "644"],
+	["conf/default.toml", "etc/stonenet/config.toml", "644"],
+	["assets/empty", "var/lib/stonenet/.empty", "644"],
 	["static/**/*", "usr/share/stonenet/static", "644"],
 	["templates/**/*", "usr/share/stonenet/templates", "644"],
 	["assets/generic/xdg/stonenet.desktop", "usr/share/applications/", "644"],

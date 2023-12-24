@@ -1,0 +1,57 @@
+=======
+INSTALL
+=======
+
+Installing stonenet on any unix-like system should be quite easy. Non-unix-like
+systems, like Windows, need some additional manual work, but it is possible.
+
+
+Debian-based systems
+--------------------
+All you need to do is add the stonenet repo to the package manager, like so:
+```
+wget -qO- http://get.stonenet.org/gpg-key.pub | sudo apt-key add -
+echo "deb http://get.stonenet.org/debian stable main" | sudo tee /etc/apt/sources.list.d/stonenet.list
+sudo apt update
+```
+And then you can simply install the stonenet package:
+```
+sudo apt install stonenet
+```
+That's it.
+
+
+Other Unix-like systems
+-----------------------
+For unix-like systems not based on Debian, you can install it from source. All
+that is really required is Rust's package manager `cargo`, for building the
+source code. Sqlite3 would be nice, but it can be bundled into the output
+binary if not available on the system.
+
+Install Cargo
+~~~~~~~~~~~~~
+You can use your system's package manager to obtain `cargo` in some cases, but
+the Rust compiler needs to be new enough.
+(Check `rust-version` in `Cargo.toml`.) Otherwise, follow this guide:
+https://doc.rust-lang.org/cargo/getting-started/installation.html
+
+Install Stonenet
+~~~~~~~~~~~~~~~~
+Once `cargo` is available, you can build the source code with:
+```
+cargo build --release
+```
+Before we install Stonenet, check the variables on the top of the `install.sh`
+file first.
+These variables define the directories to were everything will be installed.
+Moreover, the `SYSTEMD_PATH` variable can be made to be empty, if systemd is not
+available on your system.
+Once everything is configured appropriately, you can finally run it (keep in
+mind to use root privileges):
+```
+./install.sh
+```
+
+Windows
+-------
+Currently, Windows support is not there yet.

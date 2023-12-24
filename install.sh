@@ -1,12 +1,23 @@
 #!/bin/sh
-EXECUTABLE_PATH=/usr/local/bin/stonenet
+##########################################
+#                                        #
+#   Configure installation parameters:   #
+#                                        #
+##########################################
+
+EXECUTABLE_PATH=/usr/local/bin/stonenetd
 CONFIG_PATH=/usr/local/etc/stonenet
 DATA_FILES_PATH=/usr/local/share/stonenet
 LOGFILE=/var/log/stonenet.log
-# If your system is not using Systemd, just comment out this following line
+# If your system is not using Systemd, just comment out this following line:
 SYSTEMD_PATH=/lib/systemd/system
 
 
+##########################################
+#                                        #
+#   DO NOT CHANGE ANYTHING BELOW THIS!   #
+#                                        #
+##########################################
 
 set -e
 cargo build --release
@@ -28,4 +39,7 @@ else
     elif -d /etc/xdg/autostart; then
         install assets/generic/xdg/org.stonenet.stonenetd.desktop /etc/xdg/autostart"
         echo Installed XDG autostart desktop entry.
+    else
+        echo "Stonenet is not configured to run on system startup. You'll need to do this manually!"
+    fi
 fi
