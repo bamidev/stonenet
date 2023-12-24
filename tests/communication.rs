@@ -12,7 +12,7 @@ use std::{
 use log::*;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use rand_core::CryptoRngCore;
+use rand::{CryptoRng, RngCore};
 use stonenetd::{
 	api::Api,
 	config::Config,
@@ -29,7 +29,7 @@ fn initialize_rng() -> ChaCha8Rng {
 }
 
 async fn load_test_node(
-	stop_flag: Arc<AtomicBool>, rng: &mut impl CryptoRngCore, config: &Config, port: u16,
+	stop_flag: Arc<AtomicBool>, rng: &mut (impl CryptoRng + RngCore), config: &Config, port: u16,
 	openness: Openness, filename: &str,
 ) -> Api {
 	// FIXME: Generate proper random temporary file names.

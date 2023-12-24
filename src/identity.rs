@@ -156,7 +156,7 @@ impl DerefMut for PublicKey {
 
 #[cfg(test)]
 mod tests {
-	use rand_core::RngCore;
+	use rand::RngCore;
 
 	use super::*;
 

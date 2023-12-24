@@ -73,6 +73,6 @@ assets = [
 	["templates/**/*", "usr/share/stonenet/templates", "644"],
 	["assets/generic/xdg/stonenet.desktop", "usr/share/applications/", "644"],
 ]
-depends = ["libsqlite3-0"]
+depends = ["libsqlite3-0", "$auto"]
 maintainer-scripts = "assets/debian"
 systemd-units = { unit-scripts = "assets/debian/systemd" }
