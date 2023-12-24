@@ -42,7 +42,7 @@ use generic_array::{typenum::*, GenericArray};
 use hmac::*;
 use log::*;
 use once_cell::sync::OnceCell;
-use rand_core::{OsRng, RngCore};
+use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use tokio::{
 	self, spawn,

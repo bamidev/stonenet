@@ -3,7 +3,7 @@ use std::{fmt, ops};
 use async_trait::async_trait;
 use base58::*;
 use num::bigint::BigUint;
-use rand_core::{OsRng, RngCore};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
