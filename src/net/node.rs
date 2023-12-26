@@ -1955,7 +1955,7 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 					match e {
 						// If the node hasn't send any pings for 120 seconds, we're done
 						sstp::Error::Timeout => {
-							debug!("Kept alive connection has timed out.");
+							debug!("Kept alive connection has timed out. [{} -> {}]", connection.our_session_id(), connection.their_session_id());
 							break;
 						}
 						// The other end closed the connection, so stop

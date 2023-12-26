@@ -2310,6 +2310,7 @@ impl Server {
 				should_close = true;
 			}
 		} else {
+			warn!("InvalidSessionIdOurs1 {}:{}", keystate_sequence, key_sequence);
 			return Err(Error::InvalidSessionIdOurs(our_session_id).into());
 		}
 
@@ -2493,6 +2494,7 @@ impl Server {
 		let our_session_id = u16::from_le_bytes(*array_ref![packet, 160, 2]);
 		let session_lock = match self.sessions.lock().await.map.get(&our_session_id) {
 			None => {
+				warn!("InvalidSessionIdOurs2");
 				return Err(Error::InvalidSessionIdOurs(our_session_id).into());
 			}
 			Some(s) => s.clone(),
