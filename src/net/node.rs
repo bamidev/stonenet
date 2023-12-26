@@ -11,6 +11,7 @@ use log::*;
 use num::BigUint;
 use serde::de::DeserializeOwned;
 use tokio::{
+	select,
 	spawn,
 	sync::{oneshot, Mutex},
 	time::sleep,
@@ -91,7 +92,7 @@ where
 	pub(super) interface: I,
 	pub(super) socket: Arc<sstp::Server>,
 	pub(super) expected_connections:
-		Arc<Mutex<HashMap<IdType, oneshot::Sender<Box<sstp::Connection>>>>>,
+		Arc<Mutex<HashMap<ContactOption, oneshot::Sender<Box<sstp::Connection>>>>>,
 	pub(super) bucket_size: usize,
 }
 
@@ -263,6 +264,7 @@ where
 						.request_reversed_connection(
 							&mut relay_connection,
 							node_id,
+							&strategy.contact,
 							&contact_me_option,
 						)
 						.await
@@ -290,6 +292,7 @@ where
 							.request_reversed_connection(
 								&mut relay_connection,
 								node_id,
+								&strategy.contact,
 								&contact_me_option,
 							)
 							.await
@@ -495,7 +498,6 @@ where
 			.interface
 			.exchange(connection, message_type_id, buffer)
 			.await;
-
 		self.handle_connection_issue(
 			result,
 			connection.their_node_id(),
@@ -1220,7 +1222,7 @@ where
 
 	async fn process_ping_request(&self, address: &SocketAddr) -> Option<Vec<u8>> {
 		debug!("Received ping request from {}", address);
-		Some(Vec::new())
+		Some(self.node_id.clone().0.into())
 	}
 
 	pub(super) async fn process_request(
@@ -1293,14 +1295,14 @@ where
 	}
 
 	async fn request_reversed_connection(
-		&self, relay_connection: &mut Connection, target: &IdType, contact_option: &ContactOption,
+		&self, relay_connection: &mut Connection, target: &IdType, their_contact: &ContactOption, our_contact: &ContactOption,
 	) -> Option<Box<Connection>> {
 		// FIXME: It would be much faster if we didn't have to wait for a timeout before
 		// we continued.
-		if !self.punch_hole(contact_option).await {
+		if !self.punch_hole(their_contact).await {
 			return None;
 		}
-
+		
 		let overlay_node = self.overlay_node();
 		let (tx, rx) = oneshot::channel();
 		{
@@ -1308,14 +1310,14 @@ where
 			// If a connection from the same target is already expected, we can't touch it.
 			// It would leave the other task that's still waiting on the previous connection
 			// hanging.
-			if expected_connections.contains_key(target) {
+			if expected_connections.contains_key(their_contact) {
 				error!(
-					"Attempted to request reversed connection from same node more than once: {}",
-					target
+					"Attempted to request reversed connection from same node more than once: {} {}",
+					target, their_contact
 				);
 				return None;
 			}
-			expected_connections.insert(target.clone(), tx);
+			expected_connections.insert(their_contact.clone(), tx);
 		}
 
 		// Contact the relay node
@@ -1324,7 +1326,7 @@ where
 			.exchange_relay_initiate_connection_request(
 				relay_connection,
 				target.clone(),
-				contact_option.clone(),
+				our_contact.clone(),
 			)
 			.await?;
 		if !knows_target {
@@ -1332,26 +1334,22 @@ where
 		}
 
 		// TODO: Keep the connection with the relay node open until contact is made,
-		// because the relay node may be able to tell us if he could contact the target
-		// node.
-
-		// Spawn task to cancel the wait after the timeout interval
-		let arc_expected_connections = self.overlay_node().base.expected_connections.clone();
-		let target2 = target.clone();
-		spawn(async move {
-			sleep(Duration::from_millis(10000)).await;
-			let mut expected_connections = arc_expected_connections.lock().await;
-			expected_connections.remove(&target2);
-		});
+		// because the relay node may be able to send us a status message explaining whether things went ok or not.
 
 		// Wait until a connection is received, and return that.
-		match rx.await {
-			Ok(connection) => Some(connection),
-			Err(_) => {
-				debug!("Didn't receive reverse connection: timeout.");
+		let result = select! {
+			result = rx => {
+				Some(result.expect("sender of expected connection has closed unexpectantly"))
+			},
+			_ = sleep(sstp::DEFAULT_TIMEOUT * 3) => {
+				let mut expected_connections = self.expected_connections.lock().await;
+				let removed = expected_connections.remove(their_contact).is_some();
+				debug_assert!(!removed, "expected connection is gone");
+				debug!("Unable to receive reversed connection: timeout of {:?} elapsed", sstp::DEFAULT_TIMEOUT * 3);
 				None
-			}
-		}
+			},
+		};
+		result
 	}
 
 	/// Pings a node and returns its latency and node ID .
@@ -1495,6 +1493,7 @@ where
 		// node.
 		let mut connection = self.connect(target, None).await?;
 		let their_node_id = connection.their_node_id().clone();
+		self.exchange_ping_on_connection(&mut connection).await;
 		if let Err(e) = connection.close().await {
 			debug!("Unable to close connection: {}", e);
 		}
@@ -1856,9 +1855,9 @@ where
 pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Connection>) {
 	// If the connection was expected because of a reversed connection request, pass
 	// it along
-	{
+	/*{	// FIXME: The same thing is happening in received connections
 		let mut expected_connections = overlay_node.base.expected_connections.lock().await;
-		if let Some(tx) = expected_connections.remove(c.their_node_id()) {
+		if let Some(tx) = expected_connections.remove(&c.peer_contact_option()) {
 			if tx.is_closed() {
 				warn!(
 					"Unable to pass expected connection along, treating it like a normal \
@@ -1869,14 +1868,14 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 				return;
 			}
 		}
-	}
+	}*/
 
 	// Otherwise, just process the incomming requests
 	let mutex: Arc<Mutex<Box<Connection>>> = Arc::new(Mutex::new(c));
 	let mut is_first_message = true;
 	while !overlay_node.base.stop_flag.load(Ordering::Relaxed) {
+		let mut connection = mutex.lock().await;
 		let message = {
-			let mut connection = mutex.lock().await;
 			match connection.receive().await {
 				Ok(m) => m,
 				Err(e) => {
@@ -1887,8 +1886,14 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 							// first request is received.
 							if is_first_message {
 								debug!(
-									"Node {} timed out before request was received ({})",
+									"Node {} timed out before request was received",
 									connection.peer_address(),
+								);
+								print!(
+									"Node {} timed out before request was received ks_seq={} [{} -> {}]",
+									connection.peer_address(),
+									connection.key_state.sequence,
+									connection.our_session_id(),
 									connection.their_session_id(),
 								);
 							}
@@ -1919,7 +1924,7 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 			}
 		};
 		is_first_message = false;
-		if process_request_message(overlay_node.clone(), mutex.clone(), &message).await {
+		if process_request_message(overlay_node.clone(), mutex.clone(), &mut *connection, &message).await {
 			// If ownership of the connection was taken by a keep alive request, we leave
 			// the connection open, and stop listening on it
 			return;
@@ -1936,8 +1941,8 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 	c.set_keep_alive_timeout(timeout).await;
 	let mutex: Arc<Mutex<Box<Connection>>> = Arc::new(Mutex::new(c));
 	while !overlay_node.base.stop_flag.load(Ordering::Relaxed) {
+		let mut connection = mutex.lock().await;
 		let message = {
-			let mut connection = mutex.lock().await;
 			match connection.receive_with_timeout(timeout).await {
 				Ok(m) => m,
 				Err(e) => {
@@ -1966,7 +1971,7 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 			}
 		};
 
-		if process_request_message(overlay_node.clone(), mutex.clone(), &message).await {
+		if process_request_message(overlay_node.clone(), mutex.clone(), &mut connection,&message).await {
 			// If ownership of the connection was taken by a keep alive request, we leave
 			// the connection open, and stop listening on it
 			debug!("Kept alive connection changed ownership.");
@@ -1978,10 +1983,8 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 }
 
 async fn process_request_message(
-	overlay_node: Arc<OverlayNode>, connection: Arc<Mutex<Box<Connection>>>, buffer: &[u8],
+	overlay_node: Arc<OverlayNode>, mutex: Arc<Mutex<Box<Connection>>>, connection: &mut Connection, buffer: &[u8],
 ) -> bool {
-	let mut c = connection.lock().await;
-
 	let mut message_type_id = buffer[0];
 	if message_type_id >= 0x80 {
 		message_type_id ^= 0x80;
@@ -1997,10 +2000,10 @@ async fn process_request_message(
 		let (r, ownership_taken) = match overlay_node
 			.base
 			.process_request(
-				connection.clone(),
+				mutex.clone(),
 				overlay_node.clone(),
-				c.peer_address(),
-				c.their_node_info(),
+				connection.peer_address(),
+				connection.their_node_info(),
 				message_type_id,
 				&buffer[33..],
 				Some(&actor_id),
@@ -2011,8 +2014,8 @@ async fn process_request_message(
 			None => (
 				overlay_node
 					.process_actor_request(
-						&mut c,
-						&connection,
+						connection,
+						&mutex,
 						&actor_id,
 						message_type_id,
 						&buffer[33..],
@@ -2027,17 +2030,17 @@ async fn process_request_message(
 			Some(response) => {
 				debug_assert!(
 					response.len() > 0,
-					"actor response must be more than 0 bytes"
+					"actor response must be more than 0 bytes ({}) [{} -> {}]", message_type_id, connection.our_session_id(), connection.their_session_id()
 				);
 				if let Err(e) = actor_node
 					.base
 					.interface
-					.respond(&mut *c, message_type_id + 1, &response)
+					.respond(connection, message_type_id + 1, &response)
 					.await
 				{
 					warn!("Unable to respond to actor request: {}", e);
 				} else {
-					let node_info = c.their_node_info().clone();
+					let node_info = connection.their_node_info().clone();
 					actor_node.base.remember_node(node_info).await;
 				}
 			}
@@ -2047,10 +2050,10 @@ async fn process_request_message(
 		let (r, ownership_taken) = match overlay_node
 			.base
 			.process_request(
-				connection.clone(),
+				mutex.clone(),
 				overlay_node.clone(),
-				&c.peer_address(),
-				c.their_node_info(),
+				&connection.peer_address(),
+				connection.their_node_info(),
 				message_type_id,
 				&buffer[1..],
 				None,
@@ -2060,7 +2063,7 @@ async fn process_request_message(
 			Some(r) => r,
 			None => (
 				overlay_node
-					.process_request(&mut *c, message_type_id, &buffer[1..])
+					.process_request(connection, message_type_id, &buffer[1..])
 					.await,
 				false,
 			),
@@ -2072,12 +2075,12 @@ async fn process_request_message(
 				if let Err(e) = overlay_node
 					.base
 					.interface
-					.respond(&mut *c, message_type_id + 1, &x)
+					.respond(connection, message_type_id + 1, &x)
 					.await
 				{
 					warn!("Unable to respond: {}", e);
 				} else {
-					let node_info = c.their_node_info().clone();
+					let node_info = connection.their_node_info().clone();
 					overlay_node.base.remember_node(node_info).await;
 				}
 			}

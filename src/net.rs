@@ -78,7 +78,7 @@ where
 	pub availability: IpAvailability,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct ContactOption {
 	target: SocketAddr,
 	use_tcp: bool,

@@ -214,7 +214,7 @@ impl OverlayNode {
 			)),
 			bootstrap_nodes,
 		});
-		this.base.interface.node.set(Some(this.clone()));
+		debug_assert!(this.base.interface.node.set(Some(this.clone())).is_ok());
 
 		let this2 = this.clone();
 		socket.listen(move |connection| {
@@ -222,10 +222,14 @@ impl OverlayNode {
 			tokio::spawn(async move {
 				// Check if reversed connection is expected
 				{
-					let mut expected = this3.base.expected_connections.lock().await;
-					if let Some(tx) = expected.remove(connection.their_node_id()) {
-						if tx.send(connection).is_err() {
-							error!("Unable to send requested reverse connection to origin node.")
+					let mut expected_connections = this3.base.expected_connections.lock().await;
+					if let Some(tx) = expected_connections.remove(&connection.peer_contact_option()) {
+						if tx.is_closed() {
+							warn!("Unable to pass expected connection along: sender is closed.");
+						} else {
+							if let Err(_) = tx.send(connection) {
+								error!("Unable to pass expected connection along.");
+							}
 						}
 						return;
 					}
