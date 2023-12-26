@@ -758,9 +758,11 @@ where
 		let mut visited = Vec::<(IdType, ContactOption)>::new();
 		let mut candidates = VecDeque::with_capacity(fingers.len());
 		for (d, n) in Self::sort_fingers(id, fingers).into_iter() {
-			match self.pick_contact_strategy(&n.contact_info) {
-				None => {}
-				Some(strategy) => candidates.push_back((d, n, strategy)),
+			if n.node_id != self.node_id {
+				match self.pick_contact_strategy(&n.contact_info) {
+					None => {}
+					Some(strategy) => candidates.push_back((d, n, strategy)),
+				}
 			}
 		}
 		let mut found = candidates.clone();
@@ -798,6 +800,9 @@ where
 							let mut new_fingers =
 								self.extract_fingers_from_response(&response, &visited);
 							new_fingers.retain(|(f, strat)| {
+								if f.node_id == self.node_id {
+									return false;
+								}
 								if strat.method != ContactStrategyMethod::Direct {
 									return false;
 								}
