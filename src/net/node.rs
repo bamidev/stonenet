@@ -1199,19 +1199,20 @@ where
 	}
 
 	async fn process_keep_alive_request(
-		&self, connection: &Arc<Mutex<Box<Connection>>>, buffer: &[u8], node_info: &NodeContactInfo,
+		&self, connection_mutex: &Arc<Mutex<Box<Connection>>>, connection: &mut Connection, buffer: &[u8]
 	) -> (Option<Vec<u8>>, bool) {
 		// The keep alive request is empty
 		if buffer.len() > 0 {
 			return (None, false);
 		}
 
-		let ok = if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
+		let ok = if let Some(bucket_index) = self.differs_at_bit(connection.their_node_id()) {
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
 
 			if bucket.connection.is_none() {
-				bucket.connection = Some((node_info.clone(), connection.clone()));
-				debug!("Keeping connection with {} alive.", node_info);
+				connection.set_keep_alive_timeout(Duration::from_secs(120)).await;
+				bucket.connection = Some((connection.their_node_info().clone(), connection_mutex.clone()));
+				debug!("Keeping connection with {} alive.", connection.peer_address());
 				true
 			} else {
 				false
@@ -1232,12 +1233,11 @@ where
 	}
 
 	pub(super) async fn process_request(
-		self: &Arc<Self>, connection: Arc<Mutex<Box<Connection>>>, overlay_node: Arc<OverlayNode>,
-		address: &SocketAddr, node_info: &NodeContactInfo, message_type: u8, buffer: &[u8],
-		actor_id: Option<&IdType>,
+		self: &Arc<Self>, connection_mutex: Arc<Mutex<Box<Connection>>>, connection: &mut Connection, overlay_node: Arc<OverlayNode>,
+		message_type: u8, buffer: &[u8], actor_id: Option<&IdType>,
 	) -> Option<(Option<Vec<u8>>, bool)> {
 		let result = match message_type {
-			NETWORK_MESSAGE_TYPE_PING_REQUEST => (self.process_ping_request(address).await, false),
+			NETWORK_MESSAGE_TYPE_PING_REQUEST => (self.process_ping_request(connection.peer_address()).await, false),
 			NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST =>
 				(self.process_find_node_request(buffer).await, false),
 			NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST => (
@@ -1251,12 +1251,12 @@ where
 				false,
 			),
 			NETWORK_MESSAGE_TYPE_RELAY_INITIATE_CONNECTION_REQUEST => (
-				self.process_relay_initiate_connection_request(buffer, &node_info.node_id)
+				self.process_relay_initiate_connection_request(buffer, connection.their_node_id())
 					.await,
 				false,
 			),
 			NETWORK_MESSAGE_TYPE_KEEP_ALIVE_REQUEST =>
-				self.process_keep_alive_request(&connection, buffer, node_info)
+				self.process_keep_alive_request(&connection_mutex, connection, buffer)
 					.await,
 			_ => return None,
 		};
@@ -2007,9 +2007,8 @@ async fn process_request_message(
 			.base
 			.process_request(
 				mutex.clone(),
+				connection,
 				overlay_node.clone(),
-				connection.peer_address(),
-				connection.their_node_info(),
 				message_type_id,
 				&buffer[33..],
 				Some(&actor_id),
@@ -2057,9 +2056,8 @@ async fn process_request_message(
 			.base
 			.process_request(
 				mutex.clone(),
+				connection,
 				overlay_node.clone(),
-				&connection.peer_address(),
-				connection.their_node_info(),
 				message_type_id,
 				&buffer[1..],
 				None,
