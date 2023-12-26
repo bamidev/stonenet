@@ -1211,6 +1211,7 @@ where
 
 			if bucket.connection.is_none() {
 				bucket.connection = Some((node_info.clone(), connection.clone()));
+				debug!("Keeping connection with {} alive.", node_info);
 				true
 			} else {
 				false
