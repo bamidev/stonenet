@@ -461,7 +461,7 @@ impl Connection {
 		});
 	}
 
-	async fn send_close_packet(&mut self) -> Result<()> {
+	async fn send_close_packet(&mut self) -> Result<()> { error!("Closing session [{} -> {}]", self.our_session_id, self.their_session_id);
 		self.send_crypted_packet(
 			MESSAGE_TYPE_CLOSE,
 			&self.key_state,
@@ -1036,7 +1036,7 @@ impl Connection {
 				warn!("Received malformed close packet: packet too small");
 			} else if &buffer[2..34] != self.their_node_id().as_bytes() {
 				warn!("Received malformed close packet: node ID didn't match.");
-			} else {
+			} else { error!("Close packet received [{} -> {}]", self.our_session_id, self.their_session_id);
 				self.is_closing.store(true, Ordering::Relaxed);
 				// Close the other queues so that an end of the connection is signified on the
 				// task that may be waiting for those

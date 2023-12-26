@@ -1498,7 +1498,7 @@ where
 		// node.
 		let mut connection = self.connect(target, None).await?;
 		let their_node_id = connection.their_node_id().clone();
-		self.exchange_ping_on_connection(&mut connection).await;
+		self.exchange_ping_on_connection(&mut connection).await?;
 		if let Err(e) = connection.close().await {
 			debug!("Unable to close connection: {}", e);
 		}
@@ -1945,7 +1945,7 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 	let timeout = Duration::from_secs(120);
 	c.set_keep_alive_timeout(timeout).await;
 	let mutex: Arc<Mutex<Box<Connection>>> = Arc::new(Mutex::new(c));
-	while !overlay_node.base.stop_flag.load(Ordering::Relaxed) {
+	while !overlay_node.base.stop_flag.load(Ordering::Relaxed) { 
 		let mut connection = mutex.lock().await;
 		let message = {
 			match connection.receive_with_timeout(timeout).await {

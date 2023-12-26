@@ -1,9 +1,10 @@
-use std::{fmt, ops};
+use std::{error::Error, fmt, ops, str};
 
 use async_trait::async_trait;
 use base58::*;
 use num::bigint::BigUint;
 use rand::{rngs::OsRng, RngCore};
+use rusqlite::types::*;
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
@@ -150,6 +151,18 @@ impl From<[u8; 32]> for IdType {
 	fn from(other: [u8; 32]) -> Self { Self(other) }
 }
 
+impl FromSql for IdType {
+	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+		match value {
+			ValueRef::Text(data) => {
+				let string = str::from_utf8(data).map_err(|e| FromSqlError::Other(Box::new(e)))?;
+				IdType::from_base58(string.as_ref()).map_err(|e| FromSqlError::Other(Box::new(e)))
+			}
+			_ => FromSqlResult::Err(FromSqlError::InvalidType),
+		}
+	}
+}
+
 impl fmt::Display for IdType {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "{}", self.to_base58()) }
 }
@@ -169,6 +182,12 @@ impl Serialize for IdType {
 
 impl ToBase58 for IdType {
 	fn to_base58(&self) -> String { self.0.to_base58() }
+}
+
+impl ToSql for IdType {
+	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+		Ok(ToSqlOutput::Owned(Value::Text(self.to_string())))
+	}
 }
 
 impl From<FromBase58Error> for IdFromBase58Error {
@@ -191,6 +210,8 @@ impl fmt::Display for IdFromBase58Error {
 		}
 	}
 }
+
+impl Error for IdFromBase58Error {}
 
 #[cfg(test)]
 mod tests {

@@ -1927,9 +1927,8 @@ impl Connection {
 			let mut rows = stat.query([])?;
 
 			if let Some(row) = rows.next()? {
-				let address_string: String = row.get(0)?;
+				let address: IdType = row.get(0)?;
 				let private_key: PrivateKey = row.get(1)?;
-				let address = IdType::from_base58(&address_string)?;
 				(address, private_key)
 			} else {
 				let private_key = PrivateKey::generate();
@@ -1938,7 +1937,7 @@ impl Connection {
 					r#"
 					INSERT INTO node_identity (address, private_key) VALUES (?,?)
 				"#,
-					params![address.to_string(), private_key.as_bytes()],
+					params![address, private_key],
 				)?;
 				(address, private_key)
 			}
@@ -2274,6 +2273,13 @@ impl Connection {
 
 		drop(stat);
 		tx.commit()?;
+		Ok(())
+	}
+
+	pub fn store_node_identity(&self, node_id: &IdType, node_key: &PrivateKey) -> Result<()> {
+		self.execute(r#"
+			UPDATE node_identity SET address = ?, private_key = ?
+		"#, params![node_id, node_key])?;
 		Ok(())
 	}
 

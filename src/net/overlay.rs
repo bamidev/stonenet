@@ -694,7 +694,7 @@ impl OverlayNode {
 								));
 								list
 							});
-
+							
 							// Open and maintain a connection to a bidirectional node
 							// TODO: Do the same thing for IPv6
 							if let Some(ipv4_contact_info) =
@@ -705,7 +705,7 @@ impl OverlayNode {
 										self.obtain_reverse_connection().await;
 									}
 								}
-							}
+							} else { panic!("no contact info")}
 
 							self.join_actor_networks(actor_node_infos).await;
 							self.maintain_synchronization(stop_flag);
@@ -824,12 +824,17 @@ impl OverlayNode {
 	fn maintain_node_connections(self: &Arc<Self>) {
 		let this = self.clone();
 		spawn(async move {
+			let mut next_ping = SystemTime::now() + Duration::from_secs(60);
 			while !this.base.stop_flag.load(Ordering::Relaxed) {
-				sleep(Duration::from_secs(60)).await;
+				sleep(next_ping.duration_since(SystemTime::now()).unwrap_or(Duration::default())).await;
+				next_ping = SystemTime::now() + Duration::from_secs(60);
+
 				for i in 0..256 {
-					let mut bucket = this.base.buckets[i].lock().await;
+					let bucket = this.base.buckets[i].lock().await;
 					if let Some((_, connection_mutex)) = &bucket.connection {
-						let mut connection = connection_mutex.lock().await;
+						let connection_mutex2 = connection_mutex.clone();
+						drop(bucket);
+						let mut connection = connection_mutex2.lock().await;
 						if this
 							.base
 							.exchange_ping_on_connection(&mut connection)
@@ -842,6 +847,7 @@ impl OverlayNode {
 							);
 							connection.close().await;
 							drop(connection);
+							let mut bucket = this.base.buckets[i].lock().await;
 							bucket.connection = None;
 						}
 					}
@@ -871,7 +877,7 @@ impl OverlayNode {
 		});
 	}
 
-	async fn obtain_reverse_connection(self: &Arc<Self>) {
+	async fn obtain_reverse_connection(self: &Arc<Self>) { println!("Obtaining reverse connection...");
 		// Try to find a bidirectional node to open a connection to it
 		let mut iter = self.base.iter_all_fingers().await;
 		while let Some(finger) = iter.next().await {
@@ -884,22 +890,22 @@ impl OverlayNode {
 								udpv4_availability.port,
 							)),
 							false,
-						);
+						); println!("Trying {}...", &contact_option);
 						if let Some(mut c) = self
 							.base
 							.connect_at(&contact_option, Some(&finger.node_id))
 							.await
-						{
+						{	
 							if let Some(success) =
 								self.base.exchange_keep_alive_on_connection(&mut c).await
-							{
+							{	println!("Obtained keep alive connection");
 								if success {
 									self.maintain_reverse_connection(c);
 									break;
 								} else {
 									c.close().await;
 								}
-							} else {
+							} else { println!("Unable to obtain keep alive connection");
 								c.close().await;
 							}
 						}

@@ -5,7 +5,7 @@ use std::{
 
 use ed25519_dalek::{self, Signer};
 use rand::{prelude::*, rngs::OsRng};
-use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
+use rusqlite::{types::*, ToSql};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -107,6 +107,12 @@ impl FromSql for PrivateKey {
 				},
 			_ => FromSqlResult::Err(FromSqlError::InvalidType),
 		}
+	}
+}
+
+impl ToSql for PrivateKey {
+	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+		Ok(ToSqlOutput::Borrowed(ValueRef::Blob(self.as_bytes())))
 	}
 }
 
