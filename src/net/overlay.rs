@@ -726,6 +726,7 @@ impl OverlayNode {
 				);
 			} else {
 				debug!("No bootstrap nodes configured. Not connecting to any nodes.");
+				return true;
 			}
 		}
 
