@@ -38,9 +38,11 @@ use chacha20::{
 	cipher::{KeyIvInit, StreamCipher},
 	ChaCha20,
 };
+use futures::channel::oneshot;
 use generic_array::{typenum::*, GenericArray};
 use hmac::*;
 use log::*;
+use num::traits::ToBytes;
 use once_cell::sync::OnceCell;
 use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
@@ -445,6 +447,12 @@ impl Into<io::Error> for Error {
 }
 
 impl Connection {
+	/// This size includes the 4 byte message header, so to know the amount of
+	/// bytes you're able to sent in the first window, subtract 4 bytes.
+	fn calculate_window_data_length(&self, window_size: u16) -> usize {
+		window_size as usize * self.max_data_packet_length() - 32
+	}
+
 	pub async fn close(&mut self) -> Result<()> {
 		#[cfg(debug_assertions)]
 		self.should_be_closed.store(false, Ordering::Relaxed);
@@ -508,6 +516,131 @@ impl Connection {
 
 	pub fn peer_address(&self) -> &SocketAddr { &self.peer_address }
 
+	pub async fn pipe(&mut self, mut other: Box<Connection>, close_other: bool) -> Result<usize> {
+		let (len_tx, len_rx) = oneshot::channel();
+		let (tx, rx) = mpsc::channel(2);
+
+		// Spawn a task that listens on the other connection and forwards the data on
+		// the mpsc channel.
+		spawn(async move {
+			other.pipe_receive(len_tx, tx).await;
+			if close_other {
+				other.close().await;
+			}
+		});
+
+		self.pipe_send(len_rx, rx).await
+	}
+
+	pub async fn pipe_mutex(
+		&mut self, other: Arc<Mutex<Box<Connection>>>, close_other: bool,
+	) -> Result<usize> {
+		let (len_tx, len_rx) = oneshot::channel();
+		let (tx, rx) = mpsc::channel(2);
+
+		// Spawn a task that listens on the other connection and forwards the data on
+		// the mpsc channel.
+		spawn(async move {
+			let mut connection = other.lock().await;
+			connection.pipe_receive(len_tx, tx).await;
+			if close_other {
+				connection.close().await;
+			}
+		});
+
+		self.pipe_send(len_rx, rx).await
+	}
+
+	async fn pipe_receive(
+		&mut self, len_tx: oneshot::Sender<usize>, tx: mpsc::Sender<Result<Vec<u8>>>,
+	) {
+		let mut buffer = Vec::new();
+		let mut received = 0;
+
+		let timeout: Duration = self.timeout;
+		match self.receive_chunk(&mut buffer, true, timeout).await {
+			Err(e) => {
+				if let Err(_) = len_tx.send(0) {
+					return;
+				}
+				let _ = tx.send(Err(e)).await;
+				return;
+			}
+			Ok(done) => {
+				received = buffer.len();
+				// After receiving the first chunk, we can send back the message length
+				if let Err(_) = len_tx.send(buffer.capacity()) {
+					return;
+				}
+				if let Err(_) = tx.send(Ok(buffer.clone())).await {
+					return;
+				}
+				if done {
+					return;
+				}
+			}
+		}
+		loop {
+			let timeout = self.timeout;
+			match self.receive_chunk(&mut buffer, false, timeout).await {
+				Err(e) => {
+					let _ = tx.send(Err(e)).await;
+					return;
+				}
+				Ok(done) => {
+					if let Err(_) = tx.send(Ok(buffer[received..].to_vec())).await {
+						return;
+					}
+					if done {
+						return;
+					}
+					received = buffer.len();
+				}
+			}
+		}
+	}
+
+	async fn pipe_send(
+		&mut self, len_rx: oneshot::Receiver<usize>, mut rx: mpsc::Receiver<Result<Vec<u8>>>,
+	) -> Result<usize> {
+		let message_size = if let Ok(m) = len_rx.await {
+			m
+		} else {
+			return Err(Error::ConnectionClosed);
+		};
+		let mut buffer = Vec::with_capacity(4 + message_size);
+		buffer.extend((message_size as u32).to_le_bytes());
+		let mut already_sent = 0;
+		while let Some(result) = rx.recv().await {
+			let chunk = result?;
+			buffer.extend(chunk);
+
+			let mut available = buffer.len() - already_sent;
+			while available >= self.calculate_window_data_length(self.send_window.size)
+				|| buffer.len() == buffer.capacity()
+			{
+				let sent = self.send_chunk(&mut buffer[already_sent..]).await?;
+				already_sent += sent;
+				available = buffer.len() - already_sent;
+			}
+
+			debug_assert!(
+				already_sent <= buffer.capacity(),
+				"sent more bytes than message: send={}, size={}",
+				already_sent,
+				buffer.capacity()
+			);
+			if already_sent == buffer.capacity() {
+				return Ok(already_sent);
+			}
+		}
+		panic!(
+			"less bytes sent ({}) than message ({})",
+			already_sent,
+			buffer.capacity()
+		);
+	}
+
 	/// Processes all the stored close packets that are left to be processed
 	async fn process_unprocessed_close_packets(&mut self) {
 		if self.unprocessed_close_packets.len() == 0 {
@@ -530,49 +663,61 @@ impl Connection {
 		self.receive_with_timeout(self.timeout).await
 	}
 
+	async fn receive_chunk(
+		&mut self, buffer: &mut Vec<u8>, is_first_window: bool, timeout: Duration,
+	) -> Result<bool> {
+		self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
+		let dh_public_key = x25519::PublicKey::from(&self.key_state.our_dh_key);
+		let current_timeout = if is_first_window {
+			timeout
+		} else {
+			self.timeout
+		};
+
+		let (new_public_key, clean, window_full) = self
+			.receive_window(
+				current_timeout,
+				buffer,
+				self.receive_window.size,
+				is_first_window,
+				&dh_public_key,
+			)
+			.await?;
+
+		// Adjust window size
+		if clean && window_full {
+			self.receive_window.increase()
+		} else {
+			self.receive_window.decrease()
+		}
+
+		// Update our shared key
+		self.previous_keystate = self.key_state.clone();
+		self.key_state.their_dh_key = new_public_key;
+		self.key_state.reset_key(self.receive_window.size);
+		self.process_unprocessed_close_packets().await;
+
+		debug_assert!(buffer.capacity() > 0, "Message length not set");
+		Ok(buffer.len() == buffer.capacity())
+	}
+
 	/// Like `receive`, but waits a different amount of time for the first
 	/// packet, and proceeds to receive the remainder at the connection's
 	/// configured timeout.
-	pub async fn receive_with_timeout(&mut self, timeout: Duration) -> Result<Vec<u8>> {
+	pub async fn receive_with_timeout(&mut self, first_timeout: Duration) -> Result<Vec<u8>> {
 		if self.is_closing.load(Ordering::Relaxed) {
 			return Err(Error::ConnectionClosed);
 		}
 
 		let mut buffer = Vec::new();
 		let mut first = true;
+		let mut timeout = first_timeout;
 		loop {
-			self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
-			let dh_public_key = x25519::PublicKey::from(&self.key_state.our_dh_key);
-			let current_timeout = if first { timeout } else { self.timeout };
-
-			let (new_public_key, clean, window_full) = self
-				.receive_window(
-					current_timeout,
-					&mut buffer,
-					self.receive_window.size,
-					first,
-					&dh_public_key,
-				)
-				.await?;
-			first = false;
-
-			// Adjust window size
-			if clean && window_full {
-				self.receive_window.increase()
-			} else {
-				self.receive_window.decrease()
-			}
-
-			// Update our shared key
-			self.previous_keystate = self.key_state.clone();
-			self.key_state.their_dh_key = new_public_key;
-			self.key_state.reset_key(self.receive_window.size);
-			self.process_unprocessed_close_packets().await;
-
-			debug_assert!(buffer.capacity() > 0, "Message length not set");
-			if buffer.len() == buffer.capacity() {
+			if self.receive_chunk(&mut buffer, first, timeout).await? {
 				return Ok(buffer);
 			}
+			first = false;
+			timeout = self.timeout;
 		}
 	}
 
@@ -1102,46 +1247,47 @@ impl Connection {
 		.await
 	}
 
+	async fn send_chunk(&mut self, buffer: &[u8]) -> Result<usize> {
+		self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
+		let result = self
+			.send_window(
+				&buffer,
+				self.send_window.size,
+				&x25519::PublicKey::from(&self.key_state.our_dh_key),
+			)
+			.await;
+		let (send, clean, their_dh_key, window_full) = result?;
+		debug_assert!(
+			send <= buffer.len(),
+			"More data send out than exists! {} <= {}",
+			send,
+			buffer.len()
+		);
+
+		// Adjust window size
+		//self.previous_window_size = self.send_window.size;
+		if clean && window_full {
+			self.send_window.increase()
+		} else {
+			self.send_window.decrease()
+		}
+
+		// Apply new ephemeral DH secret.
+		self.previous_keystate = self.key_state.clone();
+		self.key_state.their_dh_key = their_dh_key;
+		self.key_state.reset_key(self.send_window.size);
+		return Ok(send);
+	}
+
 	async fn send_data(&mut self, buffer: &[u8]) -> Result<()> {
 		let mut send = 0usize;
-		if self.their_session_id == 17 && self.our_session_id == 16 {
-			panic!("test send");
-		}
 		loop {
-			self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
-			let result = self
-				.send_window(
-					&buffer[send..],
-					self.send_window.size,
-					&x25519::PublicKey::from(&self.key_state.our_dh_key),
-				)
-				.await;
-			let (s, clean, their_dh_key, window_full) = result?;
-			send += s;
-			debug_assert!(
-				send <= buffer.len(),
-				"More data send out than exists! {} <= {}",
-				send,
-				buffer.len()
-			);
-
-			// Adjust window size
-			//self.previous_window_size = self.send_window.size;
-			if clean && window_full {
-				self.send_window.increase()
-			} else {
-				self.send_window.decrease()
-			}
-
-			// Apply new ephemeral DH secret.
-			self.previous_keystate = self.key_state.clone();
-			self.key_state.their_dh_key = their_dh_key;
-			self.key_state.reset_key(self.send_window.size);
+			send += self.send_chunk(&buffer[send..]).await?;
+			debug_assert!(send <= buffer.len(), "send too many bytes");
 			if send == buffer.len() {
-				break;
+				return Ok(());
 			}
 		}
-		Ok(())
 	}
 
 	async fn send_ack_packet(&self, key_sequence: u16, dh_key: &x25519::PublicKey) -> Result<()> {
@@ -1412,6 +1558,19 @@ impl Drop for Connection {
 		}
 	}
 }
+
+impl From<PublicKeyError> for Error {
+	fn from(_other: PublicKeyError) -> Self { Self::InvalidPublicKey }
+}
+
+impl From<io::Error> for Error {
+	fn from(other: io::Error) -> Self { Self::IoError(Arc::new(other)) }
+}
+
+impl From<bincode::Error> for Error {
+	fn from(other: bincode::Error) -> Self { Self::MalformedMessage(Some(Arc::new(other))) }
+}
+
 
 impl KeyState {
 	pub fn new(
@@ -2721,6 +2880,7 @@ mod tests {
 	use std::net::*;
 
 	use super::*;
+	use crate::test;
 
 	#[test]
 	fn test_encryption() {
@@ -2869,16 +3029,109 @@ mod tests {
 
 		stop_flag.store(true, Ordering::Relaxed);
 	}
-}
 
-impl From<PublicKeyError> for Error {
-	fn from(_other: PublicKeyError) -> Self { Self::InvalidPublicKey }
-}
+	#[tokio::test]
+	/// Sent and receive a message through a relay
+	async fn test_connection_piping() {
+		let mut rng = test::initialize_rng();
+		let ip = Ipv4Addr::new(127, 0, 0, 1);
+		let relay_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10002));
+		let node1_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10003));
+		let node2_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10004));
+		let relay_contact_info: ContactInfo = (&relay_addr).into();
+		let node1_contact_info: ContactInfo = (&node1_addr).into();
+		let node2_contact_info: ContactInfo = (&node2_addr).into();
+		let stop_flag = Arc::new(AtomicBool::new(false));
+		let relay_private_key = PrivateKey::generate();
+		let relay_node_id = relay_private_key.public().generate_address();
+		let relay = sstp::Server::bind(
+			stop_flag.clone(),
+			relay_node_id.clone(),
+			relay_contact_info.clone(),
+			relay_private_key,
+			DEFAULT_TIMEOUT,
+		)
+		.await
+		.expect("unable to bind relay");
+		let node1_private_key = PrivateKey::generate();
+		let node1_node_id = node1_private_key.public().generate_address();
+		let node1 = sstp::Server::bind(
+			stop_flag.clone(),
+			node1_node_id,
+			node1_contact_info.clone(),
+			node1_private_key,
+			DEFAULT_TIMEOUT,
+		)
+		.await
+		.expect("unable to bind node 1");
+		let node2_private_key = PrivateKey::generate();
+		let node2_node_id = node2_private_key.public().generate_address();
+		let node2 = Arc::new(
+			sstp::Server::bind(
+				stop_flag.clone(),
+				node2_node_id.clone(),
+				node2_contact_info.clone(),
+				node2_private_key,
+				DEFAULT_TIMEOUT,
+			)
+			.await
+			.expect("unable to bind node 2"),
+		);
 
-impl From<io::Error> for Error {
-	fn from(other: io::Error) -> Self { Self::IoError(Arc::new(other)) }
-}
+		let mut message = vec![0u8; 1000];
+		rng.fill_bytes(&mut message);
 
-impl From<bincode::Error> for Error {
-	fn from(other: bincode::Error) -> Self { Self::MalformedMessage(Some(Arc::new(other))) }
+		// Set up the relay node
+		let relay2 = relay.clone();
+		let node2_node_id2 = node2_node_id.clone();
+		let message_len = message.len();
+		relay.listen(move |mut connection1| {
+			println!("receive relay connection");
+			let relay3 = relay2.clone();
+			let node2_node_id3 = node2_node_id2.clone();
+			spawn(async move {
+				println!("received connection at relay");
+				let connection2 = relay3
+					.connect(&ContactOption::use_udp(node2_addr), Some(&node2_node_id3))
+					.await
+					.expect("unable to connect to node 2");
+				let sent = connection1
+					.pipe(connection2, true)
+					.await
+					.expect("unable to pipe data");
+				assert_eq!(sent, message_len);
+			});
+		});
+
+		// Set up the node that has the message
+		let message2 = message.clone();
+		node2.listen(move |mut connection| {
+			let message3 = message2.clone();
+			spawn(async move {
+				connection
+					.send(&message3)
+					.await
+					.expect("unable to send message from node 2");
+				connection.close().await;
+			});
+		});
+
+		relay.spawn();
+		node1.spawn();
+		node2.spawn();
+
+		// Receive relayed message
+		println!("CONNECTING");
+		let mut connection = node1
+			.connect(&ContactOption::use_udp(relay_addr), Some(&relay_node_id))
+			.await
+			.expect("unable to connect to relay node");
+		let received_message = connection
+			.receive()
+			.await
+			.expect("unable to receive message");
+		connection.close().await;
+		assert_eq!(received_message.len(), message.len(), "hoi");
+		assert_eq!(received_message, message, "relayed message got corrupted");
+	}
 }
