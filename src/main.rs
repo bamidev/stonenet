@@ -1,3 +1,5 @@
+#![feature(ip)]
+
 #[macro_use]
 extern crate arrayref;
 
@@ -37,6 +39,13 @@ enum RunMode {
 	Failure,
 	Setup,
 	Start(Config),
+}
+
+fn initialize_network_interfaces() {
+	let mut map = net::NETWORK_INTERFACES.lock().unwrap();
+	for interface in pnet::datalink::interfaces() {
+		map.insert(interface.name, interface.ips);
+	}
 }
 
 fn load_config() -> Option<Config> {
@@ -79,6 +88,8 @@ fn load_config() -> Option<Config> {
 #[tokio::main]
 async fn main() {
 	env_logger::init();
+
+	initialize_network_interfaces();
 
 	// Load config
 	if let Some(config) = load_config() {

@@ -55,9 +55,9 @@ impl ConnectionManager {
 
 		// Turn the connection into a keep-alive connection, as soon as the lock on it
 		// releases.
-		let this = self.clone();
-		let node_id2 = node_info.node_id.clone();
-		let connection2 = connection.clone();
+		let _this = self.clone();
+		let _node_id2 = node_info.node_id.clone();
+		let _connection2 = connection.clone();
 		/*spawn(async move {
 			Connection::keep_alive(&connection2, move |_| {
 				spawn(async move {

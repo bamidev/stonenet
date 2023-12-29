@@ -12,7 +12,7 @@ use std::{
 use async_trait::async_trait;
 use futures::future::join_all;
 use log::*;
-use tokio::{self, spawn, time::sleep};
+use tokio::{self, spawn, sync::Mutex, time::sleep};
 
 use super::{actor::*, actor_store::*, bincode, message::*, node::*, sstp, KADEMLIA_K};
 use crate::{
@@ -223,7 +223,7 @@ impl OverlayNode {
 				// Check if reversed connection is expected
 				{
 					let mut expected_connections = this3.base.expected_connections.lock().await;
-					if let Some(tx) = expected_connections.remove(&connection.peer_contact_option()) {
+					if let Some(tx) = expected_connections.remove(&connection.contact_option()) {
 						if tx.is_closed() {
 							warn!("Unable to pass expected connection along: sender is closed.");
 						} else {
@@ -291,7 +291,7 @@ impl OverlayNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: FindActorResponse = self
 			.base
-			.handle_connection_issue2(result, &target.node_id, &target.contact_info)
+			.handle_connection_issue(result, &target.node_id)
 			.await?;
 		Some(response)
 	}
@@ -445,11 +445,7 @@ impl OverlayNode {
 		loop {
 			let new_fingers = loop {
 				if let Some(finger) = fingers_iter.next() {
-					match self
-						.base
-						.connect(&finger.contact_info, Some(&finger.node_id))
-						.await
-					{
+					match self.base.select_direct_connection(&finger).await {
 						None => {}
 						Some(mut connection) => {
 							if let Some(response) = self
@@ -539,7 +535,7 @@ impl OverlayNode {
 
 			// Test each found node before using them
 			for n in actor_nodes {
-				if self.base.test_id(&n).await {
+				if self.base.test_id(&n).await == true {
 					contacts.push(n);
 				}
 			}
@@ -694,18 +690,20 @@ impl OverlayNode {
 								));
 								list
 							});
-							
+
 							// Open and maintain a connection to a bidirectional node
 							// TODO: Do the same thing for IPv6
 							if let Some(ipv4_contact_info) =
-								self.base.socket.our_contact_info().await.ipv4
+								self.base.socket.our_contact_info().ipv4
 							{
 								if let Some(availability) = ipv4_contact_info.availability.udp {
 									if availability.openness == Openness::Unidirectional {
 										self.obtain_reverse_connection().await;
 									}
 								}
-							} else { panic!("no contact info")}
+							} else {
+								panic!("no contact info")
+							}
 
 							self.join_actor_networks(actor_node_infos).await;
 							self.maintain_synchronization(stop_flag);
@@ -827,7 +825,12 @@ impl OverlayNode {
 		spawn(async move {
 			let mut next_ping = SystemTime::now() + Duration::from_secs(60);
 			while !this.base.stop_flag.load(Ordering::Relaxed) {
-				sleep(next_ping.duration_since(SystemTime::now()).unwrap_or(Duration::default())).await;
+				sleep(
+					next_ping
+						.duration_since(SystemTime::now())
+						.unwrap_or(Duration::default()),
+				)
+				.await;
 				next_ping = SystemTime::now() + Duration::from_secs(60);
 
 				for i in 0..256 {
@@ -878,7 +881,8 @@ impl OverlayNode {
 		});
 	}
 
-	async fn obtain_reverse_connection(self: &Arc<Self>) { println!("Obtaining reverse connection...");
+	async fn obtain_reverse_connection(self: &Arc<Self>) {
+		println!("Obtaining reverse connection...");
 		// Try to find a bidirectional node to open a connection to it
 		let mut iter = self.base.iter_all_fingers().await;
 		while let Some(finger) = iter.next().await {
@@ -891,22 +895,25 @@ impl OverlayNode {
 								udpv4_availability.port,
 							)),
 							false,
-						); println!("Trying {}...", &contact_option);
+						);
+						println!("Trying {}...", &contact_option);
 						if let Some(mut c) = self
 							.base
-							.connect_at(&contact_option, Some(&finger.node_id))
+							.connect(&contact_option, Some(&finger.node_id))
 							.await
-						{	
+						{
 							if let Some(success) =
 								self.base.exchange_keep_alive_on_connection(&mut c).await
-							{	println!("Obtained keep alive connection");
+							{
+								println!("Obtained keep alive connection");
 								if success {
 									self.maintain_reverse_connection(c);
 									break;
 								} else {
 									c.close().await;
 								}
-							} else { println!("Unable to obtain keep alive connection");
+							} else {
+								println!("Unable to obtain keep alive connection");
 								c.close().await;
 							}
 						}

@@ -10,9 +10,8 @@ use std::{
 };
 
 use log::*;
-use rand::prelude::*;
+use rand::{prelude::*, CryptoRng, RngCore};
 use rand_chacha::ChaCha8Rng;
-use rand::{CryptoRng, RngCore};
 use stonenetd::{
 	api::Api,
 	config::Config,

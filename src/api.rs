@@ -540,7 +540,9 @@ impl Api {
 		})?;
 
 		if let Some(actor_node) = self.node.get_actor_node(identity).await {
-			actor_node.publish_object(self.node.clone(), &hash, &object).await;
+			actor_node
+				.publish_object(self.node.clone(), &hash, &object)
+				.await;
 		} else {
 			error!("Actor node not found.");
 		}
@@ -550,8 +552,8 @@ impl Api {
 
 	/// Calculates the signature of the s
 	fn sign_object(
-		sequence: u64, previous_hash: &IdType,
-		created: u64, payload: &ObjectPayload, private_key: &PrivateKey,
+		sequence: u64, previous_hash: &IdType, created: u64, payload: &ObjectPayload,
+		private_key: &PrivateKey,
 	) -> db::Result<(IdType, Signature)> {
 		// Prepare data to be signed
 		let sign_data = ObjectSignData {

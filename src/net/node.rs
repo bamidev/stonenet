@@ -11,12 +11,10 @@ use log::*;
 use num::BigUint;
 use serde::de::DeserializeOwned;
 use tokio::{
-	select,
-	spawn,
+	select, spawn,
 	sync::{oneshot, Mutex},
 	time::sleep,
 };
-
 
 use super::{
 	message::*,
@@ -211,23 +209,30 @@ where
 		self.interface.close().await;
 	}
 
-	pub async fn connect(
+	pub async fn select_direct_connection(
+		&self, target: &NodeContactInfo,
+	) -> Option<Box<Connection>> {
+		self.select_direct_connection2(&target.contact_info, Some(&target.node_id))
+			.await
+	}
+
+	pub async fn select_direct_connection2(
 		&self, target: &ContactInfo, node_id: Option<&IdType>,
 	) -> Option<Box<Connection>> {
 		if let Some((option, _)) = self.pick_contact_option(target) {
-			self.connect_at(&option, node_id).await
+			self.connect(&option, node_id).await
 		} else {
 			None
 		}
 	}
 
-	pub async fn connect_at(
+	pub async fn connect(
 		&self, target: &ContactOption, node_id: Option<&IdType>,
 	) -> Option<Box<Connection>> {
 		match node_id {
 			Some(ni) => {
 				let result = self.socket.connect(target, node_id).await;
-				self.handle_connection_issue(result, ni, target).await
+				self.handle_connection_issue(result, ni).await
 			}
 			None => match self.socket.connect(target, node_id).await {
 				Ok(c) => Some(c),
@@ -239,17 +244,16 @@ where
 		}
 	}
 
-	pub async fn connect_node(
+	pub async fn connect_by_strategy(
 		&self, node_id: &IdType, strategy: &ContactStrategy,
 		last_open_connection: Option<&mut Connection>, overlay_node: &Arc<OverlayNode>,
 	) -> Option<Box<Connection>> {
 		match &strategy.method {
-			ContactStrategyMethod::Direct =>
-				self.connect_at(&strategy.contact, Some(node_id)).await,
+			ContactStrategyMethod::Direct => self.connect(&strategy.contact, Some(node_id)).await,
 			ContactStrategyMethod::Reversed => {
 				if let Some(mut relay_connection) = last_open_connection {
 					// FIXME: The contact option needs to be carefully picked
-					let my_contact_info = self.contact_info().await;
+					let my_contact_info = self.contact_info();
 					let contact_me_option = ContactOption::new(
 						SocketAddrV4::new(
 							my_contact_info.ipv4.as_ref().unwrap().addr.clone().into(),
@@ -279,7 +283,7 @@ where
 					if let Some(mut relay_connection) =
 						overlay_node.find_connection_for_node(node_id).await
 					{
-						let my_contact_info = self.contact_info().await;
+						let my_contact_info = self.contact_info();
 						let contact_me_option = ContactOption::new(
 							SocketAddrV4::new(
 								my_contact_info.ipv4.as_ref().unwrap().addr.clone().into(),
@@ -311,7 +315,7 @@ where
 		}
 	}
 
-	pub async fn contact_info(&self) -> ContactInfo { self.socket.our_contact_info().await.clone() }
+	pub fn contact_info(&self) -> ContactInfo { self.socket.our_contact_info() }
 
 	pub fn differs_at_bit(&self, other_id: &IdType) -> Option<u8> {
 		differs_at_bit(&self.node_id, other_id)
@@ -320,31 +324,8 @@ where
 	pub async fn exchange(
 		&self, target: &NodeContactInfo, message_type_id: u8, buffer: &[u8],
 	) -> Option<Vec<u8>> {
-		// Use an existing connection if possible
-		if let Some(bucket) = self.find_bucket(&target.node_id).await {
-			if let Some((connected_node_info, connection_lock)) =
-				bucket.lock().await.connection.clone()
-			{
-				if target.node_id == connected_node_info.node_id {
-					if let Ok(mut connection) = connection_lock.try_lock() {
-						return self
-							.handle_connection_issue2(
-								self.interface
-									.exchange(&mut connection, message_type_id, buffer)
-									.await,
-								&target.node_id,
-								&target.contact_info,
-							)
-							.await;
-					}
-				}
-			}
-		}
-
 		// If no existing connection already existed, open one
-		let mut connection = self
-			.connect(&target.contact_info, Some(&target.node_id))
-			.await?;
+		let mut connection = self.select_direct_connection(target).await?;
 		let result = self
 			.interface
 			.exchange(&mut connection, message_type_id, buffer)
@@ -352,8 +333,7 @@ where
 		if let Err(e) = connection.close().await {
 			debug!("Unable to close connection: {}", e);
 		}
-		self.handle_connection_issue(result, &target.node_id, &connection.peer_contact_option())
-			.await
+		self.handle_connection_issue(result, &target.node_id).await
 	}
 
 	/// Exchanges a request with a response with the given contact.
@@ -361,7 +341,7 @@ where
 		&self, node_id: &IdType, target: &ContactOption, message_type_id: u8, buffer: &[u8],
 	) -> Option<Vec<u8>> {
 		// TODO: Use an existing connection if possible.
-		let mut connection = self.connect_at(target, Some(node_id)).await?;
+		let mut connection = self.connect(target, Some(node_id)).await?;
 		let result = self
 			.interface
 			.exchange(&mut connection, message_type_id, buffer)
@@ -369,7 +349,7 @@ where
 		if let Err(e) = connection.close().await {
 			debug!("Unable to close connection: {}", e);
 		}
-		self.handle_connection_issue(result, node_id, target).await
+		self.handle_connection_issue(result, node_id).await
 	}
 
 	pub async fn exchange_find_x(
@@ -396,11 +376,7 @@ where
 		let raw_response = raw_response_result?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: FindNodeResponse = self
-			.handle_connection_issue(
-				result,
-				connection.their_node_id(),
-				&connection.peer_contact_option(),
-			)
+			.handle_connection_issue(result, connection.their_node_id())
 			.await?;
 		Some(response)
 	}
@@ -419,15 +395,9 @@ where
 			)
 			.await;
 		let their_node_id = connection.their_node_id().clone();
-		let contact_option = connection.peer_contact_option().clone();
 		let response = response_result?;
-		self.process_find_value_response(
-			&their_node_id,
-			&contact_option,
-			&response,
-			expect_fingers_in_response,
-		)
-		.await
+		self.process_find_value_response(&their_node_id, &response, expect_fingers_in_response)
+			.await
 	}
 
 	pub async fn exchange_find_value_on_connection_and_parse<V>(
@@ -452,7 +422,6 @@ where
 		let (value_result, fingers_result) = self
 			.process_find_value_response(
 				connection.their_node_id(),
-				&connection.peer_contact_option(),
 				&raw_response,
 				expect_fingers_in_response,
 			)
@@ -460,11 +429,7 @@ where
 		if let Some(value_buffer) = value_result {
 			let result: sstp::Result<_> = bincode::deserialize(&value_buffer).map_err(|e| e.into());
 			let value: V = self
-				.handle_connection_issue(
-					result,
-					&connection.their_node_id(),
-					&connection.peer_contact_option(),
-				)
+				.handle_connection_issue(result, &connection.their_node_id())
 				.await?;
 			Some((Some(value), fingers_result))
 		} else {
@@ -482,11 +447,7 @@ where
 			.await?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: KeepAliveResponse = self
-			.handle_connection_issue(
-				result,
-				connection.their_node_id(),
-				&connection.peer_contact_option(),
-			)
+			.handle_connection_issue(result, connection.their_node_id())
 			.await?;
 		Some(response.ok)
 	}
@@ -498,12 +459,8 @@ where
 			.interface
 			.exchange(connection, message_type_id, buffer)
 			.await;
-		self.handle_connection_issue(
-			result,
-			connection.their_node_id(),
-			&connection.peer_contact_option(),
-		)
-		.await
+		self.handle_connection_issue(result, connection.their_node_id())
+			.await
 	}
 
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
@@ -542,11 +499,7 @@ where
 			.await?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: InitiateConnectionResponse = self
-			.handle_connection_issue(
-				result,
-				connection.their_node_id(),
-				&connection.peer_contact_option(),
-			)
+			.handle_connection_issue(result, connection.their_node_id())
 			.await?;
 		Some(response.ok)
 	}
@@ -571,11 +524,7 @@ where
 			.await;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response?).map_err(|e| e.into());
 		let response: RelayInitiateConnectionResponse = self
-			.handle_connection_issue(
-				result,
-				&relay_connection.their_node_id(),
-				&relay_connection.peer_contact_option(),
-			)
+			.handle_connection_issue(result, &relay_connection.their_node_id())
 			.await?;
 		Some(response.ok)
 	}
@@ -614,17 +563,6 @@ where
 		}
 
 		new_fingers
-	}
-
-	/// Returns the first node with bidirectional contact options known to us
-	async fn find_any_bidirectional_contact_option(&self) -> Option<(IdType, ContactOption)> {
-		let mut iter = self.iter_all_fingers().await;
-		while let Some(finger) = iter.next().await {
-			if let Some(contact_option) = self.bidirectional_contact_option(&finger.contact_info) {
-				return Some((finger.node_id, contact_option));
-			}
-		}
-		None
 	}
 
 	async fn find_bucket(&self, node_id: &IdType) -> Option<&Mutex<Bucket>> {
@@ -784,17 +722,17 @@ where
 			visited.push((candidate_contact.node_id.clone(), strategy.contact.clone()));
 
 			match self
-				.connect_at(&strategy.contact, Some(&candidate_contact.node_id))
+				.connect(&strategy.contact, Some(&candidate_contact.node_id))
 				.await
 			{
 				None => warn!(
 					"Disregarding finger {}, unable to connect...",
-					&candidate_contact.contact_info
+					&candidate_contact.node_id
 				),
 				Some(mut connection) => {
 					match self.exchange_find_node(&mut connection, &id).await {
 						None => {
-							warn!("Disregarding finger {}", &candidate_contact.contact_info);
+							warn!("Disregarding finger {}", &candidate_contact.node_id);
 						}
 						Some(response) => {
 							let mut new_fingers =
@@ -890,48 +828,21 @@ where
 	}
 
 	pub(super) async fn handle_connection_issue<T>(
-		&self, result: sstp::Result<T>, node_id: &IdType, contact: &ContactOption,
+		&self, result: sstp::Result<T>, node_id: &IdType,
 	) -> Option<T> {
 		match result {
 			Err(e) => {
 				match e {
 					sstp::Error::Timeout => {
-						debug!("Problematic node {}: {}", contact, e);
+						debug!("Problematic node {}: {}", node_id, e);
 						self.mark_node_problematic(node_id).await;
 					}
 					_ =>
 						if !e.forgivable() {
-							warn!("Rejecting node {}: {}", contact, e);
+							debug!("Rejecting node {}: {}", node_id, e);
 							self.reject_node(node_id).await;
 						} else {
-							debug!("Connection issue with node {}: {}", contact, e);
-						},
-				}
-				None
-			}
-			Ok(response) => {
-				self.mark_node_helpful(node_id).await;
-				Some(response)
-			}
-		}
-	}
-
-	pub(super) async fn handle_connection_issue2<T>(
-		&self, result: sstp::Result<T>, node_id: &IdType, contact_info: &ContactInfo,
-	) -> Option<T> {
-		match result {
-			Err(e) => {
-				match e {
-					sstp::Error::Timeout => {
-						debug!("Problematic node {}: {}", contact_info, e);
-						self.mark_node_problematic(node_id).await;
-					}
-					_ =>
-						if !e.forgivable() {
-							warn!("Rejecting node {}: {}", contact_info, e);
-							self.reject_node(node_id).await;
-						} else {
-							debug!("Connection issue with node {}: {}", contact_info, e);
+							debug!("Connection issue with node {}: {}", node_id, e);
 						},
 				}
 				None
@@ -993,10 +904,10 @@ where
 		// Add the last encountered fingers (neighbours) to our buckets as well, as they
 		// have not been automatically added.
 		let futs = neighbours.into_iter().map(|n| async move {
-			if self.test_id(&n).await {
+			if self.test_id(&n).await == true {
 				self.remember_node_nondestructive(n).await;
 			} else {
-				warn!("Connecting to neighbour {} failed", &n.contact_info);
+				warn!("Connecting to neighbour {} failed", &n.node_id);
 			}
 		});
 		join_all(futs).await;
@@ -1077,17 +988,14 @@ where
 	}
 
 	async fn process_find_value_response(
-		&self, node_id: &IdType, contact_option: &ContactOption, response: &[u8],
-		expect_fingers_in_response: bool,
+		&self, node_id: &IdType, response: &[u8], expect_fingers_in_response: bool,
 	) -> Option<(Option<Vec<u8>>, Option<FindNodeResponse>)> {
 		// If fingers are expected in the response, parse them
 		let (contacts, contacts_len) = if expect_fingers_in_response {
 			let result: sstp::Result<FindNodeResponse> =
 				bincode::deserialize_with_trailing(&response).map_err(|e| e.into());
 
-			let contacts = self
-				.handle_connection_issue(result, node_id, &contact_option)
-				.await?;
+			let contacts = self.handle_connection_issue(result, node_id).await?;
 			let contacts_len = bincode::serialized_size(&contacts).unwrap();
 			(Some(contacts), contacts_len)
 		} else {
@@ -1110,11 +1018,7 @@ where
 				return Some((None, contacts));
 			} else {
 				return self
-					.handle_connection_issue(
-						Err(sstp::Error::MalformedMessage(None)),
-						node_id,
-						&contact_option,
-					)
+					.handle_connection_issue(Err(sstp::Error::MalformedMessage(None)), node_id)
 					.await;
 			}
 		}
@@ -1158,7 +1062,7 @@ where
 
 		let value_result = match result {
 			Err(e) => {
-				panic!(
+				error!(
 					"Database error occurred processing find value request for value {} (type \
 					 {}): {}",
 					&request.id, request.value_type, e
@@ -1199,7 +1103,8 @@ where
 	}
 
 	async fn process_keep_alive_request(
-		&self, connection_mutex: &Arc<Mutex<Box<Connection>>>, connection: &mut Connection, buffer: &[u8]
+		&self, connection_mutex: &Arc<Mutex<Box<Connection>>>, connection: &mut Connection,
+		buffer: &[u8],
 	) -> (Option<Vec<u8>>, bool) {
 		// The keep alive request is empty
 		if buffer.len() > 0 {
@@ -1210,9 +1115,17 @@ where
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
 
 			if bucket.connection.is_none() {
-				connection.set_keep_alive_timeout(Duration::from_secs(120)).await;
-				bucket.connection = Some((connection.their_node_info().clone(), connection_mutex.clone()));
-				debug!("Keeping connection with {} alive.", connection.peer_address());
+				connection
+					.set_keep_alive_timeout(Duration::from_secs(120))
+					.await;
+				bucket.connection = Some((
+					connection.their_node_info().clone(),
+					connection_mutex.clone(),
+				));
+				debug!(
+					"Keeping connection with {} alive.",
+					connection.peer_address()
+				);
 				true
 			} else {
 				false
@@ -1233,11 +1146,15 @@ where
 	}
 
 	pub(super) async fn process_request(
-		self: &Arc<Self>, connection_mutex: Arc<Mutex<Box<Connection>>>, connection: &mut Connection, overlay_node: Arc<OverlayNode>,
-		message_type: u8, buffer: &[u8], actor_id: Option<&IdType>,
+		self: &Arc<Self>, connection_mutex: Arc<Mutex<Box<Connection>>>,
+		connection: &mut Connection, overlay_node: Arc<OverlayNode>, message_type: u8,
+		buffer: &[u8], actor_id: Option<&IdType>,
 	) -> Option<(Option<Vec<u8>>, bool)> {
 		let result = match message_type {
-			NETWORK_MESSAGE_TYPE_PING_REQUEST => (self.process_ping_request(connection.peer_address()).await, false),
+			NETWORK_MESSAGE_TYPE_PING_REQUEST => (
+				self.process_ping_request(connection.peer_address()).await,
+				false,
+			),
 			NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST =>
 				(self.process_find_node_request(buffer).await, false),
 			NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST => (
@@ -1287,7 +1204,7 @@ where
 		let this = self.clone();
 		spawn(async move {
 			if let Some(connection) = this
-				.connect_at(
+				.connect(
 					&request.source_contact_option,
 					Some(&request.source_node_id),
 				)
@@ -1301,14 +1218,15 @@ where
 	}
 
 	async fn request_reversed_connection(
-		&self, relay_connection: &mut Connection, target: &IdType, their_contact: &ContactOption, our_contact: &ContactOption,
+		&self, relay_connection: &mut Connection, target: &IdType, their_contact: &ContactOption,
+		our_contact: &ContactOption,
 	) -> Option<Box<Connection>> {
 		// FIXME: It would be much faster if we didn't have to wait for a timeout before
 		// we continued.
 		if !self.punch_hole(their_contact).await {
 			return None;
 		}
-		
+
 		let overlay_node = self.overlay_node();
 		let (tx, rx) = oneshot::channel();
 		{
@@ -1340,7 +1258,8 @@ where
 		}
 
 		// TODO: Keep the connection with the relay node open until contact is made,
-		// because the relay node may be able to send us a status message explaining whether things went ok or not.
+		// because the relay node may be able to send us a status message explaining
+		// whether things went ok or not.
 
 		// Wait until a connection is received, and return that.
 		let result = select! {
@@ -1443,12 +1362,12 @@ where
 		// If the bucket is full, test whether the node at the front is still active,
 		// and yeet it if not.
 		if let Some(n) = bucket.test_space() {
-			if !self.test_id(n).await {
+			if self.test_id(n).await != true {
 				bucket.pop_front();
 			}
 		}
-		debug!("Remembering node {}...", &node_info.contact_info);
-		bucket.remember(node_info);
+		debug!("Remembering node {}...", node_info);
+		bucket.remember(node_info.clone());
 	}
 
 	/// Like `remember_node`, but only remembers the node if it doesn't need to
@@ -1478,6 +1397,15 @@ where
 		}
 	}
 
+	pub async fn select_connection(&self, node_info: &NodeContactInfo) -> Option<Box<Connection>> {
+		if let Some(strategy) = self.pick_contact_strategy(&node_info.contact_info) {
+			self.connect_by_strategy(&node_info.node_id, &strategy, None, &self.overlay_node())
+				.await
+		} else {
+			None
+		}
+	}
+
 	fn sort_fingers(
 		id: &IdType, fingers: &[NodeContactInfo],
 	) -> VecDeque<(BigUint, NodeContactInfo)> {
@@ -1495,9 +1423,7 @@ where
 	}
 
 	pub async fn test_presence(&self, target: &ContactInfo) -> Option<IdType> {
-		// TODO: Instead of opening a connection and immediately closing it, ping the
-		// node.
-		let mut connection = self.connect(target, None).await?;
+		let mut connection = self.select_direct_connection2(target, None).await?;
 		let their_node_id = connection.their_node_id().clone();
 		self.exchange_ping_on_connection(&mut connection).await?;
 		if let Err(e) = connection.close().await {
@@ -1574,7 +1500,6 @@ where
 				&& self
 					.node
 					.contact_info()
-					.await
 					.is_open_to_reversed_connections(&candidate_contact.contact_info)
 			{
 				if let Some((node_id, connection)) =
@@ -1593,7 +1518,7 @@ where
 			};
 			match self
 				.node
-				.connect_node(
+				.connect_by_strategy(
 					&candidate_contact.node_id,
 					&strategy,
 					reversed_connection.as_deref_mut().map(|c| c.as_mut()),
@@ -1605,7 +1530,7 @@ where
 					if let Some(sc) = special_connection.as_mut() {
 						sc.close().await;
 					}
-					warn!("Disregarding finger {}", &candidate_contact.contact_info)
+					warn!("Disregarding finger {}", &candidate_contact)
 				}
 				Some(mut connection) => {
 					if let Some(sc) = special_connection.as_mut() {
@@ -1896,7 +1821,8 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 									connection.peer_address(),
 								);
 								print!(
-									"Node {} timed out before request was received ks_seq={} [{} -> {}]",
+									"Node {} timed out before request was received ks_seq={} [{} \
+									 -> {}]",
 									connection.peer_address(),
 									connection.key_state.sequence,
 									connection.our_session_id(),
@@ -1930,7 +1856,14 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 			}
 		};
 		is_first_message = false;
-		if process_request_message(overlay_node.clone(), mutex.clone(), &mut *connection, &message).await {
+		if process_request_message(
+			overlay_node.clone(),
+			mutex.clone(),
+			&mut *connection,
+			&message,
+		)
+		.await
+		{
 			// If ownership of the connection was taken by a keep alive request, we leave
 			// the connection open, and stop listening on it
 			return;
@@ -1946,7 +1879,7 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 	let timeout = Duration::from_secs(120);
 	c.set_keep_alive_timeout(timeout).await;
 	let mutex: Arc<Mutex<Box<Connection>>> = Arc::new(Mutex::new(c));
-	while !overlay_node.base.stop_flag.load(Ordering::Relaxed) { 
+	while !overlay_node.base.stop_flag.load(Ordering::Relaxed) {
 		let mut connection = mutex.lock().await;
 		let message = {
 			match connection.receive_with_timeout(timeout).await {
@@ -1955,7 +1888,11 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 					match e {
 						// If the node hasn't send any pings for 120 seconds, we're done
 						sstp::Error::Timeout => {
-							debug!("Kept alive connection has timed out. [{} -> {}]", connection.our_session_id(), connection.their_session_id());
+							debug!(
+								"Kept alive connection has timed out. [{} -> {}]",
+								connection.our_session_id(),
+								connection.their_session_id()
+							);
 							break;
 						}
 						// The other end closed the connection, so stop
@@ -1977,7 +1914,14 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 			}
 		};
 
-		if process_request_message(overlay_node.clone(), mutex.clone(), &mut connection,&message).await {
+		if process_request_message(
+			overlay_node.clone(),
+			mutex.clone(),
+			&mut connection,
+			&message,
+		)
+		.await
+		{
 			// If ownership of the connection was taken by a keep alive request, we leave
 			// the connection open, and stop listening on it
 			debug!("Kept alive connection changed ownership.");
@@ -1989,7 +1933,8 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 }
 
 async fn process_request_message(
-	overlay_node: Arc<OverlayNode>, mutex: Arc<Mutex<Box<Connection>>>, connection: &mut Connection, buffer: &[u8],
+	overlay_node: Arc<OverlayNode>, mutex: Arc<Mutex<Box<Connection>>>,
+	connection: &mut Connection, buffer: &[u8],
 ) -> bool {
 	let mut message_type_id = buffer[0];
 	if message_type_id >= 0x80 {
@@ -2035,7 +1980,10 @@ async fn process_request_message(
 			Some(response) => {
 				debug_assert!(
 					response.len() > 0,
-					"actor response must be more than 0 bytes ({}) [{} -> {}]", message_type_id, connection.our_session_id(), connection.their_session_id()
+					"actor response must be more than 0 bytes ({}) [{} -> {}]",
+					message_type_id,
+					connection.our_session_id(),
+					connection.their_session_id()
 				);
 				if let Err(e) = actor_node
 					.base

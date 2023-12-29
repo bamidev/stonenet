@@ -10,17 +10,19 @@ pub(crate) mod sstp;
 
 
 use std::{
+	collections::HashMap,
 	fmt,
 	net::*,
-	sync::{atomic::*, Arc},
+	sync::{atomic::*, Arc, Mutex},
 	time::{Duration, SystemTime},
 };
 
+use ipnetwork::IpNetwork;
+use lazy_static::lazy_static;
 use log::*;
 use num::BigUint;
 use serde::{Deserialize, Serialize};
 use sstp::Connection;
-use tokio::sync::Mutex;
 
 use crate::common::*;
 
@@ -48,6 +50,23 @@ pub const NETWORK_MESSAGE_TYPE_RELAY_REQUEST: u8 = 10;
 pub const NETWORK_MESSAGE_TYPE_KEEP_ALIVE_REQUEST: u8 = 12;
 //pub const NETWORK_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE: u8 = 13;
 
+lazy_static! {
+	pub static ref NETWORK_INTERFACES: Mutex<HashMap<String, Vec<IpNetwork>>> =
+		Mutex::new(HashMap::new());
+}
+
+
+#[derive(Default)]
+pub struct BindInfo {
+	pub ipv4: IpBindInfo,
+	pub ipv6: IpBindInfo,
+}
+
+#[derive(Default)]
+pub struct IpBindInfo {
+	udp_port: Option<u16>,
+	tcp_port: Option<u16>,
+}
 
 /// All the info that advertises in what way this node is approachable over the
 /// current internet. Could both be very well set to `None`, if the node is
@@ -108,6 +127,12 @@ pub struct NodeContactMethod {
 	pub node_id: IdType,
 	pub method: ContactMethod
 }*/
+
+pub enum NetworkLevel {
+	Global,
+	Local(String),
+	Unknown,
+}
 
 /// The port and 'openness' of a transport protocol such as UDP or TCP.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -318,6 +343,33 @@ impl fmt::Display for ContactOption {
 		} else {
 			write!(f, "UDP-{}", self.target)
 		}
+	}
+}
+
+
+impl NetworkLevel {
+	pub fn from_ip(ip: &IpAddr) -> NetworkLevel {
+		if ip.is_global() {
+			NetworkLevel::Global
+		} else {
+			if let Some(interface) = Self::find_interface_for_ip(ip) {
+				NetworkLevel::Local(interface)
+			} else {
+				NetworkLevel::Unknown
+			}
+		}
+	}
+
+	fn find_interface_for_ip(ip: &IpAddr) -> Option<String> {
+		let map = NETWORK_INTERFACES.lock().unwrap();
+		for (interface, ips) in map.iter() {
+			for ip_range in ips {
+				if ip_range.contains(*ip) {
+					return Some(interface.clone());
+				}
+			}
+		}
+		None
 	}
 }
 

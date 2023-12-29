@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
-use tokio::{spawn, time::sleep};
+use tokio::{spawn, sync::Mutex, time::sleep};
 
 use super::{connection_manager::*, message::*, node::*, overlay::OverlayNode, sstp, *};
 use crate::{
@@ -269,7 +269,7 @@ impl ActorNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: HeadResponse = self
 			.base
-			.handle_connection_issue2(result, &target.node_id, &target.contact_info)
+			.handle_connection_issue(result, &target.node_id)
 			.await?;
 		Some(response)
 	}
@@ -284,11 +284,7 @@ impl ActorNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: HeadResponse = self
 			.base
-			.handle_connection_issue(
-				result,
-				&connection.their_node_id(),
-				&connection.peer_contact_option(),
-			)
+			.handle_connection_issue(result, &connection.their_node_id())
 			.await?;
 		// FIXME: Verify object here
 		Some(response)
@@ -321,26 +317,6 @@ impl ActorNode {
 		value_result
 	}
 
-	/*async fn exchange_store_value(
-		&self, c: &mut Connection, id: IdType, value_type: ValueType,
-	) -> Option<StoreValueResponse> {
-		let request = StoreValueRequest { id, value_type };
-		let raw_response = self
-			.base
-			.exchange_on_connection(
-				c,
-				ACTOR_MESSAGE_TYPE_STORE_VALUE_REQUEST,
-				&bincode::serialize(&request).unwrap(),
-			)
-			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
-		let response: StoreValueResponse = self
-			.base
-			.handle_connection_issue(result, c.their_node_id(), &c.peer_contact_option())
-			.await?;
-		Some(response)
-	}*/
-
 	async fn exchange_profile(&self, contact: &NodeContactInfo) -> Option<ProfileObject> {
 		let request = GetProfileRequest {};
 		let raw_response = self
@@ -354,7 +330,7 @@ impl ActorNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: GetProfileResponse = self
 			.base
-			.handle_connection_issue2(result, &contact.node_id, &contact.contact_info)
+			.handle_connection_issue(result, &contact.node_id)
 			.await?;
 		response.profile
 	}
@@ -376,11 +352,7 @@ impl ActorNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: PublishObjectResponse = self
 			.base
-			.handle_connection_issue(
-				result,
-				connection.their_node_id(),
-				&connection.peer_contact_option(),
-			)
+			.handle_connection_issue(result, connection.their_node_id())
 			.await?;
 		Some(response.needed)
 	}
@@ -1193,11 +1165,7 @@ impl ActorNode {
 	) {
 		let mut iter = self.base.iter_all_fingers().await;
 		while let Some(finger) = iter.next().await {
-			if let Some(connection) = self
-				.base
-				.connect(&finger.contact_info, Some(&finger.node_id))
-				.await
-			{
+			if let Some(connection) = self.base.select_direct_connection(&finger).await {
 				self.clone()
 					.publish_object_on_connection(&overlay_node, connection, id, object)
 					.await;
@@ -1334,11 +1302,7 @@ impl ActorNode {
 	async fn synchronize_head(self: &Arc<Self>, overlay_node: &Arc<OverlayNode>) -> db::Result<()> {
 		let mut finger_iter = self.base.iter_all_fingers().await;
 		while let Some(finger) = finger_iter.next().await {
-			if let Some(mut connection) = self
-				.base
-				.connect(&finger.contact_info, Some(&finger.node_id))
-				.await
-			{
+			if let Some(mut connection) = self.base.select_direct_connection(&finger).await {
 				if let Some(response) = self.exchange_head_on_connection(&mut connection).await {
 					match self
 						.process_new_object(&mut connection, &response.hash, &response.object)

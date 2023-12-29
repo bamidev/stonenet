@@ -2277,9 +2277,12 @@ impl Connection {
 	}
 
 	pub fn store_node_identity(&self, node_id: &IdType, node_key: &PrivateKey) -> Result<()> {
-		self.execute(r#"
+		self.execute(
+			r#"
 			UPDATE node_identity SET address = ?, private_key = ?
-		"#, params![node_id, node_key])?;
+		"#,
+			params![node_id, node_key],
+		)?;
 		Ok(())
 	}
 

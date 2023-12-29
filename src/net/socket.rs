@@ -167,6 +167,7 @@ fn udp_max_packet_length<V>() -> usize {
 	} else if mem::size_of::<V>() == mem::size_of::<SocketAddrV6>() {
 		1280 - 40 /* Fixed IP header size */ - 8 /* UDP header size */
 	} else {
+		panic!("unreachable");
 		0 // Shouldn't be reached...
 	}
 }
