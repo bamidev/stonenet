@@ -355,7 +355,7 @@ impl ActorNode {
 			.handle_connection_issue(result, connection.their_node_id())
 			.await?;
 		Some(response.needed)
-	}
+	}	
 
 	pub async fn fetch_profile(&self) -> Option<ProfileObject> {
 		let mut iter = self.base.iter_all_fingers().await;
@@ -479,33 +479,21 @@ impl ActorNode {
 	}
 
 	/// Does all the work that is expected upon joining the network.
-	pub async fn initialize(
-		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, first_nodes: &[NodeContactInfo],
-	) {
-		// Put yourself in the network
-		let mut joined = false;
-		for first_node in first_nodes {
-			if self
-				.base
-				.join_network_starting_at(&first_node.contact_info)
-				.await
-			{
-				joined = true;
-				break;
-			}
-		}
-		if !joined {
-			info!("Alone on actor network {}.", &self.base.interface.actor_id);
-			return;
-		}
-
+	pub async fn initialize(self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, neighbours: &[NodeContactInfo]) {
 		// Check if we are behind or if the network is behind
-		self.synchronize_head(overlay_node)
+		self.synchronize_head(overlay_node, neighbours)
 			.await
 			.expect("unable to synchronize head");
 
 		// Do the work of synchronizing all missing data.
 		self.start_synchronization();
+	}
+
+	pub async fn initialize_with_connection(self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, mut connection: Box<Connection>) {
+		if let Err(e) = self.synchronize_head_on_connection(overlay_node, &mut connection).await {
+			error!("Database error while synchonizing head on connection: {}", e);
+		}
+		connection.close().await;
 	}
 
 	/// Returns a list of block hashes that we'd like to have.
@@ -588,6 +576,20 @@ impl ActorNode {
 		})
 	}
 
+	pub async fn join_network_starting_with_connection(self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, mut connection: Box<Connection>) -> Option<bool> {
+		let response = self.base.exchange_find_node_on_connection(&mut connection, self.base.node_id()).await?;
+		if response.fingers.iter().any(|f| self.base.bidirectional_contact_option(&f.contact_info).is_some()) {
+			connection.close().await;
+		} else {
+			self.initialize_with_connection(overlay_node, connection).await;
+			return Some(false);
+		}
+
+		let neighbours = self.base.find_node_from_fingers(self.base.node_id(), &response.fingers, 4, 100).await;
+		self.initialize(overlay_node, &neighbours);
+		Some(true)
+	}
+
 	fn load_public_key(&self) -> PublicKey {
 		let actor_info = tokio::task::block_in_place(|| {
 			let c = self.db().connect().expect("unable to connect to database");
@@ -667,6 +669,7 @@ impl ActorNode {
 		};
 		let fingers = self.base.find_nearest_fingers(id).await;
 		let response = FindNodeResponse {
+			is_super_node: self.base.interface.overlay_node().is_super_node,
 			connection,
 			fingers,
 		};
@@ -713,81 +716,6 @@ impl ActorNode {
 			.await;
 		Some(bincode::serialize(&KeepAliveResponse { ok }).unwrap())
 	}
-
-	/*async fn process_relay_request(
-		self: &Arc<Self>, mutex: &Arc<Mutex<Box<Connection>>>, buffer: &[u8],
-	) -> Option<Vec<u8>> {
-		let request: RelayRequest = match bincode::deserialize(buffer) {
-			Ok(id) => id,
-			Err(e) => {
-				warn!("Malformed relay request: {}", e);
-				return None;
-			}
-		};
-
-		if let Some((target, target_connection_lock)) = self
-			.base
-			.interface
-			.connection_manager
-			.find(&request.target)
-			.await
-		{
-			let this = self.clone();
-			let mutex2 = mutex.clone();
-			spawn(async move {
-				if let Ok(mut target_connection) = target_connection_lock.try_lock() {
-					let mut response = RelayResponse { ok: true };
-					let mut connection = mutex2.lock().await;
-					if this
-						.base
-						.interface
-						.send(
-							&mut *target_connection,
-							request.message_type_id,
-							&[],
-							//&request.message,
-						)
-						.await
-						.is_ok()
-					{
-						if let Err(e) = this
-							.base
-							.interface
-							.respond(
-								&mut *connection,
-								ACTOR_MESSAGE_TYPE_RELAY_RESPONSE,
-								&bincode::serialize(&response).unwrap(),
-							)
-							.await
-						{
-							warn!("Unable to respond to relay request: {}", e);
-						}
-						if let Err(e) = target_connection.pipe(connection.as_mut()).await {
-							warn!("Unable to pipe relay request: {}", e);
-						}
-					} else {
-						response.ok = false;
-						if let Err(e) = this
-							.base
-							.interface
-							.respond(
-								&mut *connection,
-								ACTOR_MESSAGE_TYPE_RELAY_RESPONSE,
-								&bincode::serialize(&response).unwrap(),
-							)
-							.await
-						{
-							warn!("Unable to respond to relay request: {}", e);
-						}
-					}
-				}
-			});
-			return None;
-		}
-
-		let response = RelayResponse { ok: false };
-		Some(bincode::serialize(&response).unwrap())
-	}*/
 
 	pub(super) async fn process_request(
 		self: &Arc<Self>, connection: &mut Connection, _mutex: &Arc<Mutex<Box<Connection>>>,
@@ -1165,20 +1093,20 @@ impl ActorNode {
 	) {
 		let mut iter = self.base.iter_all_fingers().await;
 		while let Some(finger) = iter.next().await {
-			if let Some(connection) = self.base.select_direct_connection(&finger).await {
+			if let Some(mut connection) = self.base.select_direct_connection(&finger).await {
 				self.clone()
-					.publish_object_on_connection(&overlay_node, connection, id, object)
+					.publish_object_on_connection(&overlay_node, &mut connection, id, object)
 					.await;
 			}
 		}
 	}
 
 	pub async fn publish_object_on_connection(
-		self: Arc<Self>, overlay_node: &Arc<OverlayNode>, mut connection: Box<Connection>,
+		self: Arc<Self>, overlay_node: &Arc<OverlayNode>, connection: &mut Connection,
 		id: &IdType, object: &Object,
 	) {
 		if let Some(wants_it) = self
-			.exchange_publish_object_on_connection(&mut connection, id)
+			.exchange_publish_object_on_connection(connection, id)
 			.await
 		{
 			if wants_it {
@@ -1193,12 +1121,9 @@ impl ActorNode {
 				}
 				// Keep the connection open so that the other side can continue to make
 				// requests to us, and once (s)he closes, we return our function.
-				#[cfg(debug_assertions)]
-				connection.should_be_closed.store(false, Ordering::Relaxed);
-				node::handle_connection(overlay_node.clone(), connection).await;
-			} else {
-				connection.close().await;
+				node::handle_find_value_connection(overlay_node, connection).await;
 			}
+			connection.close().await;
 			return;
 		}
 
@@ -1299,48 +1224,44 @@ impl ActorNode {
 		Ok(())
 	}
 
-	async fn synchronize_head(self: &Arc<Self>, overlay_node: &Arc<OverlayNode>) -> db::Result<()> {
-		let mut finger_iter = self.base.iter_all_fingers().await;
-		while let Some(finger) = finger_iter.next().await {
+	async fn synchronize_head(self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, fingers: &[NodeContactInfo]) -> db::Result<()> {
+		for finger in fingers {
 			if let Some(mut connection) = self.base.select_direct_connection(&finger).await {
-				if let Some(response) = self.exchange_head_on_connection(&mut connection).await {
-					match self
-						.process_new_object(&mut connection, &response.hash, &response.object)
-						.await
-					{
-						Err(e) => {
-							connection.close().await;
-							return Err(e);
-						}
-						Ok(result) => {
-							if let Some(our_head) = result {
-								// If that node is behind, publish our head to that node
-								if response.object.sequence < our_head.sequence {
-									self.clone()
-										.publish_object_on_connection(
-											overlay_node,
-											connection,
-											&response.hash,
-											&response.object,
-										)
-										.await;
-								} else {
-									connection.close().await;
-								}
-							} else {
-								connection.close().await;
-							}
-						}
-					}
-
-					// Stop after we've gotten head from one peer
-					break;
-				} else {
-					connection.close().await;
-				}
+				self.synchronize_head_on_connection(overlay_node, &mut connection).await;
+				connection.close().await;
 			}
 		}
 		Ok(())
+	}
+
+	async fn synchronize_head_on_connection(self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, connection: &mut Connection) -> db::Result<bool> {
+		if let Some(response) = self.exchange_head_on_connection(connection).await {
+			match self
+				.process_new_object(connection, &response.hash, &response.object)
+				.await
+			{
+				Err(e) => {
+					return Err(e);
+				}
+				Ok(result) => {
+					if let Some(our_head) = result {
+						// If that node is behind, publish our head to that node
+						if response.object.sequence < our_head.sequence {
+							self.clone()
+								.publish_object_on_connection(
+									overlay_node,
+									connection,
+									&response.hash,
+									&response.object,
+								)
+								.await;
+						}
+					}
+					return Ok(true);
+				}
+			}
+		}
+		Ok(false)
 	}
 
 	async fn synchronize_files(&self) -> db::Result<()> {

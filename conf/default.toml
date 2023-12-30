@@ -61,3 +61,11 @@ udp_max_idle_time = 60
 # number saves a tiny amount of memory.
 # Needs to be 1 or more.
 bucket_size = 4
+
+# Become a super node. Being a super node means you'll relay ANY data for ANY
+# node without restriction. This helps the network by providing to those that
+# are behind a firewall that doesn't allow them to reach other nodes who can't
+# receive connections.
+# However, as a super node you run the risk of being complicit in sharing
+# illegal data. So only set this to true at your own risk!
+super_node = false

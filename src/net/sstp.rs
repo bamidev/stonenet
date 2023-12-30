@@ -38,11 +38,10 @@ use chacha20::{
 	cipher::{KeyIvInit, StreamCipher},
 	ChaCha20,
 };
-use futures::channel::oneshot;
+use futures::{channel::oneshot, join};
 use generic_array::{typenum::*, GenericArray};
 use hmac::*;
 use log::*;
-use num::traits::ToBytes;
 use once_cell::sync::OnceCell;
 use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
@@ -135,6 +134,8 @@ pub enum Error {
 	/// The node ID did not match in the hello response. Could be an attempt
 	/// at a MitM-attack.
 	InsecureConnection,
+	/// The data that got inspected during a pipe failed a check.
+	InvalidData,
 	/// The public key in the hello exchange didn't match the node ID.
 	InvalidPublicKey,
 	/// A packet had an invalid message type on it.
@@ -398,6 +399,7 @@ impl fmt::Display for Error {
 			Self::DummyError => write!(f, "dummy error"),
 			Self::EmptyAckMask => write!(f, "ack mask did not contain any missing packet bits"),
 			Self::InsecureConnection => write!(f, "connection not secure"),
+			Self::InvalidData => write!(f, "invalid data"),
 			Self::InvalidPublicKey => write!(f, "invalid public key"),
 			Self::InvalidMessageType(mt) => write!(f, "invalid message type: {}", mt),
 			Self::InvalidNodeId => write!(f, "invalid node ID"),
@@ -516,24 +518,26 @@ impl Connection {
 
 	pub fn peer_address(&self) -> &SocketAddr { &self.peer_address }
 
-	pub async fn pipe(&mut self, mut other: Box<Connection>, close_other: bool) -> Result<usize> {
+	/// Listen on the other connection and send all data on this connection.
+	pub async fn pipe(
+		&mut self, other: &mut Connection,
+		verify_data: impl FnMut(&[u8]) -> bool + Send + 'static,
+	) -> Result<usize> {
 		let (len_tx, len_rx) = oneshot::channel();
 		let (tx, rx) = mpsc::channel(2);
 
 		// Spawn a task that listens on the other connection and forwards the data on
 		// the mpsc channel.
-		spawn(async move {
-			other.pipe_receive(len_tx, tx).await;
-			if close_other {
-				other.close().await;
-			}
-		});
-
-		self.pipe_send(len_rx, rx).await
+		let (_, result) = join!(
+			other.pipe_receive(len_tx, tx, verify_data),
+			self.pipe_send(len_rx, rx),
+		);
+		result
 	}
 
 	pub async fn pipe_mutex(
 		&mut self, other: Arc<Mutex<Box<Connection>>>, close_other: bool,
+		verify_data: impl FnMut(&[u8]) -> bool + Send + 'static,
 	) -> Result<usize> {
 		let (len_tx, len_rx) = oneshot::channel();
 		let (tx, rx) = mpsc::channel(2);
@@ -542,7 +546,7 @@ impl Connection {
 		// the mpsc channel.
 		spawn(async move {
 			let mut connection = other.lock().await;
-			connection.pipe_receive(len_tx, tx).await;
+			connection.pipe_receive(len_tx, tx, verify_data).await;
 			if close_other {
 				connection.close().await;
 			}
@@ -553,9 +557,10 @@ impl Connection {
 
 	async fn pipe_receive(
 		&mut self, len_tx: oneshot::Sender<usize>, tx: mpsc::Sender<Result<Vec<u8>>>,
+		mut verify_data: impl FnMut(&[u8]) -> bool + Send + 'static,
 	) {
 		let mut buffer = Vec::new();
-		let mut received = 0;
+		let mut received;
 
 		let timeout: Duration = self.timeout;
 		match self.receive_chunk(&mut buffer, true, timeout).await {
@@ -568,15 +573,21 @@ impl Connection {
 			}
 			Ok(done) => {
 				received = buffer.len();
-				// After receiving the first chunk, we can send back the message length
-				if let Err(_) = len_tx.send(buffer.capacity()) {
-					return;
-				}
-				if let Err(_) = tx.send(Ok(buffer.clone())).await {
-					return;
-				}
-				if done {
-					return;
+				if verify_data(&buffer) {
+					// After receiving the first chunk, we can send back the message length
+					if let Err(_) = len_tx.send(buffer.capacity()) {
+						return;
+					}
+					if let Err(_) = tx.send(Ok(buffer.clone())).await {
+						return;
+					}
+					if done {
+						return;
+					}
+				} else {
+					if let Err(_) = tx.send(Err(Error::InvalidData)).await {
+						return;
+					}
 				}
 			}
 		}
@@ -587,15 +598,20 @@ impl Connection {
 					let _ = tx.send(Err(e)).await;
 					return;
 				}
-				Ok(done) => {
-					if let Err(_) = tx.send(Ok(buffer[received..].to_vec())).await {
-						return;
-					}
-					if done {
-						return;
-					}
-					received = buffer.len();
-				}
+				Ok(done) =>
+					if verify_data(&buffer) {
+						if let Err(_) = tx.send(Ok(buffer[received..].to_vec())).await {
+							return;
+						}
+						if done {
+							return;
+						}
+						received = buffer.len();
+					} else {
+						if let Err(_) = tx.send(Err(Error::InvalidData)).await {
+							return;
+						}
+					},
 			}
 		}
 	}
@@ -3091,14 +3107,15 @@ mod tests {
 			let node2_node_id3 = node2_node_id2.clone();
 			spawn(async move {
 				println!("received connection at relay");
-				let connection2 = relay3
+				let mut connection2 = relay3
 					.connect(&ContactOption::use_udp(node2_addr), Some(&node2_node_id3))
 					.await
 					.expect("unable to connect to node 2");
 				let sent = connection1
-					.pipe(connection2, true)
+					.pipe(&mut connection2, |_| true)
 					.await
 					.expect("unable to pipe data");
+				connection2.close().await;
 				assert_eq!(sent, message_len);
 			});
 		});
@@ -3121,7 +3138,6 @@ mod tests {
 		node2.spawn();
 
 		// Receive relayed message
-		println!("CONNECTING");
 		let mut connection = node1
 			.connect(&ContactOption::use_udp(relay_addr), Some(&relay_node_id))
 			.await
@@ -3131,7 +3147,6 @@ mod tests {
 			.await
 			.expect("unable to receive message");
 		connection.close().await;
-		assert_eq!(received_message.len(), message.len(), "hoi");
 		assert_eq!(received_message, message, "relayed message got corrupted");
 	}
 }

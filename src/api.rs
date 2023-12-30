@@ -367,7 +367,7 @@ impl Api {
 			let node = self.node.clone();
 			let actor_id2 = actor_id.clone();
 			tokio::spawn(async move {
-				node.join_actor_network(actor_id2, actor_info).await;
+				node.join_actor_network(&actor_id2, &actor_info).await;
 			});
 		}
 

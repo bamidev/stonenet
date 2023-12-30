@@ -43,6 +43,7 @@ pub struct FindNodeRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FindNodeResponse {
+	pub is_super_node: bool,
 	pub connection: Option<NodeContactInfo>,
 	/// A list of other nodes this node knows about. Are less likely to be still
 	/// available.
@@ -79,6 +80,18 @@ pub struct HeadRequest {}
 pub struct HeadResponse {
 	pub hash: IdType,
 	pub object: Object,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RelayDataRequest {
+	pub target: IdType,
+	pub find_value: FindValueRequest,
+	// FIXME: Needs a signature to verify that the value is actually part of the actor network
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RelayDataResponse {
+	pub ok: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -205,13 +218,12 @@ pub struct RelayInitiateConnectionResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RelayRequest {
-	pub target: IdType,
-	pub message_type_id: u8,
+pub struct OpenRelayRequest {
+	pub target: NodeContactInfo,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RelayResponse {
+pub struct OpenRelayResponse {
 	pub ok: bool,
 }
 

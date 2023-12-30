@@ -41,14 +41,6 @@ pub const NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST: u8 = 2;
 //pub const NETWORK_MESSAGE_TYPE_FIND_NODE_RESPONSE: u8 = 3;
 pub const NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST: u8 = 4;
 //pub const NETWORK_MESSAGE_TYPE_FIND_NODE_RESPONSE: u8 = 5;
-pub const NETWORK_MESSAGE_TYPE_INITIATE_CONNECTION_REQUEST: u8 = 6;
-//pub const NETWORK_MESSAGE_TYPE_RELAY_RESPONSE: u8 = 7;
-pub const NETWORK_MESSAGE_TYPE_RELAY_INITIATE_CONNECTION_REQUEST: u8 = 8;
-//pub const NETWORK_MESSAGE_TYPE_RELAY_RESPONSE: u8 = 9;
-pub const NETWORK_MESSAGE_TYPE_RELAY_REQUEST: u8 = 10;
-//pub const NETWORK_MESSAGE_TYPE_RELAY_RESPONSE: u8 = 11;
-pub const NETWORK_MESSAGE_TYPE_KEEP_ALIVE_REQUEST: u8 = 12;
-//pub const NETWORK_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE: u8 = 13;
 
 lazy_static! {
 	pub static ref NETWORK_INTERFACES: Mutex<HashMap<String, Vec<IpNetwork>>> =
@@ -151,6 +143,8 @@ pub enum Openness {
 	Bidirectional  = 0,
 	/// Allowed to initiate connections, but not able to accept any.
 	Unidirectional = 1,
+	/// Punchable
+	Punchable      = 2,
 }
 
 
@@ -389,6 +383,7 @@ impl fmt::Display for Openness {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Openness::Bidirectional => write!(f, "bidirectional"),
+			Openness::Punchable => write!(f, "punchable"),
 			Openness::Unidirectional => write!(f, "unidirectional"),
 		}
 	}

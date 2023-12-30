@@ -28,6 +28,7 @@ pub struct Config {
 	pub load_web_interface: bool,
 	pub udp_max_idle_time: usize,
 	pub bucket_size: usize,
+	pub super_node: bool
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -54,6 +55,7 @@ impl Default for Config {
 			load_web_interface: true,
 			udp_max_idle_time: 60,
 			bucket_size: 4,
+			super_node: false
 		}
 	}
 }

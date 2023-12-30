@@ -138,7 +138,7 @@ Hoi ik ben Kees!
 		.expect("unable to create identity");
 	let _ = node1
 		.node
-		.join_actor_network(actor_id.clone(), actor_info.clone())
+		.join_actor_network(&actor_id, &actor_info)
 		.await
 		.expect("unable to join actor network");
 
@@ -238,7 +238,7 @@ Hoi ik ben Kees!
 		.expect("unable to follow node 1");
 	node2
 		.node
-		.join_actor_network(actor_id.clone(), actor_info)
+		.join_actor_network(&actor_id, &actor_info)
 		.await;
 	assert!(actor_found, "actor not found");
 	let actor_node = node2

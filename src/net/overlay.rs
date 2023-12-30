@@ -1,6 +1,3 @@
-// FIXME: Remove when going stable:
-#![allow(dead_code)]
-
 use std::{
 	boxed::Box,
 	collections::HashMap,
@@ -10,18 +7,18 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::future::join_all;
+use futures::{future::{join_all, BoxFuture}, channel::oneshot};
 use log::*;
-use tokio::{self, spawn, sync::Mutex, time::sleep};
+use tokio::{self, spawn, sync::Mutex, time::sleep, select};
 
-use super::{actor::*, actor_store::*, bincode, message::*, node::*, sstp, KADEMLIA_K};
+use super::{actor::*, actor_store::*, bincode, message::*, node::*, sstp};
 use crate::{
 	common::*,
 	config::*,
 	db::{self, Database},
 	identity::*,
 	model::*,
-	net::*,
+	net::*, limited_store::LimitedVec,
 };
 
 
@@ -34,9 +31,21 @@ pub const OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST: u8 = 68;
 //pub const OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_RESPONSE: u8 = 69;
 pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST: u8 = 70;
 //pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_RESPONSE: u8 = 71;
-pub const OVERLAY_MESSAGE_TYPE_RELAY_REQUEST: u8 = 72;
-//pub const OVERLAY_MESSAGE_TYPE_RELAY_RESPONSE: u8 = 73;
+pub const OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST: u8 = 72;
+pub const OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE: u8 = 73;
+pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST: u8 = 74;
+//pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE: u8 = 75;
 
+
+pub struct ConnectActorIter<'a> {
+	base: FindActorIter<'a>,
+	actor_info: Option<ActorInfo>,
+	state: u8,
+	pi: usize,
+	ri: usize,
+	punchable_nodes: Vec<(IdType, ContactOption)>,
+	relayable_nodes: Vec<NodeContactInfo>,
+}
 pub struct FindActorIter<'a>(FindValueIter<'a, OverlayInterface>);
 
 /*#[derive(Clone, Default)]
@@ -47,6 +56,10 @@ struct OverlayBucket {
 pub struct OverlayNode {
 	pub(super) base: Arc<Node<OverlayInterface>>,
 	bootstrap_nodes: Vec<SocketAddr>,
+	pub(super) expected_connections:
+		Arc<Mutex<HashMap<ContactOption, oneshot::Sender<Box<sstp::Connection>>>>>,
+	pub(super) is_super_node: bool,
+	super_nodes: Mutex<LimitedVec<NodeContactInfo>>,
 }
 
 pub(super) struct OverlayInterface {
@@ -174,6 +187,77 @@ impl<'a> AsyncIterator for FindActorIter<'a> {
 	}
 }
 
+impl<'a> ConnectActorIter<'a> {
+	pub fn visited(&self) -> &[(IdType, ContactOption)] { self.base.visited() }
+
+	pub async fn close(&mut self) { self.base.close().await; }
+}
+
+#[async_trait]
+impl<'a> AsyncIterator for ConnectActorIter<'a> {
+	type Item = (Box<Connection>, ActorInfo);
+
+	async fn next(&mut self) -> Option<Self::Item> {
+		// At first, just try bidirectional nodes only
+		if self.state == 0 {
+			while let Some(result) = self.base.next().await {
+				let (ai, actor_nodes) = *result;
+				if self.actor_info.is_none() {
+					self.actor_info = Some(ai);
+				}
+	
+				// Try all unidirectional nodes first, just remember the others
+				for node in actor_nodes {
+					if let Some(strategy) = self.base.0.node.pick_contact_strategy(&node.contact_info) {
+						match strategy.method {
+							ContactStrategyMethod::Relay => {
+								self.relayable_nodes.push(node);
+							}
+							ContactStrategyMethod::HolePunch => {
+								self.punchable_nodes.push((node.node_id.clone(), strategy.contact));
+							}
+							ContactStrategyMethod::Direct => {
+								if let Some(connection) = self.base.0.node.connect(&strategy.contact, Some(&node.node_id)).await {
+									return Some((connection, self.actor_info.clone().unwrap()));
+								}
+							}
+						}
+					}
+				}
+			}
+			self.state = 1;
+		}
+
+		// Then, try all the punchable nodes we've encountered
+		if self.state == 1 {
+			for i in self.pi..self.punchable_nodes.len() {
+				let (node_id, contact_option) = &self.punchable_nodes[i];
+				let strategy = ContactStrategy {
+					method: ContactStrategyMethod::HolePunch,
+					contact: contact_option.clone()
+				};
+				// FIXME: There needs to be a "self.base.connect_through_hole_punching" function...
+				if let Some(connection) = self.base.0.node.connect_by_strategy(&node_id, &strategy, None, &self.base.0.overlay_node).await {
+					self.pi = i;
+					return Some((connection, self.actor_info.as_ref().unwrap().clone()));
+				}
+			}
+			self.pi = self.punchable_nodes.len();
+
+			for i in self.ri..self.relayable_nodes.len() {
+				let node_info = &self.relayable_nodes[i];
+				if let Some(connection) = self.base.0.overlay_node.open_relay(node_info).await {
+					self.ri = i;
+					return Some((connection, self.actor_info.as_ref().unwrap().clone()));
+				}
+			}
+			self.ri = self.relayable_nodes.len();
+		}
+
+		None
+	}
+}
+
 impl OverlayNode {
 	pub async fn close(self: Arc<Self>) { self.base.close().await; }
 
@@ -213,6 +297,9 @@ impl OverlayNode {
 				config.bucket_size,
 			)),
 			bootstrap_nodes,
+			expected_connections: Arc::new(Mutex::new(HashMap::new())),
+			is_super_node: config.super_node,
+			super_nodes: Mutex::new(LimitedVec::new(100))
 		});
 		debug_assert!(this.base.interface.node.set(Some(this.clone())).is_ok());
 
@@ -222,9 +309,9 @@ impl OverlayNode {
 			tokio::spawn(async move {
 				// Check if reversed connection is expected
 				{
-					let mut expected_connections = this3.base.expected_connections.lock().await;
+					let mut expected_connections = this3.expected_connections.lock().await;
 					if let Some(tx) = expected_connections.remove(&connection.contact_option()) {
-						if tx.is_closed() {
+						if tx.is_canceled() {
 							warn!("Unable to pass expected connection along: sender is closed.");
 						} else {
 							if let Err(_) = tx.send(connection) {
@@ -296,6 +383,86 @@ impl OverlayNode {
 		Some(response)
 	}
 
+	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
+	/// RPC.
+	pub async fn exchange_keep_alive_on_connection(
+		&self, connection: &mut Connection,
+	) -> Option<bool> {
+		let raw_response = self.base
+			.exchange_on_connection(connection, OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST, &[])
+			.await?;
+		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let response: KeepAliveResponse = self.base
+			.handle_connection_issue(result, connection.their_node_id())
+			.await?;
+		Some(response.ok)
+	}
+
+	pub async fn exchange_open_relay_on_connection(&self, connection: &mut Connection, target: NodeContactInfo) -> Option<bool> {
+		let request = OpenRelayRequest {
+			target,
+		};
+		let raw_response = self.base
+			.exchange_on_connection(
+				connection,
+				OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST,
+				&bincode::serialize(&request).unwrap(),
+			)
+			.await?;
+		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let response: OpenRelayResponse = self
+			.base
+			.handle_connection_issue(result, connection.their_node_id())
+			.await?;
+		Some(response.ok)
+	}
+
+	pub(super) async fn exchange_punch_hole_on_connection(
+		&self, connection: &mut Connection, source_node_id: IdType,
+		source_contact_option: ContactOption,
+	) -> Option<bool> {
+		let request = InitiateConnectionRequest {
+			source_node_id,
+			source_contact_option,
+		};
+		let raw_response = self.base
+			.exchange_on_connection(
+				connection,
+				OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST,
+				&bincode::serialize(&request).unwrap(),
+			)
+			.await?;
+		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let response: InitiateConnectionResponse = self.base
+			.handle_connection_issue(result, connection.their_node_id())
+			.await?;
+		Some(response.ok)
+	}
+
+	/// Asks a peer to relay an initiate connection request to the destination
+	/// target for you.
+	async fn exchange_relay_punch_hole_request(
+		&self, relay_connection: &mut Connection, target: IdType, contact_option: ContactOption,
+	) -> Option<bool> {
+		let message = RelayInitiateConnectionRequest {
+			target,
+			contact_option,
+		};
+		let raw_response = self
+			.base
+			.exchange_on_connection(
+				relay_connection,
+				OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST,
+				&bincode::serialize(&message).unwrap(),
+			)
+			.await;
+		let result: sstp::Result<_> = bincode::deserialize(&raw_response?).map_err(|e| e.into());
+		let response: RelayInitiateConnectionResponse = self.base
+			.handle_connection_issue(result, &relay_connection.their_node_id())
+			.await?;
+		Some(response.ok)
+	}
+
 	pub async fn exchange_store_actor(
 		&self, target: &NodeContactInfo, actor_id: IdType, actor_info: ActorInfo,
 	) -> Option<()> {
@@ -324,6 +491,23 @@ impl OverlayNode {
 			.exchange_at(
 				node_id,
 				target,
+				OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST,
+				&bincode::serialize(&request).unwrap(),
+			)
+			.await?;
+		Some(())
+	}
+
+	pub async fn exchange_store_actor_on_connection(
+		&self, connection: &mut Connection, actor_id: IdType, actor_info: ActorInfo,
+	) -> Option<()> {
+		let request = StoreActorRequest {
+			actor_id,
+			actor_info,
+		};
+		self.base
+			.exchange_on_connection(
+				connection,
 				OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST,
 				&bincode::serialize(&request).unwrap(),
 			)
@@ -450,7 +634,7 @@ impl OverlayNode {
 						Some(mut connection) => {
 							if let Some(response) = self
 								.base
-								.exchange_find_node(&mut *connection, &node_id)
+								.exchange_find_node_on_connection(&mut *connection, &node_id)
 								.await
 							{
 								if let Some(node_info) = response.connection {
@@ -498,8 +682,20 @@ impl OverlayNode {
 		nodes.get(actor_id).map(|n| n.clone())
 	}
 
+	async fn connect_actor_iter<'a>(self: &'a Arc<Self>, actor_id: &IdType) -> ConnectActorIter<'a> {
+		ConnectActorIter {
+			base: self.find_actor_iter(actor_id, 100, true).await,
+			actor_info: None,
+			state: 0,
+			pi: 0,
+			ri: 0,
+			punchable_nodes: Vec::new(),
+			relayable_nodes: Vec::new(),
+		}
+	}
+
 	pub async fn join_actor_network(
-		self: &Arc<Self>, actor_id: IdType, actor_info: ActorInfo,
+		self: &Arc<Self>, actor_id: &IdType, actor_info: &ActorInfo,
 	) -> Option<Arc<ActorNode>> {
 		// Insert a new - or load the existing node
 		let node = {
@@ -514,7 +710,7 @@ impl OverlayNode {
 					self.node_id().clone(),
 					self.base.socket.clone(),
 					actor_id.clone(),
-					actor_info,
+					actor_info.clone(),
 					self.db().clone(),
 					self.base.bucket_size,
 				));
@@ -523,105 +719,25 @@ impl OverlayNode {
 			}
 		};
 
-		// Try to find k nodes for the network first
-		let mut contacts = Vec::with_capacity((KADEMLIA_K * 2 - 1) as _);
-		let mut actor_iter = self.find_actor_iter(&actor_id, 100, false).await;
-		let mut actor_info = None;
-		while let Some(result) = actor_iter.next().await {
-			let (ai, actor_nodes) = *result;
-			if actor_info.is_none() {
-				actor_info = Some(ai);
-			}
-
-			// Test each found node before using them
-			for n in actor_nodes {
-				if self.base.test_id(&n).await == true {
-					contacts.push(n);
-				}
-			}
-
-			if contacts.len() >= KADEMLIA_K as usize {
+		// Try to find a node on the actor network first
+		let mut iter = self.connect_actor_iter(actor_id).await;
+		while let Some((connection, _)) = iter.next().await {
+			if let Some(_open) = node.join_network_starting_with_connection(self, connection).await {
 				break;
 			}
-			if self.base.has_stopped() {
-				actor_iter.close().await;
-				return None;
-			}
 		}
 
-		// If no nodes responded with a result, we don't have the public key.
-		if actor_info.is_none() {
-			tokio::task::block_in_place(|| {
-				match self.db().connect() {
-					Err(e) => error!("Unable to connect to database to fetch identity: {}", e),
-					Ok(c) => match c.fetch_identity(&actor_id) {
-						Err(e) => error!("Unable to fetch identity from db: {}", e),
-						Ok(ai) => actor_info = ai,
-					},
-				};
-			});
+		let last_two_visited: Vec<_> = iter.visited().into_iter().rev().take(2).map(|f| f.clone()).collect();
+		let stored = self.store_actor_at_contacts(actor_id, 4, &actor_info, &last_two_visited).await;
+		debug!("Stored actor {} at {} nodes.", actor_id, stored);
 
-			// If we don't have it, we can't join the network.
-			if actor_info.is_none() {
-				actor_iter.close().await;
-				return None;
-			}
-		}
-
-		// If we've found less than k nodes, make sure to store it a few more
-		// times in the network.
-		if contacts.len() < KADEMLIA_K as usize {
-			let store_count = KADEMLIA_K as usize - contacts.len();
-			let fingers = if store_count > actor_iter.visited().len() {
-				actor_iter.visited()
-			} else {
-				let l = actor_iter.visited().len();
-				&actor_iter.visited()[(l - store_count)..]
-			};
-
-			// Try storing from the last visited nodes first
-			let mut actually_stored = 0;
-			if fingers.len() > 0 {
-				// FIXME: Uncomment
-				actually_stored = self
-					.store_actor_at_contacts(
-						&actor_id,
-						store_count,
-						actor_info.as_ref().unwrap(),
-						fingers,
-					)
-					.await;
-			}
-
-			// If still not enough stored at enough nodes, try again from the
-			// start.
-			if actually_stored < store_count {
-				actually_stored += self
-					.store_actor(
-						&actor_id,
-						store_count - actually_stored,
-						actor_info.as_ref().unwrap(),
-					)
-					.await;
-
-				if actually_stored == 0 {
-					warn!("Unable to store actor at any nodes.");
-					actor_iter.close().await;
-					return None;
-				}
-			}
-		}
-		actor_iter.close().await;
-
-		//spawn(async move {
-		node.initialize(self, &contacts).await;
-		//});
+		iter.close().await;
 		Some(node)
 	}
 
 	async fn join_actor_networks(self: &Arc<Self>, actors: Vec<(IdType, ActorInfo)>) {
 		// Join each network in parallel
-		let futs = actors.into_iter().map(|(actor_id, actor_info)| async {
+		let futs = actors.into_iter().map(|(actor_id, actor_info)| async move {
 			if !self
 				.base
 				.interface
@@ -632,7 +748,7 @@ impl OverlayNode {
 			{
 				let actor_id_string = actor_id.to_string();
 				if self
-					.join_actor_network(actor_id, actor_info)
+					.join_actor_network(&actor_id, &actor_info)
 					.await
 					.is_some()
 				{
@@ -903,7 +1019,7 @@ impl OverlayNode {
 							.await
 						{
 							if let Some(success) =
-								self.base.exchange_keep_alive_on_connection(&mut c).await
+								self.exchange_keep_alive_on_connection(&mut c).await
 							{
 								println!("Obtained keep alive connection");
 								if success {
@@ -921,6 +1037,126 @@ impl OverlayNode {
 				}
 			}
 		}
+	}
+
+	async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
+		loop { 
+			let mut super_nodes = self.super_nodes.lock().await;
+			if let Some(super_node_info) = super_nodes.pop_front() {
+				drop(super_nodes);
+				if let Some(mut connection) = self.base.select_connection(&super_node_info).await {
+					if let Some(ok) = self.exchange_open_relay_on_connection(&mut connection, target.clone()).await {
+						if ok {
+							let mut super_nodes = self.super_nodes.lock().await;
+							super_nodes.push_back(super_node_info);
+							return Some(connection)
+						}
+					}
+				}
+			} else {
+				return None;
+			}
+		}
+	}
+
+	async fn process_open_relay_request(self: &Arc<Self>, connection: &mut Connection, buffer: &[u8]) -> Option<Vec<u8>> {
+		let request: OpenRelayRequest = match bincode::deserialize(buffer) {
+			Ok(r) => r,
+			Err(e) => {
+				warn!("Malformed relay data request: {}", e);
+				return None;
+			}
+		};
+
+		let result = if self.is_super_node {
+			connection.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 10).await;
+			self.base.select_connection(&request.target).await
+		} else { None };
+
+		let response = OpenRelayResponse { ok: result.is_some() };
+		if let Err(e) = self.base
+			.interface
+			.respond(
+				connection,
+				OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE,
+				&bincode::serialize(&response).unwrap(),
+			)
+			.await {
+				warn!("Unable to respond to relay request: {}", e);
+				self.base.handle_connection_issue::<()>(Err(e), connection.their_node_id()).await;
+			}
+
+		if let Some(mut target_connection) = result {
+			if let Err(e) = handle_relay_connection(connection, &mut target_connection).await {
+				match e {
+					sstp::Error::ConnectionClosed => {},
+					other => {
+						warn!("Connection issue during relaying: {}", other);
+					}
+				}
+			}
+		}
+		None
+	}
+
+	pub(super) async fn request_reversed_connection(
+		&self, relay_connection: &mut Connection, target: &IdType, their_contact: &ContactOption,
+		our_contact: &ContactOption,
+	) -> Option<Box<Connection>> {
+		// Generally not really needed, but might help in case the target node's connection comes in sooner than the relay node's reply.
+		if !self.punch_hole(their_contact).await {
+			return None;
+		}
+
+		let (tx, rx) = oneshot::channel();
+		{
+			let mut expected_connections = self.expected_connections.lock().await;
+			// If a connection from the same target is already expected, we can't touch it.
+			// It would leave the other task that's still waiting on the previous connection
+			// hanging.
+			if expected_connections.contains_key(their_contact) {
+				error!(
+					"Attempted to request reversed connection from same node more than once: {} {}",
+					target, their_contact
+				);
+				return None;
+			}
+			expected_connections.insert(their_contact.clone(), tx);
+		}
+
+		// Contact the relay node
+		let knows_target = self
+			.exchange_relay_punch_hole_request(
+				relay_connection,
+				target.clone(),
+				our_contact.clone(),
+			)
+			.await?;
+		if !knows_target {
+			return None;
+		}
+
+		// TODO: Keep the connection with the relay node open until contact is made,
+		// because the relay node may be able to send us a status message explaining
+		// whether things went ok or not.
+
+		// Wait until a connection is received, and return that.
+		let result = select! {
+			result = rx => {
+				Some(result.expect("sender of expected connection has closed unexpectantly"))
+			},
+			result = self.base.connect_with_timeout(their_contact, Some(target), sstp::DEFAULT_TIMEOUT * 3) => {
+				result
+			},
+		};
+		let mut expected_connections = self.expected_connections.lock().await;
+		let removed = expected_connections.remove(their_contact).is_some();
+		debug_assert!(!removed, "expected connection is gone");
+		
+		if result.is_none() {
+			debug!("Unable to receive reversed connection: timeout elapsed");
+		}
+		result
 	}
 
 	fn start_reverse_connection(self: &Arc<Self>) {
@@ -947,6 +1183,7 @@ impl OverlayNode {
 		let (connection, fingers) = self.base.find_nearest_contacts(&request.node_id).await;
 		let mut response = FindActorResponse {
 			contacts: FindNodeResponse {
+				is_super_node: self.is_super_node,
 				connection,
 				fingers,
 			},
@@ -992,25 +1229,105 @@ impl OverlayNode {
 		// Deserialize response
 		Some(bincode::serialize(&response).unwrap())
 	}
+	
+	async fn process_keep_alive_request(
+		&self, connection_mutex: &Arc<Mutex<Box<Connection>>>, connection: &mut Connection,
+		buffer: &[u8],
+	) -> (Option<Vec<u8>>, bool) {
+		// The keep alive request is empty
+		if buffer.len() > 0 {
+			return (None, false);
+		}
+
+		let ok = if let Some(bucket_index) = self.base.differs_at_bit(connection.their_node_id()) {
+			let mut bucket = self.base.buckets[bucket_index as usize].lock().await;
+
+			if bucket.connection.is_none() {
+				connection
+					.set_keep_alive_timeout(Duration::from_secs(120))
+					.await;
+				bucket.connection = Some((
+					connection.their_node_info().clone(),
+					connection_mutex.clone(),
+				));
+				debug!(
+					"Keeping connection with {} alive.",
+					connection.peer_address()
+				);
+				true
+			} else {
+				false
+			}
+		} else {
+			false
+		};
+
+		(
+			Some(bincode::serialize(&KeepAliveResponse { ok }).unwrap()),
+			ok,
+		)
+	}
+
+	async fn process_relay_punch_hole_request(
+		self: &Arc<Self>, buffer: &[u8], node_id: &IdType,
+	) -> Option<Vec<u8>> {
+		let request: RelayInitiateConnectionRequest = match bincode::deserialize(buffer) {
+			Err(e) => {
+				warn!("Malformed relay initiate connection request: {}", e);
+				return None;
+			}
+			Ok(r) => r,
+		};
+		let mut response = RelayInitiateConnectionResponse { ok: true };
+		if let Some(connection_mutex) = self.base.find_connection_in_buckets(&request.target).await {
+			let this = self.clone();
+			let node_id2 = node_id.clone();
+			spawn(async move {
+				let mut connection = connection_mutex.lock().await;
+				this.exchange_punch_hole_on_connection(
+						&mut connection,
+						node_id2,
+						request.contact_option,
+					)
+					.await
+			});
+		} else {
+			response.ok = false;
+		}
+
+		Some(bincode::serialize(&response).unwrap())
+	}
 
 	pub(super) async fn process_request(
-		self: &Arc<Self>, connection: &mut sstp::Connection, message_type: u8, buffer: &[u8],
-	) -> Option<Vec<u8>> {
+		self: &Arc<Self>, connection: &mut sstp::Connection, connection_mutex: Arc<Mutex<Box<Connection>>>, message_type: u8, buffer: &[u8],
+	) -> (Option<Vec<u8>>, bool) {
 		match message_type {
 			OVERLAY_MESSAGE_TYPE_FIND_ACTOR_REQUEST =>
-				self.process_find_actor_request(buffer).await,
+				(self.process_find_actor_request(buffer).await, false),
 			OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST =>
-				self.process_store_actor_request(connection.their_node_info(), buffer)
+				(self.process_store_actor_request(connection.their_node_info(), buffer)
+					.await, false),
+			OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST => (
+				self.process_punch_hole_request(buffer)
 					.await,
-			OVERLAY_MESSAGE_TYPE_RELAY_REQUEST =>
-				self.process_relay_request(connection, buffer).await,
+				false,
+			),
+			OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST => (
+				self.process_relay_punch_hole_request(buffer, connection.their_node_id())
+					.await,
+				false,
+			),
+			OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST =>
+				self.process_keep_alive_request(&connection_mutex, connection, buffer)
+					.await,
+			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST => (self.process_open_relay_request(connection, buffer).await, false),
 			other_id => {
 				error!(
-					"Unknown message type ID received from {}: {}",
+					"Unknown overlay message type ID received from {}: {}",
 					connection.peer_address(),
 					other_id
 				);
-				None
+				(None, false)
 			}
 		}
 	}
@@ -1067,24 +1384,49 @@ impl OverlayNode {
 		Some(Vec::new())
 	}
 
-	/// Processes the relay request
-	async fn process_relay_request(
-		&self, _connection: &mut Connection, buffer: &[u8],
-	) -> Option<Vec<u8>> {
-		let request: RelayRequest = match bincode::deserialize(buffer) {
+	async fn process_punch_hole_request(self: &Arc<Self>, buffer: &[u8]) -> Option<Vec<u8>> {
+		#[inline(always)]
+		fn handle_connection_recursive(
+			overlay_node: Arc<OverlayNode>, connection: Box<Connection>,
+		) -> BoxFuture<'static, ()> {
+			Box::pin(async move {
+				handle_connection(overlay_node, connection).await;
+			})
+		}
+
+		let request: InitiateConnectionRequest = match bincode::deserialize(buffer) {
 			Err(e) => {
-				warn!("Malformed relay request: {}", e);
+				warn!("Malformed initiate connection request: {}", e);
 				return None;
 			}
 			Ok(r) => r,
 		};
+		let response = InitiateConnectionResponse { ok: true };
 
-		if let Some((_contact_info, _connection_opt)) =
-			self.base.find_finger_or_connection(&request.target).await
-		{
-			// TODO: Implement
+		let this = self.clone();
+		spawn(async move {
+			if let Some(connection) = this.base
+				.connect(
+					&request.source_contact_option,
+					Some(&request.source_node_id),
+				)
+				.await
+			{
+				handle_connection_recursive(this, connection).await;
+			}
+		});
+
+		Some(bincode::serialize(&response).unwrap())
+	}
+
+	async fn punch_hole(&self, target: &ContactOption) -> bool {
+		match self.base.socket.send_punch_hole_packet(target).await {
+			Err(e) => {
+				error!("Unable to send hole punching packet to {}: {}", &target, e);
+				false
+			}
+			Ok(result) => result,
 		}
-		None
 	}
 
 	pub async fn store_actor(
@@ -1116,29 +1458,47 @@ impl OverlayNode {
 		store_count
 	}
 
-	/// Just like `store_actor`, but starts searching from the given fingers.
+	/// Just like `store_actor`, but stores it at the given contacts, and then continues
 	pub async fn store_actor_at_contacts(
 		&self, actor_id: &IdType, duplicates: usize, actor_info: &ActorInfo,
 		contacts: &[(IdType, ContactOption)],
 	) -> usize {
 		let mut store_count = 0;
+		let mut fingers = Vec::with_capacity(contacts.len());
 		for (node_id, contact_option) in contacts {
-			if self
-				.exchange_store_actor_at(
-					&node_id,
-					&contact_option,
-					actor_id.clone(),
-					actor_info.clone(),
-				)
-				.await
-				.is_some()
-			{
-				store_count += 1;
-				if store_count == duplicates {
-					return store_count;
+			if let Some(mut connection) = self.base.connect(contact_option, Some(node_id)).await {
+				if self.exchange_store_actor_on_connection(&mut connection, actor_id.clone(), actor_info.clone()).await.is_some() {
+					store_count += 1;
+					if store_count == duplicates {
+						return store_count;
+					}
+					fingers.push(connection.their_node_info().clone());
 				}
 			}
 		}
+
+		let todo = duplicates - store_count;
+		let contacts = self.base.find_node_from_fingers(&actor_id, &fingers, todo * 2, 1).await;
+		store_count += self.store_actor_at(actor_id, duplicates - store_count, actor_info, &contacts)
+			.await;
 		store_count
+	}
+}
+
+
+async fn handle_relay_connection(client_connection: &mut Connection, server_connection: &mut Connection) -> sstp::Result<()> {
+	fn verify_request(buffer: &[u8]) -> bool {
+		// Only allow find value requests
+		if buffer.len() > 0 {
+			(buffer[0] & 0x7F) == NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST
+		} else {
+			true
+		}
+	}
+
+	// Keep relaying requests & responses until one connection closes or errors out
+	loop {
+		server_connection.pipe(client_connection, verify_request).await?;
+		client_connection.pipe(server_connection, |_| true).await?;
 	}
 }
