@@ -306,42 +306,15 @@ impl Api {
 			return Ok(profile);
 		}
 
-		// FIXME: Also load the avatar and wallpaper files and the description block
-		let actor_node = match self.node.lurk_actor_network(actor_id).await {
-			None => {
-				warn!("Couldn't reach actor network for profile.");
-				return Ok(None);
-			}
-			Some(n) => n,
-		};
-
-		Ok(match actor_node.fetch_profile().await {
-			None => None,
-			Some(ProfileObject {
-				name,
-				avatar,
-				wallpaper,
-				description,
-			}) => {
-				let info = ProfileObjectInfo {
-					actor: TargetedActorInfo {
-						id: actor_id.clone(),
-						name,
-						avatar_id: avatar,
-						wallpaper_id: wallpaper,
-					},
-					description: match description {
-						None => None,
-						Some(hash) => {
-							let raw = self.find_block(&actor_node, &hash).await?;
-							raw.map(|r| String::from_utf8_lossy(&r).into_owned())
-						}
-					},
-				};
-
-				Some(info)
-			}
-		})
+		// Try to get the profile from the actor network
+		if let Some(_) = self.node.find_actor_profile_info(actor_id).await {
+			let profile = tokio::task::block_in_place(|| {
+				let c = self.db.connect()?;
+				c.fetch_profile_info(actor_id)
+			})?;
+			return Ok(profile);
+		}
+		Ok(None)
 	}
 
 	pub async fn follow(&self, actor_id: &IdType, join_network: bool) -> db::Result<bool> {

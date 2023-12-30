@@ -188,7 +188,7 @@ pub struct GetProfileRequest {}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetProfileResponse {
-	pub profile: Option<ProfileObject>,
+	pub object: Option<(IdType, Object)>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -10,8 +10,7 @@ use std::{
 };
 
 use log::*;
-use rand::{prelude::*, CryptoRng, RngCore};
-use rand_chacha::ChaCha8Rng;
+use rand::{CryptoRng, RngCore};
 use stonenetd::{
 	api::Api,
 	config::Config,
@@ -19,13 +18,9 @@ use stonenetd::{
 	identity::PrivateKey,
 	model::*,
 	net::{overlay::*, ContactInfo, *},
+	test::*,
 };
 
-
-fn initialize_rng() -> ChaCha8Rng {
-	let seed = <ChaCha8Rng as SeedableRng>::Seed::default();
-	ChaCha8Rng::from_seed(seed)
-}
 
 async fn load_test_node(
 	stop_flag: Arc<AtomicBool>, rng: &mut (impl CryptoRng + RngCore), config: &Config, port: u16,
@@ -107,7 +102,7 @@ async fn test_data_synchronization() {
 		&mut rng,
 		&config2,
 		37339,
-		Openness::Bidirectional,
+		Openness::Unidirectional,
 		"/tmp/node2.sqlite",
 	)
 	.await;
@@ -236,10 +231,7 @@ Hoi ik ben Kees!
 		.follow(&actor_id, false)
 		.await
 		.expect("unable to follow node 1");
-	node2
-		.node
-		.join_actor_network(&actor_id, &actor_info)
-		.await;
+	node2.node.join_actor_network(&actor_id, &actor_info).await;
 	assert!(actor_found, "actor not found");
 	let actor_node = node2
 		.node

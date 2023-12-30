@@ -1,19 +1,16 @@
 use std::{
-	collections::{VecDeque},
+	collections::VecDeque,
 	ops::Deref,
 	sync::{atomic::*, Arc},
 	time::SystemTime,
 };
 
 use async_trait::async_trait;
-use futures::future::{join_all};
+use futures::future::join_all;
 use log::*;
 use num::BigUint;
 use serde::de::DeserializeOwned;
-use tokio::{
-	spawn,
-	sync::{Mutex},
-};
+use tokio::{spawn, sync::Mutex};
 
 use super::{
 	message::*,
@@ -79,7 +76,7 @@ where
 
 	visited: Vec<(IdType, ContactOption)>,
 	candidates: VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
-	connection_for_reverse_connection_requests: Option<(IdType, Box<Connection>)>
+	connection_for_reverse_connection_requests: Option<(IdType, Box<Connection>)>,
 }
 
 pub struct Node<I>
@@ -124,7 +121,7 @@ impl ContactStrategy {
 			method: match openness {
 				Openness::Bidirectional => ContactStrategyMethod::Direct,
 				Openness::Punchable => ContactStrategyMethod::HolePunch,
-				Openness::Unidirectional => ContactStrategyMethod::Relay
+				Openness::Unidirectional => ContactStrategyMethod::Relay,
 			},
 		})
 	}
@@ -141,7 +138,7 @@ impl ContactStrategyMethod {
 		match self {
 			Self::Direct => 0,
 			Self::HolePunch => 1,
-			Self::Relay => 2
+			Self::Relay => 2,
 		}
 	}
 }
@@ -203,7 +200,9 @@ where
 		}
 	}
 
-	pub(super) fn bidirectional_contact_option(&self, target: &ContactInfo) -> Option<ContactOption> {
+	pub(super) fn bidirectional_contact_option(
+		&self, target: &ContactInfo,
+	) -> Option<ContactOption> {
 		self.socket.bidirectional_contact_option(target)
 	}
 
@@ -312,26 +311,37 @@ where
 						None
 					}
 				}
-			},
+			}
 			ContactStrategyMethod::Relay => {
 				// For the moment, relaying is not supported through the find value iterator.
-				// And this is not necessary because when punchable or bidirectional nodes exist, they can be contacted instead.
-				// And if a unidirectional node has a new value that the other nodes don't have, this will rectified once the node starts synchronizing with the network (which should happen every hour).
-				// And in the case where there are only unidirectional nodes in the actor network, a node joining the actor network will use relaying in order to synchronize with other nodes.
+				// And this is not necessary because when punchable or bidirectional nodes
+				// exist, they can be contacted instead. And if a unidirectional node has a new
+				// value that the other nodes don't have, this will rectified once the node
+				// starts synchronizing with the network (which should happen every hour).
+				// And in the case where there are only unidirectional nodes in the actor
+				// network, a node joining the actor network will use relaying in order to
+				// synchronize with other nodes.
 				None
 			}
 		}
 	}
 
 	pub async fn connect_with_timeout(
-		&self, target: &ContactOption, node_id: Option<&IdType>, timeout: Duration
+		&self, target: &ContactOption, node_id: Option<&IdType>, timeout: Duration,
 	) -> Option<Box<Connection>> {
 		match node_id {
 			Some(ni) => {
-				let result = self.socket.connect_with_timeout(target, node_id, timeout).await;
+				let result = self
+					.socket
+					.connect_with_timeout(target, node_id, timeout)
+					.await;
 				self.handle_connection_issue(result, ni).await
 			}
-			None => match self.socket.connect_with_timeout(target, node_id, timeout).await {
+			None => match self
+				.socket
+				.connect_with_timeout(target, node_id, timeout)
+				.await
+			{
 				Ok(c) => Some(c),
 				Err(e) => {
 					warn!("Unable to connect to {}: {}", target, e);
@@ -641,7 +651,9 @@ where
 			.await
 	}
 
-	pub async fn find_connection_in_buckets(&self, id: &IdType) -> Option<Arc<Mutex<Box<Connection>>>> {
+	pub async fn find_connection_in_buckets(
+		&self, id: &IdType,
+	) -> Option<Arc<Mutex<Box<Connection>>>> {
 		for i in (0..256).rev() {
 			let bucket_mutex = &self.buckets[i];
 			let bucket = bucket_mutex.lock().await;
@@ -694,7 +706,10 @@ where
 					&candidate_contact.node_id
 				),
 				Some(mut connection) => {
-					match self.exchange_find_node_on_connection(&mut connection, &id).await {
+					match self
+						.exchange_find_node_on_connection(&mut connection, &id)
+						.await
+					{
 						None => {
 							warn!("Disregarding finger {}", &candidate_contact.node_id);
 						}
@@ -1074,19 +1089,16 @@ where
 	}
 
 	pub(super) async fn process_request(
-		self: &Arc<Self>,
-		connection: &mut Connection, overlay_node: Arc<OverlayNode>, message_type: u8,
-		buffer: &[u8], actor_id: Option<&IdType>,
+		self: &Arc<Self>, connection: &mut Connection, overlay_node: Arc<OverlayNode>,
+		message_type: u8, buffer: &[u8], actor_id: Option<&IdType>,
 	) -> Option<Option<Vec<u8>>> {
 		let result = match message_type {
-			NETWORK_MESSAGE_TYPE_PING_REQUEST => 
+			NETWORK_MESSAGE_TYPE_PING_REQUEST =>
 				self.process_ping_request(connection.peer_address()).await,
-			NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST =>
-				self.process_find_node_request(buffer).await,
-			NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST => 
+			NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST => self.process_find_node_request(buffer).await,
+			NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST =>
 				self.process_find_value_request(buffer, overlay_node, actor_id)
-					.await
-			,
+					.await,
 			_ => return None,
 		};
 		Some(result)
@@ -1626,7 +1638,9 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 	mutex.lock().await.close().await;
 }
 
-pub(super) async fn handle_find_value_connection(overlay_node: &Arc<OverlayNode>, connection: &mut Connection) {
+pub(super) async fn handle_find_value_connection(
+	overlay_node: &Arc<OverlayNode>, connection: &mut Connection,
+) {
 	let mut is_first_message = true;
 	while !overlay_node.base.stop_flag.load(Ordering::Relaxed) {
 		let message = {
@@ -1760,11 +1774,9 @@ async fn process_find_value_request_message(
 		};
 		drop(actor_nodes);
 
-		let r = actor_node.base.process_find_value_request(
-			&buffer[33..],
-			overlay_node.clone(),
-			Some(&actor_id),
-			)
+		let r = actor_node
+			.base
+			.process_find_value_request(&buffer[33..], overlay_node.clone(), Some(&actor_id))
 			.await;
 
 		match r {

@@ -520,8 +520,7 @@ impl Connection {
 
 	/// Listen on the other connection and send all data on this connection.
 	pub async fn pipe(
-		&mut self, other: &mut Connection,
-		verify_data: impl FnMut(&[u8]) -> bool + Send + 'static,
+		&mut self, other: &mut Connection, verify_data: impl FnMut(&[u8]) -> bool + Send + 'static,
 	) -> Result<usize> {
 		let (len_tx, len_rx) = oneshot::channel();
 		let (tx, rx) = mpsc::channel(2);

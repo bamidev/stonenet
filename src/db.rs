@@ -1947,44 +1947,20 @@ impl Connection {
 		Ok(result)
 	}
 
-	pub fn fetch_profile(&self, actor_id: &IdType) -> Result<Option<ProfileObject>> {
+	pub fn fetch_profile_object(&self, actor_id: &IdType) -> Result<Option<(IdType, Object)>> {
 		let mut stat = self.prepare(
 			r#"
-			SELECT po.name, po.avatar_file_hash, po.wallpaper_file_hash, po.description_block_hash
+			SELECT o.rowid, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start,
 			FROM profile_object AS po
 			INNER JOIN object AS o ON po.object_id = o.rowid
 			INNER JOIN identity AS i ON o.actor_id = i.rowid
-			LEFT JOIN file AS af ON po.avatar_file_hash = af.hash AND o.actor_id = af.actor_id
-			LEFT JOIN file AS wf ON po.wallpaper_file_hash = wf.hash AND o.actor_id = wf.actor_id
-			LEFT JOIN block AS db ON po.description_block_hash = db.hash AND o.actor_id = db.actor_id
 			WHERE i.address = ?
+			ORDER BY o.rowid DESC LIMIT 1
 		"#,
 		)?;
-		let mut rows = stat.query([actor_id.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let name: String = row.get(0)?;
-			let avatar_hash: Option<String> = row.get(1)?;
-			let wallpaper_hash: Option<String> = row.get(2)?;
-			let description_hash: Option<String> = row.get(3)?;
-			let avatar_id = match avatar_hash.as_ref() {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(&hash)?),
-			};
-			let wallpaper_id = match wallpaper_hash.as_ref() {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(&hash)?),
-			};
-			let description_block_id = match description_hash.as_ref() {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(&hash)?),
-			};
-
-			Ok(Some(ProfileObject {
-				name,
-				avatar: avatar_id,
-				wallpaper: wallpaper_id,
-				description: description_block_id,
-			}))
+		let mut rows = stat.query(params![actor_id.to_string()])?;
+		if let Some((hash, object, _)) = Self::_parse_object(self, &mut rows)? {
+			Ok(Some((hash, object)))
 		} else {
 			Ok(None)
 		}
