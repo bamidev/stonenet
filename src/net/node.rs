@@ -944,7 +944,25 @@ where
 
 	pub(super) fn pick_contact_strategy(&self, target: &ContactInfo) -> Option<ContactStrategy> {
 		let (option, openness) = self.pick_contact_option(target)?;
-		ContactStrategy::new(option, openness)
+		let method = match openness {
+			Openness::Bidirectional => ContactStrategyMethod::Direct,
+			other =>
+				if other == Openness::Punchable {
+					ContactStrategyMethod::HolePunch
+				} else {
+					let own_openness = self.contact_info().openness_at_option(&option)?;
+					if own_openness != Openness::Unidirectional {
+						ContactStrategyMethod::HolePunch
+					} else {
+						ContactStrategyMethod::Relay
+					}
+				},
+		};
+
+		Some(ContactStrategy {
+			method,
+			contact: option,
+		})
 	}
 
 	async fn process_find_node_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {

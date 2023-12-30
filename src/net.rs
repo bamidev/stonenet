@@ -187,6 +187,31 @@ impl ContactInfo {
 		false
 	}
 
+	pub fn openness_at_option(&self, option: &ContactOption) -> Option<Openness> {
+		match &option.target {
+			SocketAddr::V4(addr) =>
+				if let Some(e) = &self.ipv4 {
+					if !option.use_tcp {
+						e.availability.udp.as_ref().map(|e| e.openness.clone())
+					} else {
+						e.availability.tcp.as_ref().map(|e| e.openness.clone())
+					}
+				} else {
+					None
+				},
+			SocketAddr::V6(addr) =>
+				if let Some(e) = &self.ipv6 {
+					if !option.use_tcp {
+						e.availability.udp.as_ref().map(|e| e.openness.clone())
+					} else {
+						e.availability.tcp.as_ref().map(|e| e.openness.clone())
+					}
+				} else {
+					None
+				},
+		}
+	}
+
 	pub fn update(&mut self, addr: &SocketAddr, for_tcp: bool) {
 		match addr {
 			SocketAddr::V4(a) => self.update_v4(a.ip(), a.port(), for_tcp),

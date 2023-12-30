@@ -59,6 +59,7 @@ use x25519_dalek as x25519;
 // FIXME: Why can't I use super::socket::* here?
 use super::{
 	bincode,
+	node::ContactStrategyMethod,
 	socket::{
 		ConnectionBasedLinkServer, ConnectionLessLinkServer, LinkServer, LinkSocket,
 		LinkSocketReceiver, LinkSocketSender, TcpServer, UdpServer,
@@ -2348,6 +2349,9 @@ impl SocketCollection {
 		if let Some(option) = self.pick_contact_option_at_openness(target, Openness::Bidirectional)
 		{
 			return Some((option, Openness::Bidirectional));
+		}
+		if let Some(option) = self.pick_contact_option_at_openness(target, Openness::Punchable) {
+			return Some((option, Openness::Punchable));
 		}
 		if let Some(option) = self.pick_contact_option_at_openness(target, Openness::Unidirectional)
 		{

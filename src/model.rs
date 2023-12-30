@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{common::*, identity::*};
 
 
-pub const ACTOR_TYPE_FEED: &str = "feed";
-pub const ACTOR_TYPE_SITE: &str = "website";
+pub const ACTOR_TYPE_BLOGCHAIN: &str = "blogchain";
 
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

@@ -250,7 +250,7 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 					contact: contact_option.clone(),
 				};
 				// FIXME: There needs to be a "self.base.connect_through_hole_punching"
-				// function...
+				// function or something like that...
 				if let Some(connection) = self
 					.base
 					.0
@@ -258,7 +258,7 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 					.connect_by_strategy(&node_id, &strategy, None, &self.base.0.overlay_node)
 					.await
 				{
-					self.pi = i;
+					self.pi = i + 1;
 					return Some((connection, self.actor_info.as_ref().unwrap().clone()));
 				}
 			}
@@ -267,7 +267,7 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 			for i in self.ri..self.relayable_nodes.len() {
 				let node_info = &self.relayable_nodes[i];
 				if let Some(connection) = self.base.0.overlay_node.open_relay(node_info).await {
-					self.ri = i;
+					self.ri = i + 1;
 					return Some((connection, self.actor_info.as_ref().unwrap().clone()));
 				}
 			}
@@ -563,7 +563,7 @@ impl OverlayNode {
 					self.clone(),
 					self.base.socket.clone(),
 					actor_id.clone(),
-					actor_info,
+					actor_info.clone(),
 					self.db().clone(),
 					self.base.bucket_size,
 				));
@@ -572,20 +572,44 @@ impl OverlayNode {
 					if let Some(r) = node.exchange_profile_on_connection(&mut connection).await {
 						r
 					} else {
+						connection.close().await;
 						continue;
 					};
-				if let Ok(done) = node
+
+				// We need to store the identity in order for the object to be able to be stored
+				let result = tokio::task::block_in_place(|| {
+					let mut db = self.db().connect()?;
+					db.store_identity(actor_id, &actor_info.public_key, &actor_info.first_object)
+				});
+				if let Err(e) = result {
+					error!("Unable to store identity: {}", e);
+					connection.close().await;
+					iter.close().await;
+					return Some(object);
+				}
+
+				// Then we can collect all the values related to this identity
+				match node
 					.collect_object(&mut connection, &object_id, &object, false)
 					.await
 				{
-					if done {
+					Ok(done) =>
+						if done {
+							connection.close().await;
+							iter.close().await;
+							return Some(object);
+						},
+					Err(e) => {
+						error!("Unable collect object on first connection: {}", e);
+						connection.close().await;
 						iter.close().await;
 						return Some(object);
-					} else {
-						// If we don't have all the files and blocks yet,
-						break (node, object);
 					}
 				}
+				// If we don't have all the files and blocks yet, attempt to synchronize
+				// (outside of the loop)
+				connection.close().await;
+				break (node, object);
 			} else {
 				iter.close().await;
 				return None;
@@ -774,19 +798,19 @@ impl OverlayNode {
 
 		// Try to find a node on the actor network first
 		let mut iter = self.connect_actor_iter(actor_id).await;
-		let actor_info = loop {
+		loop {
 			if let Some((connection, ai)) = iter.next().await {
 				if let Some(_open) = node
 					.join_network_starting_with_connection(self, connection)
 					.await
 				{
-					break ai;
+					break;
 				}
 			} else {
-				return Some(node);
+				break;
 			}
-		};
-
+		}
+		iter.close().await;
 		let last_two_visited: Vec<_> = iter
 			.visited()
 			.into_iter()
@@ -795,10 +819,9 @@ impl OverlayNode {
 			.map(|f| f.clone())
 			.collect();
 		let stored = self
-			.store_actor_at_contacts(actor_id, 4, &actor_info, &last_two_visited)
+			.store_actor_at_contacts(actor_id, 4, actor_info, &last_two_visited)
 			.await;
 		debug!("Stored actor {} at {} nodes.", actor_id, stored);
-		iter.close().await;
 
 		Some(node)
 	}
@@ -1066,7 +1089,6 @@ impl OverlayNode {
 	}
 
 	async fn obtain_reverse_connection(self: &Arc<Self>) {
-		println!("Obtaining reverse connection...");
 		// Try to find a bidirectional node to open a connection to it
 		let mut iter = self.base.iter_all_fingers().await;
 		while let Some(finger) = iter.next().await {
@@ -1080,7 +1102,7 @@ impl OverlayNode {
 							)),
 							false,
 						);
-						println!("Trying {}...", &contact_option);
+
 						if let Some(mut c) = self
 							.base
 							.connect(&contact_option, Some(&finger.node_id))
@@ -1089,15 +1111,15 @@ impl OverlayNode {
 							if let Some(success) =
 								self.exchange_keep_alive_on_connection(&mut c).await
 							{
-								println!("Obtained keep alive connection");
 								if success {
 									self.maintain_reverse_connection(c);
 									break;
 								} else {
+									warn!("Keep alive connection was denied.");
 									c.close().await;
 								}
 							} else {
-								println!("Unable to obtain keep alive connection");
+								warn!("Unable to obtain keep alive connection.");
 								c.close().await;
 							}
 						}

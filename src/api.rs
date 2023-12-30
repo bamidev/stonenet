@@ -84,7 +84,7 @@ impl Api {
 		let actor_info = ActorInfo {
 			public_key: private_key.public(),
 			first_object: object_hash.clone(),
-			actor_type: "feed".into(),
+			actor_type: "blogchain".into(),
 		};
 		let actor_id = IdType::hash(&bincode::serialize(&actor_info).unwrap());
 

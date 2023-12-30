@@ -102,7 +102,7 @@ async fn test_data_synchronization() {
 		&mut rng,
 		&config2,
 		37339,
-		Openness::Unidirectional,
+		Openness::Punchable,
 		"/tmp/node2.sqlite",
 	)
 	.await;
@@ -189,7 +189,7 @@ Hoi ik ben Kees!
 	assert_eq!(profile.description, Some(profile_description.to_string()));
 	let actor_node = node2
 		.node
-		.lurk_actor_network(&actor_id)
+		.join_actor_network(&actor_id, &actor_info)
 		.await
 		.expect("actor node not found");
 	let avatar = node2
@@ -226,18 +226,11 @@ Hoi ik ben Kees!
 	);
 
 	// Download the posts
-	drop(actor_node);
 	let actor_found = node2
 		.follow(&actor_id, false)
 		.await
 		.expect("unable to follow node 1");
-	node2.node.join_actor_network(&actor_id, &actor_info).await;
 	assert!(actor_found, "actor not found");
-	let actor_node = node2
-		.node
-		.get_actor_node(&actor_id)
-		.await
-		.expect("missing actor node");
 	debug!("Synchronizing...");
 	actor_node.wait_for_synchronization().await;
 

@@ -1503,8 +1503,13 @@ impl Connection {
 
 		let tx = self.0.transaction()?;
 
-		let identity_id =
-			Self::_store_my_identity(&tx, label, private_key, &first_object_hash, "feed".into())?;
+		let identity_id = Self::_store_my_identity(
+			&tx,
+			label,
+			private_key,
+			&first_object_hash,
+			"blogchain".into(),
+		)?;
 		let avatar_file_id = store_file(&tx, identity_id, avatar)?;
 		let wallpaper_file_id = store_file(&tx, identity_id, wallpaper)?;
 		let description_block_id = if let Some((hash, description_str)) = &description {
@@ -1950,7 +1955,7 @@ impl Connection {
 	pub fn fetch_profile_object(&self, actor_id: &IdType) -> Result<Option<(IdType, Object)>> {
 		let mut stat = self.prepare(
 			r#"
-			SELECT o.rowid, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start,
+			SELECT o.rowid, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
 			FROM profile_object AS po
 			INNER JOIN object AS o ON po.object_id = o.rowid
 			INNER JOIN identity AS i ON o.actor_id = i.rowid
@@ -2221,6 +2226,22 @@ impl Connection {
 		} else {
 			Ok(false)
 		}
+	}
+
+	pub fn store_identity(
+		&mut self, address: &IdType, public_key: &PublicKey, first_object: &IdType,
+	) -> Result<()> {
+		let mut stat = self.prepare(
+			r#"
+			INSERT INTO identity (address, public_key, first_object, type) VALUES(?,?,?,'blogchain')
+		"#,
+		)?;
+		stat.insert(rusqlite::params![
+			address,
+			public_key.as_bytes(),
+			first_object
+		])?;
+		Ok(())
 	}
 
 	pub fn store_my_identity(
