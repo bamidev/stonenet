@@ -327,19 +327,19 @@ where
 	}
 
 	pub async fn connect_with_timeout(
-		&self, target: &ContactOption, node_id: Option<&IdType>, timeout: Duration,
+		&self, stop_flag: Arc<AtomicBool>, target: &ContactOption, node_id: Option<&IdType>, timeout: Duration,
 	) -> Option<Box<Connection>> {
 		match node_id {
 			Some(ni) => {
 				let result = self
 					.socket
-					.connect_with_timeout(target, node_id, timeout)
+					.connect_with_timeout(stop_flag, target, node_id, timeout)
 					.await;
 				self.handle_connection_issue(result, ni).await
 			}
 			None => match self
 				.socket
-				.connect_with_timeout(target, node_id, timeout)
+				.connect_with_timeout(stop_flag, target, node_id, timeout)
 				.await
 			{
 				Ok(c) => Some(c),
@@ -1619,13 +1619,10 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 				Err(e) => {
 					match e {
 						sstp::Error::Timeout => {
-							// Currently there is an issue with close packets being malformed, and
-							// so because of it connections my not be properly closed after the
-							// first request is received.
 							if is_first_message {
 								debug!(
-									"Node {} timed out before request was received",
-									connection.peer_address(),
+									"Node {} timed out before request was received [{} -> {}]",
+									connection.peer_address(), connection.our_session_id(), connection.their_session_id()
 								);
 								print!(
 									"Node {} timed out before request was received",
@@ -1688,16 +1685,13 @@ pub(super) async fn handle_find_value_connection(
 				Err(e) => {
 					match e {
 						sstp::Error::Timeout => {
-							// Currently there is an issue with close packets being malformed, and
-							// so because of it connections my not be properly closed after the
-							// first request is received.
 							if is_first_message {
 								debug!(
-									"Node {} timed out before request was received",
+									"Node {} timed out before find value request was received",
 									connection.peer_address(),
 								);
 								print!(
-									"Node {} timed out before request was received",
+									"Node {} timed out before find value request was received",
 									connection.peer_address(),
 								);
 							}

@@ -628,7 +628,7 @@ impl ActorNode {
 			.base
 			.find_node_from_fingers(self.base.node_id(), &response.fingers, 4, 100)
 			.await;
-		self.initialize(overlay_node, &neighbours);
+		self.initialize(overlay_node, &neighbours).await;
 		Some(true)
 	}
 

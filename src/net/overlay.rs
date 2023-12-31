@@ -1250,13 +1250,24 @@ impl OverlayNode {
 		// because the relay node may be able to send us a status message explaining
 		// whether things went ok or not.
 
+		// Spawn the connection attempt on another task, because we should only interupt it with the stop flag.
+		let stop_flag = Arc::new(AtomicBool::new(false));
+		let stop_flag2 = stop_flag.clone();
+		let their_contact2 = their_contact.clone();
+		let target2 = target.clone();
+		let base = self.base.clone();
+		let join_handle = spawn(async move {
+			base.connect_with_timeout(stop_flag2, &their_contact2, Some(&target2), sstp::DEFAULT_TIMEOUT * 3).await
+		});
+
 		// Wait until a connection is received, and return that.
 		let result = select! {
 			result = rx => {
+				stop_flag.store(true, Ordering::Relaxed);
 				Some(result.expect("sender of expected connection has closed unexpectantly"))
 			},
-			result = self.base.connect_with_timeout(their_contact, Some(target), sstp::DEFAULT_TIMEOUT * 3) => {
-				result
+			result = join_handle => {
+				result.expect("unable to retrieve result from join handle")
 			},
 		};
 		let mut expected_connections = self.expected_connections.lock().await;

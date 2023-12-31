@@ -1857,12 +1857,13 @@ impl Server {
 	pub async fn connect(
 		self: &Arc<Self>, target: &ContactOption, node_id: Option<&IdType>,
 	) -> Result<Box<Connection>> {
-		self.connect_with_timeout(target, node_id, DEFAULT_TIMEOUT)
+		let stop_flag = Arc::new(AtomicBool::new(false));
+		self.connect_with_timeout(stop_flag, target, node_id, DEFAULT_TIMEOUT)
 			.await
 	}
 
 	pub async fn connect_with_timeout(
-		self: &Arc<Self>, target: &ContactOption, node_id: Option<&IdType>, timeout: Duration,
+		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, target: &ContactOption, node_id: Option<&IdType>, timeout: Duration,
 	) -> Result<Box<Connection>> {
 		let (sender, receiver) = match self.sockets.connect(target, timeout).await? {
 			None => return Err(Error::NoConnectionOptions),
@@ -1908,8 +1909,9 @@ impl Server {
 			.ok_or(Error::OutOfSessions)?;
 
 		// Wait for the hello response to arrive
-		let mut timeouts = 0;
-		while timeouts < 2 {
+		let started = SystemTime::now();
+		let sleep_time = min(timeout / 4, MAXIMUM_RETRY_TIMEOUT);
+		while !stop_flag.load(Ordering::Relaxed) && SystemTime::now().duration_since(started).unwrap() < timeout {
 			self.send_hello(
 				&*sender,
 				&secret_key,
@@ -1964,19 +1966,22 @@ impl Server {
 						keep_alive_timeout: timeout
 					}))
 				},
-				_ = sleep(timeout/2) => {
-					timeouts += 1;
-				}
+				_ = sleep(sleep_time) => {}
 			}
 		}
 
-		Err(Error::Timeout)
+		// If the connecting task was stopped from an outside force, don't give a timeout error
+		if stop_flag.load(Ordering::Relaxed) {
+			Err(Error::ConnectionClosed)
+		} else {
+			Err(Error::Timeout)
+		}
 	}
 
 	async fn new_incomming_session(
 		&self, their_node_id: IdType, their_session_id: u16, queues: QueueSenders,
 		timeout: Duration,
-	) -> Result<Option<(u16, Arc<Mutex<SessionData>>)>> {
+	) -> Result<(u16, bool)> {
 		let mut sessions = self.sessions.lock().await;
 		// Check if session doesn't already exists
 		match sessions
@@ -1985,7 +1990,7 @@ impl Server {
 		{
 			None => {}
 			// If it exists, return None
-			Some(_) => return Ok(None),
+			Some((our_session_id, _)) => return Ok((our_session_id, false)),
 		}
 		let session_id = match sessions.next_id() {
 			None => return Err(Error::OutOfSessions),
@@ -1997,8 +2002,8 @@ impl Server {
 			queues,
 			timeout,
 		)));
-		sessions.map.insert(session_id, session_data.clone());
-		return Ok(Some((session_id, session_data)));
+		sessions.map.insert(session_id, session_data);
+		return Ok((session_id, true));
 	}
 
 	async fn new_outgoing_session(
@@ -2576,18 +2581,14 @@ impl Server {
 		their_contact_info.update(addr, sender.is_tcp());
 
 		let (tx_queues, rx_queues) = Queues::channel(their_session_id);
-		let (our_session_id, _session) = match self
+		let (our_session_id, is_new) = self
 			.new_incomming_session(
 				node_id.clone(),
 				their_session_id,
 				tx_queues,
 				self.default_timeout,
 			)
-			.await?
-		{
-			None => return Ok(()),
-			Some(r) => r,
-		};
+			.await?; warn!("new_incomming_session {} {}", our_session_id, is_new);
 
 		let addr_len = match addr {
 			SocketAddr::V4(_) => 4,
@@ -2620,6 +2621,13 @@ impl Server {
 		// Sign DH public key, and write it to the response buffer
 		let signature = self.private_key.sign(&response[129..]);
 		response[65..129].clone_from_slice(&signature.to_bytes());
+
+		// If the connection was already created before, just return the response again.
+		// The other side might not have received the hello response packet
+		if !is_new {
+			sender.send(&response, self.default_timeout).await?;
+			return Ok(());
+		}
 
 		let connection = Box::new(Connection {
 			server: self.clone(),
@@ -2695,12 +2703,15 @@ impl Server {
 		let our_session_id = u16::from_le_bytes(*array_ref![packet, 160, 2]);
 		let session_lock = match self.sessions.lock().await.map.get(&our_session_id) {
 			None => {
-				warn!("InvalidSessionIdOurs2");
 				return Err(Error::InvalidSessionIdOurs(our_session_id).into());
 			}
 			Some(s) => s.clone(),
 		};
 		let mut session = session_lock.lock().await;
+		// If the hello_watch is already gone, we've processed this response before
+		if session.hello_watch.is_none() {
+			return Ok(())
+		}
 
 		// Remember their session ID
 		let their_session_id = u16::from_le_bytes(*array_ref![packet, 162, 2]);
@@ -2736,25 +2747,20 @@ impl Server {
 		let their_dh_key = x25519::PublicKey::from(*array_ref![packet, 128, 32]);
 
 		// Send the hello response data back to the connecting task if not send already
-		match session.hello_watch.take() {
-			None => {}
-			Some(sender) => {
-				if sender
-					.send(Ok((
-						their_node_id,
-						their_contact_info,
-						their_session_id,
-						their_dh_key,
-						session.last_activity.clone(),
-					)))
-					.is_err()
-				{
-					debug!(
-						"Session {} already closed before it was initiated.",
-						our_session_id
-					);
-				}
-			}
+		let sender = session.hello_watch.take().unwrap();
+		if sender.send(Ok((
+				their_node_id,
+				their_contact_info,
+				their_session_id,
+				their_dh_key,
+				session.last_activity.clone(),
+			)))
+			.is_err()
+		{
+			debug!(
+				"Unable to send connection data back to connecting task. ({})",
+				our_session_id
+			);
 		}
 
 		Ok(())
