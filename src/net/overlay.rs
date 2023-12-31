@@ -63,7 +63,7 @@ pub struct OverlayNode {
 	pub(super) expected_connections:
 		Arc<Mutex<HashMap<ContactOption, oneshot::Sender<Box<sstp::Connection>>>>>,
 	pub(super) is_super_node: bool,
-	super_nodes: Mutex<LimitedVec<NodeContactInfo>>,
+	super_nodes: Mutex<LimitedVec<(IdType, ContactOption)>>,
 }
 
 pub(super) struct OverlayInterface {
@@ -1132,16 +1132,20 @@ impl OverlayNode {
 	async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
 		loop {
 			let mut super_nodes = self.super_nodes.lock().await;
-			if let Some(super_node_info) = super_nodes.pop_front() {
+			if let Some((super_node_id, super_node_contact)) = super_nodes.pop_front() {
 				drop(super_nodes);
-				if let Some(mut connection) = self.base.select_connection(&super_node_info).await {
+				if let Some(mut connection) = self
+					.base
+					.connect(&super_node_contact, Some(&super_node_id))
+					.await
+				{
 					if let Some(ok) = self
 						.exchange_open_relay_on_connection(&mut connection, target.clone())
 						.await
 					{
 						if ok {
 							let mut super_nodes = self.super_nodes.lock().await;
-							super_nodes.push_back(super_node_info);
+							super_nodes.push_back((super_node_id, super_node_contact));
 							return Some(connection);
 						}
 					}
@@ -1537,6 +1541,18 @@ impl OverlayNode {
 				false
 			}
 			Ok(result) => result,
+		}
+	}
+
+	pub(super) async fn remember_super_node(
+		&self, node_id: &IdType, contact: &ContactOption,
+	) -> bool {
+		let mut super_nodes = self.super_nodes.lock().await;
+		if super_nodes.iter().find(|(n, _)| n == node_id).is_none() {
+			super_nodes.push_back((node_id.clone(), contact.clone()));
+			true
+		} else {
+			false
 		}
 	}
 

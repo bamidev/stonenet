@@ -714,6 +714,16 @@ where
 							warn!("Disregarding finger {}", &candidate_contact.node_id);
 						}
 						Some(response) => {
+							if response.is_super_node
+								&& strategy.method == ContactStrategyMethod::Direct
+							{
+								self.overlay_node()
+									.remember_super_node(
+										&candidate_contact.node_id,
+										&strategy.contact,
+									)
+									.await;
+							}
 							let mut new_fingers =
 								self.extract_fingers_from_response(&response, &visited);
 							new_fingers.retain(|(f, strat)| {
@@ -1357,6 +1367,17 @@ where
 						Some((possible_value, possible_contacts)) => {
 							// If node returned new fingers, append them to our list
 							if let Some(find_node_response) = possible_contacts {
+								if find_node_response.is_super_node
+									&& strategy.method == ContactStrategyMethod::Direct
+								{
+									self.node
+										.overlay_node()
+										.remember_super_node(
+											&candidate_contact.node_id,
+											&strategy.contact,
+										)
+										.await;
+								}
 								let mut new_fingers = self.node.extract_fingers_from_response(
 									&find_node_response,
 									&self.visited,
