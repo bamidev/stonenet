@@ -135,16 +135,17 @@ pub struct TransportAvailabilityEntry {
 
 /// The level of 'openness' a node has, that determines the way they (can)
 /// interact with the rest of the network.
-#[derive(Clone, Debug, Eq, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Deserialize, PartialEq, Serialize)]
 pub enum Openness {
 	/// Allowed to initiate and accept connections.
 	/// For nodes that are not behind a symmetric NAT
 	/// for example.
 	Bidirectional  = 0,
+	/// Allowed to initiate connections, and is able to open a hole to accept
+	/// connections.
+	Punchable      = 1,
 	/// Allowed to initiate connections, but not able to accept any.
-	Unidirectional = 1,
-	/// Punchable
-	Punchable      = 2,
+	Unidirectional = 2,
 }
 
 
@@ -187,9 +188,39 @@ impl ContactInfo {
 		false
 	}
 
+	pub fn merge(&mut self, other: &Self) {
+		if let Some(entry_a) = &other.ipv4 {
+			if let Some(entry_b) = self.ipv4.as_mut() {
+				entry_b.addr = entry_a.addr;
+				if let Some(a) = &entry_a.availability.udp {
+					entry_b.availability.udp = Some(a.clone());
+				}
+				if let Some(a) = &entry_a.availability.tcp {
+					entry_b.availability.tcp = Some(a.clone());
+				}
+			} else {
+				self.ipv4 = other.ipv4.clone();
+			}
+		}
+
+		if let Some(entry_a) = &other.ipv6 {
+			if let Some(entry_b) = self.ipv6.as_mut() {
+				entry_b.addr = entry_a.addr;
+				if let Some(a) = &entry_a.availability.udp {
+					entry_b.availability.udp = Some(a.clone());
+				}
+				if let Some(a) = &entry_a.availability.tcp {
+					entry_b.availability.tcp = Some(a.clone());
+				}
+			} else {
+				self.ipv6 = other.ipv6.clone();
+			}
+		}
+	}
+
 	pub fn openness_at_option(&self, option: &ContactOption) -> Option<Openness> {
 		match &option.target {
-			SocketAddr::V4(addr) =>
+			SocketAddr::V4(_addr) =>
 				if let Some(e) = &self.ipv4 {
 					if !option.use_tcp {
 						e.availability.udp.as_ref().map(|e| e.openness.clone())
@@ -199,7 +230,7 @@ impl ContactInfo {
 				} else {
 					None
 				},
-			SocketAddr::V6(addr) =>
+			SocketAddr::V6(_addr) =>
 				if let Some(e) = &self.ipv6 {
 					if !option.use_tcp {
 						e.availability.udp.as_ref().map(|e| e.openness.clone())
@@ -411,6 +442,14 @@ impl fmt::Display for Openness {
 			Openness::Punchable => write!(f, "punchable"),
 			Openness::Unidirectional => write!(f, "unidirectional"),
 		}
+	}
+}
+
+impl PartialOrd for Openness {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+		(*self as u8)
+			.partial_cmp(&(*other as u8))
+			.map(|o| o.reverse())
 	}
 }
 

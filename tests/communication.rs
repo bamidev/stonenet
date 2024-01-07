@@ -22,6 +22,9 @@ use stonenetd::{
 };
 
 
+#[ctor::ctor]
+fn initialize() { env_logger::init(); }
+
 async fn load_test_node(
 	stop_flag: Arc<AtomicBool>, rng: &mut (impl CryptoRng + RngCore), config: &Config, port: u16,
 	openness: Openness, filename: &str,
@@ -52,6 +55,7 @@ async fn load_test_node(
 		}),
 		ipv6: None,
 	};
+	info!("Node {} runs on port {}.", node_id, port);
 	let node = OverlayNode::start(
 		stop_flag.clone(),
 		node_id,
@@ -69,44 +73,79 @@ async fn load_test_node(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_data_synchronization() {
-	env_logger::init();
+async fn test_data_synchronizations() {
+	let mut next_port = 20000;
+	test_data_synchronization(
+		&mut next_port,
+		Openness::Unidirectional,
+		Openness::Bidirectional,
+		true,
+	)
+	.await;
+	test_data_synchronization(
+		&mut next_port,
+		Openness::Unidirectional,
+		Openness::Unidirectional,
+		false,
+	)
+	.await;
+}
+
+async fn test_data_synchronization(
+	next_port: &mut u16, node1_openness: Openness, node2_openness: Openness,
+	test_notifications: bool,
+) {
 	let mut rng = initialize_rng();
 
-	// Set up two nodes
+	// Set up four nodes
 	let stop_flag = Arc::new(AtomicBool::new(false));
-	let config1 = Config::default();
+	let mut config1 = Config::default();
+	config1.super_node = true;
 	let mut config2 = Config::default();
-	config2.bootstrap_nodes = vec!["127.0.0.1:37337".to_string()];
+	config2.super_node = true;
+	config2.bootstrap_nodes = vec![format!("127.0.0.1:{}", *next_port)];
+	let mut config3 = Config::default();
+	config3.bootstrap_nodes = vec![format!("127.0.0.1:{}", *next_port)];
 	let bootstrap_node = load_test_node(
 		stop_flag.clone(),
 		&mut rng,
 		&config1,
-		37337,
+		*next_port,
 		Openness::Bidirectional,
 		"/tmp/bootstrap.sqlite",
 	)
 	.await;
+	*next_port += 1;
+	let random_node: Api = load_test_node(
+		stop_flag.clone(),
+		&mut rng,
+		&config2,
+		*next_port,
+		Openness::Bidirectional,
+		"/tmp/random.sqlite",
+	)
+	.await;
+	*next_port += 1;
 	let node1 = load_test_node(
 		stop_flag.clone(),
 		&mut rng,
-		&config2,
-		37338,
-		Openness::Unidirectional,
+		&config3,
+		*next_port,
+		node1_openness,
 		"/tmp/node1.sqlite",
 	)
 	.await;
-	node1.node.join_network(stop_flag.clone()).await;
+	*next_port += 1;
 	let node2 = load_test_node(
 		stop_flag.clone(),
 		&mut rng,
-		&config2,
-		37339,
-		Openness::Punchable,
+		&config3,
+		*next_port,
+		node2_openness,
 		"/tmp/node2.sqlite",
 	)
 	.await;
-	node2.node.join_network(stop_flag.clone()).await;
+	*next_port += 1;
 
 	// Create a profile for node 1
 	let profile_description = r#"
@@ -178,7 +217,6 @@ Hoi ik ben Kees!
 		)
 		.await
 		.expect("unable to publish third post");
-
 	// Check if all profile data came through correctly
 	let profile = node2
 		.fetch_profile_info(&actor_id)
@@ -255,7 +293,7 @@ Hoi ik ben Kees!
 		let mut c = node2.db.connect().expect("unable to open database");
 		c.fetch_home_feed(5, 0).expect("unable to fetch home feed")
 	});
-	assert_eq!(home_feed.len(), 5);
+	assert_eq!(home_feed.len(), 4 + test_notifications as usize);
 
 	// Check if we've received all posts no mather in which order.
 	for object in &home_feed {
@@ -290,8 +328,10 @@ Hoi ik ben Kees!
 	stop_flag.store(true, Ordering::Relaxed);
 	node1.close().await;
 	node2.close().await;
+	random_node.close().await;
 	bootstrap_node.close().await;
 	remove_file("/tmp/bootstrap.sqlite").unwrap();
+	remove_file("/tmp/random.sqlite").unwrap();
 	remove_file("/tmp/node1.sqlite").unwrap();
 	remove_file("/tmp/node2.sqlite").unwrap();
 }

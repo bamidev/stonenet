@@ -3,7 +3,6 @@ use std::{error::Error, fmt, ops, str};
 use async_trait::async_trait;
 use base58::*;
 use num::bigint::BigUint;
-use rand::{rngs::OsRng, RngCore};
 use rusqlite::types::*;
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
@@ -114,13 +113,6 @@ impl IdType {
 	}
 
 	pub fn new(bytes: [u8; 32]) -> Self { Self(bytes.into()) }
-
-	pub fn random() -> IdType {
-		let mut rng = OsRng {};
-		let mut buf = [0u8; 32];
-		rng.fill_bytes(&mut buf);
-		IdType(buf)
-	}
 }
 
 impl ops::BitXor<&IdType> for IdType {

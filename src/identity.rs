@@ -165,11 +165,13 @@ mod tests {
 	use rand::RngCore;
 
 	use super::*;
+	use crate::test;
 
 	#[test]
 	fn test_signature() {
+		let mut rng = test::initialize_rng();
 		let mut buffer = vec![0u8; 1024];
-		OsRng.fill_bytes(&mut buffer);
+		rng.fill_bytes(&mut buffer);
 
 		let keypair = PrivateKey::generate();
 		let signature = keypair.sign(&buffer);

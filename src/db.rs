@@ -2060,10 +2060,10 @@ impl Connection {
 	pub fn has_block(&self, actor_id: &IdType, hash: &IdType) -> rusqlite::Result<bool> {
 		let mut stat = self.prepare(
 			r#"
-			SELECT rowid
+			SELECT b.rowid
 			FROM block AS b
 			LEFT JOIN identity AS i ON b.actor_id = i.rowid
-			WHERE i.address = ? AND f.hash = ?
+			WHERE i.address = ? AND b.hash = ?
 		"#,
 		)?;
 		let mut rows = stat.query([actor_id.to_string(), hash.to_string()])?;

@@ -11,6 +11,7 @@ mod identity;
 mod limited_store;
 mod model;
 mod net;
+#[cfg(test)]
 mod test;
 mod web;
 

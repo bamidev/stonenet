@@ -21,11 +21,6 @@ use super::{
 use crate::{common::*, db, limited_store::LimitedVec};
 
 
-const NODE_FINGER_MINIMUM_PING_DELAY: u64 = 60000;
-const NODE_COMMUNICATION_TTL: u32 = 64;
-const NODE_COMMUNICATION_TIMEOUT: u32 = 2;
-
-
 pub struct AllFingersIter<'a> {
 	global_index: usize,
 	buckets: &'a Vec<Mutex<Bucket>>,
@@ -73,6 +68,7 @@ where
 	do_verify:
 		Box<dyn Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a>,
 	narrow_down: bool,
+	use_relays: bool,
 
 	visited: Vec<(IdType, ContactOption)>,
 	candidates: VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
@@ -200,12 +196,6 @@ where
 		}
 	}
 
-	pub(super) fn bidirectional_contact_option(
-		&self, target: &ContactInfo,
-	) -> Option<ContactOption> {
-		self.socket.bidirectional_contact_option(target)
-	}
-
 	pub async fn close(&self) {
 		self.stop_flag.store(true, Ordering::Relaxed);
 		self.interface.close().await;
@@ -231,27 +221,26 @@ where
 	pub async fn connect(
 		&self, target: &ContactOption, node_id: Option<&IdType>,
 	) -> Option<Box<Connection>> {
-		match node_id {
-			Some(ni) => {
-				let result = self.socket.connect(target, node_id).await;
-				self.handle_connection_issue(result, ni).await
-			}
-			None => match self.socket.connect(target, node_id).await {
-				Ok(c) => Some(c),
-				Err(e) => {
-					warn!("Unable to connect to {}: {}", target, e);
-					None
+		match self.socket.connect(target, node_id).await {
+			Ok(c) => Some(c),
+			Err(e) => {
+				warn!("Unable to connect to {}: {}", target, e);
+				if let Some(ni) = node_id {
+					self.mark_node_problematic(ni).await
 				}
-			},
+				None
+			}
 		}
 	}
 
 	pub async fn connect_by_strategy(
-		&self, node_id: &IdType, strategy: &ContactStrategy,
+		&self, node_info: &NodeContactInfo, strategy: &ContactStrategy,
 		last_open_connection: Option<&mut Connection>, overlay_node: &Arc<OverlayNode>,
 	) -> Option<Box<Connection>> {
 		match &strategy.method {
-			ContactStrategyMethod::Direct => self.connect(&strategy.contact, Some(node_id)).await,
+			ContactStrategyMethod::Direct =>
+				self.connect(&strategy.contact, Some(&node_info.node_id))
+					.await,
 			ContactStrategyMethod::HolePunch => {
 				if let Some(mut relay_connection) = last_open_connection {
 					// FIXME: The contact option needs to be carefully picked
@@ -267,7 +256,7 @@ where
 					if let Some(target_connection) = overlay_node
 						.request_reversed_connection(
 							&mut relay_connection,
-							node_id,
+							&node_info.node_id,
 							&strategy.contact,
 							&contact_me_option,
 						)
@@ -280,8 +269,27 @@ where
 				// If no connection to obtain reversed connection
 				// with is provided, try to obtain one from the overlay network
 				} else {
-					if let Some(mut relay_connection) =
-						overlay_node.find_connection_for_node(node_id).await
+					// If we already have a connection with this node, don't use that one because it
+					// using it will block any hole punch requests that might come in during usage.
+					// Open a new connection to the node, because the existing connection has
+					// already 'opened the hole'.
+					if let Some(existing_connection) =
+						self.find_connection_in_buckets(&node_info.node_id).await
+					{
+						// FIXME: contact option should be obtainable without having to lock the
+						// existing connection.
+						let contact_option = {
+							let c = existing_connection.lock().await;
+							c.contact_option()
+						};
+						return self
+							.connect(&contact_option, Some(&node_info.node_id))
+							.await;
+					}
+
+					if let Some(mut relay_connection) = overlay_node
+						.find_connection_for_node(&node_info.node_id)
+						.await
 					{
 						let my_contact_info = self.contact_info();
 						let contact_me_option = ContactOption::new(
@@ -295,7 +303,7 @@ where
 						let tc = if let Some(target_connection) = overlay_node
 							.request_reversed_connection(
 								&mut relay_connection,
-								node_id,
+								&node_info.node_id,
 								&strategy.contact,
 								&contact_me_option,
 							)
@@ -305,49 +313,34 @@ where
 						} else {
 							None
 						};
-						relay_connection.close().await;
+						relay_connection.close_async();
 						tc
 					} else {
 						None
 					}
 				}
 			}
-			ContactStrategyMethod::Relay => {
-				// For the moment, relaying is not supported through the find value iterator.
-				// And this is not necessary because when punchable or bidirectional nodes
-				// exist, they can be contacted instead. And if a unidirectional node has a new
-				// value that the other nodes don't have, this will rectified once the node
-				// starts synchronizing with the network (which should happen every hour).
-				// And in the case where there are only unidirectional nodes in the actor
-				// network, a node joining the actor network will use relaying in order to
-				// synchronize with other nodes.
-				None
-			}
+			ContactStrategyMethod::Relay => self.overlay_node().open_relay(node_info).await,
 		}
 	}
 
 	pub async fn connect_with_timeout(
-		&self, stop_flag: Arc<AtomicBool>, target: &ContactOption, node_id: Option<&IdType>, timeout: Duration,
+		&self, stop_flag: Arc<AtomicBool>, target: &ContactOption, node_id: Option<&IdType>,
+		timeout: Duration,
 	) -> Option<Box<Connection>> {
-		match node_id {
-			Some(ni) => {
-				let result = self
-					.socket
-					.connect_with_timeout(stop_flag, target, node_id, timeout)
-					.await;
-				self.handle_connection_issue(result, ni).await
-			}
-			None => match self
-				.socket
-				.connect_with_timeout(stop_flag, target, node_id, timeout)
-				.await
-			{
-				Ok(c) => Some(c),
-				Err(e) => {
-					warn!("Unable to connect to {}: {}", target, e);
-					None
+		match self
+			.socket
+			.connect_with_timeout(stop_flag, target, node_id, timeout)
+			.await
+		{
+			Ok(c) => Some(c),
+			Err(e) => {
+				warn!("Unable to connect to {}: {}", target, e);
+				if let Some(ni) = node_id {
+					self.mark_node_problematic(ni).await
 				}
-			},
+				None
+			}
 		}
 	}
 
@@ -366,10 +359,8 @@ where
 			.interface
 			.exchange(&mut connection, message_type_id, buffer)
 			.await;
-		if let Err(e) = connection.close().await {
-			debug!("Unable to close connection: {}", e);
-		}
-		self.handle_connection_issue(result, &target.node_id).await
+		connection.close_async();
+		self.handle_connection_issue(result, target).await
 	}
 
 	/// Exchanges a request with a response with the given contact.
@@ -382,10 +373,9 @@ where
 			.interface
 			.exchange(&mut connection, message_type_id, buffer)
 			.await;
-		if let Err(e) = connection.close().await {
-			debug!("Unable to close connection: {}", e);
-		}
-		self.handle_connection_issue(result, node_id).await
+		let node_info = connection.their_node_info().clone();
+		connection.close_async();
+		self.handle_connection_issue(result, &node_info).await
 	}
 
 	pub async fn exchange_find_x(
@@ -412,7 +402,7 @@ where
 		let raw_response = raw_response_result?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: FindNodeResponse = self
-			.handle_connection_issue(result, connection.their_node_id())
+			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
 		Some(response)
 	}
@@ -430,10 +420,13 @@ where
 				&raw_request,
 			)
 			.await;
-		let their_node_id = connection.their_node_id().clone();
 		let response = response_result?;
-		self.process_find_value_response(&their_node_id, &response, expect_fingers_in_response)
-			.await
+		self.process_find_value_response(
+			connection.their_node_info(),
+			&response,
+			expect_fingers_in_response,
+		)
+		.await
 	}
 
 	pub async fn exchange_find_value_on_connection_and_parse<V>(
@@ -457,7 +450,7 @@ where
 			.await?;
 		let (value_result, fingers_result) = self
 			.process_find_value_response(
-				connection.their_node_id(),
+				connection.their_node_info(),
 				&raw_response,
 				expect_fingers_in_response,
 			)
@@ -465,7 +458,7 @@ where
 		if let Some(value_buffer) = value_result {
 			let result: sstp::Result<_> = bincode::deserialize(&value_buffer).map_err(|e| e.into());
 			let value: V = self
-				.handle_connection_issue(result, &connection.their_node_id())
+				.handle_connection_issue(result, &connection.their_node_info())
 				.await?;
 			Some((Some(value), fingers_result))
 		} else {
@@ -480,7 +473,7 @@ where
 			.interface
 			.exchange(connection, message_type_id, buffer)
 			.await;
-		self.handle_connection_issue(result, connection.their_node_id())
+		self.handle_connection_issue(result, connection.their_node_info())
 			.await
 	}
 
@@ -624,7 +617,6 @@ where
 				let bucket = self.buckets[i].lock().await;
 				bucket.all()
 			};
-
 			let remaining = KADEMLIA_K as usize - fingers.len();
 			if remaining <= additional_fingers.len() {
 				fingers.extend_from_slice(&additional_fingers[0..remaining]);
@@ -632,11 +624,10 @@ where
 				fingers.extend_from_slice(&additional_fingers);
 			}
 
-			if fingers.len() >= KADEMLIA_K as usize {
+			if fingers.len() >= self.bucket_size {
 				return fingers;
 			}
 		}
-
 		fingers
 	}
 
@@ -767,7 +758,7 @@ where
 	pub async fn find_value_from_fingers<'a>(
 		&'a self, overlay_node: Arc<OverlayNode>, id: &IdType, value_type_id: u8,
 		expect_fingers_in_response: bool, fingers: &[NodeContactInfo], visit_limit: usize,
-		narrow_down: bool,
+		narrow_down: bool, use_relays: bool,
 		do_verify: impl Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a,
 	) -> Option<AtomicPtr<()>> {
 		self.find_value_from_fingers_iter(
@@ -778,6 +769,7 @@ where
 			fingers,
 			visit_limit,
 			narrow_down,
+			use_relays,
 			do_verify,
 		)
 		.await
@@ -788,7 +780,7 @@ where
 	pub async fn find_value_from_fingers_iter<'a>(
 		&'a self, overlay_node: Arc<OverlayNode>, id: &IdType, value_type_id: u8,
 		expect_fingers_in_response: bool, fingers: &[NodeContactInfo], visit_limit: usize,
-		narrow_down: bool,
+		narrow_down: bool, use_relays: bool,
 		do_verify: impl Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a,
 	) -> FindValueIter<'a, I> {
 		// Initialize the candidates by picking a contact strategy for each candidate.
@@ -810,6 +802,7 @@ where
 			value_type_id,
 			do_verify: Box::new(do_verify),
 			narrow_down,
+			use_relays,
 			visited: Vec::with_capacity(visit_limit),
 			candidates,
 			connection_for_reverse_connection_requests: None,
@@ -817,27 +810,27 @@ where
 	}
 
 	pub(super) async fn handle_connection_issue<T>(
-		&self, result: sstp::Result<T>, node_id: &IdType,
+		&self, result: sstp::Result<T>, node_info: &NodeContactInfo,
 	) -> Option<T> {
 		match result {
 			Err(e) => {
 				match e {
 					sstp::Error::Timeout => {
-						debug!("Problematic node {}: {}", node_id, e);
-						self.mark_node_problematic(node_id).await;
+						warn!("Problematic node {}: {}", node_info, e);
+						self.mark_node_problematic(&node_info.node_id).await;
 					}
 					_ =>
 						if !e.forgivable() {
-							debug!("Rejecting node {}: {}", node_id, e);
-							self.reject_node(node_id).await;
+							warn!("Problematic node {}: {}", node_info, e);
+							self.reject_node(&node_info.node_id).await;
 						} else {
-							debug!("Connection issue with node {}: {}", node_id, e);
+							debug!("Connection issue with node {}: {}", node_info, e);
 						},
 				}
 				None
 			}
 			Ok(response) => {
-				self.mark_node_helpful(node_id).await;
+				self.mark_node_helpful(node_info).await;
 				Some(response)
 			}
 		}
@@ -874,8 +867,7 @@ where
 			contact_info: node_address.clone(),
 			node_id,
 		};
-		self.remember_node_nondestructive(first_contact.clone())
-			.await;
+		self.mark_node_helpful(&first_contact).await;
 
 		// Keep finding new fingers until we have not been able to get any
 		// closer to our own ID.
@@ -891,10 +883,10 @@ where
 			.await;
 
 		// Add the last encountered fingers (neighbours) to our buckets as well, as they
-		// have not been automatically added.
+		// have not been automatically added due to interaction.
 		let futs = neighbours.into_iter().map(|n| async move {
 			if self.test_id(&n).await == true {
-				self.remember_node_nondestructive(n).await;
+				self.mark_node_helpful(&n).await;
 			} else {
 				warn!("Connecting to neighbour {} failed", &n.node_id);
 			}
@@ -920,10 +912,10 @@ where
 		}
 	}
 
-	async fn mark_node_helpful(&self, node_id: &IdType) {
-		if let Some(bucket_index) = self.differs_at_bit(node_id) {
+	async fn mark_node_helpful(&self, node_info: &NodeContactInfo) {
+		if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
-			bucket.mark_helpful(node_id);
+			bucket.mark_helpful(node_info);
 		}
 	}
 
@@ -956,17 +948,19 @@ where
 		let (option, openness) = self.pick_contact_option(target)?;
 		let method = match openness {
 			Openness::Bidirectional => ContactStrategyMethod::Direct,
-			other =>
-				if other == Openness::Punchable {
+			Openness::Punchable => ContactStrategyMethod::HolePunch,
+			Openness::Unidirectional => {
+				let own_openness = self.contact_info().openness_at_option(&option)?;
+				if own_openness != Openness::Unidirectional {
+					if self.node_id.to_string() != "gGCoKktsmezqAaYwkZmN4k3pUC8c5m5AWPZZgB9bFB8" {
+						//panic!("hole punch?! own={} {}", own_openness,
+						// self.contact_info());
+					}
 					ContactStrategyMethod::HolePunch
 				} else {
-					let own_openness = self.contact_info().openness_at_option(&option)?;
-					if own_openness != Openness::Unidirectional {
-						ContactStrategyMethod::HolePunch
-					} else {
-						ContactStrategyMethod::Relay
-					}
-				},
+					ContactStrategyMethod::Relay
+				}
+			}
 		};
 
 		Some(ContactStrategy {
@@ -995,14 +989,14 @@ where
 	}
 
 	async fn process_find_value_response(
-		&self, node_id: &IdType, response: &[u8], expect_fingers_in_response: bool,
+		&self, node_info: &NodeContactInfo, response: &[u8], expect_fingers_in_response: bool,
 	) -> Option<(Option<Vec<u8>>, Option<FindNodeResponse>)> {
 		// If fingers are expected in the response, parse them
 		let (contacts, contacts_len) = if expect_fingers_in_response {
 			let result: sstp::Result<FindNodeResponse> =
 				bincode::deserialize_with_trailing(&response).map_err(|e| e.into());
 
-			let contacts = self.handle_connection_issue(result, node_id).await?;
+			let contacts = self.handle_connection_issue(result, node_info).await?;
 			let contacts_len = bincode::serialized_size(&contacts).unwrap();
 			(Some(contacts), contacts_len)
 		} else {
@@ -1025,7 +1019,7 @@ where
 				return Some((None, contacts));
 			} else {
 				return self
-					.handle_connection_issue(Err(sstp::Error::MalformedMessage(None)), node_id)
+					.handle_connection_issue(Err(sstp::Error::MalformedMessage(None)), node_info)
 					.await;
 			}
 		}
@@ -1153,7 +1147,7 @@ where
 	/// available.
 	/// This method can block for quite a while, as it exchanges requests.
 	/// Normally speaking, you'd want to spawn this off to execute on the side.
-	pub async fn remember_node(self: &Arc<Self>, node_info: NodeContactInfo) {
+	/*pub async fn remember_node(self: &Arc<Self>, node_info: NodeContactInfo) {
 		let bucket_pos = match self.differs_at_bit(&node_info.node_id) {
 			None => {
 				debug!("Found same node ID as us, ignoring...");
@@ -1180,19 +1174,21 @@ where
 			}
 		}
 		debug!("Remembering node {}...", node_info);
-		bucket.remember(node_info.clone());
-	}
+		bucket.remember(node_info);
+	}*/
 
 	/// Like `remember_node`, but only remembers the node if it doesn't need to
 	/// push other data away.
-	pub async fn remember_node_nondestructive(&self, node_info: NodeContactInfo) {
+	/*pub async fn remember_node_nondestructive(&self, node_info: NodeContactInfo) {
 		let bucket_pos = match self.differs_at_bit(&node_info.node_id) {
 			None => {
 				debug!("Found same node ID as us, ignoring...");
 				return;
 			}
 			Some(p) => p as usize,
-		};
+		};if self.bucket_size >= 100 && node_info.contact_info.ipv4.clone().unwrap().availability.udp.unwrap().port == 37337 {
+			panic!("HOI2");
+		}
 
 		// If peer is already in our bucket, only update contact info
 		let mut bucket = self.buckets[bucket_pos].lock().await;
@@ -1206,13 +1202,13 @@ where
 
 		if bucket.test_space().is_none() {
 			debug!("Remembering node {}.", &node_info.contact_info);
-			bucket.remember(node_info);
+			bucket.remember(&node_info);
 		}
-	}
+	}*/
 
 	pub async fn select_connection(&self, node_info: &NodeContactInfo) -> Option<Box<Connection>> {
 		if let Some(strategy) = self.pick_contact_strategy(&node_info.contact_info) {
-			self.connect_by_strategy(&node_info.node_id, &strategy, None, &self.overlay_node())
+			self.connect_by_strategy(&node_info, &strategy, None, &self.overlay_node())
 				.await
 		} else {
 			None
@@ -1308,6 +1304,9 @@ where
 				.push((candidate_contact.node_id.clone(), contact_option));
 
 			// Use the already found contact option to exchange the find value request.
+			if strategy.method == ContactStrategyMethod::Relay && !self.use_relays {
+				continue;
+			}
 			let mut special_connection: Option<Box<Connection>> = None;
 			let mut reversed_connection = if strategy.method == ContactStrategyMethod::HolePunch
 				&& self
@@ -1332,7 +1331,7 @@ where
 			match self
 				.node
 				.connect_by_strategy(
-					&candidate_contact.node_id,
+					&candidate_contact,
 					&strategy,
 					reversed_connection.as_deref_mut().map(|c| c.as_mut()),
 					&self.overlay_node,
@@ -1343,7 +1342,7 @@ where
 					if let Some(sc) = special_connection.as_mut() {
 						sc.close().await;
 					}
-					warn!("Disregarding finger {}", &candidate_contact)
+					debug!("Disregarding finger {}", &candidate_contact)
 				}
 				Some(mut connection) => {
 					if let Some(sc) = special_connection.as_mut() {
@@ -1459,16 +1458,36 @@ impl Bucket {
 		fingers
 	}
 
-	fn mark_helpful(&mut self, id: &IdType) {
+	fn mark_helpful(&mut self, node_info: &NodeContactInfo) {
 		match self
-			.replacement_cache
+			.fingers
 			.iter()
-			.position(|f| &f.finger.node_id == id)
+			.position(|f| f.node_id == node_info.node_id)
 		{
-			None => {}
+			// If the finger already exists in this bucket, just update its contact info with the
+			// latest contact info
 			Some(index) => {
-				let finger = self.replacement_cache.remove(index).unwrap().finger;
-				self.remember(finger);
+				self.fingers[index]
+					.contact_info
+					.merge(&node_info.contact_info);
+			}
+			// If the finger is not in this bucket, check if it is in the replacement cache
+			None => {
+				match self
+					.replacement_cache
+					.iter()
+					.position(|f| &f.finger.node_id == &node_info.node_id)
+				{
+					// If not in the replacement cache, just add it to our bucket
+					None => {
+						self.remember(node_info);
+					}
+					// If it is in our replacement cache, add it back
+					Some(index) => {
+						let finger = self.replacement_cache.remove(index).unwrap().finger;
+						self.remember(&finger);
+					}
+				}
 			}
 		}
 	}
@@ -1550,18 +1569,10 @@ impl Bucket {
 		true
 	}
 
-	fn remember(&mut self, node: NodeContactInfo) {
-		if self.fingers.len() == self.fingers.limit() as usize {
-			if self.replacement_cache.has_space() {
-				self.replacement_cache.push_back(BucketReplacementEntry {
-					finger: self.fingers.pop_front().unwrap(),
-					failed_attempts: 1,
-				});
-			} else {
-				self.fingers.pop_front();
-			}
+	fn remember(&mut self, node: &NodeContactInfo) {
+		if self.fingers.len() < self.fingers.limit() as usize {
+			self.fingers.push_back(node.clone());
 		}
-		self.fingers.push_back(node);
 	}
 
 	fn test_space(&self) -> Option<&NodeContactInfo> {
@@ -1585,7 +1596,9 @@ impl Bucket {
 				let old = self.fingers[index].contact_info.clone();
 				let different = old != node_info.contact_info;
 				if different {
-					self.fingers[index].contact_info = node_info.contact_info.clone();
+					self.fingers[index]
+						.contact_info
+						.merge(&node_info.contact_info);
 				}
 				(true, different)
 			}
@@ -1621,11 +1634,11 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 						sstp::Error::Timeout => {
 							if is_first_message {
 								debug!(
-									"Node {} timed out before request was received [{} -> {}]",
-									connection.peer_address(), connection.our_session_id(), connection.their_session_id()
+									"Node {} timed out before request was received.",
+									connection.peer_address(),
 								);
 								print!(
-									"Node {} timed out before request was received",
+									"Node {} timed out before request was received.",
 									connection.peer_address(),
 								);
 							}
@@ -1817,10 +1830,8 @@ async fn process_find_value_request_message(
 			Some(response) => {
 				debug_assert!(
 					response.len() > 0,
-					"actor response must be more than 0 bytes ({}) [{} -> {}]",
+					"actor response must be more than 0 bytes ({})",
 					message_type_id,
-					connection.our_session_id(),
-					connection.their_session_id()
 				);
 				if let Err(e) = actor_node
 					.base
@@ -1829,9 +1840,15 @@ async fn process_find_value_request_message(
 					.await
 				{
 					warn!("Unable to respond to actor request: {}", e);
+					actor_node
+						.base
+						.mark_node_problematic(connection.their_node_id())
+						.await;
 				} else {
-					let node_info = connection.their_node_info().clone();
-					actor_node.base.remember_node(node_info).await;
+					actor_node
+						.base
+						.mark_node_helpful(connection.their_node_info())
+						.await;
 				}
 			}
 		}
@@ -1854,29 +1871,15 @@ async fn process_request_message(
 		};
 		drop(actor_nodes);
 
-		let r = match overlay_node
-			.base
-			.process_request(
+		let r = overlay_node
+			.process_actor_request(
 				connection,
-				overlay_node.clone(),
+				&mutex,
+				&actor_id,
 				message_type_id,
 				&buffer[33..],
-				Some(&actor_id),
 			)
-			.await
-		{
-			Some(r) => r,
-			None =>
-				overlay_node
-					.process_actor_request(
-						connection,
-						&mutex,
-						&actor_id,
-						message_type_id,
-						&buffer[33..],
-					)
-					.await,
-		};
+			.await;
 
 		match r {
 			None => {}
@@ -1895,9 +1898,13 @@ async fn process_request_message(
 					.await
 				{
 					warn!("Unable to respond to actor request: {}", e);
+					actor_node
+						.base
+						.mark_node_problematic(connection.their_node_id())
+						.await;
 				} else {
 					let node_info = connection.their_node_info().clone();
-					actor_node.base.remember_node(node_info).await;
+					actor_node.base.mark_node_helpful(&node_info).await;
 				}
 			}
 		}
@@ -1930,10 +1937,14 @@ async fn process_request_message(
 					.respond(connection, message_type_id + 1, &x)
 					.await
 				{
-					warn!("Unable to respond: {}", e);
+					warn!("Unable to respond to request: {}", e);
+					overlay_node
+						.base
+						.mark_node_problematic(connection.their_node_id())
+						.await;
 				} else {
 					let node_info = connection.their_node_info().clone();
-					overlay_node.base.remember_node(node_info).await;
+					overlay_node.base.mark_node_helpful(&node_info).await;
 				}
 			}
 		}

@@ -513,9 +513,7 @@ impl Api {
 		})?;
 
 		if let Some(actor_node) = self.node.get_actor_node(identity).await {
-			actor_node
-				.publish_object(self.node.clone(), &hash, &object)
-				.await;
+			actor_node.publish_object(&self.node, &hash, &object).await;
 		} else {
 			error!("Actor node not found.");
 		}

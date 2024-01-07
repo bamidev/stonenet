@@ -39,6 +39,8 @@ pub const OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST: u8 = 72;
 pub const OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE: u8 = 73;
 pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST: u8 = 74;
 //pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE: u8 = 75;
+pub const OVERLAY_MESSAGE_TYPE_START_RELAY_REQUEST: u8 = 76;
+//pub const OVERLAY_MESSAGE_TYPE_START_RELAY_RESPONSE: u8 = 77;
 
 
 pub struct ConnectActorIter<'a> {
@@ -47,7 +49,7 @@ pub struct ConnectActorIter<'a> {
 	state: u8,
 	pi: usize,
 	ri: usize,
-	punchable_nodes: Vec<(IdType, ContactOption)>,
+	punchable_nodes: Vec<(NodeContactInfo, ContactOption)>,
 	relayable_nodes: Vec<NodeContactInfo>,
 }
 pub struct FindActorIter<'a>(FindValueIter<'a, OverlayInterface>);
@@ -220,8 +222,7 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 								self.relayable_nodes.push(node);
 							}
 							ContactStrategyMethod::HolePunch => {
-								self.punchable_nodes
-									.push((node.node_id.clone(), strategy.contact));
+								self.punchable_nodes.push((node.clone(), strategy.contact));
 							}
 							ContactStrategyMethod::Direct => {
 								if let Some(connection) = self
@@ -244,7 +245,7 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 		// Then, try all the punchable nodes we've encountered
 		if self.state == 1 {
 			for i in self.pi..self.punchable_nodes.len() {
-				let (node_id, contact_option) = &self.punchable_nodes[i];
+				let (node_info, contact_option) = &self.punchable_nodes[i];
 				let strategy = ContactStrategy {
 					method: ContactStrategyMethod::HolePunch,
 					contact: contact_option.clone(),
@@ -255,7 +256,7 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 					.base
 					.0
 					.node
-					.connect_by_strategy(&node_id, &strategy, None, &self.base.0.overlay_node)
+					.connect_by_strategy(&node_info, &strategy, None, &self.base.0.overlay_node)
 					.await
 				{
 					self.pi = i + 1;
@@ -396,10 +397,7 @@ impl OverlayNode {
 			.exchange_find_x(target, node_id, OVERLAY_MESSAGE_TYPE_FIND_ACTOR_REQUEST)
 			.await?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
-		let response: FindActorResponse = self
-			.base
-			.handle_connection_issue(result, &target.node_id)
-			.await?;
+		let response: FindActorResponse = self.base.handle_connection_issue(result, target).await?;
 		Some(response)
 	}
 
@@ -415,7 +413,7 @@ impl OverlayNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: KeepAliveResponse = self
 			.base
-			.handle_connection_issue(result, connection.their_node_id())
+			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
 		Some(response.ok)
 	}
@@ -424,18 +422,20 @@ impl OverlayNode {
 		&self, connection: &mut Connection, target: NodeContactInfo,
 	) -> Option<bool> {
 		let request = OpenRelayRequest { target };
+		// FIXME: This should have about 4 times the default timeout because the relay
+		// node needs to reach the other node before responding
 		let raw_response = self
 			.base
 			.exchange_on_connection(
 				connection,
-				OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST,
+				OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST,
 				&bincode::serialize(&request).unwrap(),
 			)
 			.await?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: OpenRelayResponse = self
 			.base
-			.handle_connection_issue(result, connection.their_node_id())
+			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
 		Some(response.ok)
 	}
@@ -459,7 +459,7 @@ impl OverlayNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: InitiateConnectionResponse = self
 			.base
-			.handle_connection_issue(result, connection.their_node_id())
+			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
 		Some(response.ok)
 	}
@@ -484,7 +484,27 @@ impl OverlayNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response?).map_err(|e| e.into());
 		let response: RelayInitiateConnectionResponse = self
 			.base
-			.handle_connection_issue(result, &relay_connection.their_node_id())
+			.handle_connection_issue(result, &relay_connection.their_node_info())
+			.await?;
+		Some(response.ok)
+	}
+
+	async fn exchange_start_relay_on_connection(
+		&self, connection: &mut Connection, origin: NodeContactInfo,
+	) -> Option<bool> {
+		let request = StartRelayRequest { origin };
+		let raw_response = self
+			.base
+			.exchange_on_connection(
+				connection,
+				OVERLAY_MESSAGE_TYPE_START_RELAY_REQUEST,
+				&bincode::serialize(&request).unwrap(),
+			)
+			.await?;
+		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let response: StartRelayResponse = self
+			.base
+			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
 		Some(response.ok)
 	}
@@ -531,11 +551,12 @@ impl OverlayNode {
 			actor_id,
 			actor_info,
 		};
+		let raw_request = bincode::serialize(&request).unwrap();
 		self.base
 			.exchange_on_connection(
 				connection,
 				OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST,
-				&bincode::serialize(&request).unwrap(),
+				&raw_request,
 			)
 			.await?;
 		Some(())
@@ -684,6 +705,7 @@ impl OverlayNode {
 				&fingers,
 				hop_limit,
 				narrow_down,
+				false,
 				verify_pubkey,
 			)
 			.await;
@@ -800,10 +822,7 @@ impl OverlayNode {
 		let mut iter = self.connect_actor_iter(actor_id).await;
 		loop {
 			if let Some((connection, ai)) = iter.next().await {
-				if let Some(_open) = node
-					.join_network_starting_with_connection(self, connection)
-					.await
-				{
+				if let Some(_open) = node.join_network_starting_with_connection(connection).await {
 					break;
 				}
 			} else {
@@ -1113,13 +1132,12 @@ impl OverlayNode {
 							{
 								if success {
 									self.maintain_reverse_connection(c);
-									break;
+									return;
 								} else {
-									warn!("Keep alive connection was denied.");
+									debug!("Keep alive connection was denied.");
 									c.close().await;
 								}
 							} else {
-								warn!("Unable to obtain keep alive connection.");
 								c.close().await;
 							}
 						}
@@ -1127,9 +1145,11 @@ impl OverlayNode {
 				}
 			}
 		}
+		warn!("Unable to obtain keep alive connection.");
+		panic!("Unable to obtain keep alive connection.");
 	}
 
-	async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
+	pub async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
 		loop {
 			let mut super_nodes = self.super_nodes.lock().await;
 			if let Some((super_node_id, super_node_contact)) = super_nodes.pop_front() {
@@ -1139,16 +1159,21 @@ impl OverlayNode {
 					.connect(&super_node_contact, Some(&super_node_id))
 					.await
 				{
+					connection
+						.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 4)
+						.await;
 					if let Some(ok) = self
 						.exchange_open_relay_on_connection(&mut connection, target.clone())
 						.await
 					{
 						if ok {
+							connection.update_their_node_info(target.clone());
 							let mut super_nodes = self.super_nodes.lock().await;
 							super_nodes.push_back((super_node_id, super_node_contact));
 							return Some(connection);
 						}
 					}
+					connection.close_async();
 				}
 			} else {
 				return None;
@@ -1166,7 +1191,6 @@ impl OverlayNode {
 				return None;
 			}
 		};
-
 		let result = if self.is_super_node {
 			connection
 				.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 10)
@@ -1176,36 +1200,51 @@ impl OverlayNode {
 			None
 		};
 
-		let response = OpenRelayResponse {
-			ok: result.is_some(),
-		};
-		if let Err(e) = self
-			.base
-			.interface
-			.respond(
-				connection,
-				OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE,
-				&bincode::serialize(&response).unwrap(),
-			)
-			.await
-		{
-			warn!("Unable to respond to relay request: {}", e);
-			self.base
-				.handle_connection_issue::<()>(Err(e), connection.their_node_id())
-				.await;
-		}
-
 		if let Some(mut target_connection) = result {
+			let opened = if let Some(ok) = self
+				.exchange_start_relay_on_connection(
+					&mut target_connection,
+					connection.their_node_info().clone(),
+				)
+				.await
+			{
+				ok
+			} else {
+				false
+			};
+
+			let response = OpenRelayResponse { ok: opened };
+			if let Err(e) = self
+				.base
+				.interface
+				.respond(
+					connection,
+					OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE,
+					&bincode::serialize(&response).unwrap(),
+				)
+				.await
+			{
+				warn!("Unable to respond to relay request: {}", e);
+				self.base
+					.handle_connection_issue::<()>(Err(e), connection.their_node_info())
+					.await;
+			}
+
 			if let Err(e) = handle_relay_connection(connection, &mut target_connection).await {
 				match e {
 					sstp::Error::ConnectionClosed => {}
 					other => {
-						warn!("Connection issue during relaying: {}", other);
+						panic!("Connection issue during relaying: {}", other);
 					}
 				}
 			}
+			target_connection.close_async();
+			// We've already responded at this point
+			return None;
 		}
-		None
+
+		// If the connection wouldn't open, respond with a failure
+		Some(bincode::serialize(&OpenRelayResponse { ok: false }).unwrap())
 	}
 
 	pub(super) async fn request_reversed_connection(
@@ -1218,7 +1257,7 @@ impl OverlayNode {
 			return None;
 		}
 
-		let (tx, rx) = oneshot::channel();
+		let (tx_in, rx_in) = oneshot::channel();
 		{
 			let mut expected_connections = self.expected_connections.lock().await;
 			// If a connection from the same target is already expected, we can't touch it.
@@ -1231,7 +1270,7 @@ impl OverlayNode {
 				);
 				return None;
 			}
-			expected_connections.insert(their_contact.clone(), tx);
+			expected_connections.insert(their_contact.clone(), tx_in);
 		}
 
 		// Contact the relay node
@@ -1250,26 +1289,50 @@ impl OverlayNode {
 		// because the relay node may be able to send us a status message explaining
 		// whether things went ok or not.
 
-		// Spawn the connection attempt on another task, because we should only interupt it with the stop flag.
+		// Spawn the connection attempt on another task, because we should only interupt
+		// it with the stop flag.
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let stop_flag2 = stop_flag.clone();
 		let their_contact2 = their_contact.clone();
 		let target2 = target.clone();
 		let base = self.base.clone();
-		let join_handle = spawn(async move {
-			base.connect_with_timeout(stop_flag2, &their_contact2, Some(&target2), sstp::DEFAULT_TIMEOUT * 3).await
+		let (tx_out, rx_out) = oneshot::channel();
+		spawn(async move {
+			let result = base
+				.connect_with_timeout(
+					stop_flag2.clone(),
+					&their_contact2,
+					Some(&target2),
+					sstp::DEFAULT_TIMEOUT * 3,
+				)
+				.await;
+			// If an incomming connection was already received by this point, close the
+			// outgoing connection if it was already established.
+			if stop_flag2.load(Ordering::Relaxed) {
+				if let Some(mut connection) = result {
+					connection.close().await;
+				}
+			} else {
+				if let Err(result2) = tx_out.send(result) {
+					error!("Unable to send back incomming connection.");
+					if let Some(mut connection) = result2 {
+						connection.close().await;
+					}
+				}
+			}
 		});
 
 		// Wait until a connection is received, and return that.
 		let result = select! {
-			result = rx => {
+			result = rx_in => {
 				stop_flag.store(true, Ordering::Relaxed);
 				Some(result.expect("sender of expected connection has closed unexpectantly"))
 			},
-			result = join_handle => {
-				result.expect("unable to retrieve result from join handle")
+			result = rx_out => {
+				result.expect("unable to retrieve result from oneshot")
 			},
 		};
+
 		let mut expected_connections = self.expected_connections.lock().await;
 		let removed = expected_connections.remove(their_contact).is_some();
 		debug_assert!(!removed, "expected connection is gone");
@@ -1424,42 +1487,40 @@ impl OverlayNode {
 		self: &Arc<Self>, connection: &mut sstp::Connection,
 		connection_mutex: Arc<Mutex<Box<Connection>>>, message_type: u8, buffer: &[u8],
 	) -> (Option<Vec<u8>>, bool) {
-		match message_type {
+		let response = match message_type {
 			OVERLAY_MESSAGE_TYPE_FIND_ACTOR_REQUEST =>
-				(self.process_find_actor_request(buffer).await, false),
-			OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST => (
+				self.process_find_actor_request(buffer).await,
+			OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST =>
 				self.process_store_actor_request(connection.their_node_info(), buffer)
 					.await,
-				false,
-			),
 			OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST =>
-				(self.process_punch_hole_request(buffer).await, false),
-			OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST => (
+				self.process_punch_hole_request(buffer).await,
+			OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST =>
 				self.process_relay_punch_hole_request(buffer, connection.their_node_id())
 					.await,
-				false,
-			),
 			OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST =>
-				self.process_keep_alive_request(&connection_mutex, connection, buffer)
+				return self
+					.process_keep_alive_request(&connection_mutex, connection, buffer)
 					.await,
-			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST => (
+			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST =>
 				self.process_open_relay_request(connection, buffer).await,
-				false,
-			),
+			OVERLAY_MESSAGE_TYPE_START_RELAY_REQUEST =>
+				self.process_start_relay_request(connection, buffer).await,
 			other_id => {
 				error!(
 					"Unknown overlay message type ID received from {}: {}",
 					connection.peer_address(),
 					other_id
 				);
-				(None, false)
+				None
 			}
-		}
+		};
+		(response, false)
 	}
 
 	pub(super) async fn process_actor_request(
-		&self, connection: &mut Connection, mutex: &Arc<Mutex<Box<Connection>>>, actor_id: &IdType,
-		message_type: u8, buffer: &[u8],
+		self: &Arc<Self>, connection: &mut Connection, mutex: &Arc<Mutex<Box<Connection>>>,
+		actor_id: &IdType, message_type: u8, buffer: &[u8],
 	) -> Option<Vec<u8>> {
 		let actor_node = {
 			let actor_nodes = self.base.interface.actor_nodes.lock().await;
@@ -1469,9 +1530,40 @@ impl OverlayNode {
 			}
 		};
 
+		match actor_node
+			.base
+			.process_request(
+				connection,
+				self.clone(),
+				message_type,
+				&buffer,
+				Some(&actor_id),
+			)
+			.await
+		{
+			None => {}
+			Some(response) => return response,
+		}
+
 		actor_node
 			.process_request(connection, mutex, message_type, buffer)
 			.await
+	}
+
+	async fn process_start_relay_request(
+		&self, connection: &mut Connection, buffer: &[u8],
+	) -> Option<Vec<u8>> {
+		let request: StartRelayRequest = match bincode::deserialize(buffer) {
+			Err(e) => {
+				error!("Malformed start relay request: {}", e);
+				return None;
+			}
+			Ok(r) => r,
+		};
+		connection.update_their_node_info(request.origin);
+
+		// Always accept
+		Some(bincode::serialize(&StartRelayResponse { ok: true }).unwrap())
 	}
 
 	async fn process_store_actor_request(
@@ -1641,20 +1733,47 @@ impl OverlayNode {
 async fn handle_relay_connection(
 	client_connection: &mut Connection, server_connection: &mut Connection,
 ) -> sstp::Result<()> {
-	fn verify_request(buffer: &[u8]) -> bool {
-		// Only allow find value requests
-		if buffer.len() > 0 {
-			(buffer[0] & 0x7F) == NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST
-		} else {
-			true
+	fn verify_request(buffer: &[u8]) -> Option<u8> {
+		const MESSAGE_TYPE_WHITELIST: &[u8] = &[
+			NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST,
+			NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST,
+			ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST,
+			ACTOR_MESSAGE_TYPE_HEAD_REQUEST,
+			//ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST <-- not supported yet because after
+			// response, client may send an additional message, and then direction reverses.
+		];
+
+		// Only allow the whitelisted message types
+		let message_type = buffer[0];
+		if message_type < 0x80 {
+			return None;
 		}
+		if MESSAGE_TYPE_WHITELIST.contains(&(buffer[0] & 0x7F)) {
+			return Some(message_type);
+		}
+		None
 	}
 
 	// Keep relaying requests & responses until one connection closes or errors out
 	loop {
+		let mut message_type = 0u8;
 		server_connection
-			.pipe(client_connection, verify_request)
+			.pipe(client_connection, |buf| {
+				if let Some(mt) = verify_request(buf) {
+					message_type = mt;
+					true
+				} else {
+					false
+				}
+			})
 			.await?;
-		client_connection.pipe(server_connection, |_| true).await?;
+		client_connection
+			.pipe(server_connection, |buf| {
+				if buf.len() == 0 {
+					return false;
+				}
+				buf[0] == (message_type + 1)
+			})
+			.await?;
 	}
 }

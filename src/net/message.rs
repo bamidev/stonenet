@@ -83,18 +83,6 @@ pub struct HeadResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RelayDataRequest {
-	pub target: IdType,
-	pub find_value: FindValueRequest,
-	// FIXME: Needs a signature to verify that the value is actually part of the actor network
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RelayDataResponse {
-	pub ok: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct StoreActorRequest {
 	pub actor_id: IdType,
 	pub actor_info: ActorInfo,
@@ -226,6 +214,17 @@ pub struct OpenRelayRequest {
 pub struct OpenRelayResponse {
 	pub ok: bool,
 }
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StartRelayRequest {
+	pub origin: NodeContactInfo,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StartRelayResponse {
+	pub ok: bool,
+}
+
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ValueType {

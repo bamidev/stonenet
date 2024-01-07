@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use futures::future::join_all;
 use serde::de::DeserializeOwned;
 use tokio::{spawn, sync::Mutex, time::sleep};
 
@@ -85,7 +86,6 @@ impl NodeInterface for ActorInterface {
 		&self, connection: &mut Connection, mut message_type: u8, buffer: &[u8],
 	) -> sstp::Result<Vec<u8>> {
 		message_type |= 0x80;
-
 		let mut real_buffer = Vec::with_capacity(33 + buffer.len());
 		real_buffer.push(message_type);
 		real_buffer.extend(self.actor_id.as_bytes());
@@ -99,6 +99,7 @@ impl NodeInterface for ActorInterface {
 				sstp::Error::InvalidResponseMessageType((response[0], message_type + 1)).into(),
 			);
 		}
+
 		response.remove(0);
 		return Ok(response);
 	}
@@ -143,36 +144,6 @@ impl NodeInterface for ActorInterface {
 impl ActorNode {
 	pub fn actor_id(&self) -> &IdType { &self.base.interface.actor_id }
 
-	/*async fn broadcast_value(
-		self: Arc<Self>, responsibility_bit: Option<u8>, id: &IdType, value_type: ValueType,
-		data: Arc<Vec<u8>>,
-	) {
-		let _i = 255;
-		let mut iter = self.base.iter_all_fingers().await;
-		// FIXME: Could be more effecient if iterating over one bucket at the time.
-		loop {
-			// Don't broadcast to above the responsibility bit in the binary tree
-			let bucket_index = iter.bucket_index();
-			if responsibility_bit.is_some() && bucket_index <= responsibility_bit {
-				break;
-			}
-
-			if let Some(contact) = iter.next().await {
-				let this = self.clone();
-				let contact2 = contact.clone();
-				let id2 = id.clone();
-				let value_type2 = value_type.clone();
-				let data2 = data.clone();
-				tokio::spawn(async move {
-					this.store_value_at(&contact2, &id2, value_type2, &*data2)
-						.await;
-				});
-			} else {
-				break;
-			}
-		}
-	}*/
-
 	pub async fn close(self: Arc<Self>) { self.base.close().await; }
 
 	/// Attempts to collect as much blocks of this file on the given connection.
@@ -205,8 +176,10 @@ impl ActorNode {
 
 				for sequence in 0..result.file.blocks.len() {
 					let block_id = &result.file.blocks[sequence];
-					if !self.collect_block(connection, block_id).await? {
-						return Ok(false);
+					if self.needs_block(block_id) {
+						if !self.collect_block(connection, block_id).await? {
+							return Ok(false);
+						}
 					}
 				}
 			} else {
@@ -223,29 +196,36 @@ impl ActorNode {
 		&self, connection: &mut Connection, id: &IdType, object: &Object, verified_from_start: bool,
 	) -> db::Result<bool> {
 		self.store_object(id, object, verified_from_start)?;
-
 		match &object.payload {
 			ObjectPayload::Profile(payload) => {
 				if let Some(block_id) = payload.description.as_ref() {
-					if !self.collect_block(connection, block_id).await? {
-						return Ok(false);
+					if self.needs_block(block_id) {
+						if !self.collect_block(connection, block_id).await? {
+							return Ok(false);
+						}
 					}
 				}
 				if let Some(hash) = payload.avatar.as_ref() {
-					if !self.collect_file(connection, &hash).await? {
-						return Ok(false);
+					if self.needs_file(&hash) {
+						if !self.collect_file(connection, &hash).await? {
+							return Ok(false);
+						}
 					}
 				}
 				if let Some(hash) = payload.wallpaper.as_ref() {
-					if !self.collect_file(connection, &hash).await? {
-						return Ok(false);
+					if self.needs_file(&hash) {
+						if !self.collect_file(connection, &hash).await? {
+							return Ok(false);
+						}
 					}
 				}
 			}
 			ObjectPayload::Post(payload) =>
 				for hash in &payload.files {
-					if !self.collect_file(connection, &hash).await? {
-						return Ok(false);
+					if self.needs_file(&hash) {
+						if !self.collect_file(connection, &hash).await? {
+							return Ok(false);
+						}
 					}
 				},
 			_ => {}
@@ -267,10 +247,7 @@ impl ActorNode {
 			.exchange(target, ACTOR_MESSAGE_TYPE_HEAD_REQUEST, &[])
 			.await?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
-		let response: HeadResponse = self
-			.base
-			.handle_connection_issue(result, &target.node_id)
-			.await?;
+		let response: HeadResponse = self.base.handle_connection_issue(result, target).await?;
 		Some(response)
 	}
 
@@ -284,7 +261,7 @@ impl ActorNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: HeadResponse = self
 			.base
-			.handle_connection_issue(result, &connection.their_node_id())
+			.handle_connection_issue(result, &connection.their_node_info())
 			.await?;
 		// FIXME: Verify object here
 		Some(response)
@@ -330,10 +307,8 @@ impl ActorNode {
 			)
 			.await?;
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
-		let response: GetProfileResponse = self
-			.base
-			.handle_connection_issue(result, &contact.node_id)
-			.await?;
+		let response: GetProfileResponse =
+			self.base.handle_connection_issue(result, contact).await?;
 		response.object
 	}
 
@@ -352,7 +327,7 @@ impl ActorNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: GetProfileResponse = self
 			.base
-			.handle_connection_issue(result, connection.their_node_id())
+			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
 		response.object
 	}
@@ -374,7 +349,7 @@ impl ActorNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: PublishObjectResponse = self
 			.base
-			.handle_connection_issue(result, connection.their_node_id())
+			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
 		Some(response.needed)
 	}
@@ -458,6 +433,7 @@ impl ActorNode {
 				&fingers,
 				hop_limit,
 				only_narrow_down,
+				true,
 				parse_value::<V>,
 			)
 			.await;
@@ -498,11 +474,13 @@ impl ActorNode {
 	}
 
 	/// Does all the work that is expected upon joining the network.
-	pub async fn initialize(
-		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, neighbours: &[NodeContactInfo],
-	) {
+	pub async fn initialize(self: &Arc<Self>, neighbours: &[NodeContactInfo]) {
+		debug_assert!(
+			neighbours.len() > 0,
+			"need fingers to intialize actor node with"
+		);
 		// Check if we are behind or if the network is behind
-		self.synchronize_head(overlay_node, neighbours)
+		self.synchronize_head(neighbours)
 			.await
 			.expect("unable to synchronize head");
 
@@ -510,18 +488,10 @@ impl ActorNode {
 		self.start_synchronization();
 	}
 
-	pub async fn initialize_with_connection(
-		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, mut connection: Box<Connection>,
-	) {
-		if let Err(e) = self
-			.synchronize_head_on_connection(overlay_node, &mut connection)
-			.await
-		{
-			error!(
-				"Database error while synchonizing head on connection: {}",
-				e
-			);
-		}
+	pub async fn initialize_with_connection(self: &Arc<Self>, mut connection: Box<Connection>) {
+		warn!("initialize_with_connection");
+		self.synchronize_recent_objects_on_connection(&mut connection)
+			.await;
 		connection.close().await;
 	}
 
@@ -606,29 +576,41 @@ impl ActorNode {
 	}
 
 	pub async fn join_network_starting_with_connection(
-		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, mut connection: Box<Connection>,
+		self: &Arc<Self>, mut connection: Box<Connection>,
 	) -> Option<bool> {
 		let response = self
 			.base
 			.exchange_find_node_on_connection(&mut connection, self.base.node_id())
 			.await?;
-		if response.fingers.iter().any(|f| {
-			self.base
-				.bidirectional_contact_option(&f.contact_info)
-				.is_some()
+		let mut fingers = response.fingers.clone();
+		fingers.push(connection.their_node_info().clone());
+
+		// If there is one or more fingers that do not require relaying, the node will
+		// synchronize by using the whole network. If there are only nodes that require
+		// communication via a relay, we savour the open connection and use it to
+		// synchronize at least the last 10 objects.
+		if fingers.iter().any(|f| {
+			if let Some(strategy) = self.base.pick_contact_strategy(&f.contact_info) {
+				&f.node_id != &self.base.node_id && strategy.method != ContactStrategyMethod::Relay
+			} else {
+				false
+			}
 		}) {
 			connection.close().await;
 		} else {
-			self.initialize_with_connection(overlay_node, connection)
-				.await;
+			self.initialize_with_connection(connection).await;
 			return Some(false);
 		}
 
 		let neighbours = self
 			.base
-			.find_node_from_fingers(self.base.node_id(), &response.fingers, 4, 100)
+			.find_node_from_fingers(self.base.node_id(), &fingers, 4, 100)
 			.await;
-		self.initialize(overlay_node, &neighbours).await;
+		if neighbours.len() > 0 {
+			self.initialize(&neighbours).await;
+		} else {
+			self.initialize(&fingers).await;
+		}
 		Some(true)
 	}
 
@@ -943,19 +925,19 @@ impl ActorNode {
 		})
 	}
 
-	fn needs_file(&self, actor_id: &IdType, id: &IdType) -> bool {
+	fn needs_file(&self, id: &IdType) -> bool {
 		tokio::task::block_in_place(|| {
 			let c = match self.db().connect() {
 				Ok(c) => c,
 				Err(e) => {
-					error!("Unable to connect to database to check object: {}", e);
+					error!("Unable to connect to database to check file: {}", e);
 					return false;
 				}
 			};
-			let has_object = match c.has_file(actor_id, id) {
+			let has_object = match c.has_file(self.actor_id(), id) {
 				Ok(b) => b,
 				Err(e) => {
-					error!("Unable to check object: {}", e);
+					error!("Unable to check file: {}", e);
 					return false;
 				}
 			};
@@ -963,19 +945,19 @@ impl ActorNode {
 		})
 	}
 
-	fn needs_block(&self, actor_id: &IdType, id: &IdType) -> bool {
+	fn needs_block(&self, id: &IdType) -> bool {
 		tokio::task::block_in_place(|| {
 			let c = match self.db().connect() {
 				Ok(c) => c,
 				Err(e) => {
-					error!("Unable to connect to database to check object: {}", e);
+					error!("Unable to connect to database to check block: {}", e);
 					return false;
 				}
 			};
-			let has_object = match c.has_block(actor_id, id) {
+			let has_object = match c.has_block(self.actor_id(), id) {
 				Ok(b) => b,
 				Err(e) => {
-					error!("Unable to check object: {}", e);
+					error!("Unable to check block: {}", e);
 					return false;
 				}
 			};
@@ -1131,20 +1113,32 @@ impl ActorNode {
 	}
 
 	pub async fn publish_object(
-		self: Arc<Self>, overlay_node: Arc<OverlayNode>, id: &IdType, object: &Object,
+		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &Object,
 	) {
 		let mut iter = self.base.iter_all_fingers().await;
+		let mut futs = Vec::new();
 		while let Some(finger) = iter.next().await {
-			if let Some(mut connection) = self.base.select_direct_connection(&finger).await {
-				self.clone()
-					.publish_object_on_connection(&overlay_node, &mut connection, id, object)
+			let this = self.clone();
+			let overlay_node2 = overlay_node.clone();
+			let id2 = id.clone();
+			let object2 = object.clone();
+			futs.push(async move {
+				if let Some(mut connection) = this.base.select_connection(&finger).await {
+					this.publish_object_on_connection(
+						overlay_node2,
+						&mut connection,
+						&id2,
+						&object2,
+					)
 					.await;
-			}
+				}
+			});
 		}
+		join_all(futs).await;
 	}
 
 	pub async fn publish_object_on_connection(
-		self: Arc<Self>, overlay_node: &Arc<OverlayNode>, connection: &mut Connection, id: &IdType,
+		self: &Arc<Self>, overlay_node: Arc<OverlayNode>, connection: &mut Connection, id: &IdType,
 		object: &Object,
 	) {
 		if let Some(wants_it) = self
@@ -1163,7 +1157,7 @@ impl ActorNode {
 				}
 				// Keep the connection open so that the other side can continue to make
 				// requests to us, and once (s)he closes, we return our function.
-				node::handle_find_value_connection(overlay_node, connection).await;
+				node::handle_find_value_connection(&overlay_node, connection).await;
 			}
 			connection.close().await;
 			return;
@@ -1179,7 +1173,7 @@ impl ActorNode {
 	///   leading up to this new object.
 	async fn process_new_object(
 		&self, connection: &mut Connection, id: &IdType, object: &Object,
-	) -> db::Result<Option<Object>> {
+	) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db().connect()?;
 			c.fetch_head(self.actor_id())
@@ -1198,9 +1192,12 @@ impl ActorNode {
 					)
 					.await?
 				{
-					error!("Invalid data received on connection.")
+					error!("Invalid data received on connection.");
+					return Ok(false);
 				}
-				return Ok(Some(our_head));
+				Ok(true)
+			} else {
+				Ok(false)
 			}
 		// If we don't have any objects yet
 		} else {
@@ -1208,18 +1205,18 @@ impl ActorNode {
 			if object.sequence == 0 {
 				if id != &self.base.interface.actor_info.first_object {
 					error!("Invalid first object received on connection");
-					return Ok(None);
+					return Ok(false);
 				}
 			}
 			if !self
 				.collect_object(connection, id, object, object.sequence == 0)
 				.await?
 			{
-				error!("Invalid data received on connection.")
+				error!("Invalid data received on connection.");
+				return Ok(false);
 			}
+			Ok(true)
 		}
-
-		Ok(None)
 	}
 
 	fn store_block(&self, id: &IdType, data: &[u8]) -> db::Result<()> {
@@ -1253,6 +1250,65 @@ impl ActorNode {
 		self.synchronize_blocks().await
 	}
 
+	pub async fn synchronize_recent_objects_on_connection(&self, connection: &mut Connection) {
+		error!("SYNCHRONIZE ON CONNECTION");
+		let result = match self.synchronize_head_on_connection(connection).await {
+			Ok(r) => r,
+			Err(e) => {
+				error!(
+					"Database error while synchonizing head on connection: {}",
+					e
+				);
+				return;
+			}
+		};
+
+		if let Some((head, _)) = result {
+			let head_sequence = head.sequence;
+			let mut i = head_sequence;
+			let mut last_object = head;
+			while i > 0 && head_sequence - i < 10 {
+				i -= 1;
+				if !self.has_object_by_sequence(i) {
+					match self
+						.exchange_find_value_on_connection_and_parse::<FindObjectResult>(
+							connection,
+							ValueType::Object,
+							&last_object.previous_hash,
+						)
+						.await
+					{
+						None => break,
+						Some(result) => {
+							match self
+								.collect_object(
+									connection,
+									&last_object.previous_hash,
+									&result.object,
+									false,
+								)
+								.await
+							{
+								Ok(_) => {}
+								Err(e) => {
+									error!(
+										"Database issue while trying to synchronize object (seq \
+										 {}): {}",
+										i, e
+									);
+									return;
+								}
+							}
+							last_object = result.object;
+						}
+					}
+				}
+			}
+			// TODO: Actually check if the obtained objects are now verified
+			// from start.
+		}
+	}
+
 	pub(super) async fn synchronize_blocks(&self) -> db::Result<()> {
 		let missing_blocks = self.investigate_missing_blocks()?;
 		for hash in missing_blocks {
@@ -1266,13 +1322,12 @@ impl ActorNode {
 		Ok(())
 	}
 
-	async fn synchronize_head(
-		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, fingers: &[NodeContactInfo],
-	) -> db::Result<()> {
+	async fn synchronize_head(self: &Arc<Self>, fingers: &[NodeContactInfo]) -> db::Result<()> {
 		for finger in fingers {
 			if let Some(mut connection) = self.base.select_direct_connection(&finger).await {
-				self.synchronize_head_on_connection(overlay_node, &mut connection)
-					.await;
+				if let Err(e) = self.synchronize_head_on_connection(&mut connection).await {
+					error!("Database issue with synchronizing head: {}", e);
+				}
 				connection.close().await;
 			}
 		}
@@ -1280,35 +1335,15 @@ impl ActorNode {
 	}
 
 	async fn synchronize_head_on_connection(
-		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, connection: &mut Connection,
-	) -> db::Result<bool> {
+		&self, connection: &mut Connection,
+	) -> db::Result<Option<(Object, bool)>> {
 		if let Some(response) = self.exchange_head_on_connection(connection).await {
-			match self
+			let result = self
 				.process_new_object(connection, &response.hash, &response.object)
-				.await
-			{
-				Err(e) => {
-					return Err(e);
-				}
-				Ok(result) => {
-					if let Some(our_head) = result {
-						// If that node is behind, publish our head to that node
-						if response.object.sequence < our_head.sequence {
-							self.clone()
-								.publish_object_on_connection(
-									overlay_node,
-									connection,
-									&response.hash,
-									&response.object,
-								)
-								.await;
-						}
-					}
-					return Ok(true);
-				}
-			}
+				.await?;
+			return Ok(Some((response.object, result)));
 		}
-		Ok(false)
+		Ok(None)
 	}
 
 	pub(super) async fn synchronize_files(&self) -> db::Result<()> {
@@ -1436,8 +1471,7 @@ impl ActorNode {
 
 	/// Will run the
 	pub fn start_synchronization(self: &Arc<Self>) -> bool {
-		if !self.is_synchonizing.load(Ordering::Acquire) {
-			self.is_synchonizing.store(true, Ordering::Release);
+		if !self.is_synchonizing.swap(true, Ordering::Acquire) {
 			let this = self.clone();
 			spawn(async move {
 				let result = this.synchronize().await;
