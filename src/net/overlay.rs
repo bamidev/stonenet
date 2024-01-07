@@ -1234,11 +1234,11 @@ impl OverlayNode {
 				match e {
 					sstp::Error::ConnectionClosed => {}
 					other => {
-						panic!("Connection issue during relaying: {}", other);
+						warn!("Connection issue during relaying: {}", other);
 					}
 				}
 			}
-			target_connection.close_async();
+			target_connection.close().await;
 			// We've already responded at this point
 			return None;
 		}

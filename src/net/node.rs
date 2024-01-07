@@ -165,7 +165,9 @@ where
 
 	pub async fn close(&mut self) {
 		if let Some((_, connection)) = self.connection_for_reverse_connection_requests.as_mut() {
-			connection.close().await;
+			if let Err(e) = connection.close().await {
+				warn!("Unable to close connection of find value iterator: {}", e);
+			};
 			self.connection_for_reverse_connection_requests = None;
 		}
 	}
@@ -1748,7 +1750,7 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 	let timeout = Duration::from_secs(120);
 	c.set_keep_alive_timeout(timeout).await;
 	let mutex: Arc<Mutex<Box<Connection>>> = Arc::new(Mutex::new(c));
-	while !overlay_node.base.stop_flag.load(Ordering::Relaxed) {
+	while !overlay_node.base.has_stopped() {
 		let mut connection = mutex.lock().await;
 		let message = {
 			match connection.receive_with_timeout(timeout).await {
@@ -1798,7 +1800,12 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 		}
 	}
 	let mut connection = mutex.lock().await;
-	connection.close().await;
+	if let Err(e) = connection.close().await {
+		error!(
+			"Unable to close connection that was being kept alive: {}",
+			e
+		);
+	}
 }
 
 async fn process_find_value_request_message(

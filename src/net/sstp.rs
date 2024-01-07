@@ -565,7 +565,9 @@ impl Connection {
 			let mut connection = other.lock().await;
 			connection.pipe_receive(len_tx, tx, verify_data).await;
 			if close_other {
-				connection.close().await;
+				if let Err(e) = connection.close().await {
+					error!("Unable to close piped connection: {}", e);
+				}
 			}
 		});
 
@@ -1547,8 +1549,7 @@ impl Connection {
 impl Drop for Connection {
 	fn drop(&mut self) {
 		if self.should_be_closed.load(Ordering::Relaxed) {
-			//panic!("Connection {} not closed before drop",
-			// self.our_session_id);
+			panic!("Connection {} not closed before drop", self.our_session_id);
 		}
 	}
 }

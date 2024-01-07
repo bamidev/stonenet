@@ -241,7 +241,7 @@ impl ActorNode {
 		self.base.exchange(target, message_type_id | 0x80)
 	}*/
 
-	pub async fn exchange_head(&self, target: &NodeContactInfo) -> Option<HeadResponse> {
+	/*pub async fn exchange_head(&self, target: &NodeContactInfo) -> Option<HeadResponse> {
 		let raw_response = self
 			.base
 			.exchange(target, ACTOR_MESSAGE_TYPE_HEAD_REQUEST, &[])
@@ -249,7 +249,7 @@ impl ActorNode {
 		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
 		let response: HeadResponse = self.base.handle_connection_issue(result, target).await?;
 		Some(response)
-	}
+	}*/
 
 	pub async fn exchange_head_on_connection(
 		&self, connection: &mut Connection,
@@ -294,7 +294,7 @@ impl ActorNode {
 		value_result
 	}
 
-	pub(super) async fn exchange_profile(
+	/*pub(super) async fn exchange_profile(
 		&self, contact: &NodeContactInfo,
 	) -> Option<(IdType, Object)> {
 		let request = GetProfileRequest {};
@@ -310,7 +310,7 @@ impl ActorNode {
 		let response: GetProfileResponse =
 			self.base.handle_connection_issue(result, contact).await?;
 		response.object
-	}
+	}*/
 
 	pub(super) async fn exchange_profile_on_connection(
 		&self, connection: &mut Connection,
@@ -444,7 +444,7 @@ impl ActorNode {
 		})
 	}
 
-	pub async fn fetch_head(&self) -> Option<Object> {
+	/*pub async fn fetch_head(&self) -> Option<Object> {
 		let mut iter = self.base.iter_all_fingers().await;
 		let mut i = 0;
 		let mut newest_object: Option<Object> = None;
@@ -463,7 +463,7 @@ impl ActorNode {
 			i += 1
 		}
 		newest_object
-	}
+	}*/
 
 	fn has_object_by_sequence(&self, sequence: u64) -> bool {
 		tokio::task::block_in_place(|| {
@@ -492,7 +492,7 @@ impl ActorNode {
 		warn!("initialize_with_connection");
 		self.synchronize_recent_objects_on_connection(&mut connection)
 			.await;
-		connection.close().await;
+		connection.close_async();
 	}
 
 	/// Returns a list of block hashes that we'd like to have.
@@ -596,7 +596,7 @@ impl ActorNode {
 				false
 			}
 		}) {
-			connection.close().await;
+			connection.close_async();
 		} else {
 			self.initialize_with_connection(connection).await;
 			return Some(false);
@@ -679,7 +679,7 @@ impl ActorNode {
 		}
 	}
 
-	async fn missing_value_response(&self, id: &IdType) -> Vec<u8> {
+	/*async fn missing_value_response(&self, id: &IdType) -> Vec<u8> {
 		let bit = self.base.node_id.differs_at_bit(id);
 		let connection = match bit {
 			None => None,
@@ -699,7 +699,7 @@ impl ActorNode {
 		};
 		let result: Result<(), FindNodeResponse> = Err(response);
 		bincode::serialize(&result).unwrap()
-	}
+	}*/
 
 	async fn process_get_profile_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
 		let _request: GetProfileRequest = match bincode::deserialize(buffer) {
@@ -727,18 +727,6 @@ impl ActorNode {
 
 		let response = GetProfileResponse { object };
 		Some(bincode::serialize(&response).unwrap())
-	}
-
-	async fn process_keep_alive_request(
-		self: &Arc<Self>, node_info: &NodeContactInfo, mutex: &Arc<Mutex<Box<Connection>>>,
-	) -> Option<Vec<u8>> {
-		let ok = self
-			.base
-			.interface
-			.connection_manager
-			.add(node_info, mutex)
-			.await;
-		Some(bincode::serialize(&KeepAliveResponse { ok }).unwrap())
 	}
 
 	pub(super) async fn process_request(
@@ -901,7 +889,6 @@ impl ActorNode {
 			if let Err(e) = this.process_new_object(c, &request.id, &object).await {
 				error!("Database error while processing new object: {}", e);
 			}
-			c.close().await;
 		}
 	}
 
@@ -962,65 +949,6 @@ impl ActorNode {
 				}
 			};
 			!has_object
-		})
-	}
-
-	async fn process_upload_block_message(
-		&self, actor_id: &IdType, id: &IdType, buffer: &[u8],
-	) -> bool {
-		if &IdType::hash(buffer) != id {
-			warn!("Invalid block data received from for block {}.", id);
-			return false;
-		}
-
-		tokio::task::block_in_place(|| {
-			let mut c = match self.db().connect() {
-				Ok(c) => c,
-				Err(e) => {
-					error!("Unable to connect to database to store block: {}", e);
-					return false;
-				}
-			};
-
-			match c.store_block(actor_id, id, buffer) {
-				Ok(()) => true,
-				Err(e) => {
-					error!("Unable to store block {}: {}", id, e);
-					false
-				}
-			}
-		})
-	}
-
-	async fn process_upload_file_message(
-		&self, actor_id: &IdType, id: &IdType, buffer: &[u8],
-	) -> bool {
-		let file: File = match bincode::deserialize(buffer) {
-			Err(e) => {
-				warn!("Malformed upload file message: {}", e);
-				return false;
-			}
-			Ok(o) => o,
-		};
-
-		// TODO: Verify file hash
-
-		tokio::task::block_in_place(|| {
-			let mut c = match self.db().connect() {
-				Ok(c) => c,
-				Err(e) => {
-					error!("Unable to connect to database to store file: {}", e);
-					return false;
-				}
-			};
-
-			match c.store_file2(actor_id, id, &file.mime_type, &file.blocks) {
-				Ok(_) => true,
-				Err(e) => {
-					error!("Unable to store file {}: {}", id, e);
-					false
-				}
-			}
 		})
 	}
 
@@ -1251,7 +1179,6 @@ impl ActorNode {
 	}
 
 	pub async fn synchronize_recent_objects_on_connection(&self, connection: &mut Connection) {
-		error!("SYNCHRONIZE ON CONNECTION");
 		let result = match self.synchronize_head_on_connection(connection).await {
 			Ok(r) => r,
 			Err(e) => {
