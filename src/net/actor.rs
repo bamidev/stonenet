@@ -489,7 +489,6 @@ impl ActorNode {
 	}
 
 	pub async fn initialize_with_connection(self: &Arc<Self>, mut connection: Box<Connection>) {
-		warn!("initialize_with_connection");
 		self.synchronize_recent_objects_on_connection(&mut connection)
 			.await;
 		connection.close_async();
@@ -1059,6 +1058,7 @@ impl ActorNode {
 						&object2,
 					)
 					.await;
+					connection.close_async();
 				}
 			});
 		}
@@ -1087,11 +1087,8 @@ impl ActorNode {
 				// requests to us, and once (s)he closes, we return our function.
 				node::handle_find_value_connection(&overlay_node, connection).await;
 			}
-			connection.close().await;
 			return;
 		}
-
-		connection.close().await;
 	}
 
 	/// Processes a new object:
@@ -1255,7 +1252,7 @@ impl ActorNode {
 				if let Err(e) = self.synchronize_head_on_connection(&mut connection).await {
 					error!("Database issue with synchronizing head: {}", e);
 				}
-				connection.close().await;
+				connection.close_async();
 			}
 		}
 		Ok(())

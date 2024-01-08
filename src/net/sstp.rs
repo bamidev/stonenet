@@ -452,6 +452,8 @@ impl Connection {
 	/// Like close, but closes the connection somewhere in the future and you
 	/// don't need to wait on it.
 	pub fn close_async(mut self: Box<Self>) {
+		#[cfg(debug_assertions)]
+		self.should_be_closed.store(false, Ordering::Relaxed);
 		spawn(async move {
 			if let Err(e) = self.close().await {
 				debug!("Unable to close connection: {}", e);

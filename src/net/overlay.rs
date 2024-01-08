@@ -178,7 +178,7 @@ impl NodeInterface for OverlayInterface {
 impl<'a> FindActorIter<'a> {
 	pub fn visited(&self) -> &[(IdType, ContactOption)] { self.0.visited() }
 
-	pub async fn close(&mut self) { self.0.close().await; }
+	pub fn close(&mut self) { self.0.close(); }
 }
 
 #[async_trait]
@@ -196,7 +196,7 @@ impl<'a> AsyncIterator for FindActorIter<'a> {
 impl<'a> ConnectActorIter<'a> {
 	pub fn visited(&self) -> &[(IdType, ContactOption)] { self.base.visited() }
 
-	pub async fn close(&mut self) { self.base.close().await; }
+	pub fn close(&mut self) { self.base.close(); }
 }
 
 #[async_trait]
@@ -593,7 +593,7 @@ impl OverlayNode {
 					if let Some(r) = node.exchange_profile_on_connection(&mut connection).await {
 						r
 					} else {
-						connection.close().await;
+						connection.close_async();
 						continue;
 					};
 
@@ -604,8 +604,8 @@ impl OverlayNode {
 				});
 				if let Err(e) = result {
 					error!("Unable to store identity: {}", e);
-					connection.close().await;
-					iter.close().await;
+					connection.close_async();
+					iter.close();
 					return Some(object);
 				}
 
@@ -616,27 +616,27 @@ impl OverlayNode {
 				{
 					Ok(done) =>
 						if done {
-							connection.close().await;
-							iter.close().await;
+							connection.close_async();
+							iter.close();
 							return Some(object);
 						},
 					Err(e) => {
 						error!("Unable collect object on first connection: {}", e);
-						connection.close().await;
-						iter.close().await;
+						connection.close_async();
+						iter.close();
 						return Some(object);
 					}
 				}
 				// If we don't have all the files and blocks yet, attempt to synchronize
 				// (outside of the loop)
-				connection.close().await;
+				connection.close_async();
 				break (node, object);
 			} else {
-				iter.close().await;
+				iter.close();
 				return None;
 			}
 		};
-		iter.close().await;
+		iter.close();
 
 		// Try to synchronize the missing files and blocks. Only works if there are some
 		// bidirectional nodes available.
@@ -657,7 +657,7 @@ impl OverlayNode {
 	) -> Option<Box<(ActorInfo, Vec<NodeContactInfo>)>> {
 		let mut iter = self.find_actor_iter(id, hop_limit, narrow_down).await;
 		let result = iter.next().await;
-		iter.close().await;
+		iter.close();
 		result
 	}
 
@@ -739,7 +739,7 @@ impl OverlayNode {
 									}
 								}
 
-								connection.close().await;
+								connection.close_async();
 								let mut fingers = response.fingers;
 								fingers.retain(|f| {
 									if &f.node_id == self.node_id() {
@@ -759,7 +759,7 @@ impl OverlayNode {
 									break fingers;
 								}
 							} else {
-								connection.close().await;
+								connection.close_async();
 							}
 						}
 					}
@@ -821,7 +821,7 @@ impl OverlayNode {
 		// Try to find a node on the actor network first
 		let mut iter = self.connect_actor_iter(actor_id).await;
 		loop {
-			if let Some((connection, ai)) = iter.next().await {
+			if let Some((connection, _)) = iter.next().await {
 				if let Some(_open) = node.join_network_starting_with_connection(connection).await {
 					break;
 				}
@@ -829,7 +829,7 @@ impl OverlayNode {
 				break;
 			}
 		}
-		iter.close().await;
+		iter.close();
 		let last_two_visited: Vec<_> = iter
 			.visited()
 			.into_iter()
@@ -1075,8 +1075,9 @@ impl OverlayNode {
 								"Unable to ping on keep alive node connection of node {}",
 								connection.their_node_id()
 							);
-							connection.close().await;
-							drop(connection);
+							if let Err(e) = connection.close().await {
+								warn!("Unable to close connection that was being kept alive: {}", e);
+							}
 							let mut bucket = this.base.buckets[i].lock().await;
 							bucket.connection = None;
 						}
@@ -1135,10 +1136,10 @@ impl OverlayNode {
 									return;
 								} else {
 									debug!("Keep alive connection was denied.");
-									c.close().await;
+									c.close_async();
 								}
 							} else {
-								c.close().await;
+								c.close_async();
 							}
 						}
 					}
@@ -1237,7 +1238,7 @@ impl OverlayNode {
 					}
 				}
 			}
-			target_connection.close().await;
+			target_connection.close_async();
 			// We've already responded at this point
 			return None;
 		}
@@ -1308,14 +1309,14 @@ impl OverlayNode {
 			// If an incomming connection was already received by this point, close the
 			// outgoing connection if it was already established.
 			if stop_flag2.load(Ordering::Relaxed) {
-				if let Some(mut connection) = result {
-					connection.close().await;
+				if let Some(connection) = result {
+					connection.close_async();
 				}
 			} else {
 				if let Err(result2) = tx_out.send(result) {
 					error!("Unable to send back incomming connection.");
-					if let Some(mut connection) = result2 {
-						connection.close().await;
+					if let Some(connection) = result2 {
+						connection.close_async();
 					}
 				}
 			}
@@ -1712,7 +1713,7 @@ impl OverlayNode {
 					}
 					fingers.push(connection.their_node_info().clone());
 				}
-				connection.close().await;
+				connection.close_async();
 			}
 		}
 

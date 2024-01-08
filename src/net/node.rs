@@ -163,12 +163,9 @@ where
 {
 	pub fn visited(&self) -> &[(IdType, ContactOption)] { &self.visited }
 
-	pub async fn close(&mut self) {
-		if let Some((_, connection)) = self.connection_for_reverse_connection_requests.as_mut() {
-			if let Err(e) = connection.close().await {
-				warn!("Unable to close connection of find value iterator: {}", e);
-			};
-			self.connection_for_reverse_connection_requests = None;
+	pub fn close(&mut self) {
+		if let Some((_, connection)) = self.connection_for_reverse_connection_requests.take() {
+			connection.close_async();
 		}
 	}
 }
