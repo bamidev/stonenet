@@ -1146,7 +1146,6 @@ impl OverlayNode {
 			}
 		}
 		warn!("Unable to obtain keep alive connection.");
-		panic!("Unable to obtain keep alive connection.");
 	}
 
 	pub async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
