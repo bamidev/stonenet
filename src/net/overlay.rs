@@ -879,7 +879,7 @@ impl OverlayNode {
 							{
 								if let Some(availability) = ipv4_contact_info.availability.udp {
 									if availability.openness == Openness::Unidirectional {
-										self.obtain_reverse_connection().await;
+										self.obtain_keep_alive_connection().await;
 									}
 								}
 							} else {
@@ -987,7 +987,7 @@ impl OverlayNode {
 			.collect()
 	}
 
-	fn maintain_reverse_connection(self: &Arc<Self>, connection: Box<Connection>) {
+	fn maintain_keep_alive_connection(self: &Arc<Self>, connection: Box<Connection>) {
 		let this = self.clone();
 		spawn(async move {
 			node::keep_alive_connection(this.clone(), connection).await;
@@ -1066,13 +1066,34 @@ impl OverlayNode {
 		});
 	}
 
-	async fn obtain_reverse_connection(self: &Arc<Self>) {
-		// Try to find a bidirectional node to open a connection to it
+	/// Tries to obtain a keep-alive connection from one of the available
+	/// fingers.
+	async fn obtain_keep_alive_connection(self: &Arc<Self>) {
+		async fn use_connection(this: &Arc<OverlayNode>, mut connection: Box<Connection>) -> bool {
+			if let Some(success) = this
+				.exchange_keep_alive_on_connection(&mut connection)
+				.await
+			{
+				if success {
+					this.maintain_keep_alive_connection(connection);
+					return true;
+				} else {
+					debug!("Keep alive connection was denied.");
+				}
+			}
+			connection.close_async();
+			false
+		}
+
+		// Try to find a bidirectional node to keep a connection with
+		let mut punchable_nodes = Vec::new();
 		let mut iter = self.base.iter_all_fingers().await;
 		while let Some(finger) = iter.next().await {
-			if let Some(ipv4_contact_info) = finger.contact_info.ipv4 {
+			if let Some(ipv4_contact_info) = finger.contact_info.ipv4.clone() {
 				if let Some(udpv4_availability) = ipv4_contact_info.availability.udp {
-					if udpv4_availability.openness == Openness::Bidirectional {
+					if udpv4_availability.openness == Openness::Punchable {
+						punchable_nodes.push(finger);
+					} else if udpv4_availability.openness == Openness::Bidirectional {
 						let contact_option = ContactOption::new(
 							SocketAddr::V4(SocketAddrV4::new(
 								ipv4_contact_info.addr,
@@ -1081,26 +1102,25 @@ impl OverlayNode {
 							false,
 						);
 
-						if let Some(mut c) = self
+						if let Some(c) = self
 							.base
 							.connect(&contact_option, Some(&finger.node_id))
 							.await
 						{
-							if let Some(success) =
-								self.exchange_keep_alive_on_connection(&mut c).await
-							{
-								if success {
-									self.maintain_reverse_connection(c);
-									return;
-								} else {
-									debug!("Keep alive connection was denied.");
-									c.close_async();
-								}
-							} else {
-								c.close_async();
+							if use_connection(self, c).await {
+								return;
 							}
 						}
 					}
+				}
+			}
+		}
+
+		// If not bidirectional nodes were available, try the punchable ones next
+		for finger in &punchable_nodes {
+			if let Some(c) = self.base.select_connection(finger).await {
+				if use_connection(self, c).await {
+					return;
 				}
 			}
 		}
@@ -1304,7 +1324,7 @@ impl OverlayNode {
 	fn start_reverse_connection(self: &Arc<Self>) {
 		let this = self.clone();
 		spawn(async move {
-			this.obtain_reverse_connection().await;
+			this.obtain_keep_alive_connection().await;
 		});
 	}
 
