@@ -374,33 +374,6 @@ impl OverlayNode {
 		}
 	}
 
-	pub async fn exchange_find_x(
-		&self, target: &NodeContactInfo, node_id: &IdType, message_type_id: u8,
-	) -> Option<Vec<u8>> {
-		let request = FindNodeRequest {
-			node_id: node_id.clone(),
-		};
-		self.base
-			.exchange(
-				target,
-				message_type_id,
-				&bincode::serialize(&request).unwrap(),
-			)
-			.await
-	}
-
-	/// In the paper, this is described as the 'FIND_VALUE' RPC.
-	pub async fn exchange_find_actor(
-		&self, target: &NodeContactInfo, node_id: &IdType,
-	) -> Option<FindActorResponse> {
-		let raw_response = self
-			.exchange_find_x(target, node_id, OVERLAY_MESSAGE_TYPE_FIND_ACTOR_REQUEST)
-			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
-		let response: FindActorResponse = self.base.handle_connection_issue(result, target).await?;
-		Some(response)
-	}
-
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
 	/// RPC.
 	pub async fn exchange_keep_alive_on_connection(
@@ -518,24 +491,6 @@ impl OverlayNode {
 		};
 		self.base
 			.exchange(
-				target,
-				OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST,
-				&bincode::serialize(&request).unwrap(),
-			)
-			.await?;
-		Some(())
-	}
-
-	pub async fn exchange_store_actor_at(
-		&self, node_id: &IdType, target: &ContactOption, actor_id: IdType, actor_info: ActorInfo,
-	) -> Option<()> {
-		let request = StoreActorRequest {
-			actor_id,
-			actor_info,
-		};
-		self.base
-			.exchange_at(
-				node_id,
 				target,
 				OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST,
 				&bincode::serialize(&request).unwrap(),
@@ -1076,7 +1031,10 @@ impl OverlayNode {
 								connection.their_node_id()
 							);
 							if let Err(e) = connection.close().await {
-								warn!("Unable to close connection that was being kept alive: {}", e);
+								warn!(
+									"Unable to close connection that was being kept alive: {}",
+									e
+								);
 							}
 							let mut bucket = this.base.buckets[i].lock().await;
 							bucket.connection = None;
@@ -1689,7 +1647,7 @@ impl OverlayNode {
 	}
 
 	/// Just like `store_actor`, but stores it at the given contacts, and then
-	/// continues
+	/// continues to find contacts to store them at too.
 	pub async fn store_actor_at_contacts(
 		&self, actor_id: &IdType, duplicates: usize, actor_info: &ActorInfo,
 		contacts: &[(IdType, ContactOption)],

@@ -235,22 +235,6 @@ impl ActorNode {
 
 	fn db(&self) -> &db::Database { &self.base.interface.db }
 
-	/*fn async fn exchange(
-		&self, target: &NodeContactInfo, message_type_id: u8, buffer: &[u8],
-	) -> Option<Vec<u8>> {
-		self.base.exchange(target, message_type_id | 0x80)
-	}*/
-
-	/*pub async fn exchange_head(&self, target: &NodeContactInfo) -> Option<HeadResponse> {
-		let raw_response = self
-			.base
-			.exchange(target, ACTOR_MESSAGE_TYPE_HEAD_REQUEST, &[])
-			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
-		let response: HeadResponse = self.base.handle_connection_issue(result, target).await?;
-		Some(response)
-	}*/
-
 	pub async fn exchange_head_on_connection(
 		&self, connection: &mut Connection,
 	) -> Option<HeadResponse> {
@@ -294,24 +278,6 @@ impl ActorNode {
 		value_result
 	}
 
-	/*pub(super) async fn exchange_profile(
-		&self, contact: &NodeContactInfo,
-	) -> Option<(IdType, Object)> {
-		let request = GetProfileRequest {};
-		let raw_response = self
-			.base
-			.exchange(
-				contact,
-				ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST,
-				&bincode::serialize(&request).unwrap(),
-			)
-			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
-		let response: GetProfileResponse =
-			self.base.handle_connection_issue(result, contact).await?;
-		response.object
-	}*/
-
 	pub(super) async fn exchange_profile_on_connection(
 		&self, connection: &mut Connection,
 	) -> Option<(IdType, Object)> {
@@ -353,21 +319,6 @@ impl ActorNode {
 			.await?;
 		Some(response.needed)
 	}
-
-	/*pub async fn fetch_profile(&self) -> Option<Object> {
-		let mut iter = self.base.iter_all_fingers().await;
-		while let Some(contact) = iter.next().await {
-			match self.exchange_profile(&contact).await {
-				None => debug!("Node {} doesn't have profile data.", &contact.contact_info),
-				Some((_, object)) => return Some(object),
-			}
-		}
-		// Try again. The 'find value' procedure is able to connect to 'unidirectional'
-		// nodes.
-		self.find_object(&self.base.interface.actor_info.first_object)
-			.await
-			.map(|r| r.object)
-	}*/
 
 	pub async fn find_block(&self, id: &IdType) -> Option<FindBlockResult> {
 		let result: Box<FindBlockResult> =
@@ -443,27 +394,6 @@ impl ActorNode {
 			object_result
 		})
 	}
-
-	/*pub async fn fetch_head(&self) -> Option<Object> {
-		let mut iter = self.base.iter_all_fingers().await;
-		let mut i = 0;
-		let mut newest_object: Option<Object> = None;
-		while let Some(contact) = iter.next().await {
-			if let Some(response) = self.exchange_head(&contact).await {
-				if newest_object.is_none()
-					|| response.object.sequence > newest_object.as_ref().unwrap().sequence
-				{
-					newest_object = Some(response.object)
-				}
-			}
-
-			if i == KADEMLIA_K {
-				break;
-			}
-			i += 1
-		}
-		newest_object
-	}*/
 
 	fn has_object_by_sequence(&self, sequence: u64) -> bool {
 		tokio::task::block_in_place(|| {
@@ -544,6 +474,7 @@ impl ActorNode {
 		})
 	}
 
+	#[allow(dead_code)]
 	fn investigate_missing_object_files(&self, object: &Object) -> db::Result<Vec<IdType>> {
 		tokio::task::block_in_place(|| {
 			let c = self.db().connect()?;
@@ -613,6 +544,7 @@ impl ActorNode {
 		Some(true)
 	}
 
+	#[allow(dead_code)]
 	fn load_public_key(&self) -> PublicKey {
 		let actor_info = tokio::task::block_in_place(|| {
 			let c = self.db().connect().expect("unable to connect to database");
@@ -678,7 +610,8 @@ impl ActorNode {
 		}
 	}
 
-	/*async fn missing_value_response(&self, id: &IdType) -> Vec<u8> {
+	#[allow(dead_code)]
+	async fn missing_value_response(&self, id: &IdType) -> Vec<u8> {
 		let bit = self.base.node_id.differs_at_bit(id);
 		let connection = match bit {
 			None => None,
@@ -698,7 +631,7 @@ impl ActorNode {
 		};
 		let result: Result<(), FindNodeResponse> = Err(response);
 		bincode::serialize(&result).unwrap()
-	}*/
+	}
 
 	async fn process_get_profile_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
 		let _request: GetProfileRequest = match bincode::deserialize(buffer) {
@@ -1283,6 +1216,7 @@ impl ActorNode {
 		Ok(())
 	}
 
+	#[allow(dead_code)]
 	async fn synchronize_object(
 		&self, connection: &mut Connection, object: &Object,
 	) -> db::Result<()> {
@@ -1414,6 +1348,7 @@ impl ActorNode {
 		}
 	}
 
+	#[allow(dead_code)]
 	pub async fn wait_for_synchronization(&self) {
 		loop {
 			if self.is_synchonizing.load(Ordering::Relaxed) {

@@ -37,11 +37,6 @@ use signal_hook::flag;
 use tokio;
 use toml;
 
-enum RunMode {
-	Failure,
-	Setup,
-	Start(Config),
-}
 
 fn initialize_network_interfaces() {
 	let mut map = net::NETWORK_INTERFACES.lock().unwrap();

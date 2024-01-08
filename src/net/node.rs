@@ -732,7 +732,7 @@ where
 							}
 							// If the exact ID has been found, we stop
 							if new_fingers.iter().find(|f| &f.0.node_id == id).is_some() {
-								connection.close().await;
+								connection.close_async();
 								break;
 							}
 							Self::append_candidates(id, &mut candidates, &new_fingers);
@@ -744,7 +744,7 @@ where
 							}
 						}
 					}
-					connection.close().await;
+					connection.close_async();
 				}
 			}
 
@@ -1338,14 +1338,14 @@ where
 				.await
 			{
 				None => {
-					if let Some(sc) = special_connection.as_mut() {
-						sc.close().await;
+					if let Some(sc) = special_connection.take() {
+						sc.close_async();
 					}
 					debug!("Disregarding finger {}", &candidate_contact)
 				}
 				Some(mut connection) => {
-					if let Some(sc) = special_connection.as_mut() {
-						sc.close().await;
+					if let Some(sc) = special_connection.take() {
+						sc.close_async();
 					}
 
 					match self
@@ -1360,7 +1360,7 @@ where
 					{
 						// If node didn't respond right, ignore it
 						None => {
-							connection.close().await;
+							connection.close_async();
 						}
 						Some((possible_value, possible_contacts)) => {
 							// If node returned new fingers, append them to our list
@@ -1405,10 +1405,10 @@ where
 									self.connection_for_reverse_connection_requests =
 										Some((connected_contact.node_id, connection));
 								} else {
-									connection.close().await;
+									connection.close_async();
 								}
 							} else {
-								connection.close().await;
+								connection.close_async();
 							}
 
 							// If a value was found, return it, otherwise keep the search loop going
@@ -1683,7 +1683,7 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 	}
 
 	// If we've broken out of the loop naturally, close the connection
-	mutex.lock().await.close().await;
+	let _ = mutex.lock().await.close().await;
 }
 
 pub(super) async fn handle_find_value_connection(
@@ -1707,7 +1707,7 @@ pub(super) async fn handle_find_value_connection(
 									connection.peer_address(),
 								);
 							}
-							connection.close().await;
+							let _ = connection.close().await;
 							break;
 						}
 						// Opening and immediately closing connections is done to test presence, so
