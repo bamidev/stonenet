@@ -19,6 +19,7 @@ use std::{
 	fs::File,
 	io::{self, prelude::*},
 	process,
+	str::FromStr,
 	sync::{
 		atomic::{AtomicBool, Ordering},
 		Arc,
@@ -116,8 +117,11 @@ async fn main() {
 		// Load node
 		let node = load_node(stop_flag.clone(), db.clone(), &config).await;
 
-		// Spawn threads
+		// Test openness
 		let globals = Api { node, db };
+		test_openness(&globals, &config).await;
+
+		// Spawn threads
 		if config.load_web_interface {
 			let g2 = globals.clone();
 			let (shutdown, join) = web::spawn(g2).await;
@@ -125,6 +129,7 @@ async fn main() {
 			shutdown.notify();
 
 			info!("Exiting stonenetd...");
+			//globals.node.remember_nodes().await;
 			match join.await {
 				Ok(()) => {}
 				Err(e) => error!("Rocket error after shutdown: {}", e),
@@ -178,5 +183,38 @@ async fn node_main(stop_flag: Arc<AtomicBool>, g: &Api, config: &Config) {
 
 	while !stop_flag.load(Ordering::Relaxed) {
 		tokio::time::sleep(Duration::from_secs(1)).await;
+	}
+}
+
+async fn test_openness(g: &Api, config: &Config) {
+	// Use the openness as found in the config file, or, if not set, test it
+	let udp4_openness = if let Some(string) = &config.ipv4_udp_openness {
+		if let Ok(o) = Openness::from_str(string) {
+			info!("Using UDPv4 openness: {}", o);
+			Some(o)
+		} else {
+			// TODO: Need to return None if UDP4 is not usable at all
+			info!("Using UDPv4 openness: unidirectional");
+			Some(Openness::Bidirectional)
+		}
+	} else {
+		info!("Testing UDPv4 openness...");
+		if let Some(o) = g.node.test_openness_udp4(&config.bootstrap_nodes).await {
+			info!("Tested UDPv4 openness to be: {}", o);
+			Some(o)
+		} else {
+			warn!("No UDPv4 connectivity detected.");
+			None
+		}
+	};
+
+	if let Some(openness) = udp4_openness {
+		let mut ci = g.node.contact_info();
+		if let Some(entry) = &mut ci.ipv4 {
+			if let Some(entry) = &mut entry.availability.udp {
+				entry.openness = openness;
+			}
+		}
+		g.node.set_contact_info(ci);
 	}
 }

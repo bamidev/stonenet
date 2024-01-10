@@ -4,7 +4,7 @@
 pub mod file_loader;
 mod install;
 
-use std::{cmp::min, fmt, ops::*, path::*};
+use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*};
 
 use chrono::*;
 use fallible_iterator::FallibleIterator;
@@ -1685,8 +1685,8 @@ impl Connection {
 		while let Some(row) = rows.next()? {
 			let address_string: String = row.get(0)?;
 			let raw_public_key: Vec<u8> = row.get(1)?;
-			let first_object_string: String = row.get(3)?;
-			let actor_type: String = row.get(4)?;
+			let first_object_string: String = row.get(2)?;
+			let actor_type: String = row.get(3)?;
 			let address = IdType::from_base58(&address_string)?;
 			let public_key = PublicKey::from_bytes(
 				raw_public_key
@@ -2018,6 +2018,21 @@ impl Connection {
 		}
 	}
 
+	pub fn fetch_remembered_node(&mut self, address: &SocketAddr) -> Result<(IdType, i32)> {
+		let result = self.query_row(
+			r#"
+			SELECT node_id, success_score FROM remembered_nodes WHERE address = ?
+		"#,
+			params![address.to_string()],
+			|row| {
+				let node_id: IdType = row.get(0)?;
+				let score: i32 = row.get(1)?;
+				Ok((node_id, score))
+			},
+		)?;
+		Ok(result)
+	}
+
 	pub fn follow(&mut self, actor_id: &IdType, actor_info: &ActorInfo) -> Result<()> {
 		let tx = self.0.transaction()?;
 
@@ -2305,6 +2320,58 @@ impl Connection {
 		};
 		tx.commit()?;
 		Ok(true)
+	}
+
+	pub fn fetch_bootstrap_node_id(&mut self, address: &SocketAddr) -> Result<Option<IdType>> {
+		let node_id = self.0.query_row(
+			"SELECT node_id FROM bootstrap_id WHERE address = ?",
+			[address.to_string()],
+			|row| row.get(0),
+		)?;
+		Ok(node_id)
+	}
+
+	pub fn remember_bootstrap_node_id(
+		&mut self, address: &SocketAddr, node_id: &IdType,
+	) -> Result<()> {
+		let tx = self.0.transaction()?;
+		let updated = tx.execute(
+			"UPDATE bootstrap_id SET node_id = ? WHERE address = ?",
+			params![node_id, address.to_string()],
+		)?;
+		if updated == 0 {
+			tx.execute(
+				"INSERT INTO remembered_id (address, node_id) VALUES (?,?)",
+				params![address.to_string(), node_id],
+			)?;
+		}
+		Ok(())
+	}
+
+	pub fn remember_node(&mut self, address: &SocketAddr, node_id: &IdType) -> Result<()> {
+		let tx = self.0.transaction()?;
+
+		let mut stat = tx.prepare(
+			r#"
+			SELECT success_score FROM remembered_nodes WHERE address = ?
+		"#,
+		)?;
+		let mut rows = stat.query([address.to_string()])?;
+		if let Some(row) = rows.next()? {
+			let score: i32 = row.get(0)?;
+
+			let affected = tx.execute(
+				r#"UPDATE remembered_nodes SET success_score = ? WHERE address = ?"#,
+				params![score + 1, address.to_string()],
+			)?;
+			debug_assert!(affected > 0);
+		} else {
+			tx.execute(
+				r#"INSERT INTO remembered_nodes (address, node_id, success_score) VALUES (?, ?, ?)"#,
+				params![address.to_string(), node_id, 1],
+			)?;
+		}
+		Ok(())
 	}
 
 	pub fn unfollow(&mut self, actor_id: &IdType) -> Result<bool> {

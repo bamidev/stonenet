@@ -374,6 +374,8 @@ impl OverlayNode {
 		}
 	}
 
+	pub fn contact_info(&self) -> ContactInfo { self.base.contact_info() }
+
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
 	/// RPC.
 	pub async fn exchange_keep_alive_on_connection(
@@ -1227,7 +1229,7 @@ impl OverlayNode {
 
 	pub(super) async fn request_reversed_connection(
 		&self, relay_connection: &mut Connection, target: &IdType, their_contact: &ContactOption,
-		our_contact: &ContactOption,
+		our_contact: &ContactOption, attempt_outgoing: bool,
 	) -> Option<Box<Connection>> {
 		// Generally not really needed, but might help in case the target node's
 		// connection comes in sooner than the relay node's reply.
@@ -1269,46 +1271,59 @@ impl OverlayNode {
 
 		// Spawn the connection attempt on another task, because we should only interupt
 		// it with the stop flag.
-		let stop_flag = Arc::new(AtomicBool::new(false));
-		let stop_flag2 = stop_flag.clone();
-		let their_contact2 = their_contact.clone();
-		let target2 = target.clone();
-		let base = self.base.clone();
 		let (tx_out, rx_out) = oneshot::channel();
-		spawn(async move {
-			let result = base
-				.connect_with_timeout(
-					stop_flag2.clone(),
-					&their_contact2,
-					Some(&target2),
-					sstp::DEFAULT_TIMEOUT * 3,
-				)
-				.await;
-			// If an incomming connection was already received by this point, close the
-			// outgoing connection if it was already established.
-			if stop_flag2.load(Ordering::Relaxed) {
-				if let Some(connection) = result {
-					connection.close_async();
-				}
-			} else {
-				if let Err(result2) = tx_out.send(result) {
-					error!("Unable to send back incomming connection.");
-					if let Some(connection) = result2 {
+		let stop_flag = Arc::new(AtomicBool::new(false));
+		if attempt_outgoing {
+			let stop_flag2 = stop_flag.clone();
+			let their_contact2 = their_contact.clone();
+			let target2 = target.clone();
+			let base = self.base.clone();
+			spawn(async move {
+				let result = base
+					.connect_with_timeout(
+						stop_flag2.clone(),
+						&their_contact2,
+						Some(&target2),
+						sstp::DEFAULT_TIMEOUT * 3,
+					)
+					.await;
+				// If an incomming connection was already received by this point, close the
+				// outgoing connection if it was already established.
+				if stop_flag2.load(Ordering::Relaxed) {
+					if let Some(connection) = result {
 						connection.close_async();
 					}
+				} else {
+					if let Err(result2) = tx_out.send(result) {
+						error!("Unable to send back incomming connection.");
+						if let Some(connection) = result2 {
+							connection.close_async();
+						}
+					}
 				}
-			}
-		});
+			});
+		}
 
 		// Wait until a connection is received, and return that.
-		let result = select! {
-			result = rx_in => {
-				stop_flag.store(true, Ordering::Relaxed);
-				Some(result.expect("sender of expected connection has closed unexpectantly"))
-			},
-			result = rx_out => {
-				result.expect("unable to retrieve result from oneshot")
-			},
+		let result = if attempt_outgoing {
+			select! {
+				result = rx_in => {
+					stop_flag.store(true, Ordering::Relaxed);
+					Some(result.expect("sender of expected connection has closed unexpectantly"))
+				},
+				result = rx_out => {
+					result.expect("unable to retrieve result from oneshot")
+				},
+			}
+		} else {
+			select! {
+				result = rx_in => {
+					Some(result.expect("sender of expected connection has closed unexpectantly"))
+				},
+				() = sleep(sstp::DEFAULT_TIMEOUT * 3) => {
+					None
+				}
+			}
 		};
 
 		let mut expected_connections = self.expected_connections.lock().await;
@@ -1441,7 +1456,36 @@ impl OverlayNode {
 			Ok(r) => r,
 		};
 		let mut response = RelayInitiateConnectionResponse { ok: true };
-		if let Some(connection_mutex) = self.base.find_connection_in_buckets(&request.target).await
+
+		// If the requested target node happens to be one of our known bootstrap nodes,
+		// we always allow it
+		if self
+			.bootstrap_nodes
+			.contains(&request.contact_option.target)
+		{
+			if let Some(mut connection) = self
+				.base
+				.connect(&request.contact_option, Some(&request.target))
+				.await
+			{
+				let this = self.clone();
+				let node_id2 = node_id.clone();
+				spawn(async move {
+					this.exchange_punch_hole_on_connection(
+						&mut connection,
+						node_id2,
+						request.contact_option,
+					)
+					.await;
+					if let Err(e) = connection.close().await {
+						warn!("Unable to close connection with a bootstrap node: {}", e);
+					}
+				});
+			}
+		}
+		// Otherwise, we only allow if we have a connection with the node
+		else if let Some(connection_mutex) =
+			self.base.find_connection_in_buckets(&request.target).await
 		{
 			let this = self.clone();
 			let node_id2 = node_id.clone();
@@ -1637,6 +1681,10 @@ impl OverlayNode {
 		}
 	}
 
+	pub fn set_contact_info(&self, contact_info: ContactInfo) {
+		self.base.set_contact_info(contact_info);
+	}
+
 	pub async fn store_actor(
 		&self, actor_id: &IdType, duplicates: usize, actor_info: &ActorInfo,
 	) -> usize {
@@ -1704,6 +1752,112 @@ impl OverlayNode {
 			.store_actor_at(actor_id, duplicates - store_count, actor_info, &contacts)
 			.await;
 		store_count
+	}
+
+	pub async fn test_openness_udp4(&self, bootstrap_nodes: &[String]) -> Option<Openness> {
+		// Sanity check
+		if bootstrap_nodes.len() < 2 {
+			error!("Not enough bootstrap nodes to test openness, asssuming unidirectional.");
+			return None;
+		}
+
+		// Parse the bootstrap nodes addresses
+		let bnode1_addr = match SocketAddr::from_str(&bootstrap_nodes[0]) {
+			Ok(s) => s,
+			Err(e) => {
+				error!(
+					"Unable to parse bootstrap node {}: {}.",
+					bootstrap_nodes[0], e
+				);
+				return None;
+			}
+		};
+		let bnode2_addr = match SocketAddr::from_str(&bootstrap_nodes[1]) {
+			Ok(s) => s,
+			Err(e) => {
+				error!(
+					"Unable to parse bootstrap node {}: {}.",
+					bootstrap_nodes[1], e
+				);
+				return None;
+			}
+		};
+		let bnode1_contact = ContactOption::new(bnode1_addr, false);
+		let bnode2_contact = ContactOption::new(bnode2_addr, false);
+
+		// Currently only support UDPv4
+		let our_ip4_entry = self
+			.base
+			.contact_info()
+			.ipv4
+			.expect("missing IPv4 contact entry");
+		let our_udp4_entry = our_ip4_entry
+			.availability
+			.udp
+			.expect("missing UDPv4 contact entry");
+		let our_addr = SocketAddr::new(IpAddr::V4(our_ip4_entry.addr), our_udp4_entry.port);
+		let our_contact = ContactOption::new(our_addr, false);
+
+		// Test if we can do hole punching
+		// We need to open a connection to obtain the node's ID first, because
+		// requesting a reversed connection requires it
+		// FIXME: In order to test if this node is actually bidirectional, we
+		// can request a reverse connection without connecting to it first.
+		let mut db = self.db().connect().expect("unable to connect to database");
+		let mut bnode1_connection: Box<Connection> =
+			self.base.connect(&bnode1_contact, None).await?;
+		bnode1_connection
+			.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 4)
+			.await;
+		let bnode2_id = if let Some(bnode2_id) = db
+			.fetch_bootstrap_node_id(&bnode2_addr)
+			.expect("unable to fetch bootstrap node ID")
+		{
+			// If we know the bootstrap node's ID, we can test if we are a bidirectional
+			// node.
+			if let Some(rc) = self
+				.request_reversed_connection(
+					&mut bnode1_connection,
+					&bnode2_id,
+					&bnode2_contact,
+					&our_contact,
+					false,
+				)
+				.await
+			{
+				bnode1_connection.close_async();
+				rc.close_async();
+				return Some(Openness::Bidirectional);
+			}
+
+			bnode2_id
+		} else {
+			let bnode2_connection = self.base.connect(&bnode2_contact, None).await?;
+			let bnode2_id = bnode2_connection.their_node_id().clone();
+			bnode2_connection.close_async();
+			db.remember_bootstrap_node_id(&bnode2_addr, &bnode2_id)
+				.expect("unable to remember bootstrap node ID");
+			bnode2_id
+		};
+
+		// If the node is not bidirectional, try to test if it is punchable
+		if let Some(rc) = self
+			.request_reversed_connection(
+				&mut bnode1_connection,
+				&bnode2_id,
+				&bnode2_contact,
+				&our_contact,
+				false,
+			)
+			.await
+		{
+			bnode1_connection.close_async();
+			rc.close_async();
+			return Some(Openness::Punchable);
+		} else {
+			bnode1_connection.close_async();
+			return Some(Openness::Bidirectional);
+		}
 	}
 }
 

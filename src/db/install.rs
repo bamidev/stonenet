@@ -16,6 +16,12 @@ pub const QUERY: &'static str = r#"
 		FOREIGN KEY(object_id) REFERENCES object(rowid)
 	);
 
+	CREATE TABLE bootstrap_id (
+		address TEXT NOT NULL PRIMARY KEY,
+		node_id TEXT NOT NULL,
+		UNIQUE(node_id)
+	);
+
 	CREATE TABLE identity (
 		address TEXT NOT NULL PRIMARY KEY,
 		public_key BLOB NOT NULL,
@@ -48,9 +54,11 @@ pub const QUERY: &'static str = r#"
 		address TEXT NOT NULL
 	);
 
-	CREATE TABLE remembered_nodes (
+	CREATE TABLE remembered_fingers (
 		address TEXT PRIMARY KEY,
-		success_score INTEGER NOT NULL
+		node_id TEXT NOT NULL,
+		success_score INTEGER NOT NULL,
+		UNIQUE(node_id),
 	);
 
 	CREATE TABLE remembered_actor_nodes (

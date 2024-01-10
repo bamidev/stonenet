@@ -258,6 +258,7 @@ where
 							&node_info.node_id,
 							&strategy.contact,
 							&contact_me_option,
+							true,
 						)
 						.await
 					{
@@ -305,6 +306,7 @@ where
 								&node_info.node_id,
 								&strategy.contact,
 								&contact_me_option,
+								true,
 							)
 							.await
 						{
@@ -1212,6 +1214,10 @@ where
 		} else {
 			None
 		}
+	}
+
+	pub fn set_contact_info(&self, contact_info: ContactInfo) {
+		self.socket.set_contact_info(contact_info);
 	}
 
 	fn sort_fingers(

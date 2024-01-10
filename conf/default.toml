@@ -9,12 +9,13 @@ ipv4_address = "0.0.0.0"
 #ipv6_address = "::"
 
 # Set the following openness settings to either "bidirectional", "punchable" or
-# "unidirectional". Changing this, changes the way that your node advertises the
-# way it is able to connect to other nodes. If no ipv6_address is set, the
-# relevant ipv8_openness settings are ignored. The same goes for the
-# ipv4_address.
-# If you comment out one of these settings, that means that the transport
-# method is disabled.
+# "unidirectional".
+# If you leave this unset, it will be tested whether hole punching is possible
+# behind your current NAT device. If so, it will be set to "punchable", and
+# "unidirectional" otherwise.
+# If you do set this, your NAT device will not be tested.
+# If you run this node on a server or VPS, or have port forwarding enabled, you
+# should set the openness of the relevant protocol to "bidirectional".
 #
 # Here is what each setting means:
 # - bidrectional: Use this if this device is able to receive incomming
@@ -22,15 +23,13 @@ ipv4_address = "0.0.0.0"
 #     or when you have forwarded a port on your router. It doesn't matter which
 #     external port is used.
 # - punchable: Use this if this device is behind a NAT device, but still supports
-#     'hole-punching'. Most home routers support UDP hole-punching. Many also
-#     support TCP hole-punching, but only enable this is your are certain it
-#     works.
+#     'hole-punching'. Most home routers support hole-punching.
 # - unidirectional: This means the device is only capable of initiating outgoing
 #     connections.
-ipv4_udp_openness = "bidirectional"
-ipv4_tcp_openness = "unidirectional"
-ipv6_udp_openness = "bidirectional"
-ipv6_tcp_openness = "unidirectional"
+#ipv4_udp_openness = "bidirectional"
+#ipv4_tcp_openness = "bidirectional"
+#ipv6_udp_openness = "bidirectional"
+#ipv6_tcp_openness = "bidirectional"
 
 # The ports to bind to. If you comment any of them out, they will use a random
 # port available on your system.
@@ -63,9 +62,8 @@ udp_max_idle_time = 60
 bucket_size = 4
 
 # Become a super node. Being a super node means you'll relay ANY data for ANY
-# node without restriction. This helps the network by providing to those that
-# are behind a firewall that doesn't allow them to reach other nodes who can't
-# receive connections.
-# However, as a super node you run the risk of being complicit in sharing
+# node without restriction. This helps the network by allowing nodes that can't
+# receive connections to contact eachother.
+# However, as a super node you could run the risk of being complicit in sharing
 # illegal data. So only set this to true at your own risk!
 super_node = false

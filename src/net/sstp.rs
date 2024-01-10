@@ -278,13 +278,12 @@ pub fn contact_info_from_config(config: &Config) -> ContactInfo {
 	let mut contact_info = ContactInfo::default();
 
 	fn parse_openness(string: &str) -> Openness {
-		match string {
-			"bidirectional" => Openness::Bidirectional,
-			"unidirectional" => Openness::Unidirectional,
-			other => {
-				warn!(
-					"Openness setting {} not recognized, defaulting to \"unidirectional\"",
-					other
+		match Openness::from_str(string) {
+			Ok(o) => o,
+			Err(()) => {
+				error!(
+					"Unable to parse openness \"{}\", defaulting to unidirectional",
+					string
 				);
 				Openness::Unidirectional
 			}
@@ -2044,6 +2043,10 @@ impl Server {
 		socket.send(&buffer, timeout).await?;
 		Ok(())
 	}
+
+	pub fn set_contact_info(&self, contact_info: ContactInfo) {
+		*self.our_contact_info.lock().unwrap() = contact_info;
+	}
 }
 
 impl SocketCollection {
@@ -2498,7 +2501,7 @@ impl Server {
 				should_close = true;
 			}
 		} else {
-			debug!("Invalid session ID: {}", our_session_id);
+			//debug!("Invalid session ID: {}", our_session_id);
 		}
 
 		if should_close {

@@ -13,6 +13,7 @@ use std::{
 	collections::HashMap,
 	fmt,
 	net::*,
+	str::FromStr,
 	sync::{atomic::*, Arc, Mutex},
 	time::{Duration, SystemTime},
 };
@@ -438,9 +439,22 @@ impl fmt::Display for NodeContactInfo {
 impl fmt::Display for Openness {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Openness::Bidirectional => write!(f, "bidirectional"),
-			Openness::Punchable => write!(f, "punchable"),
-			Openness::Unidirectional => write!(f, "unidirectional"),
+			Self::Bidirectional => write!(f, "bidirectional"),
+			Self::Punchable => write!(f, "punchable"),
+			Self::Unidirectional => write!(f, "unidirectional"),
+		}
+	}
+}
+
+impl FromStr for Openness {
+	type Err = ();
+
+	fn from_str(string: &str) -> Result<Self, ()> {
+		match string.to_lowercase().as_str() {
+			"bidirectional" => Ok(Self::Bidirectional),
+			"punchable" => Ok(Self::Punchable),
+			"unidirectional" => Ok(Self::Unidirectional),
+			_ => Err(()),
 		}
 	}
 }
