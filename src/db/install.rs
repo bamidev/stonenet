@@ -58,7 +58,7 @@ pub const QUERY: &'static str = r#"
 		address TEXT PRIMARY KEY,
 		node_id TEXT NOT NULL,
 		success_score INTEGER NOT NULL,
-		UNIQUE(node_id),
+		UNIQUE(node_id)
 	);
 
 	CREATE TABLE remembered_actor_nodes (

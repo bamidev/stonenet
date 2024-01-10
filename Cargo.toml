@@ -1,6 +1,6 @@
 [package]
 name = "stonenetd"
-version = "0.0.0"
+version = "0.0.1"
 authors = ["Danny de Jong"]
 description = "The daemon for the completely decentralized & censorship-resistant media platform."
 edition = "2021"
@@ -68,6 +68,7 @@ windows = { version = "0", features = [
 
 [package.metadata.deb]
 name = "stonenet"
+revision = "2"
 section = "net"
 priority = "optional"
 assets = [
