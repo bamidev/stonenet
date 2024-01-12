@@ -288,9 +288,17 @@ impl OverlayNode {
 	) -> sstp::Result<Arc<Self>> {
 		let mut bootstrap_nodes = Vec::<SocketAddr>::with_capacity(config.bootstrap_nodes.len());
 		for address_string in &config.bootstrap_nodes {
-			match SocketAddr::from_str(address_string) {
+			match address_string.to_socket_addrs() {
 				Err(e) => error!("Unable to parse bootstrap node {}: {}.", address_string, e),
-				Ok(s) => bootstrap_nodes.push(s),
+				Ok(mut s) =>
+					if let Some(addr) = s.next() {
+						bootstrap_nodes.push(addr);
+					} else {
+						error!(
+							"Unable to parse bootstrap node {}: domain name resolution failed",
+							address_string
+						);
+					},
 			}
 		}
 
@@ -1762,8 +1770,17 @@ impl OverlayNode {
 		}
 
 		// Parse the bootstrap nodes addresses
-		let bnode1_addr = match SocketAddr::from_str(&bootstrap_nodes[0]) {
-			Ok(s) => s,
+		let bnode1_addr = match bootstrap_nodes[0].to_socket_addrs() {
+			Ok(mut s) =>
+				if let Some(addr) = s.next() {
+					addr
+				} else {
+					error!(
+						"Unable to parse bootstrap node {}: domain name resolution failed.",
+						bootstrap_nodes[0]
+					);
+					return None;
+				},
 			Err(e) => {
 				error!(
 					"Unable to parse bootstrap node {}: {}.",
@@ -1772,8 +1789,17 @@ impl OverlayNode {
 				return None;
 			}
 		};
-		let bnode2_addr = match SocketAddr::from_str(&bootstrap_nodes[1]) {
-			Ok(s) => s,
+		let bnode2_addr = match bootstrap_nodes[1].to_socket_addrs() {
+			Ok(mut s) =>
+				if let Some(addr) = s.next() {
+					addr
+				} else {
+					error!(
+						"Unable to parse bootstrap node {}: domain name resolution failed.",
+						bootstrap_nodes[1]
+					);
+					return None;
+				},
 			Err(e) => {
 				error!(
 					"Unable to parse bootstrap node {}: {}.",
