@@ -2323,12 +2323,18 @@ impl Connection {
 	}
 
 	pub fn fetch_bootstrap_node_id(&mut self, address: &SocketAddr) -> Result<Option<IdType>> {
-		let node_id = self.0.query_row(
-			"SELECT node_id FROM bootstrap_id WHERE address = ?",
-			[address.to_string()],
-			|row| row.get(0),
+		let mut stat = self.0.prepare(
+			r#"
+			SELECT node_id FROM bootstrap_id WHERE address = ?
+		"#,
 		)?;
-		Ok(node_id)
+		let mut rows = stat.query([address.to_string()])?;
+		if let Some(row) = rows.next()? {
+			let node_id = row.get(0)?;
+			Ok(Some(node_id))
+		} else {
+			Ok(None)
+		}
 	}
 
 	pub fn remember_bootstrap_node_id(
@@ -2341,7 +2347,7 @@ impl Connection {
 		)?;
 		if updated == 0 {
 			tx.execute(
-				"INSERT INTO remembered_id (address, node_id) VALUES (?,?)",
+				"INSERT INTO bootstrap_id (address, node_id) VALUES (?,?)",
 				params![address.to_string(), node_id],
 			)?;
 		}

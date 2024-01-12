@@ -142,23 +142,13 @@ async fn main() {
 }
 
 async fn load_node(stop_flag: Arc<AtomicBool>, db: Database, config: &Config) -> Arc<OverlayNode> {
-	let contact_info: ContactInfo = net::sstp::contact_info_from_config(config);
 	let mut c = db.connect().expect("Unable to connect to database.");
 	let (node_id, keypair) = c
 		.fetch_node_identity()
 		.expect("Unable to load node identity");
-	match net::overlay::OverlayNode::start(
-		stop_flag,
-		node_id,
-		contact_info.clone(),
-		keypair,
-		db,
-		config,
-	)
-	.await
-	{
+	match net::overlay::OverlayNode::start(stop_flag, config, node_id, keypair, db).await {
 		Err(e) => {
-			error!("Unable to bind to address {}: {}", contact_info, e);
+			error!("Unable to bind socket: {}", e);
 			process::exit(1)
 		}
 		Ok(s) => s,

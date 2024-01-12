@@ -25,7 +25,7 @@ use num::BigUint;
 use serde::{Deserialize, Serialize};
 use sstp::Connection;
 
-use crate::common::*;
+use crate::{common::*, config::Config};
 
 /// Size of the 'k-buckets'. This parameter defines how many active fingers we
 /// keep for each leaf in the binary tree.
@@ -155,6 +155,91 @@ fn distance(a: &IdType, b: &IdType) -> BigUint { a.distance(b) }
 
 
 impl ContactInfo {
+	/// Parses the contact info ready for initiating a `SstpSocket` from the
+	/// config file
+	pub fn from_config(config: &Config) -> ContactInfo {
+		let mut contact_info = ContactInfo::default();
+
+		fn parse_openness(string: &str) -> Openness {
+			match Openness::from_str(string) {
+				Ok(o) => o,
+				Err(()) => {
+					error!(
+						"Unable to parse openness \"{}\", defaulting to unidirectional",
+						string
+					);
+					Openness::Unidirectional
+				}
+			}
+		}
+
+		// IPv4
+		match &config.ipv4_address {
+			None => {}
+			Some(address) =>
+				contact_info.ipv4 =
+					Some(ContactInfoEntry {
+						addr: address.parse().expect("invalid IPv4 address configured"),
+						availability: IpAvailability {
+							udp: config.ipv4_udp_port.as_ref().map(|p| {
+								TransportAvailabilityEntry {
+									port: *p,
+									openness: config
+										.ipv4_udp_openness
+										.as_ref()
+										.map(|s| parse_openness(s))
+										.unwrap_or(Openness::Unidirectional),
+								}
+							}),
+							tcp: config.ipv4_tcp_port.as_ref().map(|p| {
+								TransportAvailabilityEntry {
+									port: *p,
+									openness: config
+										.ipv4_tcp_openness
+										.as_ref()
+										.map(|s| parse_openness(s))
+										.unwrap_or(Openness::Unidirectional),
+								}
+							}),
+						},
+					}),
+		}
+
+		// IPv6
+		match &config.ipv6_address {
+			None => {}
+			Some(address) =>
+				contact_info.ipv6 =
+					Some(ContactInfoEntry {
+						addr: address.parse().expect("invalid IPv6 address configured"),
+						availability: IpAvailability {
+							udp: config.ipv6_udp_port.as_ref().map(|p| {
+								TransportAvailabilityEntry {
+									port: *p,
+									openness: config
+										.ipv6_udp_openness
+										.as_ref()
+										.map(|s| parse_openness(s))
+										.unwrap_or(Openness::Unidirectional),
+								}
+							}),
+							tcp: config.ipv6_tcp_port.as_ref().map(|p| {
+								TransportAvailabilityEntry {
+									port: *p,
+									openness: config
+										.ipv6_tcp_openness
+										.as_ref()
+										.map(|s| parse_openness(s))
+										.unwrap_or(Openness::Unidirectional),
+								}
+							}),
+						},
+					}),
+		}
+
+		contact_info
+	}
+
 	pub fn is_open_to_reversed_connections(&self, other: &ContactInfo) -> bool {
 		if let Some(entry_a) = &self.ipv4 {
 			if let Some(entry_b) = &other.ipv4 {

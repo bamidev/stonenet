@@ -15,10 +15,10 @@ pub struct Config {
 
 	pub ipv4_address: Option<String>,
 	pub ipv6_address: Option<String>,
-	pub ipv4_udp_port: u16,
-	pub ipv4_tcp_port: u16,
-	pub ipv6_udp_port: u16,
-	pub ipv6_tcp_port: u16,
+	pub ipv4_udp_port: Option<u16>,
+	pub ipv4_tcp_port: Option<u16>,
+	pub ipv6_udp_port: Option<u16>,
+	pub ipv6_tcp_port: Option<u16>,
 	pub ipv4_udp_openness: Option<String>,
 	pub ipv4_tcp_openness: Option<String>,
 	pub ipv6_udp_openness: Option<String>,
@@ -28,7 +28,7 @@ pub struct Config {
 	pub load_web_interface: bool,
 	pub udp_max_idle_time: usize,
 	pub bucket_size: usize,
-	pub super_node: bool,
+	pub relay_node: bool,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -41,21 +41,21 @@ impl Default for Config {
 	fn default() -> Self {
 		Self {
 			database_path: String::default(),
-			ipv4_address: Some("0.0.0.0".to_string()),
-			ipv6_address: Some("::".to_string()),
-			ipv4_udp_port: 37337,
-			ipv4_tcp_port: 37337,
-			ipv6_udp_port: 37337,
-			ipv6_tcp_port: 37337,
-			ipv4_udp_openness: Some("bidirectional".to_string()),
-			ipv4_tcp_openness: Some("unidirectional".to_string()),
-			ipv6_udp_openness: Some("bidirectional".to_string()),
-			ipv6_tcp_openness: Some("unidirectional".to_string()),
+			ipv4_address: None,
+			ipv6_address: None,
+			ipv4_udp_port: None,
+			ipv4_tcp_port: None,
+			ipv6_udp_port: None,
+			ipv6_tcp_port: None,
+			ipv4_udp_openness: None,
+			ipv4_tcp_openness: None,
+			ipv6_udp_openness: None,
+			ipv6_tcp_openness: None,
 			bootstrap_nodes: vec![],
-			load_web_interface: true,
+			load_web_interface: false,
 			udp_max_idle_time: 60,
 			bucket_size: 4,
-			super_node: false,
+			relay_node: false,
 		}
 	}
 }

@@ -205,6 +205,12 @@ struct Sessions {
 	next_id: u16,
 }
 
+#[derive(Debug)]
+pub enum SocketBindError {
+	Io(io::Error),
+	InvalidAddress(String, AddrParseError),
+}
+
 struct SocketCollection {
 	ipv4: Option<SstpSocketServers<SocketAddrV4>>,
 	ipv6: Option<SstpSocketServers<SocketAddrV6>>,
@@ -270,75 +276,6 @@ fn calculate_checksum(buffer: &[u8]) -> u16 {
 		result = result.wrapping_add(buffer[i] as u16);
 	}
 	result
-}
-
-/// Parses the contact info ready for initiating a `SstpSocket` from the config
-/// file
-pub fn contact_info_from_config(config: &Config) -> ContactInfo {
-	let mut contact_info = ContactInfo::default();
-
-	fn parse_openness(string: &str) -> Openness {
-		match Openness::from_str(string) {
-			Ok(o) => o,
-			Err(()) => {
-				error!(
-					"Unable to parse openness \"{}\", defaulting to unidirectional",
-					string
-				);
-				Openness::Unidirectional
-			}
-		}
-	}
-
-	// IPv4
-	match &config.ipv4_address {
-		None => {}
-		Some(address) =>
-			contact_info.ipv4 =
-				Some(ContactInfoEntry {
-					addr: address.parse().expect("invalid IPv4 address configured"),
-					availability: IpAvailability {
-						udp: config.ipv4_udp_openness.as_ref().map(|o| {
-							TransportAvailabilityEntry {
-								port: config.ipv4_udp_port,
-								openness: parse_openness(o),
-							}
-						}),
-						tcp: config.ipv4_tcp_openness.as_ref().map(|o| {
-							TransportAvailabilityEntry {
-								port: config.ipv4_tcp_port,
-								openness: parse_openness(o),
-							}
-						}),
-					},
-				}),
-	}
-
-	// IPv6
-	match &config.ipv6_address {
-		None => {}
-		Some(address) =>
-			contact_info.ipv6 =
-				Some(ContactInfoEntry {
-					addr: address.parse().expect("invalid IPv6 address configured"),
-					availability: IpAvailability {
-						udp: config.ipv6_udp_openness.as_ref().map(|o| {
-							TransportAvailabilityEntry {
-								port: config.ipv6_udp_port,
-								openness: parse_openness(o),
-							}
-						}),
-						tcp: config.ipv6_tcp_openness.as_ref().map(|o| {
-							TransportAvailabilityEntry {
-								port: config.ipv6_tcp_port,
-								openness: parse_openness(o),
-							}
-						}),
-					},
-				}),
-	}
-
-	contact_info
 }
 
 /// Decrypts what has been encrypted by `encrypt_cbc`.
@@ -1684,62 +1621,127 @@ impl Sessions {
 	}
 }
 
+impl fmt::Display for SocketBindError {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Io(e) => write!(f, "I/O error: {}", e),
+			Self::InvalidAddress(s, e) => write!(f, "invalid address syntax for \"{}\": {}", s, e),
+		}
+	}
+}
+
+impl From<io::Error> for SocketBindError {
+	fn from(other: io::Error) -> Self { Self::Io(other) }
+}
+
 impl SocketCollection {
 	/// Binds all internal sockets to the given addresses and ports.
-	pub async fn bind(contact_info: &ContactInfo) -> io::Result<Self> {
+	pub async fn bind(config: &Config) -> StdResult<Self, SocketBindError> {
 		let mut this = Self::default();
 
-		if let Some(ci_entry) = contact_info.ipv4.as_ref() {
+		// Parse IPv4 configuration
+		if let Some(addr_string) = &config.ipv4_address {
+			let addr = Ipv4Addr::from_str(&addr_string)
+				.map_err(|e| SocketBindError::InvalidAddress(addr_string.clone(), e))?;
 			let mut servers = SstpSocketServers::default();
-			if let Some(trans_entry) = &ci_entry.availability.udp {
+
+			// Parse UDPv4 configuration
+			if let Some(port) = config.ipv4_udp_port {
 				servers.udp = Some(Arc::new(SstpSocketServer {
-					inner: UdpServer::bind(SocketAddrV4::new(
-						ci_entry.addr.clone(),
-						trans_entry.port,
-					))
-					.await?,
-					openness: trans_entry.openness.clone(),
+					inner: UdpServer::bind(SocketAddrV4::new(addr, port)).await?,
+					openness: config
+						.ipv4_udp_openness
+						.as_ref()
+						.map(|s| match Openness::from_str(s) {
+							Ok(o) => o,
+							Err(_) => {
+								error!(
+									"Unable to parse UDPv4 openness \"{}\" from config file. \
+									 Assuming unidirectional.",
+									s
+								);
+								Openness::Unidirectional
+							}
+						})
+						.unwrap_or(Openness::Unidirectional),
 				}));
 			}
-			if let Some(trans_entry) = &ci_entry.availability.tcp {
+
+			// Parse TCPv4 configuration
+			if let Some(port) = config.ipv4_tcp_port {
 				servers.tcp = Some(Arc::new(SstpSocketServer {
-					inner: TcpServer::bind(SocketAddrV4::new(
-						ci_entry.addr.clone(),
-						trans_entry.port,
-					))
-					.await?,
-					openness: trans_entry.openness.clone(),
+					inner: TcpServer::bind(SocketAddrV4::new(addr, port)).await?,
+					openness: config
+						.ipv4_tcp_openness
+						.as_ref()
+						.map(|s| match Openness::from_str(s) {
+							Ok(o) => o,
+							Err(_) => {
+								error!(
+									"Unable to parse TCPv4 openness \"{}\" from config file. \
+									 Assuming unidirectional.",
+									s
+								);
+								Openness::Unidirectional
+							}
+						})
+						.unwrap_or(Openness::Unidirectional),
 				}));
 			}
+
 			this.ipv4 = Some(servers);
 		}
 
-		if let Some(ci_entry) = contact_info.ipv6.as_ref() {
+		// Parse IPv6 configuration
+		if let Some(addr_string) = &config.ipv6_address {
+			let addr = Ipv6Addr::from_str(&addr_string)
+				.map_err(|e| SocketBindError::InvalidAddress(addr_string.clone(), e))?;
 			let mut servers = SstpSocketServers::default();
-			if let Some(trans_entry) = &ci_entry.availability.udp {
+
+			// Parse UDPv6 configuration
+			if let Some(port) = config.ipv6_udp_port {
 				servers.udp = Some(Arc::new(SstpSocketServer {
-					inner: UdpServer::bind(SocketAddrV6::new(
-						ci_entry.addr.clone(),
-						trans_entry.port,
-						0,
-						0,
-					))
-					.await?,
-					openness: trans_entry.openness.clone(),
+					inner: UdpServer::bind(SocketAddrV6::new(addr, port, 0, 0)).await?,
+					openness: config
+						.ipv6_udp_openness
+						.as_ref()
+						.map(|s| match Openness::from_str(&s) {
+							Ok(o) => o,
+							Err(_) => {
+								error!(
+									"Unable to parse UDPv6 openness \"{}\" from config file. \
+									 Assuming unidirectional.",
+									s
+								);
+								Openness::Unidirectional
+							}
+						})
+						.unwrap_or(Openness::Unidirectional),
 				}));
 			}
-			if let Some(trans_entry) = &ci_entry.availability.tcp {
+
+			// Parse TCPv6 configuration
+			if let Some(port) = config.ipv6_tcp_port {
 				servers.tcp = Some(Arc::new(SstpSocketServer {
-					inner: TcpServer::bind(SocketAddrV6::new(
-						ci_entry.addr.clone(),
-						trans_entry.port,
-						0,
-						0,
-					))
-					.await?,
-					openness: trans_entry.openness.clone(),
+					inner: TcpServer::bind(SocketAddrV6::new(addr, port, 0, 0)).await?,
+					openness: config
+						.ipv6_tcp_openness
+						.as_ref()
+						.map(|s| match Openness::from_str(&s) {
+							Ok(o) => o,
+							Err(_) => {
+								error!(
+									"Unable to parse TCPv6 openness \"{}\" from config file. \
+									 Assuming unidirectional.",
+									s
+								);
+								Openness::Unidirectional
+							}
+						})
+						.unwrap_or(Openness::Unidirectional),
 				}));
 			}
+
 			this.ipv6 = Some(servers);
 		}
 
@@ -1804,12 +1806,13 @@ impl Server {
 	/// default_timeout: The timeout that incomming connection will be
 	/// configured for
 	pub async fn bind(
-		stop_flag: Arc<AtomicBool>, node_id: IdType, contact_info: ContactInfo,
-		private_key: PrivateKey, default_timeout: Duration,
-	) -> Result<Arc<Self>> {
+		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: PrivateKey,
+		default_timeout: Duration,
+	) -> StdResult<Arc<Self>, SocketBindError> {
+		let contact_info = ContactInfo::from_config(config);
 		Ok(Arc::new(Self {
 			stop_flag,
-			sockets: SocketCollection::bind(&contact_info).await?,
+			sockets: SocketCollection::bind(config).await?,
 			our_contact_info: StdMutex::new(contact_info),
 			sessions: Mutex::new(Sessions::new()),
 			node_id,
@@ -2915,6 +2918,11 @@ mod tests {
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
 		let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10000));
 		let slave_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10001));
+		let mut master_config = Config::default();
+		master_config.ipv4_address = Some("127.0.0.1".to_string());
+		master_config.ipv4_udp_port = Some(10000);
+		let mut slave_config = master_config.clone();
+		slave_config.ipv4_udp_port = Some(10001);
 		let master_contact_info: ContactInfo = (&master_addr).into();
 		let slave_contact_info: ContactInfo = (&slave_addr).into();
 		let stop_flag = Arc::new(AtomicBool::new(false));
@@ -2922,8 +2930,8 @@ mod tests {
 		let master_node_id = master_private_key.public().generate_address();
 		let master = sstp::Server::bind(
 			stop_flag.clone(),
+			&master_config,
 			master_node_id,
-			master_contact_info.clone(),
 			master_private_key,
 			DEFAULT_TIMEOUT,
 		)
@@ -2934,8 +2942,8 @@ mod tests {
 		let slave = Arc::new(
 			sstp::Server::bind(
 				stop_flag.clone(),
+				&slave_config,
 				slave_node_id,
-				slave_contact_info.clone(),
 				slave_private_key,
 				DEFAULT_TIMEOUT,
 			)
@@ -3046,20 +3054,23 @@ mod tests {
 	/// Sent and receive a message through a relay
 	async fn test_connection_piping() {
 		let mut rng = test::initialize_rng();
+		let mut relay_config = Config::default();
+		relay_config.ipv4_address = Some("127.0.0.1".to_string());
+		relay_config.ipv4_udp_port = Some(10002);
+		let mut node1_config = relay_config.clone();
+		node1_config.ipv4_udp_port = Some(10003);
+		let mut node2_config = relay_config.clone();
+		node2_config.ipv4_udp_port = Some(10004);
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
 		let relay_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10002));
-		let node1_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10003));
 		let node2_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10004));
-		let relay_contact_info: ContactInfo = (&relay_addr).into();
-		let node1_contact_info: ContactInfo = (&node1_addr).into();
-		let node2_contact_info: ContactInfo = (&node2_addr).into();
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let relay_private_key = PrivateKey::generate();
 		let relay_node_id = relay_private_key.public().generate_address();
 		let relay = sstp::Server::bind(
 			stop_flag.clone(),
+			&relay_config,
 			relay_node_id.clone(),
-			relay_contact_info.clone(),
 			relay_private_key,
 			DEFAULT_TIMEOUT,
 		)
@@ -3069,8 +3080,8 @@ mod tests {
 		let node1_node_id = node1_private_key.public().generate_address();
 		let node1 = sstp::Server::bind(
 			stop_flag.clone(),
+			&node1_config,
 			node1_node_id,
-			node1_contact_info.clone(),
 			node1_private_key,
 			DEFAULT_TIMEOUT,
 		)
@@ -3081,8 +3092,8 @@ mod tests {
 		let node2 = Arc::new(
 			sstp::Server::bind(
 				stop_flag.clone(),
+				&node2_config,
 				node2_node_id.clone(),
-				node2_contact_info.clone(),
 				node2_private_key,
 				DEFAULT_TIMEOUT,
 			)

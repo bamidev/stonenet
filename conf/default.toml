@@ -67,4 +67,4 @@ bucket_size = 4
 # receive connections to contact eachother.
 # However, as a super node you could run the risk of being complicit in sharing
 # illegal data. So only set this to true at your own risk!
-super_node = false
+relay_node = false

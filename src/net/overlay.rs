@@ -2,7 +2,6 @@ use std::{
 	boxed::Box,
 	collections::HashMap,
 	net::SocketAddr,
-	str::FromStr,
 	sync::{atomic::*, Arc, Mutex as StdMutex, OnceLock},
 };
 
@@ -14,7 +13,14 @@ use futures::{
 use log::*;
 use tokio::{self, select, spawn, sync::Mutex, time::sleep};
 
-use super::{actor::*, actor_store::*, bincode, message::*, node::*, sstp};
+use super::{
+	actor::*,
+	actor_store::*,
+	bincode,
+	message::*,
+	node::*,
+	sstp::{self, SocketBindError},
+};
 use crate::{
 	common::*,
 	config::*,
@@ -283,9 +289,9 @@ impl OverlayNode {
 	pub async fn close(self: Arc<Self>) { self.base.close().await; }
 
 	pub async fn start(
-		stop_flag: Arc<AtomicBool>, node_id: IdType, contact_info: ContactInfo,
-		private_key: PrivateKey, db: Database, config: &Config,
-	) -> sstp::Result<Arc<Self>> {
+		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: PrivateKey,
+		db: Database,
+	) -> Result<Arc<Self>, SocketBindError> {
 		let mut bootstrap_nodes = Vec::<SocketAddr>::with_capacity(config.bootstrap_nodes.len());
 		for address_string in &config.bootstrap_nodes {
 			match address_string.to_socket_addrs() {
@@ -304,8 +310,8 @@ impl OverlayNode {
 
 		let socket = sstp::Server::bind(
 			stop_flag.clone(),
+			config,
 			node_id.clone(),
-			contact_info.clone(),
 			private_key,
 			sstp::DEFAULT_TIMEOUT,
 		)
@@ -327,7 +333,7 @@ impl OverlayNode {
 			)),
 			bootstrap_nodes,
 			expected_connections: Arc::new(Mutex::new(HashMap::new())),
-			is_super_node: config.super_node,
+			is_super_node: config.relay_node,
 			super_nodes: Mutex::new(LimitedVec::new(100)),
 		});
 		debug_assert!(this.base.interface.node.set(Some(this.clone())).is_ok());
@@ -910,8 +916,9 @@ impl OverlayNode {
 		if i == self.bootstrap_nodes.len() {
 			if self.bootstrap_nodes.len() > 0 {
 				error!(
-					"None of the {} bootstrap node(s) were available.",
-					self.bootstrap_nodes.len()
+					"None of the {} bootstrap node(s) were available. {:?}",
+					self.bootstrap_nodes.len(),
+					self.bootstrap_nodes
 				);
 			} else {
 				debug!("No bootstrap nodes configured. Not connecting to any nodes.");
@@ -1811,19 +1818,6 @@ impl OverlayNode {
 		let bnode1_contact = ContactOption::new(bnode1_addr, false);
 		let bnode2_contact = ContactOption::new(bnode2_addr, false);
 
-		// Currently only support UDPv4
-		let our_ip4_entry = self
-			.base
-			.contact_info()
-			.ipv4
-			.expect("missing IPv4 contact entry");
-		let our_udp4_entry = our_ip4_entry
-			.availability
-			.udp
-			.expect("missing UDPv4 contact entry");
-		let our_addr = SocketAddr::new(IpAddr::V4(our_ip4_entry.addr), our_udp4_entry.port);
-		let our_contact = ContactOption::new(our_addr, false);
-
 		// Test if we can do hole punching
 		// We need to open a connection to obtain the node's ID first, because
 		// requesting a reversed connection requires it
@@ -1835,6 +1829,15 @@ impl OverlayNode {
 		bnode1_connection
 			.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 4)
 			.await;
+		let e1 = self
+			.base
+			.socket
+			.our_contact_info()
+			.ipv4
+			.expect("IPv4 not set");
+		let e2 = e1.availability.udp.expect("UDPv4 port not set");
+		let our_contact =
+			ContactOption::new(SocketAddr::V4(SocketAddrV4::new(e1.addr, e2.port)), false);
 		let bnode2_id = if let Some(bnode2_id) = db
 			.fetch_bootstrap_node_id(&bnode2_addr)
 			.expect("unable to fetch bootstrap node ID")
@@ -1882,7 +1885,7 @@ impl OverlayNode {
 			return Some(Openness::Punchable);
 		} else {
 			bnode1_connection.close_async();
-			return Some(Openness::Bidirectional);
+			return Some(Openness::Unidirectional);
 		}
 	}
 }
