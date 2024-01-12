@@ -1252,6 +1252,18 @@ impl OverlayNode {
 			return None;
 		}
 
+		// Contact the relay node
+		let knows_target = self
+			.exchange_relay_punch_hole_request(
+				relay_connection,
+				target.clone(),
+				our_contact.clone(),
+			)
+			.await?;
+		if !knows_target {
+			return None;
+		}
+
 		let (tx_in, rx_in) = oneshot::channel();
 		{
 			let mut expected_connections = self.expected_connections.lock().await;
@@ -1266,18 +1278,6 @@ impl OverlayNode {
 				return None;
 			}
 			expected_connections.insert(their_contact.clone(), tx_in);
-		}
-
-		// Contact the relay node
-		let knows_target = self
-			.exchange_relay_punch_hole_request(
-				relay_connection,
-				target.clone(),
-				our_contact.clone(),
-			)
-			.await?;
-		if !knows_target {
-			return None;
 		}
 
 		// TODO: Keep the connection with the relay node open until contact is made,
@@ -1343,7 +1343,11 @@ impl OverlayNode {
 
 		let mut expected_connections = self.expected_connections.lock().await;
 		let removed = expected_connections.remove(their_contact).is_some();
-		debug_assert!(!removed, "expected connection is gone");
+		debug_assert!(
+			result.is_some() || !removed,
+			"expected connection is gone for {}",
+			their_contact
+		);
 
 		if result.is_none() {
 			debug!("Unable to receive reversed connection: timeout elapsed");

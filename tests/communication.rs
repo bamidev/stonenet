@@ -26,8 +26,8 @@ use stonenetd::{
 fn initialize() { env_logger::init(); }
 
 async fn load_test_node(
-	stop_flag: Arc<AtomicBool>, rng: &mut (impl CryptoRng + RngCore), config: &Config, port: u16,
-	openness: Openness, filename: &str,
+	stop_flag: Arc<AtomicBool>, rng: &mut (impl CryptoRng + RngCore), config: &Config,
+	filename: &str,
 ) -> Api {
 	// FIXME: Generate proper random temporary file names.
 	let file = PathBuf::from(filename);
@@ -45,27 +45,14 @@ async fn load_test_node(
 	let db = Database::load(file).expect("unable to load database");
 	let private_key = PrivateKey::generate_with_rng(rng);
 	let node_id = private_key.public().generate_address();
-	let contact_info = ContactInfo {
-		ipv4: Some(Ipv4ContactInfo {
-			addr: Ipv4Addr::new(127, 0, 0, 1),
-			availability: IpAvailability {
-				udp: Some(TransportAvailabilityEntry { port, openness }),
-				tcp: None,
-			},
-		}),
-		ipv6: None,
-	};
-	info!("Node {} runs on port {}.", node_id, port);
-	let node = OverlayNode::start(
-		stop_flag.clone(),
+	info!(
+		"Node {} runs on port {}.",
 		node_id,
-		contact_info,
-		private_key,
-		db.clone(),
-		&config,
-	)
-	.await
-	.expect("unable to start node");
+		config.ipv4_udp_port.expect("no port in config")
+	);
+	let node = OverlayNode::start(stop_flag.clone(), &config, node_id, private_key, db.clone())
+		.await
+		.expect("unable to start node");
 
 	node.join_network(stop_flag).await;
 
@@ -100,52 +87,41 @@ async fn test_data_synchronization(
 	// Set up four nodes
 	let stop_flag = Arc::new(AtomicBool::new(false));
 	let mut config1 = Config::default();
-	config1.super_node = true;
+	config1.ipv4_address = Some("127.0.0.1".to_string());
+	config1.ipv4_udp_port = Some(*next_port);
+	config1.ipv4_udp_openness = Some("bidirectional".to_string());
+	config1.relay_node = true;
+	*next_port += 1;
 	let mut config2 = Config::default();
-	config2.super_node = true;
-	config2.bootstrap_nodes = vec![format!("127.0.0.1:{}", *next_port)];
+	config2.ipv4_address = Some("127.0.0.1".to_string());
+	config2.ipv4_udp_port = Some(*next_port);
+	config2.ipv4_udp_openness = Some("bidirectional".to_string());
+	config2.relay_node = true;
+	config2.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
+	*next_port += 1;
 	let mut config3 = Config::default();
-	config3.bootstrap_nodes = vec![format!("127.0.0.1:{}", *next_port)];
+	config3.ipv4_address = Some("127.0.0.1".to_string());
+	config3.ipv4_udp_port = Some(*next_port);
+	config3.ipv4_udp_openness = Some(node1_openness.to_string());
+	config3.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
+	*next_port += 1;
+	let mut config4 = Config::default();
+	config4.ipv4_address = Some("127.0.0.1".to_string());
+	config4.ipv4_udp_port = Some(*next_port);
+	config4.ipv4_udp_openness = Some(node2_openness.to_string());
+	config4.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
+	*next_port += 1;
 	let bootstrap_node = load_test_node(
 		stop_flag.clone(),
 		&mut rng,
 		&config1,
-		*next_port,
-		Openness::Bidirectional,
 		"/tmp/bootstrap.sqlite",
 	)
 	.await;
-	*next_port += 1;
-	let random_node: Api = load_test_node(
-		stop_flag.clone(),
-		&mut rng,
-		&config2,
-		*next_port,
-		Openness::Bidirectional,
-		"/tmp/random.sqlite",
-	)
-	.await;
-	*next_port += 1;
-	let node1 = load_test_node(
-		stop_flag.clone(),
-		&mut rng,
-		&config3,
-		*next_port,
-		node1_openness,
-		"/tmp/node1.sqlite",
-	)
-	.await;
-	*next_port += 1;
-	let node2 = load_test_node(
-		stop_flag.clone(),
-		&mut rng,
-		&config3,
-		*next_port,
-		node2_openness,
-		"/tmp/node2.sqlite",
-	)
-	.await;
-	*next_port += 1;
+	let random_node: Api =
+		load_test_node(stop_flag.clone(), &mut rng, &config2, "/tmp/random.sqlite").await;
+	let node1 = load_test_node(stop_flag.clone(), &mut rng, &config3, "/tmp/node1.sqlite").await;
+	let node2 = load_test_node(stop_flag.clone(), &mut rng, &config4, "/tmp/node2.sqlite").await;
 
 	// Create a profile for node 1
 	let profile_description = r#"
