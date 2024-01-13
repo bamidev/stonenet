@@ -18,6 +18,7 @@ mod web;
 use std::{
 	fs::File,
 	io::{self, prelude::*},
+	net::{SocketAddr, ToSocketAddrs},
 	process,
 	str::FromStr,
 	sync::{
@@ -177,34 +178,181 @@ async fn node_main(stop_flag: Arc<AtomicBool>, g: &Api, config: &Config) {
 }
 
 async fn test_openness(g: &Api, config: &Config) {
-	// Use the openness as found in the config file, or, if not set, test it
-	let udp4_openness = if let Some(string) = &config.ipv4_udp_openness {
-		if let Ok(o) = Openness::from_str(string) {
-			info!("Using UDPv4 openness: {}", o);
-			Some(o)
-		} else {
-			// TODO: Need to return None if UDP4 is not usable at all
-			info!("Using UDPv4 openness: unidirectional");
-			Some(Openness::Bidirectional)
-		}
-	} else {
-		info!("Testing UDPv4 openness...");
-		if let Some(o) = g.node.test_openness_udp4(&config.bootstrap_nodes).await {
-			info!("Tested UDPv4 openness to be: {}", o);
-			Some(o)
-		} else {
-			warn!("No UDPv4 connectivity detected.");
-			None
-		}
-	};
+	if config.ipv4_address.is_some() {
+		let mut bootstrap_nodes: Option<Vec<SocketAddr>> = None;
 
-	if let Some(openness) = udp4_openness {
-		let mut ci = g.node.contact_info();
-		if let Some(entry) = &mut ci.ipv4 {
-			if let Some(entry) = &mut entry.availability.udp {
-				entry.openness = openness;
+		// Use the openness as found in the config file, or, if not set, test it
+		let udp4_openness = if let Some(string) = &config.ipv4_udp_openness {
+			if let Ok(o) = Openness::from_str(string) {
+				info!("Using UDPv4 openness: {}", o);
+				Some(o)
+			} else {
+				info!("Using UDPv4 openness: unidirectional");
+				Some(Openness::Unidirectional)
 			}
+		} else {
+			info!("Testing UDPv4 openness...");
+			bootstrap_nodes = Some(resolve_bootstrap_addresses(
+				&config.bootstrap_nodes,
+				true,
+				false,
+			));
+			if bootstrap_nodes.as_ref().unwrap().len() < 2 {
+				warn!("Not enough bootstrap nodes available");
+				None
+			} else if let Some(nodes) = &bootstrap_nodes {
+				if let Some(o) = g.node.test_openness_udpv4(&nodes).await {
+					info!("Tested UDPv4 openness to be: {}", o);
+					Some(o)
+				} else {
+					warn!("No UDPv4 connectivity detected.");
+					None
+				}
+			} else {
+				None
+			}
+		};
+
+		if let Some(openness) = udp4_openness {
+			let mut ci = g.node.contact_info();
+			if let Some(entry) = &mut ci.ipv4 {
+				if let Some(entry) = &mut entry.availability.udp {
+					entry.openness = openness;
+				}
+			}
+			g.node.set_contact_info(ci);
 		}
-		g.node.set_contact_info(ci);
+
+		let tcpv4_openness = if let Some(string) = &config.ipv4_tcp_openness {
+			if let Ok(o) = Openness::from_str(string) {
+				info!("Using TCPv4 openness: {}", o);
+				Some(o)
+			} else {
+				info!("Using TCPv4 openness: unidirectional");
+				Some(Openness::Unidirectional)
+			}
+		} else {
+			info!("Testing TCPv4 openness...");
+			if bootstrap_nodes.is_none() {
+				bootstrap_nodes = Some(resolve_bootstrap_addresses(
+					&config.bootstrap_nodes,
+					true,
+					false,
+				));
+			}
+			if bootstrap_nodes.as_ref().unwrap().len() < 2 {
+				warn!("Not enough bootstrap nodes available");
+				None
+			} else if let Some(nodes) = &bootstrap_nodes {
+				if let Some(o) = g.node.test_openness_tcpv4(&nodes).await {
+					info!("Tested TCPv4 openness to be: {}", o);
+					Some(o)
+				} else {
+					warn!("No TCPv4 connectivity detected.");
+					None
+				}
+			} else {
+				None
+			}
+		};
+
+		if let Some(openness) = tcpv4_openness {
+			let mut ci = g.node.contact_info();
+			if let Some(entry) = &mut ci.ipv4 {
+				if let Some(entry) = &mut entry.availability.tcp {
+					entry.openness = openness;
+				}
+			}
+			g.node.set_contact_info(ci);
+		}
+	}
+
+	if config.ipv6_address.is_some() {
+		let mut bootstrap_nodes: Option<Vec<SocketAddr>> = None;
+
+		// Use the openness as found in the config file, or, if not set, test it
+		let udp6_openness = if let Some(string) = &config.ipv6_udp_openness {
+			if let Ok(o) = Openness::from_str(string) {
+				info!("Using UDPv6 openness: {}", o);
+				Some(o)
+			} else {
+				info!("Using UDPv6 openness: unidirectional");
+				Some(Openness::Unidirectional)
+			}
+		} else {
+			info!("Testing UDPv6 openness...");
+			bootstrap_nodes = Some(resolve_bootstrap_addresses(
+				&config.bootstrap_nodes,
+				false,
+				true,
+			));
+			if bootstrap_nodes.as_ref().unwrap().len() < 2 {
+				warn!("Not enough bootstrap nodes available");
+				None
+			} else if let Some(nodes) = &bootstrap_nodes {
+				if let Some(o) = g.node.test_openness_udpv6(&nodes).await {
+					info!("Tested UDPv6 openness to be: {}", o);
+					Some(o)
+				} else {
+					warn!("No UDPv6 connectivity detected.");
+					None
+				}
+			} else {
+				None
+			}
+		};
+
+		if let Some(openness) = udp6_openness {
+			let mut ci = g.node.contact_info();
+			if let Some(entry) = &mut ci.ipv6 {
+				if let Some(entry) = &mut entry.availability.udp {
+					entry.openness = openness;
+				}
+			}
+			g.node.set_contact_info(ci);
+		}
+
+		let tcpv6_openness = if let Some(string) = &config.ipv6_tcp_openness {
+			if let Ok(o) = Openness::from_str(string) {
+				info!("Using TCPv6 openness: {}", o);
+				Some(o)
+			} else {
+				info!("Using TCPv6 openness: unidirectional");
+				Some(Openness::Unidirectional)
+			}
+		} else {
+			info!("Testing TCPv6 openness...");
+			if bootstrap_nodes.is_none() {
+				bootstrap_nodes = Some(resolve_bootstrap_addresses(
+					&config.bootstrap_nodes,
+					false,
+					true,
+				));
+			}
+			if bootstrap_nodes.as_ref().unwrap().len() < 2 {
+				warn!("Not enough bootstrap nodes available");
+				None
+			} else if let Some(nodes) = &bootstrap_nodes {
+				if let Some(o) = g.node.test_openness_tcpv6(&nodes).await {
+					info!("Tested TCPv6 openness to be: {}", o);
+					Some(o)
+				} else {
+					warn!("No TCPv6 connectivity detected.");
+					None
+				}
+			} else {
+				None
+			}
+		};
+
+		if let Some(openness) = tcpv6_openness {
+			let mut ci = g.node.contact_info();
+			if let Some(entry) = &mut ci.ipv6 {
+				if let Some(entry) = &mut entry.availability.tcp {
+					entry.openness = openness;
+				}
+			}
+			g.node.set_contact_info(ci);
+		}
 	}
 }

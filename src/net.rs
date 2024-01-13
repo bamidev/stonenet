@@ -559,6 +559,42 @@ impl fmt::Display for TransportAvailabilityEntry {
 }
 
 
+pub fn resolve_bootstrap_addresses(
+	nodes: &[String], use_ipv4: bool, use_ipv6: bool,
+) -> Vec<SocketAddr> {
+	// Collect all (unique) IP addresses
+	let mut addrs = Vec::with_capacity(nodes.len());
+	for string in nodes {
+		match string.to_socket_addrs() {
+			Err(e) => error!("Unable to parse bootstrap node {}: {}.", string, e),
+			Ok(mut iter) =>
+				while let Some(addr) = iter.next() {
+					let addr = if use_ipv4 {
+						if addr.is_ipv4() {
+							addr
+						} else {
+							continue;
+						}
+					} else if use_ipv6 {
+						if addr.is_ipv6() {
+							addr
+						} else {
+							continue;
+						}
+					} else {
+						continue;
+					};
+
+					if !addrs.contains(&addr) {
+						addrs.push(addr);
+					}
+				},
+		}
+	}
+	addrs
+}
+
+
 #[cfg(test)]
 mod tests {
 	use super::*;

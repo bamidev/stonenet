@@ -292,21 +292,7 @@ impl OverlayNode {
 		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: PrivateKey,
 		db: Database,
 	) -> Result<Arc<Self>, SocketBindError> {
-		let mut bootstrap_nodes = Vec::<SocketAddr>::with_capacity(config.bootstrap_nodes.len());
-		for address_string in &config.bootstrap_nodes {
-			match address_string.to_socket_addrs() {
-				Err(e) => error!("Unable to parse bootstrap node {}: {}.", address_string, e),
-				Ok(mut s) =>
-					if let Some(addr) = s.next() {
-						bootstrap_nodes.push(addr);
-					} else {
-						error!(
-							"Unable to parse bootstrap node {}: domain name resolution failed",
-							address_string
-						);
-					},
-			}
-		}
+		let bootstrap_nodes = resolve_bootstrap_addresses(&config.bootstrap_nodes, true, true);
 
 		let socket = sstp::Server::bind(
 			stop_flag.clone(),
@@ -1773,54 +1759,57 @@ impl OverlayNode {
 		store_count
 	}
 
-	pub async fn test_openness_udp4(&self, bootstrap_nodes: &[String]) -> Option<Openness> {
-		// Sanity check
-		if bootstrap_nodes.len() < 2 {
-			error!("Not enough bootstrap nodes to test openness, asssuming unidirectional.");
-			return None;
-		}
+	pub async fn test_openness_udpv4(&self, bootstrap_nodes: &[SocketAddr]) -> Option<Openness> {
+		self._test_openness(&bootstrap_nodes, true, |ci| {
+			let e1 = ci.ipv4.as_ref().expect("IPv4 not set");
+			let e2 = e1.availability.udp.as_ref().expect("UDPv4 port not set");
+			ContactOption::new(SocketAddr::V4(SocketAddrV4::new(e1.addr, e2.port)), false)
+		})
+		.await
+	}
 
+	pub async fn test_openness_tcpv4(&self, bootstrap_nodes: &[SocketAddr]) -> Option<Openness> {
+		self._test_openness(&bootstrap_nodes, false, |ci| {
+			let e1 = ci.ipv4.as_ref().expect("IPv4 not set");
+			let e2 = e1.availability.udp.as_ref().expect("TCPv4 port not set");
+			ContactOption::new(SocketAddr::V4(SocketAddrV4::new(e1.addr, e2.port)), true)
+		})
+		.await
+	}
+
+	pub async fn test_openness_udpv6(&self, bootstrap_nodes: &[SocketAddr]) -> Option<Openness> {
+		self._test_openness(&bootstrap_nodes, true, |ci| {
+			let e1 = ci.ipv6.as_ref().expect("IPv6 not set");
+			let e2 = e1.availability.udp.as_ref().expect("UDPv6 port not set");
+			ContactOption::new(
+				SocketAddr::V6(SocketAddrV6::new(e1.addr, e2.port, 0, 0)),
+				false,
+			)
+		})
+		.await
+	}
+
+	pub async fn test_openness_tcpv6(&self, bootstrap_nodes: &[SocketAddr]) -> Option<Openness> {
+		self._test_openness(&bootstrap_nodes, false, |ci| {
+			let e1 = ci.ipv6.as_ref().expect("IPv6 not set");
+			let e2 = e1.availability.udp.as_ref().expect("TCPv6 port not set");
+			ContactOption::new(
+				SocketAddr::V6(SocketAddrV6::new(e1.addr, e2.port, 0, 0)),
+				true,
+			)
+		})
+		.await
+	}
+
+	pub async fn _test_openness(
+		&self, bootstrap_nodes: &[SocketAddr], use_udp: bool,
+		our_contact_fn: impl FnOnce(&ContactInfo) -> ContactOption,
+	) -> Option<Openness> {
 		// Parse the bootstrap nodes addresses
-		let bnode1_addr = match bootstrap_nodes[0].to_socket_addrs() {
-			Ok(mut s) =>
-				if let Some(addr) = s.next() {
-					addr
-				} else {
-					error!(
-						"Unable to parse bootstrap node {}: domain name resolution failed.",
-						bootstrap_nodes[0]
-					);
-					return None;
-				},
-			Err(e) => {
-				error!(
-					"Unable to parse bootstrap node {}: {}.",
-					bootstrap_nodes[0], e
-				);
-				return None;
-			}
-		};
-		let bnode2_addr = match bootstrap_nodes[1].to_socket_addrs() {
-			Ok(mut s) =>
-				if let Some(addr) = s.next() {
-					addr
-				} else {
-					error!(
-						"Unable to parse bootstrap node {}: domain name resolution failed.",
-						bootstrap_nodes[1]
-					);
-					return None;
-				},
-			Err(e) => {
-				error!(
-					"Unable to parse bootstrap node {}: {}.",
-					bootstrap_nodes[1], e
-				);
-				return None;
-			}
-		};
-		let bnode1_contact = ContactOption::new(bnode1_addr, false);
-		let bnode2_contact = ContactOption::new(bnode2_addr, false);
+		let bnode1_addr = bootstrap_nodes[0];
+		let bnode2_addr = bootstrap_nodes[1];
+		let bnode1_contact = ContactOption::new(bnode1_addr, !use_udp);
+		let bnode2_contact = ContactOption::new(bnode2_addr, !use_udp);
 
 		// Test if we can do hole punching
 		// We need to open a connection to obtain the node's ID first, because
@@ -1833,15 +1822,7 @@ impl OverlayNode {
 		bnode1_connection
 			.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 4)
 			.await;
-		let e1 = self
-			.base
-			.socket
-			.our_contact_info()
-			.ipv4
-			.expect("IPv4 not set");
-		let e2 = e1.availability.udp.expect("UDPv4 port not set");
-		let our_contact =
-			ContactOption::new(SocketAddr::V4(SocketAddrV4::new(e1.addr, e2.port)), false);
+		let our_contact = our_contact_fn(&self.base.socket.our_contact_info());
 		let bnode2_id = if let Some(bnode2_id) = db
 			.fetch_bootstrap_node_id(&bnode2_addr)
 			.expect("unable to fetch bootstrap node ID")
