@@ -38,9 +38,9 @@ ipv4_address = "0.0.0.0"
 # recommended, as they are the arguably the least blocked ports by firewalls.
 # If this is for some reason not useable, another recommended port is 37337.
 ipv4_udp_port = 37337
-ipv6_udp_port = 37337
 ipv4_tcp_port = 37337
-ipv6_tcp_port = 37337
+ipv6_udp_port = 37339
+ipv6_tcp_port = 37339
 
 # If set to true, will run a web server for the user interface
 load_web_interface = true

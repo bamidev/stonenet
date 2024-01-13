@@ -320,7 +320,7 @@ where
 #[async_trait]
 impl<V> ConnectionBasedLinkServer for TcpServer<V>
 where
-	V: Clone + Into<SocketAddr> + FromStr + Send + 'static + std::fmt::Debug,
+	V: Clone + Into<SocketAddr> + FromStr + Send + 'static,
 {
 	async fn connect(&self, addr: Self::Target, timeout: Duration) -> io::Result<Self::Socket> {
 		let inner = Self::new_inner()?;
