@@ -50,7 +50,7 @@ pub trait LinkSocketSender: Send + Sync {
 	fn is_tcp(&self) -> bool { false }
 
 	/// Should be implemented to send one packet. May wait on reciepment.
-	async fn send(&self, message: &[u8], timeout: Duration) -> io::Result<()>;
+	async fn send(&self, message: &[u8]) -> io::Result<()>;
 }
 
 #[async_trait]
@@ -250,7 +250,7 @@ where
 
 	fn max_packet_length(&self) -> usize { udp_max_packet_length::<V>() }
 
-	async fn send(&self, message: &[u8], _timeout: Duration) -> io::Result<()> {
+	async fn send(&self, message: &[u8]) -> io::Result<()> {
 		let socket_addr: SocketAddr = Into::<SocketAddr>::into((*self.endpoint).clone());
 		let written = self.inner.send_to(message, socket_addr).await?;
 		if written != message.len() {
@@ -306,7 +306,7 @@ where
 	async fn bind(addr: Self::Target) -> io::Result<Self> {
 		let inner = Self::new_inner()?;
 		inner.set_reuseaddr(true)?;
-		//inner.set_reuseport(true)?;
+		inner.set_reuseport(true)?;
 		inner.bind(addr.clone().into())?;
 		Ok(Self {
 			inner: inner.listen(TCP_BACKLOG)?,
@@ -325,7 +325,7 @@ where
 	async fn connect(&self, addr: Self::Target, timeout: Duration) -> io::Result<Self::Socket> {
 		let inner = Self::new_inner()?;
 		inner.set_reuseaddr(true)?;
-		//inner.set_reuseport(true)?;
+		inner.set_reuseport(true)?;
 		inner.bind(self.addr.as_ref().clone().into())?;
 
 		select! {
@@ -405,7 +405,7 @@ where
 		let packet_size;
 		let mut socket = self.inner.lock().await;
 		select! {
-			result = socket.read_u16_le() => {
+			result = socket.read_u32_le() => {
 				packet_size = result? as usize;
 			},
 			_ = sleep(timeout) => {
@@ -415,18 +415,14 @@ where
 
 		// Read the actual packet into a buffer
 		let mut buffer = vec![0u8; packet_size];
-		select! {
-			result = socket.read(&mut buffer) => {
-				let read = result?;
-				if read < packet_size {
-					return Err(io::ErrorKind::UnexpectedEof.into());
-				}
-				Ok(buffer)
-			},
-			_ = sleep(timeout) => {
-				Err(io::ErrorKind::TimedOut.into())
-			}
+		let read = socket.read_exact(&mut buffer).await?;
+		if read < packet_size {
+			#[cfg(test)]
+			panic!("Packet over TCP did not sent whole packet: {} < {}", read, packet_size);
+
+			return Err(io::ErrorKind::UnexpectedEof.into());
 		}
+		Ok(buffer)
 	}
 }
 
@@ -443,20 +439,13 @@ where
 
 	fn max_packet_length(&self) -> usize { 0xFFFF }
 
-	async fn send(&self, packet: &[u8], timeout: Duration) -> io::Result<()> {
-		let mut buffer = vec![0u8; 2 + packet.len()];
-		let packet_size = packet.len() as u16;
-		buffer[..2].copy_from_slice(&packet_size.to_le_bytes());
-		buffer[2..].copy_from_slice(packet);
-
+	async fn send(&self, packet: &[u8]) -> io::Result<()> {
+		let packet_size = packet.len() as u32;
+		println!("SEND {}", packet_size);
 		let mut socket = self.inner.as_ref().unwrap().lock().await;
-		select! {
-			result = socket.write_all(&mut buffer) => {
-				result
-			},
-			_ = sleep(timeout) => {
-				Err(io::ErrorKind::TimedOut.into())
-			}
-		}
+		socket.write_u32_le(packet_size).await?;
+		socket.write_all(&packet).await?;
+		socket.flush().await?;
+		Ok(())
 	}
 }

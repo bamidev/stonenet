@@ -717,7 +717,6 @@ impl Connection {
 			if packet_sequence as usize >= self.key_state.keychain.len() {
 				return Err(Error::InvalidSequenceNumber(packet_sequence).into());
 			}
-
 			if self.decrypt_packet(&self.key_state, packet_sequence, &mut packet) {
 				break;
 			} else {
@@ -1024,11 +1023,11 @@ impl Connection {
 				}
 			}
 			error_free = false;
-			let missing_sequences: Vec<&u16> = ooo_cache.keys().collect();
+			let ooo_sequences: Vec<&u16> = ooo_cache.keys().collect();
 			let missing_mask = self.compose_missing_mask(
 				max_packets_needed,
 				packets_collected,
-				&missing_sequences,
+				&ooo_sequences,
 			);
 			self.send_missing_mask_packet(packets_collected, missing_mask)
 				.await?;
@@ -1376,7 +1375,7 @@ impl Connection {
 		);
 
 		*self.last_activity.lock().unwrap() = SystemTime::now();
-		self.sender.send(&buffer, self.timeout).await?;
+		self.sender.send(&buffer).await?;
 		Ok(())
 	}
 
@@ -2019,7 +2018,7 @@ impl Server {
 	pub async fn send_punch_hole_packet(&self, contact: &ContactOption) -> Result<bool> {
 		if let Some((tx, _rx)) = self.sockets.connect(contact, self.default_timeout).await? {
 			let buffer = vec![MESSAGE_TYPE_PUNCH_HOLE; 1];
-			tx.send(&buffer, self.default_timeout).await?;
+			tx.send(&buffer).await?;
 			return Ok(true);
 		}
 		Ok(false)
@@ -2043,7 +2042,7 @@ impl Server {
 		let signature = self.private_key.sign(&buffer[129..]);
 		buffer[65..129].copy_from_slice(&signature.to_bytes());
 
-		socket.send(&buffer, timeout).await?;
+		socket.send(&buffer).await?;
 		Ok(())
 	}
 
@@ -2366,10 +2365,10 @@ impl Server {
 				Err(e) => {
 					match e.kind() {
 						io::ErrorKind::UnexpectedEof => {
-							// TODO: Close the sender if not already closed.
 							debug!("TCP connection closed {}.", &addr);
+							let _ = sender.close().await;
 						}
-						_ => warn!("TCP io error: {}", e),
+						_ => warn!("TCP I/O error: {}", e),
 					}
 					return;
 				}
@@ -2612,7 +2611,7 @@ impl Server {
 		// If the connection was already created before, just return the response again.
 		// The other side might not have received the hello response packet
 		if !is_new {
-			sender.send(&response, self.default_timeout).await?;
+			sender.send(&response).await?;
 			return Ok(());
 		}
 
@@ -2650,7 +2649,7 @@ impl Server {
 			None => {}
 			Some(closure) => {
 				closure(connection);
-				sender.send(&response, self.default_timeout).await?;
+				sender.send(&response).await?;
 			}
 		}
 
@@ -2813,7 +2812,7 @@ impl Server {
 						Err(e) => match e {
 							// A connection is opened without sending anything all the time
 							Error::ConnectionClosed => {}
-							_ => warn!("Sstp io error: {}", e),
+							_ => warn!("SSTP I/O error: {}", e),
 						},
 					}
 				});
@@ -2895,6 +2894,9 @@ mod tests {
 	use super::*;
 	use crate::test;
 
+	#[ctor::ctor]
+	fn initialize() { env_logger::init(); }
+
 	#[test]
 	fn test_encryption() {
 		let mut rng = test::initialize_rng();
@@ -2911,20 +2913,33 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn test_connection_with_tcp() {
+		test_connection(false).await;
+	}
+
+	#[tokio::test]
+	async fn test_connection_with_udp() {
+		test_connection(true).await;
+	}
+
 	/// Sent and receive a bunch of messages.
-	async fn test_connection() {
+	async fn test_connection(use_udp: bool) {
 		let mut rng = test::initialize_rng();
-		//env_logger::init();
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
 		let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10000));
-		let slave_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10001));
 		let mut master_config = Config::default();
 		master_config.ipv4_address = Some("127.0.0.1".to_string());
-		master_config.ipv4_udp_port = Some(10000);
+		if use_udp {
+			master_config.ipv4_udp_port = Some(10000);
+		} else {
+			master_config.ipv4_tcp_port = Some(10000);
+		}
 		let mut slave_config = master_config.clone();
-		slave_config.ipv4_udp_port = Some(10001);
-		let master_contact_info: ContactInfo = (&master_addr).into();
-		let slave_contact_info: ContactInfo = (&slave_addr).into();
+		if use_udp {
+			slave_config.ipv4_udp_port = Some(10001);
+		} else {
+			slave_config.ipv4_tcp_port = Some(10001);
+		}
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let master_private_key = PrivateKey::generate();
 		let master_node_id = master_private_key.public().generate_address();
@@ -2955,7 +2970,7 @@ mod tests {
 		rng.fill_bytes(&mut small_message);
 		let mut small_message2 = vec![0u8; 1000];
 		rng.fill_bytes(&mut small_message2);
-		let mut big_message = vec![0u8; 1000000]; // One MB of data
+		let mut big_message = vec![0u8; 1000000]; // One MiB of data
 		rng.fill_bytes(&mut big_message);
 		let mut small_message3 = vec![0u8; 1000];
 		rng.fill_bytes(&mut small_message3);
@@ -3006,7 +3021,7 @@ mod tests {
 
 		let mut connection = slave
 			.clone()
-			.connect(&ContactOption::use_udp(master_addr), None)
+			.connect(&ContactOption::new(master_addr, !use_udp), None)
 			.await
 			.expect("unable to connect to master");
 
