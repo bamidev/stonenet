@@ -106,13 +106,7 @@ where
 	inner: Arc<tokio::net::UdpSocket>,
 	_phantom: PhantomData<UnsafeSendSync<V>>,
 }
-pub struct TcpListener<V>
-where
-	V: Into<SocketAddr>,
-{
-	inner: tokio::net::TcpListener,
-	_phantom: PhantomData<UnsafeSendSync<V>>,
-}
+
 pub struct TcpServer<V>
 where
 	V: Into<SocketAddr>,
