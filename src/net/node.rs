@@ -10,27 +10,22 @@ use futures::future::join_all;
 use log::*;
 use num::BigUint;
 use serde::de::DeserializeOwned;
-use tokio::{spawn, sync::Mutex};
+use tokio::sync::Mutex;
 
 use super::{
+	bucket::Bucket,
 	message::*,
 	overlay::OverlayNode,
 	sstp::{self, Connection},
 	*,
 };
-use crate::{common::*, db, limited_store::LimitedVec};
+use crate::{common::*, db};
 
 
 pub struct AllFingersIter<'a> {
 	global_index: usize,
 	buckets: &'a Vec<Mutex<Bucket>>,
 	bucket_iter: <Vec<NodeContactInfo> as IntoIterator>::IntoIter,
-}
-
-pub struct Bucket {
-	pub(super) connection: Option<(NodeContactInfo, Arc<Mutex<Box<sstp::Connection>>>)>,
-	fingers: LimitedVec<NodeContactInfo>,
-	replacement_cache: LimitedVec<BucketReplacementEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -47,12 +42,6 @@ pub enum ContactStrategyMethod {
 	HolePunch,
 	/// Relay the value through another node
 	Relay,
-}
-
-#[derive(Clone)]
-pub struct BucketReplacementEntry {
-	finger: NodeContactInfo,
-	failed_attempts: u8,
 }
 
 pub struct FindValueIter<'a, I>
@@ -571,25 +560,27 @@ where
 		// at the same bit as our ID.
 		// Then return the fingers otherwise lowest in the binary tree.
 		let mut connection: Option<NodeContactInfo> = None;
-		let mut fingers = Vec::with_capacity(KADEMLIA_K as _);
+		let mut fingers = Vec::with_capacity(self.bucket_size);
 		for i in (0..(bucket_pos + 1)).rev() {
 			let additional_fingers: Vec<NodeContactInfo> = {
 				let bucket = self.buckets[i].lock().await;
-				let new_fingers = bucket.all();
 				if bucket.connection.is_some() {
 					connection = bucket.connection.as_ref().map(|(n, _)| n.clone());
 				}
-				new_fingers
+				bucket
+					.public_fingers_no_connection()
+					.map(|n| n.clone())
+					.collect()
 			};
 
-			let remaining = KADEMLIA_K as usize - fingers.len();
+			let remaining = self.bucket_size - fingers.len();
 			if remaining <= additional_fingers.len() {
 				fingers.extend_from_slice(&additional_fingers[0..remaining]);
 			} else {
 				fingers.extend_from_slice(&additional_fingers);
 			}
 
-			if fingers.len() >= KADEMLIA_K as usize {
+			if fingers.len() >= self.bucket_size {
 				return (connection, fingers);
 			}
 		}
@@ -606,7 +597,7 @@ where
 			None => return Vec::new(),
 			Some(p) => p as usize,
 		};
-		let mut fingers = Vec::with_capacity(KADEMLIA_K as _);
+		let mut fingers = Vec::with_capacity(self.bucket_size);
 
 		// Return the fingers lower down the binary tree first, as they differ
 		// at the same bit as our ID.
@@ -616,9 +607,9 @@ where
 			// FIXME: Pretty ineffecient, copying the whole vector.
 			let additional_fingers: Vec<NodeContactInfo> = {
 				let bucket = self.buckets[i].lock().await;
-				bucket.all()
+				bucket.public_fingers().map(|n| n.clone()).collect()
 			};
-			let remaining = KADEMLIA_K as usize - fingers.len();
+			let remaining = self.bucket_size - fingers.len();
 			if remaining <= additional_fingers.len() {
 				fingers.extend_from_slice(&additional_fingers[0..remaining]);
 			} else {
@@ -741,7 +732,7 @@ where
 							// Prevent using candidates that were found too far back. We
 							// don't intend to iterate over the whole network. Only the
 							// last few candidates that were close.
-							while candidates.len() > KADEMLIA_K as usize {
+							while candidates.len() > self.bucket_size {
 								candidates.pop_back();
 							}
 						}
@@ -878,7 +869,7 @@ where
 			.find_node_from_fingers(
 				&self.node_id,
 				&*fingers,
-				KADEMLIA_K as _,
+				self.bucket_size,
 				100, // TODO: Make configuration variable
 			)
 			.await;
@@ -900,7 +891,7 @@ where
 	pub async fn iter_all_fingers(&self) -> AllFingersIter<'_> {
 		AllFingersIter {
 			global_index: 255,
-			bucket_iter: self.buckets[255].lock().await.all().into_iter(),
+			bucket_iter: self.buckets[255].lock().await.public_fingers2().into_iter(),
 			buckets: &self.buckets,
 		}
 	}
@@ -916,7 +907,13 @@ where
 	async fn mark_node_helpful(&self, node_info: &NodeContactInfo) {
 		if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
-			bucket.mark_helpful(node_info);
+			bucket.mark_helpful(node_info, false);
+		}
+	}
+
+	async fn mark_obtained_value(&self, node_id: &IdType) {
+		if let Some(mutex) = self.find_bucket(node_id).await {
+			mutex.lock().await.mark_obtained_value(node_id);
 		}
 	}
 
@@ -1144,69 +1141,6 @@ where
 		}
 	}
 
-	/// Puts the given node somewhere in one of the buckets if there is a spot
-	/// available.
-	/// This method can block for quite a while, as it exchanges requests.
-	/// Normally speaking, you'd want to spawn this off to execute on the side.
-	/*pub async fn remember_node(self: &Arc<Self>, node_info: NodeContactInfo) {
-		let bucket_pos = match self.differs_at_bit(&node_info.node_id) {
-			None => {
-				debug!("Found same node ID as us, ignoring...");
-				return;
-			}
-			Some(p) => p as usize,
-		};
-
-		// If peer is already in our bucket, only update contact info
-		let mut bucket = self.buckets[bucket_pos].lock().await;
-		let (already_known, updated) = bucket.update(&node_info);
-		if updated {
-			debug!("Contact info updated for node {}.", &node_info.node_id);
-		}
-		if already_known {
-			return;
-		}
-
-		// If the bucket is full, test whether the node at the front is still active,
-		// and yeet it if not.
-		if let Some(n) = bucket.test_space() {
-			if self.test_id(n).await != true {
-				bucket.pop_front();
-			}
-		}
-		debug!("Remembering node {}...", node_info);
-		bucket.remember(node_info);
-	}*/
-
-	/// Like `remember_node`, but only remembers the node if it doesn't need to
-	/// push other data away.
-	/*pub async fn remember_node_nondestructive(&self, node_info: NodeContactInfo) {
-		let bucket_pos = match self.differs_at_bit(&node_info.node_id) {
-			None => {
-				debug!("Found same node ID as us, ignoring...");
-				return;
-			}
-			Some(p) => p as usize,
-		};if self.bucket_size >= 100 && node_info.contact_info.ipv4.clone().unwrap().availability.udp.unwrap().port == 37337 {
-			panic!("HOI2");
-		}
-
-		// If peer is already in our bucket, only update contact info
-		let mut bucket = self.buckets[bucket_pos].lock().await;
-		let (already_known, updated) = bucket.update(&node_info);
-		if updated {
-			debug!("Contact info updated for node {}.", &node_info.node_id);
-		}
-		if already_known {
-			return;
-		}
-
-		if bucket.test_space().is_none() {
-			debug!("Remembering node {}.", &node_info.contact_info);
-			bucket.remember(&node_info);
-		}
-	}*/
-
 	pub async fn select_connection(&self, node_info: &NodeContactInfo) -> Option<Box<Connection>> {
 		if let Some(strategy) = self.pick_contact_strategy(&node_info.contact_info) {
 			self.connect_by_strategy(&node_info, &strategy, None, &self.overlay_node())
@@ -1269,7 +1203,7 @@ impl<'a> AsyncIterator for AllFingersIter<'a> {
 					self.bucket_iter = self.buckets[self.global_index]
 						.lock()
 						.await
-						.all()
+						.public_fingers2()
 						.into_iter();
 				} else {
 					break;
@@ -1397,7 +1331,7 @@ where
 									&new_fingers,
 								);
 								if self.narrow_down {
-									while self.candidates.len() > KADEMLIA_K as usize {
+									while self.candidates.len() > self.node.bucket_size {
 										self.candidates.pop_back();
 									}
 								}
@@ -1419,7 +1353,14 @@ where
 
 							// If a value was found, return it, otherwise keep the search loop going
 							if let Some(value) = possible_value {
-								return (self.do_verify)(&self.id, &candidate_contact, &value);
+								if let Some(result) =
+									(self.do_verify)(&self.id, &candidate_contact, &value)
+								{
+									self.node
+										.mark_obtained_value(&candidate_contact.node_id)
+										.await;
+									return Some(result);
+								}
 							}
 						}
 					}
@@ -1427,187 +1368,6 @@ where
 			}
 		}
 		None
-	}
-}
-
-impl Bucket {
-	pub fn all(&self) -> Vec<NodeContactInfo> {
-		let mut list = Vec::with_capacity(self.fingers.len() + self.connection.is_some() as usize);
-		if let Some((node_info, _)) = self.connection.as_ref() {
-			list.push(node_info.clone());
-		}
-		list.extend(self.fingers.clone());
-		list
-	}
-
-	pub fn find(&self, id: &IdType) -> Option<&NodeContactInfo> {
-		if let Some(contact) = self.connection.as_ref() {
-			return Some(&contact.0);
-		}
-		if let Some(index) = self.fingers.iter().position(|f| &f.node_id == id) {
-			return Some(&self.fingers[index]);
-		}
-		None
-	}
-
-	// TODO: Make this return an iterator
-	fn fingers(&self) -> Vec<NodeContactInfo> {
-		let mut fingers = Vec::with_capacity(self.fingers.len() + self.replacement_cache.len());
-		fingers.extend(self.fingers.clone());
-		let vec2: Vec<NodeContactInfo> = self
-			.replacement_cache
-			.iter()
-			.map(|e| e.finger.clone())
-			.collect();
-		fingers.extend(vec2);
-		fingers
-	}
-
-	fn mark_helpful(&mut self, node_info: &NodeContactInfo) {
-		match self
-			.fingers
-			.iter()
-			.position(|f| f.node_id == node_info.node_id)
-		{
-			// If the finger already exists in this bucket, just update its contact info with the
-			// latest contact info
-			Some(index) => {
-				self.fingers[index]
-					.contact_info
-					.merge(&node_info.contact_info);
-			}
-			// If the finger is not in this bucket, check if it is in the replacement cache
-			None => {
-				match self
-					.replacement_cache
-					.iter()
-					.position(|f| &f.finger.node_id == &node_info.node_id)
-				{
-					// If not in the replacement cache, just add it to our bucket
-					None => {
-						self.remember(node_info);
-					}
-					// If it is in our replacement cache, add it back
-					Some(index) => {
-						let finger = self.replacement_cache.remove(index).unwrap().finger;
-						self.remember(&finger);
-					}
-				}
-			}
-		}
-	}
-
-	fn mark_problematic(&mut self, id: &IdType) {
-		match self.fingers.iter().position(|f| &f.node_id == id) {
-			None => {}
-			Some(index) => {
-				// Move contact to the replacement cache if there is room
-				if let Some(finger) = self.fingers.remove(index) {
-					if self.replacement_cache.has_space() {
-						self.replacement_cache.push_front(BucketReplacementEntry {
-							finger,
-							failed_attempts: 1,
-						});
-					}
-				}
-				// Otherwise, increase the failed attempt counter if it is in the replacement cache
-				else if let Some(index) = self
-					.replacement_cache
-					.iter()
-					.position(|e| &e.finger.node_id == id)
-				{
-					let entry = &mut self.replacement_cache[index];
-					entry.failed_attempts += 1;
-					if entry.failed_attempts == 3 {
-						self.replacement_cache.remove(index);
-					}
-				}
-			}
-		}
-	}
-
-	fn reject(&mut self, id: &IdType) {
-		// If it refers to a connection, drop the connection.
-		if let Some((node_info, connection)) = self.connection.as_ref() {
-			if &node_info.node_id == id {
-				let c = connection.clone();
-				spawn(async move {
-					let _ = c.lock().await.close().await;
-				});
-				self.connection = None;
-				//return;
-			}
-		}
-
-		match self.fingers.iter().position(|f| &f.node_id == id) {
-			None => {}
-			Some(index) => {
-				self.fingers.remove(index);
-			}
-		}
-
-		match self
-			.replacement_cache
-			.iter()
-			.position(|f| &f.finger.node_id == id)
-		{
-			None => {}
-			Some(index) => {
-				self.replacement_cache.remove(index);
-			}
-		}
-	}
-
-	fn new(size: usize) -> Self {
-		Self {
-			connection: None,
-			fingers: LimitedVec::new(size),
-			replacement_cache: LimitedVec::new(size),
-		}
-	}
-
-	fn pop_front(&mut self) -> bool {
-		if self.fingers.len() == 0 {
-			return false;
-		}
-		self.fingers.pop_front();
-		true
-	}
-
-	fn remember(&mut self, node: &NodeContactInfo) {
-		if self.fingers.len() < self.fingers.limit() as usize {
-			self.fingers.push_back(node.clone());
-		}
-	}
-
-	fn test_space(&self) -> Option<&NodeContactInfo> {
-		if self.fingers.len() < KADEMLIA_K as usize {
-			return None;
-		}
-
-		Some(&self.fingers[0])
-	}
-
-	/// Updates the node info currently saved in the bucket.
-	/// Returns (already_existing, updated)
-	fn update(&mut self, node_info: &NodeContactInfo) -> (bool, bool) {
-		match self
-			.fingers
-			.iter_mut()
-			.position(|f| f.node_id == node_info.node_id)
-		{
-			None => (false, false),
-			Some(index) => {
-				let old = self.fingers[index].contact_info.clone();
-				let different = old != node_info.contact_info;
-				if different {
-					self.fingers[index]
-						.contact_info
-						.merge(&node_info.contact_info);
-				}
-				(true, different)
-			}
-		}
 	}
 }
 

@@ -27,6 +27,19 @@ impl<V> LimitedVec<V> {
 
 	pub fn has_space(&self) -> bool { self.store.len() < self.limit }
 
+	pub fn insert(&mut self, index: usize, value: V) -> bool {
+		if index < self.limit {
+			self.store.insert(index, value);
+			if self.store.len() > self.limit {
+				let i = self.limit;
+				self.remove(i);
+			}
+			true
+		} else {
+			false
+		}
+	}
+
 	pub fn limit(&self) -> usize { self.limit }
 
 	/// Adds a value to the top of the queue, removing anything to stay within

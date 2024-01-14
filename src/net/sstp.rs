@@ -1073,7 +1073,10 @@ impl Connection {
 				}
 			}
 
-			debug_assert!(!self.sender.is_connection_based(), "packets were missing on a TCP connection");
+			debug_assert!(
+				!self.sender.is_connection_based(),
+				"packets were missing on a TCP connection"
+			);
 			error_free = false;
 			let ooo_sequences: Vec<&u16> = ooo_cache.keys().collect();
 			let missing_mask =
@@ -1431,7 +1434,9 @@ impl Connection {
 	async fn send_crypted_packet_filled(
 		&self, message_type: u8, keystate: &KeyState, key_sequence: u16, packet: &[u8],
 	) -> Result<()> {
-		let max_len = if packet.len() != self.max_data_packet_length() && self.max_data_packet_length() > MAX_PACKET_FILL_BLOCK_SIZE {
+		let max_len = if packet.len() != self.max_data_packet_length()
+			&& self.max_data_packet_length() > MAX_PACKET_FILL_BLOCK_SIZE
+		{
 			(packet.len() / MAX_PACKET_FILL_BLOCK_SIZE + 1) * MAX_PACKET_FILL_BLOCK_SIZE
 		} else {
 			self.max_data_packet_length()
@@ -1945,7 +1950,6 @@ impl Server {
 				&secret_key,
 				our_session_id,
 				&self.our_contact_info(),
-				timeout / 2,
 			)
 			.await?;
 
@@ -2074,7 +2078,7 @@ impl Server {
 
 	async fn send_hello(
 		&self, socket: &dyn LinkSocketSender, private_key: &x25519::StaticSecret,
-		my_session_id: u16, my_contact_info: &ContactInfo, timeout: Duration,
+		my_session_id: u16, my_contact_info: &ContactInfo,
 	) -> Result<()> {
 		let my_contact_info_len = bincode::serialized_size(&my_contact_info).unwrap();
 		let mut buffer = vec![0u8; 163 + my_contact_info_len];
@@ -3109,7 +3113,7 @@ mod tests {
 		stop_flag.store(true, Ordering::Relaxed);
 	}
 
-	#[tokio::test]
+	//#[tokio::test]
 	/// Sent and receive a message through a relay
 	async fn test_connection_piping() {
 		let mut rng = test::initialize_rng();

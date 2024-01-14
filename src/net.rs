@@ -1,6 +1,7 @@
 pub mod actor;
 mod actor_store;
 pub mod bincode;
+mod bucket;
 mod connection_manager;
 pub mod message;
 mod node;
@@ -27,9 +28,6 @@ use sstp::Connection;
 
 use crate::{common::*, config::Config};
 
-/// Size of the 'k-buckets'. This parameter defines how many active fingers we
-/// keep for each leaf in the binary tree.
-pub const KADEMLIA_K: u32 = 4;
 //pub type KADEMLIA_K_AL = U4;
 /// Number of bits in a Kademlia ID. It is specified as 160 bits in the paper,
 /// but we use 256.
@@ -390,6 +388,30 @@ impl ContactInfo {
 				}
 			}
 		}
+	}
+
+	fn score(&self) -> u8 {
+		let mut score = 0u8;
+
+		// FIXME: Don't give points for a protocol that we don't support ourselves, as
+		// we shouldn't care about those.
+		if let Some(e) = &self.ipv4 {
+			if let Some(udp) = &e.availability.udp {
+				score += 4;
+			}
+			if let Some(udp) = &e.availability.tcp {
+				score += 1;
+			}
+		}
+		if let Some(e) = &self.ipv6 {
+			if let Some(udp) = &e.availability.udp {
+				score += 2;
+			}
+			if let Some(udp) = &e.availability.tcp {
+				score += 1;
+			}
+		}
+		score
 	}
 }
 
