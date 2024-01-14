@@ -46,8 +46,7 @@ pub trait LinkSocketSender: Send + Sync {
 
 	fn max_packet_length(&self) -> usize;
 
-	// FIXME: Remove this method
-	fn is_tcp(&self) -> bool { false }
+	fn is_connection_based(&self) -> bool { false }
 
 	/// Should be implemented to send one packet. May wait on reciepment.
 	async fn send(&self, message: &[u8]) -> io::Result<()>;
@@ -418,7 +417,10 @@ where
 		let read = socket.read_exact(&mut buffer).await?;
 		if read < packet_size {
 			#[cfg(test)]
-			panic!("Packet over TCP did not sent whole packet: {} < {}", read, packet_size);
+			panic!(
+				"Packet over TCP did not sent whole packet: {} < {}",
+				read, packet_size
+			);
 
 			return Err(io::ErrorKind::UnexpectedEof.into());
 		}
@@ -435,7 +437,7 @@ where
 		self.inner.as_ref().unwrap().lock().await.shutdown().await
 	}
 
-	fn is_tcp(&self) -> bool { true }
+	fn is_connection_based(&self) -> bool { true }
 
 	fn max_packet_length(&self) -> usize { 0xFFFF }
 

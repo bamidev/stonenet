@@ -376,7 +376,11 @@ impl Connection {
 		#[cfg(debug_assertions)]
 		self.should_be_closed.store(false, Ordering::Relaxed);
 		self.is_closing.store(true, Ordering::Relaxed);
-		self.send_close_packet().await?;
+		// If the underlying transport protocol was connection-based, just close the
+		// underlying connection, don't bother with a exchanging close packets.
+		if !self.sender.is_connection_based() {
+			self.negotiate_close().await?;
+		}
 		self.sender.close().await?;
 		match &mut self.receiver_handle {
 			None => {}
@@ -437,7 +441,7 @@ impl Connection {
 	pub fn contact_option(&self) -> ContactOption {
 		ContactOption {
 			target: self.peer_address.clone(),
-			use_tcp: self.sender.is_tcp(),
+			use_tcp: self.sender.is_connection_based(),
 		}
 	}
 
@@ -469,6 +473,19 @@ impl Connection {
 	pub fn our_session_id(&self) -> u16 { self.our_session_id }
 
 	fn max_data_packet_length(&self) -> usize { self.sender.max_packet_length() - 5 - 2 - 2 }
+
+	async fn negotiate_close(&mut self) -> Result<()> {
+		self.send_close_packet().await?;
+		let timeout = min(self.timeout / 8, MAXIMUM_RETRY_TIMEOUT);
+
+		while let Err(e) = self.receive_close_packet(timeout).await {
+			match e {
+				Error::Timeout => self.send_close_packet().await?,
+				other => return Err(other),
+			}
+		}
+		Ok(())
+	}
 
 	pub fn network_level(&self) -> NetworkLevel { NetworkLevel::from_ip(&self.peer_address.ip()) }
 
@@ -645,6 +662,26 @@ impl Connection {
 
 	pub async fn receive(&mut self) -> Result<Vec<u8>> {
 		self.receive_with_timeout(self.timeout).await
+	}
+
+	async fn receive_close_packet(&mut self, timeout: Duration) -> Result<()> {
+		while !self.is_closing.load(Ordering::Relaxed) {
+			tokio::select! {
+				result = self.queues.close.recv() => {
+					if let Some(packet) = result {
+						let _ = self.process_close_packet(packet);
+					}
+				},
+				_ = sleep(timeout) => {
+					if self.is_closing.load(Ordering::Relaxed) {
+						return Err(Error::ConnectionClosed.into());
+					} else {
+						return Err(Error::Timeout);
+					}
+				}
+			}
+		}
+		Ok(())
 	}
 
 	async fn receive_chunk(
@@ -1024,11 +1061,8 @@ impl Connection {
 			}
 			error_free = false;
 			let ooo_sequences: Vec<&u16> = ooo_cache.keys().collect();
-			let missing_mask = self.compose_missing_mask(
-				max_packets_needed,
-				packets_collected,
-				&ooo_sequences,
-			);
+			let missing_mask =
+				self.compose_missing_mask(max_packets_needed, packets_collected, &ooo_sequences);
 			self.send_missing_mask_packet(packets_collected, missing_mask)
 				.await?;
 			sent_first_ack_packet = Some(SystemTime::now());
@@ -2564,7 +2598,7 @@ impl Server {
 		let own_public_key = x25519::PublicKey::from(&own_secret_key);
 		let their_session_id = u16::from_le_bytes(*array_ref![packet, 160, 2]);
 		let mut their_contact_info: ContactInfo = bincode::deserialize(&packet[162..])?;
-		their_contact_info.update(addr, sender.is_tcp());
+		their_contact_info.update(addr, sender.is_connection_based());
 
 		let (tx_queues, rx_queues) = Queues::channel(their_session_id);
 		let (our_session_id, is_new) = self
@@ -2764,7 +2798,7 @@ impl Server {
 				self.process_hello_request(link_socket, sender, &packet[1..])
 					.await,
 			MESSAGE_TYPE_HELLO_RESPONSE =>
-				self.process_hello_response(sender, link_socket.is_tcp(), &packet[1..])
+				self.process_hello_response(sender, link_socket.is_connection_based(), &packet[1..])
 					.await,
 			MESSAGE_TYPE_DATA => self.process_data(&packet[1..]).await,
 			MESSAGE_TYPE_ACK => self.process_ack(&packet[1..]).await,
@@ -2913,14 +2947,10 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn test_connection_with_tcp() {
-		test_connection(false).await;
-	}
+	async fn test_connection_with_tcp() { test_connection(false).await; }
 
 	#[tokio::test]
-	async fn test_connection_with_udp() {
-		test_connection(true).await;
-	}
+	async fn test_connection_with_udp() { test_connection(true).await; }
 
 	/// Sent and receive a bunch of messages.
 	async fn test_connection(use_udp: bool) {
