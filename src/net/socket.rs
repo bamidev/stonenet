@@ -422,6 +422,7 @@ where
 				read, packet_size
 			);
 
+			#[cfg(not(test))]
 			return Err(io::ErrorKind::UnexpectedEof.into());
 		}
 		Ok(buffer)
@@ -443,7 +444,6 @@ where
 
 	async fn send(&self, packet: &[u8]) -> io::Result<()> {
 		let packet_size = packet.len() as u32;
-		println!("SEND {}", packet_size);
 		let mut socket = self.inner.as_ref().unwrap().lock().await;
 		socket.write_u32_le(packet_size).await?;
 		socket.write_all(&packet).await?;

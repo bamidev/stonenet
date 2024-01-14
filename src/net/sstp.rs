@@ -80,6 +80,7 @@ const MESSAGE_TYPE_PUNCH_HOLE: u8 = 5;
 /// If nothing was received on a TCP connection for 2 minutes, assume the
 /// connection is broken.
 const TCP_CONNECTION_TIMEOUT: u64 = 120;
+const MAX_PACKET_FILL_BLOCK_SIZE: usize = 10000;
 
 pub(super) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The minimum timeout time that will be waited on a crucial packet before
@@ -478,10 +479,20 @@ impl Connection {
 		self.send_close_packet().await?;
 		let timeout = min(self.timeout / 8, MAXIMUM_RETRY_TIMEOUT);
 
-		while let Err(e) = self.receive_close_packet(timeout).await {
-			match e {
-				Error::Timeout => self.send_close_packet().await?,
-				other => return Err(other),
+		let mut i = 1;
+		loop {
+			match self.receive_close_packet(timeout).await {
+				Ok(()) => break,
+				Err(e) => {
+					if i == 8 {
+						return Err(e);
+					}
+					match e {
+						Error::Timeout => self.send_close_packet().await?,
+						other => return Err(other),
+					}
+					i += 1;
+				}
 			}
 		}
 		Ok(())
@@ -669,7 +680,9 @@ impl Connection {
 			tokio::select! {
 				result = self.queues.close.recv() => {
 					if let Some(packet) = result {
-						let _ = self.process_close_packet(packet);
+						if self.process_close_packet(packet) {
+							return Ok(());
+						}
 					}
 				},
 				_ = sleep(timeout) => {
@@ -1059,6 +1072,8 @@ impl Connection {
 					return Err(Error::Timeout);
 				}
 			}
+
+			debug_assert!(!self.sender.is_connection_based(), "packets were missing on a TCP connection");
 			error_free = false;
 			let ooo_sequences: Vec<&u16> = ooo_cache.keys().collect();
 			let missing_mask =
@@ -1416,7 +1431,11 @@ impl Connection {
 	async fn send_crypted_packet_filled(
 		&self, message_type: u8, keystate: &KeyState, key_sequence: u16, packet: &[u8],
 	) -> Result<()> {
-		let max_len = self.max_data_packet_length();
+		let max_len = if packet.len() != self.max_data_packet_length() && self.max_data_packet_length() > MAX_PACKET_FILL_BLOCK_SIZE {
+			(packet.len() / MAX_PACKET_FILL_BLOCK_SIZE + 1) * MAX_PACKET_FILL_BLOCK_SIZE
+		} else {
+			self.max_data_packet_length()
+		};
 		let mut buffer;
 		let slice = if packet.len() == max_len {
 			packet
@@ -1433,18 +1452,13 @@ impl Connection {
 	}
 
 	async fn send_data_packet(
-		&mut self, key_sequence: u16, mut packet: &[u8], advance_key: bool,
+		&mut self, key_sequence: u16, packet: &[u8], advance_key: bool,
 	) -> Result<()> {
-		let max_len = self.max_data_packet_length();
-		if packet.len() > max_len {
-			packet = &packet[..max_len];
-		}
-
 		if advance_key {
 			self.key_state.advance_key(&packet);
 		}
 
-		self.send_crypted_packet(MESSAGE_TYPE_DATA, &self.key_state, key_sequence, &packet)
+		self.send_crypted_packet_filled(MESSAGE_TYPE_DATA, &self.key_state, key_sequence, &packet)
 			.await
 	}
 
