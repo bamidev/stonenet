@@ -299,6 +299,7 @@ where
 	async fn bind(addr: Self::Target) -> io::Result<Self> {
 		let inner = Self::new_inner()?;
 		inner.set_reuseaddr(true)?;
+		#[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
 		inner.set_reuseport(true)?;
 		inner.bind(addr.clone().into())?;
 		Ok(Self {
@@ -318,6 +319,7 @@ where
 	async fn connect(&self, addr: Self::Target, timeout: Duration) -> io::Result<Self::Socket> {
 		let inner = Self::new_inner()?;
 		inner.set_reuseaddr(true)?;
+		#[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
 		inner.set_reuseport(true)?;
 		inner.bind(self.addr.as_ref().clone().into())?;
 
