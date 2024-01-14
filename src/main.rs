@@ -18,7 +18,7 @@ mod web;
 use std::{
 	fs::File,
 	io::{self, prelude::*},
-	net::{SocketAddr, ToSocketAddrs},
+	net::SocketAddr,
 	process,
 	str::FromStr,
 	sync::{
@@ -39,13 +39,6 @@ use signal_hook::flag;
 use tokio;
 use toml;
 
-
-fn initialize_network_interfaces() {
-	let mut map = net::NETWORK_INTERFACES.lock().unwrap();
-	for interface in pnet::datalink::interfaces() {
-		map.insert(interface.name, interface.ips);
-	}
-}
 
 fn load_config() -> Option<Config> {
 	let mut file = match File::open(config::CONFIG_FILE_PATH) {
@@ -87,8 +80,6 @@ fn load_config() -> Option<Config> {
 #[tokio::main]
 async fn main() {
 	env_logger::init();
-
-	initialize_network_interfaces();
 
 	// Load config
 	if let Some(config) = load_config() {
