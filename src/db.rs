@@ -2351,6 +2351,7 @@ impl Connection {
 				params![address.to_string(), node_id],
 			)?;
 		}
+		tx.commit()?;
 		Ok(())
 	}
 
