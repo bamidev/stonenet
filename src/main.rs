@@ -16,6 +16,7 @@ mod test;
 mod web;
 
 use std::{
+	env,
 	fs::File,
 	io::{self, prelude::*},
 	net::SocketAddr,
@@ -36,9 +37,18 @@ use env_logger;
 use log::*;
 use net::{overlay::OverlayNode, *};
 use signal_hook::flag;
+use simple_logging;
 use tokio;
 use toml;
 
+
+fn initialize_logging() {
+	match env::var_os("SYSTEM_LOG_FILE") {
+		None => env_logger::init(),
+		Some(filename) => simple_logging::log_to_file(filename, LevelFilter::Info)
+			.expect("unable to unitialize logger"),
+	}
+}
 
 fn load_config() -> Option<Config> {
 	let mut file = match File::open(config::CONFIG_FILE_PATH) {
@@ -79,7 +89,7 @@ fn load_config() -> Option<Config> {
 
 #[tokio::main]
 async fn main() {
-	env_logger::init();
+	initialize_logging();
 
 	// Load config
 	if let Some(config) = load_config() {
