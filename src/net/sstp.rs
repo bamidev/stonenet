@@ -376,13 +376,16 @@ impl Connection {
 	pub async fn close(&mut self) -> Result<()> {
 		#[cfg(debug_assertions)]
 		self.should_be_closed.store(false, Ordering::Relaxed);
-		self.is_closing.store(true, Ordering::Relaxed);
+		let was_closing = self.is_closing.swap(true, Ordering::Relaxed);
 		// If the underlying transport protocol was connection-based, just close the
 		// underlying connection, don't bother with a exchanging close packets.
-		if !self.sender.is_connection_based() {
+		if !was_closing && !self.sender.is_connection_based() {
 			self.negotiate_close().await?;
 		}
 		self.sender.close().await?;
+		self.queues.ack.close();
+		self.queues.close.close();
+		self.queues.data.close();
 		match &mut self.receiver_handle {
 			None => {}
 			Some(h) => h.await.expect("join error"),
@@ -1184,10 +1187,6 @@ impl Connection {
 				warn!("Received malformed close packet: node ID didn't match.");
 			} else {
 				self.is_closing.store(true, Ordering::Relaxed);
-				// Close the other queues so that an end of the connection is signified on the
-				// task that may be waiting for those
-				self.queues.ack.close();
-				self.queues.data.close();
 				return true;
 			}
 		}
