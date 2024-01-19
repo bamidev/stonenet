@@ -2477,7 +2477,7 @@ mod tests {
 	#[ctor::ctor]
 	fn initialize() {
 		let path: PathBuf = "/tmp/db777.sqlite".into();
-		std::fs::remove_file(&path).expect("unable to remove previous test database");
+		let _ = std::fs::remove_file(&path);
 		*DB.lock().unwrap() = Some(Database::load(path).expect("unable to load database"));
 	}
 
