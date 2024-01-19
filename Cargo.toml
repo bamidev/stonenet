@@ -70,10 +70,11 @@ name = "stonenet"
 revision = "1"
 section = "net"
 priority = "optional"
+conf-files = ["etc/stonenet/config.toml"]
 assets = [
 	["target/release/stonenetd", "usr/bin/", "755"],
 	["conf/default.toml", "etc/stonenet/config.toml", "644"],
-	["assets/empty", "var/lib/stonenet/db.sqlite", "774"],
+	["assets/empty.sqlite", "var/lib/stonenet/db.sqlite", "774"],
 	["static/**/*", "usr/share/stonenet/static", "644"],
 	["templates/**/*", "usr/share/stonenet/templates", "644"],
 	["assets/generic/xdg/stonenet.desktop", "usr/share/applications/", "644"],
