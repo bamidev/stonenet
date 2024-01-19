@@ -16,7 +16,7 @@ use tokio::{self, select, spawn, sync::Mutex, time::sleep};
 use super::{
 	actor::*,
 	actor_store::*,
-	bincode,
+	binserde,
 	message::*,
 	node::*,
 	sstp::{self, SocketBindError},
@@ -150,7 +150,7 @@ impl NodeInterface for OverlayInterface {
 			}
 		};
 
-		Ok(Some(bincode::serialize(&value).unwrap()))
+		Ok(Some(binserde::serialize(&value).unwrap()))
 	}
 
 	fn overlay_node(&self) -> Arc<OverlayNode> {
@@ -385,7 +385,7 @@ impl OverlayNode {
 			.base
 			.exchange_on_connection(connection, OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST, &[])
 			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
 		let response: KeepAliveResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -404,10 +404,10 @@ impl OverlayNode {
 			.exchange_on_connection(
 				connection,
 				OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST,
-				&bincode::serialize(&request).unwrap(),
+				&binserde::serialize(&request).unwrap(),
 			)
 			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
 		let response: OpenRelayResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -428,10 +428,10 @@ impl OverlayNode {
 			.exchange_on_connection(
 				connection,
 				OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST,
-				&bincode::serialize(&request).unwrap(),
+				&binserde::serialize(&request).unwrap(),
 			)
 			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
 		let response: InitiateConnectionResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -453,10 +453,10 @@ impl OverlayNode {
 			.exchange_on_connection(
 				relay_connection,
 				OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST,
-				&bincode::serialize(&message).unwrap(),
+				&binserde::serialize(&message).unwrap(),
 			)
 			.await;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response?).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize(&raw_response?).map_err(|e| e.into());
 		let response: RelayInitiateConnectionResponse = self
 			.base
 			.handle_connection_issue(result, &relay_connection.their_node_info())
@@ -473,10 +473,10 @@ impl OverlayNode {
 			.exchange_on_connection(
 				connection,
 				OVERLAY_MESSAGE_TYPE_START_RELAY_REQUEST,
-				&bincode::serialize(&request).unwrap(),
+				&binserde::serialize(&request).unwrap(),
 			)
 			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
 		let response: StartRelayResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -495,7 +495,7 @@ impl OverlayNode {
 			.exchange(
 				target,
 				OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST,
-				&bincode::serialize(&request).unwrap(),
+				&binserde::serialize(&request).unwrap(),
 			)
 			.await?;
 		Some(())
@@ -508,7 +508,7 @@ impl OverlayNode {
 			actor_id,
 			actor_info,
 		};
-		let raw_request = bincode::serialize(&request).unwrap();
+		let raw_request = binserde::serialize(&request).unwrap();
 		self.base
 			.exchange_on_connection(
 				connection,
@@ -625,14 +625,13 @@ impl OverlayNode {
 		fn verify_pubkey(
 			id: &IdType, peer: &NodeContactInfo, data: &[u8],
 		) -> Option<AtomicPtr<()>> {
-			match bincode::deserialize::<FindActorResult>(&data) {
+			match binserde::deserialize::<FindActorResult>(&data) {
 				Err(e) => {
 					warn!("Received invalid actor info from node: {}", e);
 					None
 				}
 				Ok(result) => {
-					let actor_info_bytes = bincode::serialize(&result.actor_info).unwrap();
-					let actor_info_hash = IdType::hash(&actor_info_bytes);
+					let actor_info_hash = result.actor_info.generate_id();
 					if &actor_info_hash != id {
 						warn!("Received invalid actor info from node: invalid hash");
 						return None;
@@ -752,6 +751,12 @@ impl OverlayNode {
 	pub async fn join_actor_network(
 		self: &Arc<Self>, actor_id: &IdType, actor_info: &ActorInfo,
 	) -> Option<Arc<ActorNode>> {
+		debug_assert!(
+			&actor_info.generate_id() == actor_id,
+			"actor info and actor ID don't match ({})",
+			actor_id
+		);
+
 		// Insert a new - or load the existing node
 		let node = {
 			let mut actor_nodes = self.base.interface.actor_nodes.lock().await;
@@ -813,18 +818,14 @@ impl OverlayNode {
 				.await
 				.contains_key(&actor_id)
 			{
-				let actor_id_string = actor_id.to_string();
 				if self
 					.join_actor_network(&actor_id, &actor_info)
 					.await
 					.is_some()
 				{
-					info!("Joined actor network {}.", actor_id_string);
+					info!("Joined actor network {}.", actor_id);
 				} else {
-					info!(
-						"Only one in actor network {} at the moment.",
-						actor_id_string
-					);
+					info!("Only one in actor network {} at the moment.", actor_id);
 				}
 			}
 		});
@@ -1165,7 +1166,7 @@ impl OverlayNode {
 	async fn process_open_relay_request(
 		self: &Arc<Self>, connection: &mut Connection, buffer: &[u8],
 	) -> Option<Vec<u8>> {
-		let request: OpenRelayRequest = match bincode::deserialize(buffer) {
+		let request: OpenRelayRequest = match binserde::deserialize(buffer) {
 			Ok(r) => r,
 			Err(e) => {
 				warn!("Malformed relay data request: {}", e);
@@ -1201,7 +1202,7 @@ impl OverlayNode {
 				.respond(
 					connection,
 					OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE,
-					&bincode::serialize(&response).unwrap(),
+					&binserde::serialize(&response).unwrap(),
 				)
 				.await
 			{
@@ -1225,7 +1226,7 @@ impl OverlayNode {
 		}
 
 		// If the connection wouldn't open, respond with a failure
-		Some(bincode::serialize(&OpenRelayResponse { ok: false }).unwrap())
+		Some(binserde::serialize(&OpenRelayResponse { ok: false }).unwrap())
 	}
 
 	pub(super) async fn request_reversed_connection(
@@ -1354,7 +1355,7 @@ impl OverlayNode {
 	// &self.base.interface.socket.our_contact_info }
 
 	async fn process_find_actor_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
-		let request: FindActorRequest = match bincode::deserialize(buffer) {
+		let request: FindActorRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				error!("Malformed find actor request: {}", e);
 				return None;
@@ -1409,7 +1410,7 @@ impl OverlayNode {
 		}
 
 		// Deserialize response
-		Some(bincode::serialize(&response).unwrap())
+		Some(binserde::serialize(&response).unwrap())
 	}
 
 	async fn process_keep_alive_request(
@@ -1445,7 +1446,7 @@ impl OverlayNode {
 		};
 
 		(
-			Some(bincode::serialize(&KeepAliveResponse { ok }).unwrap()),
+			Some(binserde::serialize(&KeepAliveResponse { ok }).unwrap()),
 			ok,
 		)
 	}
@@ -1453,7 +1454,7 @@ impl OverlayNode {
 	async fn process_relay_punch_hole_request(
 		self: &Arc<Self>, buffer: &[u8], node_id: &IdType,
 	) -> Option<Vec<u8>> {
-		let request: RelayInitiateConnectionRequest = match bincode::deserialize(buffer) {
+		let request: RelayInitiateConnectionRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				warn!("Malformed relay initiate connection request: {}", e);
 				return None;
@@ -1507,7 +1508,7 @@ impl OverlayNode {
 			response.ok = false;
 		}
 
-		Some(bincode::serialize(&response).unwrap())
+		Some(binserde::serialize(&response).unwrap())
 	}
 
 	pub(super) async fn process_request(
@@ -1580,7 +1581,7 @@ impl OverlayNode {
 	async fn process_start_relay_request(
 		&self, connection: &mut Connection, buffer: &[u8],
 	) -> Option<Vec<u8>> {
-		let request: StartRelayRequest = match bincode::deserialize(buffer) {
+		let request: StartRelayRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				error!("Malformed start relay request: {}", e);
 				return None;
@@ -1590,13 +1591,13 @@ impl OverlayNode {
 		connection.update_their_node_info(request.origin);
 
 		// Always accept
-		Some(bincode::serialize(&StartRelayResponse { ok: true }).unwrap())
+		Some(binserde::serialize(&StartRelayResponse { ok: true }).unwrap())
 	}
 
 	async fn process_store_actor_request(
 		&self, sender_node_info: &NodeContactInfo, buffer: &[u8],
 	) -> Option<Vec<u8>> {
-		let request: StoreActorRequest = match bincode::deserialize(buffer) {
+		let request: StoreActorRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				error!("Malformed store actor request: {}", e);
 				return None;
@@ -1605,7 +1606,7 @@ impl OverlayNode {
 		};
 
 		// Check if actor_id is indeed the hash of the public key + first block hash.
-		let actor_id_test = IdType::hash(&bincode::serialize(&request.actor_info).unwrap());
+		let actor_id_test = request.actor_info.generate_id();
 		if actor_id_test != request.actor_id {
 			warn!("Actor store request invalid: public key doesn't match actor ID.");
 			return None;
@@ -1638,7 +1639,7 @@ impl OverlayNode {
 			})
 		}
 
-		let request: InitiateConnectionRequest = match bincode::deserialize(buffer) {
+		let request: InitiateConnectionRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				warn!("Malformed initiate connection request: {}", e);
 				return None;
@@ -1661,7 +1662,7 @@ impl OverlayNode {
 			}
 		});
 
-		Some(bincode::serialize(&response).unwrap())
+		Some(binserde::serialize(&response).unwrap())
 	}
 
 	async fn punch_hole(&self, target: &ContactOption) -> bool {

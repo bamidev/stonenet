@@ -377,7 +377,7 @@ where
 		self.exchange_on_connection(
 			connection,
 			message_type_id,
-			&bincode::serialize(&request).unwrap(),
+			&binserde::serialize(&request).unwrap(),
 		)
 		.await
 	}
@@ -390,7 +390,7 @@ where
 			.exchange_find_x(connection, node_id, NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST)
 			.await;
 		let raw_response = raw_response_result?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
 		let response: FindNodeResponse = self
 			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
@@ -402,7 +402,7 @@ where
 		expect_fingers_in_response: bool,
 	) -> Option<(Option<Vec<u8>>, Option<FindNodeResponse>)> {
 		let request = FindValueRequest { id, value_type };
-		let raw_request = bincode::serialize(&request).unwrap();
+		let raw_request = binserde::serialize(&request).unwrap();
 		let response_result: Option<Vec<u8>> = self
 			.exchange_on_connection(
 				connection,
@@ -430,7 +430,7 @@ where
 			id: id.clone(),
 			value_type: value_type as _,
 		};
-		let raw_request = bincode::serialize(&request).unwrap();
+		let raw_request = binserde::serialize(&request).unwrap();
 		let raw_response = self
 			.exchange_on_connection(
 				connection,
@@ -446,7 +446,8 @@ where
 			)
 			.await?;
 		if let Some(value_buffer) = value_result {
-			let result: sstp::Result<_> = bincode::deserialize(&value_buffer).map_err(|e| e.into());
+			let result: sstp::Result<_> =
+				binserde::deserialize(&value_buffer).map_err(|e| e.into());
 			let value: V = self
 				.handle_connection_issue(result, &connection.their_node_info())
 				.await?;
@@ -474,7 +475,7 @@ where
 		self.exchange(
 			target,
 			NETWORK_MESSAGE_TYPE_PING_REQUEST,
-			&bincode::serialize(&message).unwrap(),
+			&binserde::serialize(&message).unwrap(),
 		)
 		.await?;
 		Some(())
@@ -968,7 +969,7 @@ where
 	}
 
 	async fn process_find_node_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
-		let request: FindNodeRequest = match bincode::deserialize(buffer) {
+		let request: FindNodeRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				error!("Malformed find node request: {}", e);
 				return None;
@@ -983,7 +984,7 @@ where
 			connection,
 			fingers,
 		};
-		Some(bincode::serialize(&response).unwrap())
+		Some(binserde::serialize(&response).unwrap())
 	}
 
 	async fn process_find_value_response(
@@ -992,10 +993,10 @@ where
 		// If fingers are expected in the response, parse them
 		let (contacts, contacts_len) = if expect_fingers_in_response {
 			let result: sstp::Result<FindNodeResponse> =
-				bincode::deserialize_with_trailing(&response).map_err(|e| e.into());
+				binserde::deserialize_with_trailing(&response).map_err(|e| e.into());
 
 			let contacts = self.handle_connection_issue(result, node_info).await?;
-			let contacts_len = bincode::serialized_size(&contacts).unwrap();
+			let contacts_len = binserde::serialized_size(&contacts).unwrap();
 			(Some(contacts), contacts_len)
 		} else {
 			(None, 0)
@@ -1028,7 +1029,7 @@ where
 	) -> Option<Vec<u8>> {
 		let force_including_fingers = actor_id.is_none();
 
-		let request: FindValueRequest = match bincode::deserialize(buffer) {
+		let request: FindValueRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				error!("Malformed find value request: {}", e);
 				return None;
@@ -1081,7 +1082,7 @@ where
 				fingers,
 			};
 
-			let mut buffer = bincode::serialize(&response).unwrap();
+			let mut buffer = binserde::serialize(&response).unwrap();
 			let mut value_buffer = value_result.unwrap_or_default();
 			buffer.append(&mut value_buffer);
 			Some(buffer)
@@ -1097,7 +1098,7 @@ where
 					fingers,
 				};
 
-				buffer.extend(bincode::serialize(&response).unwrap());
+				buffer.extend(binserde::serialize(&response).unwrap());
 			}
 			Some(buffer)
 		}
@@ -1581,7 +1582,7 @@ async fn process_find_value_request_message(
 			return;
 		}
 
-		let actor_id: IdType = bincode::deserialize(&buffer[1..33]).unwrap();
+		let actor_id: IdType = binserde::deserialize(&buffer[1..33]).unwrap();
 		let actor_nodes = overlay_node.base.interface.actor_nodes.lock().await;
 		let actor_node = match actor_nodes.get(&actor_id) {
 			None => return, /* Don't respond to requests for networks we are not connected */
@@ -1632,7 +1633,7 @@ async fn process_request_message(
 	let mut message_type_id = buffer[0];
 	if message_type_id >= 0x80 {
 		message_type_id ^= 0x80;
-		let actor_id: IdType = bincode::deserialize(&buffer[1..33]).unwrap();
+		let actor_id: IdType = binserde::deserialize(&buffer[1..33]).unwrap();
 		let actor_nodes = overlay_node.base.interface.actor_nodes.lock().await;
 		let actor_node = match actor_nodes.get(&actor_id) {
 			None => return false, /* Don't respond to requests for networks we are not connected */

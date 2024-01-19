@@ -57,7 +57,7 @@ use tokio::{
 use x25519_dalek as x25519;
 
 use super::{
-	bincode,
+	binserde,
 	socket::{
 		ConnectionBasedLinkServer, ConnectionLessLinkServer, LinkServer, LinkSocket,
 		LinkSocketReceiver, LinkSocketSender, TcpServer, UdpServer,
@@ -151,7 +151,7 @@ pub enum Error {
 	/// The data inside the packet was invalid.
 	MalformedPacket,
 	// The message itself was not understood
-	MalformedMessage(Option<Arc<bincode::Error>>),
+	MalformedMessage(Option<Arc<binserde::Error>>),
 	/// Unable to connect because there were no matching options
 	NoConnectionOptions,
 	/// There is not more room for a new session.
@@ -1551,8 +1551,8 @@ impl From<io::Error> for Error {
 	fn from(other: io::Error) -> Self { Self::IoError(Arc::new(other)) }
 }
 
-impl From<bincode::Error> for Error {
-	fn from(other: bincode::Error) -> Self { Self::MalformedMessage(Some(Arc::new(other))) }
+impl From<binserde::Error> for Error {
+	fn from(other: binserde::Error) -> Self { Self::MalformedMessage(Some(Arc::new(other))) }
 }
 
 
@@ -2079,7 +2079,7 @@ impl Server {
 		&self, socket: &dyn LinkSocketSender, private_key: &x25519::StaticSecret,
 		my_session_id: u16, my_contact_info: &ContactInfo,
 	) -> Result<()> {
-		let my_contact_info_len = bincode::serialized_size(&my_contact_info).unwrap();
+		let my_contact_info_len = binserde::serialized_size(&my_contact_info).unwrap();
 		let mut buffer = vec![0u8; 163 + my_contact_info_len];
 		buffer[0] = MESSAGE_TYPE_HELLO_REQUEST;
 		buffer[1..33].copy_from_slice(self.node_id.as_bytes());
@@ -2087,7 +2087,7 @@ impl Server {
 		let public_key = x25519::PublicKey::from(private_key);
 		buffer[129..161].copy_from_slice(public_key.as_bytes());
 		buffer[161..163].copy_from_slice(&u16::to_le_bytes(my_session_id));
-		buffer[163..].copy_from_slice(&bincode::serialize(&my_contact_info).unwrap());
+		buffer[163..].copy_from_slice(&binserde::serialize(&my_contact_info).unwrap());
 
 		// Sign request
 		let signature = self.private_key.sign(&buffer[129..]);
@@ -2614,7 +2614,7 @@ impl Server {
 		let own_secret_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let own_public_key = x25519::PublicKey::from(&own_secret_key);
 		let their_session_id = u16::from_le_bytes(*array_ref![packet, 160, 2]);
-		let mut their_contact_info: ContactInfo = bincode::deserialize(&packet[162..])?;
+		let mut their_contact_info: ContactInfo = binserde::deserialize(&packet[162..])?;
 		their_contact_info.update(addr, sender.is_connection_based());
 
 		let (tx_queues, rx_queues) = Queues::channel(their_session_id);
@@ -2632,7 +2632,7 @@ impl Server {
 			SocketAddr::V6(_) => 16,
 		};
 		let contact_info = self.our_contact_info();
-		let contact_info_len = bincode::serialized_size(&contact_info).unwrap();
+		let contact_info_len = binserde::serialized_size(&contact_info).unwrap();
 		let mut response = vec![0u8; 165 + addr_len + contact_info_len + 2];
 		response[0] = MESSAGE_TYPE_HELLO_RESPONSE;
 		// Send back the sender's node ID to verify that both nodes share the
@@ -2643,14 +2643,14 @@ impl Server {
 		response[161..163].copy_from_slice(&their_session_id.to_le_bytes());
 		response[163..165].copy_from_slice(&our_session_id.to_le_bytes());
 		let i = 165 + contact_info_len;
-		response[165..i].copy_from_slice(&bincode::serialize(&contact_info).unwrap());
+		response[165..i].copy_from_slice(&binserde::serialize(&contact_info).unwrap());
 		match addr {
 			SocketAddr::V4(a) => {
-				response[i..(i + 4)].copy_from_slice(&bincode::serialize(a.ip()).unwrap());
+				response[i..(i + 4)].copy_from_slice(&binserde::serialize(a.ip()).unwrap());
 				response[(i + 4)..(i + 6)].copy_from_slice(&a.port().to_le_bytes());
 			}
 			SocketAddr::V6(a) => {
-				response[i..(i + 16)].copy_from_slice(&bincode::serialize(a.ip()).unwrap());
+				response[i..(i + 16)].copy_from_slice(&binserde::serialize(a.ip()).unwrap());
 				response[(i + 16)..(i + 18)].copy_from_slice(&a.port().to_le_bytes());
 			}
 		}
@@ -2756,14 +2756,14 @@ impl Server {
 		session.their_session_id = Some(their_session_id);
 
 		let mut their_contact_info: ContactInfo =
-			bincode::deserialize_with_trailing(&packet[164..])?;
-		let i = 164 + bincode::serialized_size(&their_contact_info).unwrap();
+			binserde::deserialize_with_trailing(&packet[164..])?;
+		let i = 164 + binserde::serialized_size(&their_contact_info).unwrap();
 		their_contact_info.update(sender, is_tcp);
 
 		// Update our own external IP address with what is given by the other side
 		match sender {
 			SocketAddr::V4(_) => {
-				let ip: Ipv4Addr = bincode::deserialize(&packet[i..(i + 4)])?;
+				let ip: Ipv4Addr = binserde::deserialize(&packet[i..(i + 4)])?;
 				let port = u16::from_le_bytes(*array_ref![packet, i + 4, 2]);
 				self.our_contact_info
 					.lock()
@@ -2771,7 +2771,7 @@ impl Server {
 					.update_v4(&ip, port, is_tcp);
 			}
 			SocketAddr::V6(_) => {
-				let ip: Ipv6Addr = bincode::deserialize(&packet[i..(i + 16)])?;
+				let ip: Ipv6Addr = binserde::deserialize(&packet[i..(i + 16)])?;
 				let port = u16::from_le_bytes(*array_ref![packet, i + 16, 2]);
 				self.our_contact_info
 					.lock()

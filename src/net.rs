@@ -1,6 +1,6 @@
 pub mod actor;
 mod actor_store;
-pub mod bincode;
+pub mod binserde;
 mod bucket;
 mod connection_manager;
 pub mod message;

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::{common::*, identity::*};
+use crate::net::binserde;
 
 
 pub const ACTOR_TYPE_BLOGCHAIN: &str = "blogchain";
@@ -102,7 +103,6 @@ pub enum ObjectPayload {
 	Post(PostObject),
 	Boost(BoostObject),
 	Profile(ProfileObject),
-	Move(MoveObject),
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -111,13 +111,20 @@ pub struct ObjectHeader {
 	pub signature: Signature,
 }
 
+
+impl ActorInfo {
+	pub fn generate_id(&self) -> IdType {
+		let buffer = binserde::serialize(self).unwrap();
+		IdType::hash(&buffer)
+	}
+}
+
 impl ObjectPayload {
 	pub fn type_id(&self) -> u8 {
 		match self {
 			Self::Post(_) => 0,
 			Self::Boost(_) => 1,
 			Self::Profile(_) => 2,
-			Self::Move(_) => 3,
 		}
 	}
 }

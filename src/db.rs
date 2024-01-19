@@ -13,7 +13,7 @@ use rusqlite::{self, params, Rows, Transaction};
 use serde::Serialize;
 
 pub use self::file_loader::FileLoader;
-use crate::{common::*, identity::*, model::*, net::bincode};
+use crate::{common::*, identity::*, model::*, net::binserde};
 
 const DATABASE_VERSION: (u8, u16, u16) = (0, 0, 0);
 pub(crate) const BLOCK_SIZE: usize = 0x100000; // 1 MiB
@@ -1035,8 +1035,6 @@ impl Connection {
 					.map(|o| o.map(|b| ObjectPayload::Boost(b))),
 				2 => Self::_fetch_profile_object(tx, object_id)
 					.map(|o| o.map(|p| ObjectPayload::Profile(p))),
-				3 => Self::_fetch_move_object(tx, object_id)
-					.map(|o| o.map(|m| ObjectPayload::Move(m))),
 				other => return Err(Error::InvalidObjectType(other)),
 			};
 			payload.map(|o| {
@@ -1146,7 +1144,7 @@ impl Connection {
 
 		// Calculate the file hash
 		let file_hash = IdType::hash(
-			&bincode::serialize(&File {
+			&binserde::serialize(&File {
 				mime_type: mime_type.to_string(),
 				blocks: block_hashes.clone(),
 			})
@@ -1265,7 +1263,7 @@ impl Connection {
 			first_object: first_object.clone(),
 			actor_type,
 		};
-		let address = IdType::hash(&bincode::serialize(&actor_info).unwrap());
+		let address = actor_info.generate_id();
 		let identity_id =
 			Self::_store_identity(tx, &address, &actor_info.public_key, first_object)?;
 
@@ -1508,7 +1506,7 @@ impl Connection {
 			label,
 			private_key,
 			&first_object_hash,
-			"blogchain".into(),
+			ACTOR_TYPE_BLOGCHAIN.to_string(),
 		)?;
 		let avatar_file_id = store_file(&tx, identity_id, avatar)?;
 		let wallpaper_file_id = store_file(&tx, identity_id, wallpaper)?;
@@ -2466,28 +2464,81 @@ impl IdFromBase58Error {
 
 #[cfg(test)]
 mod tests {
-	//use std::net::*;
+	use std::sync::Mutex;
+
+	use rand::RngCore;
 
 	use super::*;
+	use crate::test;
+
+	static DB: Mutex<Option<Database>> = Mutex::new(None);
+
+	#[ctor::ctor]
+	fn initialize() {
+		let path: PathBuf = "/tmp/db777.sqlite".into();
+		std::fs::remove_file(&path).expect("unable to remove previous test database");
+		*DB.lock().unwrap() = Some(Database::load(path).expect("unable to load database"));
+	}
 
 	#[test]
-	fn test_object() {
-		let buffer = vec![2u8; 64];
-		let signature = Signature::from_bytes(buffer.try_into().unwrap());
+	fn test_identity() {
+		let mut c = DB
+			.lock()
+			.unwrap()
+			.as_ref()
+			.unwrap()
+			.connect()
+			.expect("unable to connect to database");
 
-		let _object = Object {
-			created: Utc::now().timestamp_millis() as _,
+		let mut rng = test::initialize_rng();
+		let private_key = PrivateKey::generate_with_rng(&mut rng);
+		let mut buf = [0u8; 32];
+		rng.fill_bytes(&mut buf);
+		let payload = ObjectPayload::Profile(ProfileObject {
+			name: "Test".to_string(),
+			avatar: None,
+			wallpaper: None,
+			description: None,
+		});
+		let sign_data = ObjectSignData {
+			sequence: 0,
 			previous_hash: IdType::default(),
-			signature,
-			sequence: 1,
-			payload: ObjectPayload::Post(PostObject {
-				in_reply_to: None,
-				tags: Vec::new(),
-				files: Vec::new(),
-			}),
+			created: 1234567890,
+			payload: &payload,
 		};
+		let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
+		let first_object_id = IdType::hash(&signature.to_bytes());
+		let first_object = Object {
+			signature,
+			sequence: 0,
+			previous_hash: IdType::default(),
+			created: 1234567890,
+			payload,
+		};
+		c.create_my_identity(
+			"test",
+			&private_key,
+			&first_object_id,
+			&first_object,
+			"Test",
+			None,
+			None,
+			None,
+		)
+		.expect("unable to create personal identity");
 
-		//let db = Database::new
-		//let mut c =
+		let actor_info = ActorInfo {
+			public_key: private_key.public(),
+			first_object: first_object_id,
+			actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
+		};
+		let actor_id = actor_info.generate_id();
+
+		let (fetched_address, fetched_private_key) = c
+			.fetch_my_identity_by_label("test")
+			.expect("unable to load personal identities")
+			.expect("personal identity not found");
+		assert_eq!(fetched_address, actor_id);
+		assert_eq!(fetched_private_key.as_bytes(), private_key.as_bytes());
 	}
 }

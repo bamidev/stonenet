@@ -45,7 +45,7 @@ impl ActorInterface {
 		})?;
 		if let Some(data) = result {
 			let response = FindBlockResult { data };
-			Ok(Some(bincode::serialize(&response).unwrap()))
+			Ok(Some(binserde::serialize(&response).unwrap()))
 		} else {
 			Ok(None)
 		}
@@ -56,7 +56,7 @@ impl ActorInterface {
 			let c = self.db.connect()?;
 			c.fetch_file(id)
 		})?;
-		Ok(result.map(|file| bincode::serialize(&file).unwrap()))
+		Ok(result.map(|file| binserde::serialize(&file).unwrap()))
 	}
 
 	async fn find_object(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
@@ -64,7 +64,7 @@ impl ActorInterface {
 			let c = self.db.connect()?;
 			c.fetch_object(&self.actor_id, id)
 		})?;
-		Ok(result.map(|(object, _)| bincode::serialize(&FindObjectResult { object }).unwrap()))
+		Ok(result.map(|(object, _)| binserde::serialize(&FindObjectResult { object }).unwrap()))
 	}
 
 	async fn find_next_object(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
@@ -73,7 +73,7 @@ impl ActorInterface {
 			c.fetch_next_object(&self.actor_id, id)
 		})?;
 		Ok(result.map(|(hash, object, _)| {
-			bincode::serialize(&FindNextObjectResult { hash, object }).unwrap()
+			binserde::serialize(&FindNextObjectResult { hash, object }).unwrap()
 		}))
 	}
 }
@@ -242,7 +242,7 @@ impl ActorNode {
 			.base
 			.exchange_on_connection(connection, ACTOR_MESSAGE_TYPE_HEAD_REQUEST, &[])
 			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
 		let response: HeadResponse = self
 			.base
 			.handle_connection_issue(result, &connection.their_node_info())
@@ -287,10 +287,10 @@ impl ActorNode {
 			.exchange_on_connection(
 				connection,
 				ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST,
-				&bincode::serialize(&request).unwrap(),
+				&binserde::serialize(&request).unwrap(),
 			)
 			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
 		let response: GetProfileResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -303,7 +303,7 @@ impl ActorNode {
 		&self, connection: &mut Connection, id: &IdType,
 	) -> Option<bool> {
 		let request = PublishObjectRequest { id: id.clone() };
-		let raw_request = bincode::serialize(&request).unwrap();
+		let raw_request = binserde::serialize(&request).unwrap();
 		let raw_response = self
 			.base
 			.exchange_on_connection(
@@ -312,7 +312,7 @@ impl ActorNode {
 				&raw_request,
 			)
 			.await?;
-		let result: sstp::Result<_> = bincode::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
 		let response: PublishObjectResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -357,7 +357,7 @@ impl ActorNode {
 		where
 			V: DeserializeOwned,
 		{
-			match bincode::deserialize_owned::<V>(&data) {
+			match binserde::deserialize_owned::<V>(&data) {
 				Err(e) => {
 					warn!("Malformed value received: {}", e);
 					None
@@ -465,7 +465,6 @@ impl ActorNode {
 									results.push(file_hash.clone());
 								}
 							},
-						ObjectPayload::Move(_) => {}
 						ObjectPayload::Boost(_) => {}
 					}
 				}
@@ -498,7 +497,6 @@ impl ActorNode {
 							results.push(file_hash.clone());
 						}
 					},
-				ObjectPayload::Move(_) => {}
 				ObjectPayload::Boost(_) => {}
 			}
 			Ok(results)
@@ -630,11 +628,11 @@ impl ActorNode {
 			fingers,
 		};
 		let result: Result<(), FindNodeResponse> = Err(response);
-		bincode::serialize(&result).unwrap()
+		binserde::serialize(&result).unwrap()
 	}
 
 	async fn process_get_profile_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
-		let _request: GetProfileRequest = match bincode::deserialize(buffer) {
+		let _request: GetProfileRequest = match binserde::deserialize(buffer) {
 			Ok(r) => r,
 			Err(e) => {
 				error!("Malformed get profile message: {}", e);
@@ -658,7 +656,7 @@ impl ActorNode {
 		};
 
 		let response = GetProfileResponse { object };
-		Some(bincode::serialize(&response).unwrap())
+		Some(binserde::serialize(&response).unwrap())
 	}
 
 	pub(super) async fn process_request(
@@ -718,7 +716,7 @@ impl ActorNode {
 			}
 			Some((hash, object, ..)) => HeadResponse { hash, object },
 		};
-		Some(bincode::serialize(&response).unwrap())
+		Some(binserde::serialize(&response).unwrap())
 	}
 
 	async fn process_publish_object_request_receive_object(
@@ -732,7 +730,7 @@ impl ActorNode {
 			.respond(
 				c,
 				ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE,
-				&bincode::serialize(&response).unwrap(),
+				&binserde::serialize(&response).unwrap(),
 			)
 			.await
 		{
@@ -751,7 +749,7 @@ impl ActorNode {
 					return None;
 				}
 			};
-			let upload: PublishObjectMessage = match bincode::deserialize(&buffer) {
+			let upload: PublishObjectMessage = match binserde::deserialize(&buffer) {
 				Ok(r) => r,
 				Err(e) => {
 					warn!("Object upload message was malformed: {}", e);
@@ -777,7 +775,7 @@ impl ActorNode {
 	}
 
 	async fn process_publish_object_request(self: &Arc<Self>, c: &mut Connection, buffer: &[u8]) {
-		let request: PublishObjectRequest = match bincode::deserialize(buffer) {
+		let request: PublishObjectRequest = match binserde::deserialize(buffer) {
 			Ok(r) => r,
 			Err(e) => {
 				warn!(
@@ -890,7 +888,7 @@ impl ActorNode {
 	}
 
 	fn verify_file(&self, id: &IdType, file: &File) -> bool {
-		let buffer = bincode::serialize(file).unwrap();
+		let buffer = binserde::serialize(file).unwrap();
 		let hash = IdType::hash(&buffer);
 		id == &hash
 	}
@@ -953,7 +951,7 @@ impl ActorNode {
 			created: object.created,
 			payload: &object.payload,
 		};
-		let raw_sign_data = bincode::serialize(&sign_data).unwrap();
+		let raw_sign_data = binserde::serialize(&sign_data).unwrap();
 		if !public_key.verify(&raw_sign_data, &object.signature) {
 			warn!("Object {} is invalid: signature is incorrect.", &id);
 			return false;
@@ -1007,7 +1005,7 @@ impl ActorNode {
 			.await
 		{
 			if wants_it {
-				let buffer = bincode::serialize(object).unwrap();
+				let buffer = binserde::serialize(object).unwrap();
 				if let Err(e) = connection.send(&buffer).await {
 					error!(
 						"Unable to upload object {} to node {}: {}",

@@ -17,7 +17,7 @@ use super::{
 	db::{self, *},
 	identity::*,
 	model::*,
-	net::{actor::ActorNode, bincode, message::*, overlay::OverlayNode},
+	net::{actor::ActorNode, binserde, message::*, overlay::OverlayNode},
 };
 
 /*#[derive(Debug)]
@@ -70,7 +70,7 @@ impl Api {
 				.as_millis() as u64,
 			payload: &payload,
 		};
-		let signature = private_key.sign(&bincode::serialize(&sign_data).unwrap());
+		let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
 		let object_hash = IdType::hash(&signature.to_bytes());
 		let object = Object {
 			signature,
@@ -84,9 +84,9 @@ impl Api {
 		let actor_info = ActorInfo {
 			public_key: private_key.public(),
 			first_object: object_hash.clone(),
-			actor_type: "blogchain".into(),
+			actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
 		};
-		let actor_id = IdType::hash(&bincode::serialize(&actor_info).unwrap());
+		let actor_id = actor_info.generate_id();
 
 		// Create the identity on disk
 		tokio::task::block_in_place(|| {
@@ -533,7 +533,7 @@ impl Api {
 			created,
 			payload,
 		};
-		let raw_sign_data = bincode::serialize(&sign_data).unwrap();
+		let raw_sign_data = binserde::serialize(&sign_data).unwrap();
 
 		// Sign it
 		let signature = private_key.sign(&raw_sign_data);
@@ -575,7 +575,7 @@ impl Api {
 		}
 
 		// Calculate the file hash
-		let file_buf = bincode::serialize(&file).unwrap();
+		let file_buf = binserde::serialize(&file).unwrap();
 		let file_hash = IdType::hash(&file_buf);
 
 		(file_hash, result)
