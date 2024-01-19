@@ -2047,13 +2047,14 @@ impl Connection {
 				drop(rows);
 				let mut stat = tx.prepare(
 					r#"
-					INSERT INTO identity (address, public_key, first_object, type) VALUES (?,?,?,'feed')
+					INSERT INTO identity (address, public_key, first_object, type) VALUES (?,?,?,?)
 				"#,
 				)?;
 				stat.insert(params![
 					actor_id.to_string(),
 					actor_info.public_key.to_bytes(),
-					actor_info.first_object.as_bytes()
+					actor_info.first_object.as_bytes(),
+					ACTOR_TYPE_BLOGCHAIN
 				])?
 			};
 			identity_id
