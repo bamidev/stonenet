@@ -159,7 +159,7 @@ pub enum Error {
 	OutOfSessions,
 	/// There were less bytes in the packet than was expected.
 	PacketTooSmall,
-	Timeout,
+	Timeout(Duration),
 	DummyError,
 	SenderDropped,
 }
@@ -338,7 +338,7 @@ impl fmt::Display for Error {
 			Self::NoConnectionOptions => write!(f, "no connection options"),
 			Self::OutOfSessions => write!(f, "there is no more room for any new session"),
 			Self::PacketTooSmall => write!(f, "packet was too small"),
-			Self::Timeout => write!(f, "timeout exceeded"),
+			Self::Timeout(timeout) => write!(f, "timeout of {:?} exceeded", timeout),
 		}
 	}
 }
@@ -495,7 +495,7 @@ impl Connection {
 						return Err(e);
 					}
 					match *e {
-						Error::Timeout => self.send_close_packet().await?,
+						Error::Timeout(_) => self.send_close_packet().await?,
 						_ => return Err(e),
 					}
 					i += 1;
@@ -696,7 +696,7 @@ impl Connection {
 					if self.is_closing.load(Ordering::Relaxed) {
 						return trace::err(Error::ConnectionClosed.into());
 					} else {
-						return trace::err(Error::Timeout);
+						return trace::err(Error::Timeout(timeout));
 					}
 				}
 			}
@@ -908,12 +908,12 @@ impl Connection {
 						}
 						Err(e) => {
 							match *e {
-								Error::Timeout => {
+								Error::Timeout(_) => {
 									// Break out of the loop after a timeout, so that we resend our
 									// missing ack packet. But after 8 retries, we give up.
 									timeouts += 1;
 									if timeouts == 8 {
-										return trace::err(Error::Timeout);
+										return Err(e);
 									} else {
 										break;
 									}
@@ -1076,7 +1076,7 @@ impl Connection {
 			if let Some(time) = sent_first_ack_packet {
 				// Check to see if we've sent enough ack packets already
 				if time >= (SystemTime::now() + self.timeout) {
-					return trace::err(Error::Timeout);
+					return trace::err(Error::Timeout(timeout));
 				}
 			}
 
@@ -1114,7 +1114,7 @@ impl Connection {
 						if self.is_closing.load(Ordering::Relaxed) {
 							return trace::err(Error::ConnectionClosed.into());
 						} else {
-							return trace::err(Error::Timeout);
+							return trace::err(Error::Timeout(timeout));
 						}
 					}
 					return Ok(result.unwrap())
@@ -1128,7 +1128,7 @@ impl Connection {
 					if self.is_closing.load(Ordering::Relaxed) {
 						return trace::err(Error::ConnectionClosed.into());
 					} else {
-						return trace::err(Error::Timeout);
+						return trace::err(Error::Timeout(timeout));
 					}
 				}
 			}
@@ -1143,7 +1143,7 @@ impl Connection {
 						if self.is_closing.load(Ordering::Relaxed) {
 							return trace::err(Error::ConnectionClosed.into());
 						} else {
-							return trace::err(Error::Timeout);
+							return trace::err(Error::Timeout(timeout));
 						}
 					}
 					return Ok(result.unwrap())
@@ -1157,7 +1157,7 @@ impl Connection {
 					if self.is_closing.load(Ordering::Relaxed) {
 						return trace::err(Error::ConnectionClosed.into());
 					} else {
-						return trace::err(Error::Timeout);
+						return trace::err(Error::Timeout(timeout));
 					}
 				}
 			}
@@ -1211,7 +1211,7 @@ impl Connection {
 						if self.is_closing.load(Ordering::Relaxed) {
 							return trace::err(Error::ConnectionClosed.into());
 						} else {
-							return trace::err(Error::Timeout);
+							return trace::err(Error::Timeout(timeout));
 						}
 					}
 					return Ok(result.unwrap())
@@ -1225,7 +1225,7 @@ impl Connection {
 					if self.is_closing.load(Ordering::Relaxed) {
 						return trace::err(Error::ConnectionClosed.into());
 					} else {
-						return trace::err(Error::Timeout);
+						return trace::err(Error::Timeout(timeout));
 					}
 				}
 			}
@@ -2025,7 +2025,7 @@ impl Server {
 		if stop_flag.load(Ordering::Relaxed) {
 			trace::err(Error::ConnectionClosed)
 		} else {
-			trace::err(Error::Timeout)
+			trace::err(Error::Timeout(timeout))
 		}
 	}
 

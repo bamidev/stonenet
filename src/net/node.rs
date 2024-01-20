@@ -813,7 +813,7 @@ where
 		match result {
 			Err(e) => {
 				match *e {
-					sstp::Error::Timeout => {
+					sstp::Error::Timeout(_) => {
 						warn!("Problematic node {}: {:?}", node_info, e);
 						self.mark_node_problematic(&node_info.node_id).await;
 					}
@@ -1409,7 +1409,7 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 				Ok(m) => m,
 				Err(e) => {
 					match &*e {
-						sstp::Error::Timeout => {
+						sstp::Error::Timeout(_) => {
 							if is_first_message {
 								debug!(
 									"Node {} timed out before request was received.",
@@ -1475,7 +1475,7 @@ pub(super) async fn handle_find_value_connection(
 				Ok(m) => m,
 				Err(e) => {
 					match &*e {
-						sstp::Error::Timeout => {
+						sstp::Error::Timeout(_) => {
 							if is_first_message {
 								debug!(
 									"Node {} timed out before find value request was received",
@@ -1534,7 +1534,7 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 				Err(e) => {
 					match &*e {
 						// If the node hasn't send any pings for 120 seconds, we're done
-						sstp::Error::Timeout => {
+						sstp::Error::Timeout(_) => {
 							debug!(
 								"Kept alive connection has timed out. [{} -> {}]",
 								connection.our_session_id(),
