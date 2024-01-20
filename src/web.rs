@@ -12,9 +12,10 @@ use rocket::{
 	form::Form,
 	fs::NamedFile,
 	http::{ContentType, MediaType},
+	log::LogLevel,
 	response::{stream::ByteStream, Redirect},
 	serde::Serialize,
-	Data, *,
+	Data, *
 };
 use rocket_dyn_templates::{context, Template};
 use tokio::task::JoinHandle;
@@ -139,10 +140,12 @@ async fn index_post(
 pub async fn spawn(g: Api) -> (Shutdown, JoinHandle<()>) {
 	// Set up rocket's config to not detect ctrlc itself
 	let mut config = rocket::Config::default();
+	config.log_level = LogLevel::Off;
 	config.port = 37338;
 	config.shutdown.ctrlc = false;
 	#[cfg(unix)]
 	config.shutdown.signals.clear();
+	config.workers = 1;
 
 	let r = rocket::custom(&config)
 		.attach(Template::fairing())
