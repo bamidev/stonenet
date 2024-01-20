@@ -1726,6 +1726,7 @@ impl OverlayNode {
 		&self, actor_id: &IdType, duplicates: usize, actor_info: &ActorInfo,
 		contacts: &[(IdType, ContactOption)],
 	) -> usize {
+		debug_assert!(contacts.len() > 0, "no contacts to store actor at");
 		let mut store_count = 0;
 		let mut fingers = Vec::with_capacity(contacts.len());
 		for (node_id, contact_option) in contacts {
@@ -1749,14 +1750,16 @@ impl OverlayNode {
 			}
 		}
 
-		let todo = duplicates - store_count;
-		let contacts = self
-			.base
-			.find_node_from_fingers(&actor_id, &fingers, todo * 2, 1)
-			.await;
-		store_count += self
-			.store_actor_at(actor_id, duplicates - store_count, actor_info, &contacts)
-			.await;
+		if store_count < duplicates {
+			let todo = duplicates - store_count;
+			let contacts = self
+				.base
+				.find_node_from_fingers(&actor_id, &fingers, todo * 2, 1)
+				.await;
+			store_count += self
+				.store_actor_at(actor_id, duplicates - store_count, actor_info, &contacts)
+				.await;
+		}
 		store_count
 	}
 
