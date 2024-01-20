@@ -1578,18 +1578,8 @@ impl Connection {
 	}
 
 	async fn send_previous_ack_packet(&mut self) -> Result<()> {
-		let our_pubkey = x25519::PublicKey::from(&self.previous_keystate.our_dh_key);
-		let mut buffer = vec![0u8; 35];
-		buffer[0] = 0; // Success
-		buffer[1..3].copy_from_slice(&self.receive_window.size.to_le_bytes());
-		buffer[3..35].copy_from_slice(our_pubkey.as_bytes());
-		self.send_crypted_packet(
-			MESSAGE_TYPE_ACK,
-			&self.previous_keystate,
-			self.previous_window_ack_sequence,
-			&buffer,
-		)
-		.await
+		let our_pubkey = x25519::PublicKey::from(&self.previous_keystate.our_dh_key); println!("SENDPREVACK {} {}", self.previous_keystate.sequence, self.previous_window_ack_sequence);
+		self.send_ack_packet(self.previous_window_ack_sequence, self.receive_window.size, &our_pubkey).await
 	}
 
 	/// Updates the cleanup timeout of the connection.

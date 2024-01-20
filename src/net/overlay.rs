@@ -1853,12 +1853,16 @@ impl OverlayNode {
 
 			bnode2_id
 		} else {
-			let bnode2_connection = self.base.connect(&bnode2_contact, None).await?;
-			let bnode2_id = bnode2_connection.their_node_id().clone();
-			bnode2_connection.close_async();
-			db.remember_bootstrap_node_id(&bnode2_addr, &bnode2_id)
-				.expect("unable to remember bootstrap node ID");
-			bnode2_id
+			if let Some(bnode2_connection) = self.base.connect(&bnode2_contact, None).await {
+				let bnode2_id = bnode2_connection.their_node_id().clone();
+				bnode2_connection.close_async();
+				db.remember_bootstrap_node_id(&bnode2_addr, &bnode2_id)
+					.expect("unable to remember bootstrap node ID");
+				bnode2_id
+			} else {
+				bnode1_connection.close_async();
+				return None;
+			}
 		};
 
 		// If the node is not bidirectional, try to test if it is punchable
