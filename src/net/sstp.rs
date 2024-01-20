@@ -826,8 +826,7 @@ impl Connection {
 			if self.decrypt_packet(&self.key_state, packet_sequence, &mut packet) {
 				break;
 			} else {
-				#[cfg(debug_assertions)]
-				panic!("Invalid checksum received for packet, dropping it...");
+				trace!("Invalid checksum received for packet, dropping it...");
 			}
 		}
 
@@ -1314,7 +1313,7 @@ impl Connection {
 		self.send_data(&buffer).await
 	}
 
-	async fn send_close_packet(&mut self) -> Result<()> {
+	async fn send_close_packet(&mut self) -> Result<()> { println!("send_close_packet");
 		self.send_crypted_packet(
 			MESSAGE_TYPE_CLOSE,
 			&self.key_state,
@@ -1371,7 +1370,7 @@ impl Connection {
 
 	async fn send_ack_packet(
 		&self, key_sequence: u16, new_window_size: u16, dh_key: &x25519::PublicKey,
-	) -> Result<()> { println!("SENDACKPACK {} {}", self.key_state.sequence, key_sequence);
+	) -> Result<()> { println!("send_ack_packet {} {}", self.key_state.sequence, key_sequence);
 		let mut buffer = vec![0u8; 35];
 		buffer[0] = 0; // Success
 		buffer[1..3].copy_from_slice(&new_window_size.to_le_bytes());
@@ -1551,7 +1550,7 @@ impl Connection {
 
 	async fn send_data_packet(
 		&mut self, key_sequence: u16, packet: &[u8], advance_key: bool,
-	) -> Result<()> {
+	) -> Result<()> { println!("send_data_packet");
 		if advance_key {
 			self.key_state.advance_key(&packet);
 		}
@@ -2663,14 +2662,14 @@ impl Server {
 		Ok(())
 	}
 
-	async fn process_ack(&self, packet: &[u8]) -> Result<()> {
+	async fn process_ack(&self, packet: &[u8]) -> Result<()> { println!("process_ack");
 		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
 			session.queues.ack.send((ks_seq, seq, data))
 		})
 		.await
 	}
 
-	async fn process_ack_wait(&self, packet: &[u8]) -> Result<()> {
+	async fn process_ack_wait(&self, packet: &[u8]) -> Result<()> {println!("process_ack_wait");
 		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
 			println!("process_ack_wait result {} {} {}", ks_seq, seq, data.len());
 			session
@@ -2681,14 +2680,14 @@ impl Server {
 		.await
 	}
 
-	async fn process_close(&self, packet: &[u8]) -> Result<()> {
+	async fn process_close(&self, packet: &[u8]) -> Result<()> {println!("process_close");
 		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
 			session.queues.close.send((ks_seq, seq, data))
 		})
 		.await
 	}
 
-	async fn process_data(&self, packet: &[u8]) -> Result<()> {
+	async fn process_data(&self, packet: &[u8]) -> Result<()> {println!("process_data");
 		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
 			session
 				.queues
