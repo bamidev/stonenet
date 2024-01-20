@@ -99,6 +99,7 @@ impl NodeInterface for OverlayInterface {
 		self.send(connection, message_type, buffer).await?;
 
 		// Receive response
+		println!("RECEIVING[{}]", message_type);
 		let mut response = connection.receive().await?;
 		if response[0] != (message_type + 1) {
 			return Err(
@@ -166,7 +167,7 @@ impl NodeInterface for OverlayInterface {
 		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
 	) -> sstp::Result<()> {
 		*self.last_message_time.lock().unwrap() = SystemTime::now();
-
+		println!("SENDING[{}]", message_type);
 		// Send request
 		let mut real_buffer = Vec::with_capacity(1 + buffer.len());
 		real_buffer.push(message_type);

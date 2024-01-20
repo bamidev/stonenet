@@ -478,6 +478,7 @@ impl Connection {
 		);
 
 		if !Self::verify_packet(&data) {
+			println!("invalid {} {}: {:?}", keystate.sequence, key_sequence, &data);
 			return false;
 		}
 
@@ -825,7 +826,8 @@ impl Connection {
 			if self.decrypt_packet(&self.key_state, packet_sequence, &mut packet) {
 				break;
 			} else {
-				warn!("Invalid checksum received for packet, dropping it...");
+				#[cfg(debug_assertions)]
+				panic!("Invalid checksum received for packet, dropping it...");
 			}
 		}
 
@@ -988,6 +990,7 @@ impl Connection {
 							}
 						}
 					};
+				println!("PACK {} {}", keystate_sequence, sequence);
 
 				// If a packet of the previous keystate has been found, resend an ack packet of
 				// the previous window.
@@ -1368,7 +1371,7 @@ impl Connection {
 
 	async fn send_ack_packet(
 		&self, key_sequence: u16, new_window_size: u16, dh_key: &x25519::PublicKey,
-	) -> Result<()> {
+	) -> Result<()> { println!("SENDACKPACK {} {}", self.key_state.sequence, key_sequence);
 		let mut buffer = vec![0u8; 35];
 		buffer[0] = 0; // Success
 		buffer[1..3].copy_from_slice(&new_window_size.to_le_bytes());
@@ -1377,7 +1380,7 @@ impl Connection {
 			.await
 	}
 
-	async fn send_ack_wait_packet(&self) -> Result<()> {
+	async fn send_ack_wait_packet(&self) -> Result<()> { println!("send_ack_wait_packet");
 		self.send_crypted_packet(
 			MESSAGE_TYPE_ACK_WAIT,
 			&self.key_state,
@@ -1610,7 +1613,7 @@ impl Connection {
 	fn verify_packet(buffer: &[u8]) -> bool {
 		let given_checksum = u16::from_le_bytes(*array_ref![buffer, 0, 2]);
 		let calculated_checksum = calculate_checksum(&buffer[2..]);
-
+		println!("verify_packet {} == {}", given_checksum, calculated_checksum);
 		given_checksum == calculated_checksum
 	}
 }
