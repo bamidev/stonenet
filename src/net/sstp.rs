@@ -1164,14 +1164,14 @@ impl Connection {
 		let (keystate_sequence, sequence, mut buffer) = item;
 		let key_state_opt = if keystate_sequence == self.key_state.sequence {
 			Some(&self.key_state)
-		} else if keystate_sequence == (self.key_state.sequence - 1) {
+		} else if keystate_sequence == (self.key_state.sequence.wrapping_sub(1)) {
 			Some(&self.previous_keystate)
 		} else if keystate_sequence > self.key_state.sequence {
 			self.unprocessed_close_packets
 				.push((keystate_sequence, sequence, buffer.clone()));
 			None
 		} else {
-			warn!("Received invalid close packet: keystate sequence is too old");
+			warn!("Received invalid close packet: keystate sequence is too old: {} (current: {})", keystate_sequence, self.key_state.sequence);
 			None
 		};
 
@@ -1240,7 +1240,7 @@ impl Connection {
 		self.send_crypted_packet(
 			MESSAGE_TYPE_CLOSE,
 			&self.key_state,
-			(self.key_state.keychain.len() - 1) as _,
+			0,
 			self.node_id.as_bytes(),
 		)
 		.await
