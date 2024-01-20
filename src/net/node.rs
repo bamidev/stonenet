@@ -1174,10 +1174,9 @@ where
 	pub async fn test_presence(&self, target: &ContactInfo) -> Option<IdType> {
 		let mut connection = self.select_direct_connection2(target, None).await?;
 		let their_node_id = connection.their_node_id().clone();
-		self.exchange_ping_on_connection(&mut connection).await?;
-		if let Err(e) = connection.close().await {
-			debug!("Unable to close connection: {}", e);
-		}
+		let result = self.exchange_ping_on_connection(&mut connection).await;
+		connection.close_async();
+		result?;
 		Some(their_node_id)
 	}
 

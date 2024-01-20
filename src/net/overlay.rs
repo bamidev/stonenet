@@ -1726,7 +1726,6 @@ impl OverlayNode {
 		&self, actor_id: &IdType, duplicates: usize, actor_info: &ActorInfo,
 		contacts: &[(IdType, ContactOption)],
 	) -> usize {
-		debug_assert!(contacts.len() > 0, "no contacts to store actor at");
 		let mut store_count = 0;
 		let mut fingers = Vec::with_capacity(contacts.len());
 		for (node_id, contact_option) in contacts {
