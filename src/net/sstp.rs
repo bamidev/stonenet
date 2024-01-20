@@ -1176,7 +1176,10 @@ impl Connection {
 		};
 
 		if let Some(key_state) = key_state_opt {
-			if !self.decrypt_packet(key_state, sequence, &mut buffer) {
+			if sequence >= key_state.keychain.len() as u16 {
+				self.unprocessed_close_packets
+					.push((keystate_sequence, sequence, buffer));
+			} else if !self.decrypt_packet(key_state, sequence, &mut buffer) {
 				warn!(
 					"Received malformed close packet: checksum didn't match {} {} [{}]",
 					keystate_sequence, self.key_state.sequence, sequence
@@ -2416,7 +2419,7 @@ impl Server {
 				Err(e) => {
 					match e.kind() {
 						io::ErrorKind::UnexpectedEof => {
-							debug!("TCP connection closed {}.", &addr);
+							trace!("TCP connection closed {}.", &addr);
 							let _ = sender.close().await;
 						}
 						_ => warn!("TCP I/O error: {}", e),
