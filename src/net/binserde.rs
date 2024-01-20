@@ -1,6 +1,9 @@
 use bincode::{self, Options};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use super::sstp;
+use crate::trace::Traced;
+
 
 pub type Error = bincode::Error;
 
@@ -11,6 +14,10 @@ pub fn deserialize<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> bincode::Result<T
 		.reject_trailing_bytes();
 
 	options.deserialize(bytes)
+}
+
+pub fn deserialize_sstp<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> sstp::Result<T> {
+	deserialize(bytes).map_err(|e| Traced::new(e.into()))
 }
 
 pub fn deserialize_owned<T: DeserializeOwned>(bytes: &[u8]) -> bincode::Result<T> {

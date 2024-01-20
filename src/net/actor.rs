@@ -242,7 +242,7 @@ impl ActorNode {
 			.base
 			.exchange_on_connection(connection, ACTOR_MESSAGE_TYPE_HEAD_REQUEST, &[])
 			.await?;
-		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
 		let response: HeadResponse = self
 			.base
 			.handle_connection_issue(result, &connection.their_node_info())
@@ -290,7 +290,7 @@ impl ActorNode {
 				&binserde::serialize(&request).unwrap(),
 			)
 			.await?;
-		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
 		let response: GetProfileResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -312,7 +312,7 @@ impl ActorNode {
 				&raw_request,
 			)
 			.await?;
-		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
 		let response: PublishObjectResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())

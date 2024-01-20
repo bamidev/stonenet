@@ -15,7 +15,7 @@ use rocket::{
 	log::LogLevel,
 	response::{stream::ByteStream, Redirect},
 	serde::Serialize,
-	Data, *
+	Data, *,
 };
 use rocket_dyn_templates::{context, Template};
 use tokio::task::JoinHandle;

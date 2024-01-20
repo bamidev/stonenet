@@ -19,7 +19,11 @@ use super::{
 	sstp::{self, Connection},
 	*,
 };
-use crate::{common::*, db};
+use crate::{
+	common::*,
+	db,
+	trace::{self, Traced},
+};
 
 
 pub struct AllFingersIter<'a> {
@@ -390,7 +394,8 @@ where
 			.exchange_find_x(connection, node_id, NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST)
 			.await;
 		let raw_response = raw_response_result?;
-		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> =
+			binserde::deserialize(&raw_response).map_err(|e| Traced::new(e.into()));
 		let response: FindNodeResponse = self
 			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
@@ -447,7 +452,7 @@ where
 			.await?;
 		if let Some(value_buffer) = value_result {
 			let result: sstp::Result<_> =
-				binserde::deserialize(&value_buffer).map_err(|e| e.into());
+				binserde::deserialize(&value_buffer).map_err(|e| Traced::new(e.into()));
 			let value: V = self
 				.handle_connection_issue(result, &connection.their_node_info())
 				.await?;
@@ -685,7 +690,7 @@ where
 				.connect(&strategy.contact, Some(&candidate_contact.node_id))
 				.await
 			{
-				None => warn!(
+				None => debug!(
 					"Disregarding finger {}, unable to connect...",
 					&candidate_contact.node_id
 				),
@@ -695,7 +700,7 @@ where
 						.await
 					{
 						None => {
-							warn!("Disregarding finger {}", &candidate_contact.node_id);
+							debug!("Disregarding finger {}", &candidate_contact.node_id);
 						}
 						Some(response) => {
 							if response.is_super_node
@@ -807,9 +812,9 @@ where
 	) -> Option<T> {
 		match result {
 			Err(e) => {
-				match e {
+				match *e {
 					sstp::Error::Timeout => {
-						warn!("Problematic node {}: {}", node_info, e);
+						warn!("Problematic node {}: {:?}", node_info, e);
 						self.mark_node_problematic(&node_info.node_id).await;
 					}
 					_ =>
@@ -900,8 +905,13 @@ where
 	/// Use this if a node is giving a timeout.
 	async fn mark_node_problematic(&self, node_id: &IdType) {
 		if let Some(bucket_index) = self.differs_at_bit(node_id) {
-			let mut bucket = self.buckets[bucket_index as usize].lock().await;
-			bucket.mark_problematic(node_id);
+			let removed = {
+				let mut bucket = self.buckets[bucket_index as usize].lock().await;
+				bucket.mark_problematic(node_id)
+			};
+			if removed {
+				warn!("Node {} has been removed.", node_id);
+			}
 		}
 	}
 
@@ -993,7 +1003,7 @@ where
 		// If fingers are expected in the response, parse them
 		let (contacts, contacts_len) = if expect_fingers_in_response {
 			let result: sstp::Result<FindNodeResponse> =
-				binserde::deserialize_with_trailing(&response).map_err(|e| e.into());
+				binserde::deserialize_with_trailing(&response).map_err(|e| Traced::new(e.into()));
 
 			let contacts = self.handle_connection_issue(result, node_info).await?;
 			let contacts_len = binserde::serialized_size(&contacts).unwrap();
@@ -1018,7 +1028,10 @@ where
 				return Some((None, contacts));
 			} else {
 				return self
-					.handle_connection_issue(Err(sstp::Error::MalformedMessage(None)), node_info)
+					.handle_connection_issue(
+						trace::err(sstp::Error::MalformedMessage(None)),
+						node_info,
+					)
 					.await;
 			}
 		}
@@ -1395,7 +1408,7 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 			match connection.receive().await {
 				Ok(m) => m,
 				Err(e) => {
-					match e {
+					match &*e {
 						sstp::Error::Timeout => {
 							if is_first_message {
 								debug!(
@@ -1461,7 +1474,7 @@ pub(super) async fn handle_find_value_connection(
 			match connection.receive().await {
 				Ok(m) => m,
 				Err(e) => {
-					match e {
+					match &*e {
 						sstp::Error::Timeout => {
 							if is_first_message {
 								debug!(
@@ -1519,7 +1532,7 @@ pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c:
 			match connection.receive_with_timeout(timeout).await {
 				Ok(m) => m,
 				Err(e) => {
-					match e {
+					match &*e {
 						// If the node hasn't send any pings for 120 seconds, we're done
 						sstp::Error::Timeout => {
 							debug!(

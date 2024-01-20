@@ -385,7 +385,7 @@ impl OverlayNode {
 			.base
 			.exchange_on_connection(connection, OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST, &[])
 			.await?;
-		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
 		let response: KeepAliveResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -407,7 +407,7 @@ impl OverlayNode {
 				&binserde::serialize(&request).unwrap(),
 			)
 			.await?;
-		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
 		let response: OpenRelayResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -431,7 +431,7 @@ impl OverlayNode {
 				&binserde::serialize(&request).unwrap(),
 			)
 			.await?;
-		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
 		let response: InitiateConnectionResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -456,7 +456,7 @@ impl OverlayNode {
 				&binserde::serialize(&message).unwrap(),
 			)
 			.await;
-		let result: sstp::Result<_> = binserde::deserialize(&raw_response?).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response?);
 		let response: RelayInitiateConnectionResponse = self
 			.base
 			.handle_connection_issue(result, &relay_connection.their_node_info())
@@ -476,7 +476,7 @@ impl OverlayNode {
 				&binserde::serialize(&request).unwrap(),
 			)
 			.await?;
-		let result: sstp::Result<_> = binserde::deserialize(&raw_response).map_err(|e| e.into());
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
 		let response: StartRelayResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
@@ -1213,7 +1213,7 @@ impl OverlayNode {
 			}
 
 			if let Err(e) = handle_relay_connection(connection, &mut target_connection).await {
-				match e {
+				match &*e {
 					sstp::Error::ConnectionClosed => {}
 					other => {
 						warn!("Connection issue during relaying: {}", other);
@@ -1755,9 +1755,13 @@ impl OverlayNode {
 				.base
 				.find_node_from_fingers(&actor_id, &fingers, todo * 2, 1)
 				.await;
-			store_count += self
-				.store_actor_at(actor_id, duplicates - store_count, actor_info, &contacts)
-				.await;
+			if contacts.len() > 0 {
+				store_count += self
+					.store_actor_at(actor_id, todo, actor_info, &contacts)
+					.await;
+			} else {
+				store_count += self.store_actor(actor_id, todo, actor_info).await;
+			}
 		}
 		store_count
 	}

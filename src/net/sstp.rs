@@ -68,6 +68,7 @@ use crate::{
 	config::Config,
 	identity::{self, *},
 	net::*,
+	trace,
 };
 
 const KEEP_ALIVE_IDLE_TIME: Duration = Duration::from_secs(120);
@@ -190,7 +191,7 @@ pub type OnPacket =
 type PingReceiver = Mutex<mpsc::Receiver<SystemTime>>;
 type PingSender = mpsc::Sender<SystemTime>;
 
-pub type Result<T> = StdResult<T, Error>;
+pub type Result<T> = trace::Result<T, Error>;
 
 struct SessionData {
 	their_node_id: IdType,
@@ -382,7 +383,10 @@ impl Connection {
 		if !was_closing && !self.sender.is_connection_based() {
 			self.negotiate_close().await?;
 		}
-		self.sender.close().await?;
+		self.sender
+			.close()
+			.await
+			.map_err(|e| Into::<sstp::Error>::into(e))?;
 		self.queues.ack.close();
 		self.queues.close.close();
 		self.queues.data.close();
@@ -490,9 +494,9 @@ impl Connection {
 					if i == 8 {
 						return Err(e);
 					}
-					match e {
+					match *e {
 						Error::Timeout => self.send_close_packet().await?,
-						other => return Err(other),
+						_ => return Err(e),
 					}
 					i += 1;
 				}
@@ -573,7 +577,7 @@ impl Connection {
 						return;
 					}
 				} else {
-					let _ = tx.send(Err(Error::InvalidData));
+					let _ = tx.send(trace::err(Error::InvalidData));
 					return;
 				}
 			}
@@ -595,7 +599,7 @@ impl Connection {
 						}
 						received = buffer.len();
 					} else {
-						let _ = tx.send(Err(Error::InvalidData));
+						let _ = tx.send(trace::err(Error::InvalidData));
 						return;
 					},
 			}
@@ -618,7 +622,7 @@ impl Connection {
 				);
 				return Err(result.unwrap_err());
 			} else {
-				return Err(Error::ConnectionClosed);
+				return trace::err(Error::ConnectionClosed);
 			}
 		};
 		let mut buffer = Vec::with_capacity(4 + message_size);
@@ -690,9 +694,9 @@ impl Connection {
 				},
 				_ = sleep(timeout) => {
 					if self.is_closing.load(Ordering::Relaxed) {
-						return Err(Error::ConnectionClosed.into());
+						return trace::err(Error::ConnectionClosed.into());
 					} else {
-						return Err(Error::Timeout);
+						return trace::err(Error::Timeout);
 					}
 				}
 			}
@@ -740,7 +744,7 @@ impl Connection {
 	/// configured timeout.
 	pub async fn receive_with_timeout(&mut self, first_timeout: Duration) -> Result<Vec<u8>> {
 		if self.is_closing.load(Ordering::Relaxed) {
-			return Err(Error::ConnectionClosed);
+			return trace::err(Error::ConnectionClosed);
 		}
 
 		let mut buffer = Vec::new();
@@ -768,7 +772,7 @@ impl Connection {
 				continue;
 			}
 			if packet_sequence as usize >= self.key_state.keychain.len() {
-				return Err(Error::InvalidSequenceNumber(packet_sequence).into());
+				return trace::err(Error::InvalidSequenceNumber(packet_sequence).into());
 			}
 			if self.decrypt_packet(&self.key_state, packet_sequence, &mut packet) {
 				break;
@@ -788,7 +792,7 @@ impl Connection {
 			if data.len() > 1 {
 				Ok(Err((packet_sequence, data[1..].to_vec())))
 			} else {
-				Err(Error::EmptyAckMask)
+				trace::err(Error::EmptyAckMask)
 			}
 		} else {
 			let next_window_size = u16::from_le_bytes(*array_ref![data, 1, 2]);
@@ -903,13 +907,13 @@ impl Connection {
 							r
 						}
 						Err(e) => {
-							match e {
+							match *e {
 								Error::Timeout => {
 									// Break out of the loop after a timeout, so that we resend our
 									// missing ack packet. But after 8 retries, we give up.
 									timeouts += 1;
 									if timeouts == 8 {
-										return Err(Error::Timeout);
+										return trace::err(Error::Timeout);
 									} else {
 										break;
 									}
@@ -1072,7 +1076,7 @@ impl Connection {
 			if let Some(time) = sent_first_ack_packet {
 				// Check to see if we've sent enough ack packets already
 				if time >= (SystemTime::now() + self.timeout) {
-					return Err(Error::Timeout);
+					return trace::err(Error::Timeout);
 				}
 			}
 
@@ -1108,9 +1112,9 @@ impl Connection {
 				result = queue.recv() => {
 					if result.is_none() {
 						if self.is_closing.load(Ordering::Relaxed) {
-							return Err(Error::ConnectionClosed.into());
+							return trace::err(Error::ConnectionClosed.into());
 						} else {
-							return Err(Error::Timeout);
+							return trace::err(Error::Timeout);
 						}
 					}
 					return Ok(result.unwrap())
@@ -1122,9 +1126,9 @@ impl Connection {
 				},
 				_ = sleep(timeout) => {
 					if self.is_closing.load(Ordering::Relaxed) {
-						return Err(Error::ConnectionClosed.into());
+						return trace::err(Error::ConnectionClosed.into());
 					} else {
-						return Err(Error::Timeout);
+						return trace::err(Error::Timeout);
 					}
 				}
 			}
@@ -1137,9 +1141,9 @@ impl Connection {
 				result = self.queues.ack.recv() => {
 					if result.is_none() {
 						if self.is_closing.load(Ordering::Relaxed) {
-							return Err(Error::ConnectionClosed.into());
+							return trace::err(Error::ConnectionClosed.into());
 						} else {
-							return Err(Error::Timeout);
+							return trace::err(Error::Timeout);
 						}
 					}
 					return Ok(result.unwrap())
@@ -1151,9 +1155,9 @@ impl Connection {
 				},
 				_ = sleep(timeout) => {
 					if self.is_closing.load(Ordering::Relaxed) {
-						return Err(Error::ConnectionClosed.into());
+						return trace::err(Error::ConnectionClosed.into());
 					} else {
-						return Err(Error::Timeout);
+						return trace::err(Error::Timeout);
 					}
 				}
 			}
@@ -1171,7 +1175,10 @@ impl Connection {
 				.push((keystate_sequence, sequence, buffer.clone()));
 			None
 		} else {
-			warn!("Received invalid close packet: keystate sequence is too old: {} (current: {})", keystate_sequence, self.key_state.sequence);
+			warn!(
+				"Received invalid close packet: keystate sequence is too old: {} (current: {})",
+				keystate_sequence, self.key_state.sequence
+			);
 			None
 		};
 
@@ -1202,9 +1209,9 @@ impl Connection {
 				result = self.queues.data.recv() => {
 					if result.is_none() {
 						if self.is_closing.load(Ordering::Relaxed) {
-							return Err(Error::ConnectionClosed.into());
+							return trace::err(Error::ConnectionClosed.into());
 						} else {
-							return Err(Error::Timeout);
+							return trace::err(Error::Timeout);
 						}
 					}
 					return Ok(result.unwrap())
@@ -1216,9 +1223,9 @@ impl Connection {
 				},
 				_ = sleep(timeout) => {
 					if self.is_closing.load(Ordering::Relaxed) {
-						return Err(Error::ConnectionClosed.into());
+						return trace::err(Error::ConnectionClosed.into());
 					} else {
-						return Err(Error::Timeout);
+						return trace::err(Error::Timeout);
 					}
 				}
 			}
@@ -1429,7 +1436,10 @@ impl Connection {
 		);
 
 		*self.last_activity.lock().unwrap() = SystemTime::now();
-		self.sender.send(&buffer).await?;
+		self.sender
+			.send(&buffer)
+			.await
+			.map_err(|e| Into::<self::Error>::into(e))?;
 		Ok(())
 	}
 
@@ -1623,7 +1633,7 @@ impl SessionData {
 	pub fn new_with_their_session(
 		their_session_id: u16, node_id: IdType, queues: QueueSenders, timeout: Duration,
 	) -> Self {
-		let (dummy_tx, _) = watch::channel(Err(Error::DummyError));
+		let (dummy_tx, _) = watch::channel(trace::err(Error::DummyError));
 		Self {
 			their_node_id: node_id,
 			their_session_id: Some(their_session_id),
@@ -1898,8 +1908,13 @@ impl Server {
 		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, target: &ContactOption,
 		node_id: Option<&IdType>, timeout: Duration,
 	) -> Result<Box<Connection>> {
-		let (sender, receiver) = match self.sockets.connect(target, timeout).await? {
-			None => return Err(Error::NoConnectionOptions),
+		let (sender, receiver) = match self
+			.sockets
+			.connect(target, timeout)
+			.await
+			.map_err(|e| Into::<self::Error>::into(e))?
+		{
+			None => return trace::err(Error::NoConnectionOptions),
 			Some(s) => s,
 		};
 
@@ -1965,7 +1980,7 @@ impl Server {
 						None => {},
 						Some(id) => {
 							if &their_node_id != id {
-								return Err(Error::InvalidNodeId.into());
+								return trace::err(Error::InvalidNodeId.into());
 							}
 						}
 					}
@@ -2008,9 +2023,9 @@ impl Server {
 		// If the connecting task was stopped from an outside force, don't give a
 		// timeout error
 		if stop_flag.load(Ordering::Relaxed) {
-			Err(Error::ConnectionClosed)
+			trace::err(Error::ConnectionClosed)
 		} else {
-			Err(Error::Timeout)
+			trace::err(Error::Timeout)
 		}
 	}
 
@@ -2029,7 +2044,7 @@ impl Server {
 			Some((our_session_id, _)) => return Ok((our_session_id, false)),
 		}
 		let session_id = match sessions.next_id() {
-			None => return Err(Error::OutOfSessions),
+			None => return trace::err(Error::OutOfSessions),
 			Some(id) => id,
 		};
 		let session_data = Arc::new(Mutex::new(SessionData::new_with_their_session(
@@ -2055,7 +2070,7 @@ impl Server {
 			None => return None,
 			Some(id) => id,
 		};
-		let (hello_tx, hello_rx) = watch::channel(Err(Error::DummyError));
+		let (hello_tx, hello_rx) = watch::channel(trace::err(Error::DummyError));
 		let (tx_queues, rx_queues) = Queues::channel(session_id);
 		let session_data = Arc::new(Mutex::new(SessionData::new(
 			client_node_id,
@@ -2070,9 +2085,16 @@ impl Server {
 	pub fn our_contact_info(&self) -> ContactInfo { self.our_contact_info.lock().unwrap().clone() }
 
 	pub async fn send_punch_hole_packet(&self, contact: &ContactOption) -> Result<bool> {
-		if let Some((tx, _rx)) = self.sockets.connect(contact, self.default_timeout).await? {
+		if let Some((tx, _rx)) = self
+			.sockets
+			.connect(contact, self.default_timeout)
+			.await
+			.map_err(|e| Into::<self::Error>::into(e))?
+		{
 			let buffer = vec![MESSAGE_TYPE_PUNCH_HOLE; 1];
-			tx.send(&buffer).await?;
+			tx.send(&buffer)
+				.await
+				.map_err(|e| Into::<self::Error>::into(e))?;
 			return Ok(true);
 		}
 		Ok(false)
@@ -2096,7 +2118,10 @@ impl Server {
 		let signature = self.private_key.sign(&buffer[129..]);
 		buffer[65..129].copy_from_slice(&signature.to_bytes());
 
-		socket.send(&buffer).await?;
+		socket
+			.send(&buffer)
+			.await
+			.map_err(|e| Into::<self::Error>::into(e))?;
 		Ok(())
 	}
 
@@ -2562,7 +2587,7 @@ impl Server {
 
 		if should_close {
 			sessions.map.remove(&our_session_id);
-			return Err(Error::ConnectionClosed.into());
+			return trace::err(Error::ConnectionClosed.into());
 		}
 		Ok(())
 	}
@@ -2592,24 +2617,24 @@ impl Server {
 		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, addr: &SocketAddr, packet: &[u8],
 	) -> Result<()> {
 		if packet.len() < 162 {
-			return Err(Error::MalformedPacket.into());
+			return trace::err(Error::MalformedPacket.into());
 		}
 
 		let node_id = IdType::from_slice(&packet[..32]).unwrap();
 		let identity_pubkey = match identity::PublicKey::from_bytes(*array_ref![packet, 32, 32]) {
 			Ok(k) => k,
-			Err(_) => return Err(Error::InvalidPublicKey.into()),
+			Err(_) => return trace::err(Error::InvalidPublicKey.into()),
 		};
 		// Verify that the node ID is valid
 		let node_id2 = identity_pubkey.generate_address();
 		if node_id != node_id2 {
-			return Err(Error::InvalidPublicKey.into());
+			return trace::err(Error::InvalidPublicKey.into());
 		}
 
 		// Verify that the signature is correct
 		let signature = Signature::from_bytes(*array_ref![packet, 64, 64]);
 		if !identity_pubkey.verify(&packet[128..], &signature) {
-			return Err(Error::InvalidSignature.into());
+			return trace::err(Error::InvalidSignature.into());
 		}
 		let dh_pubkey_bytes: [u8; 32] = packet[128..160].try_into().unwrap();
 
@@ -2617,7 +2642,8 @@ impl Server {
 		let own_secret_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let own_public_key = x25519::PublicKey::from(&own_secret_key);
 		let their_session_id = u16::from_le_bytes(*array_ref![packet, 160, 2]);
-		let mut their_contact_info: ContactInfo = binserde::deserialize(&packet[162..])?;
+		let mut their_contact_info: ContactInfo =
+			binserde::deserialize(&packet[162..]).map_err(|e| Into::<self::Error>::into(e))?;
 		their_contact_info.update(addr, sender.is_connection_based());
 
 		let (tx_queues, rx_queues) = Queues::channel(their_session_id);
@@ -2665,7 +2691,10 @@ impl Server {
 		// If the connection was already created before, just return the response again.
 		// The other side might not have received the hello response packet
 		if !is_new {
-			sender.send(&response).await?;
+			sender
+				.send(&response)
+				.await
+				.map_err(|e| Into::<self::Error>::into(e))?;
 			return Ok(());
 		}
 
@@ -2703,7 +2732,10 @@ impl Server {
 			None => {}
 			Some(closure) => {
 				closure(connection);
-				sender.send(&response).await?;
+				sender
+					.send(&response)
+					.await
+					.map_err(|e| Into::<self::Error>::into(e))?;
 			}
 		}
 
@@ -2718,7 +2750,7 @@ impl Server {
 			SocketAddr::V6(_) => 16,
 		};
 		if packet.len() < (164 + addr_len) {
-			return Err(Error::MalformedPacket.into());
+			return trace::err(Error::MalformedPacket.into());
 		}
 
 		// Verify that the node ID is the same as ours. If it isn't, the
@@ -2728,7 +2760,7 @@ impl Server {
 		// sign the DH key as well.
 		let my_node_id = IdType::from_slice(&packet[..32]).unwrap();
 		if my_node_id != self.node_id {
-			return Err(Error::InsecureConnection.into());
+			return trace::err(Error::InsecureConnection.into());
 		}
 
 		let identity_pubkey = identity::PublicKey::from_bytes(*array_ref![packet, 32, 32])
@@ -2737,14 +2769,14 @@ impl Server {
 		// Verify that the signature is correct
 		let signature = Signature::from_bytes(*array_ref![packet, 64, 64]);
 		if !identity_pubkey.verify(&packet[128..], &signature) {
-			return Err(Error::InvalidSignature.into());
+			return trace::err(Error::InvalidSignature.into());
 		}
 
 		// Once we have verified the signature, take note of our session ID.
 		let our_session_id = u16::from_le_bytes(*array_ref![packet, 160, 2]);
 		let session_lock = match self.sessions.lock().await.map.get(&our_session_id) {
 			None => {
-				return Err(Error::InvalidSessionId(our_session_id).into());
+				return trace::err(Error::InvalidSessionId(our_session_id).into());
 			}
 			Some(s) => s.clone(),
 		};
@@ -2759,14 +2791,16 @@ impl Server {
 		session.their_session_id = Some(their_session_id);
 
 		let mut their_contact_info: ContactInfo =
-			binserde::deserialize_with_trailing(&packet[164..])?;
+			binserde::deserialize_with_trailing(&packet[164..])
+				.map_err(|e| Into::<self::Error>::into(e))?;
 		let i = 164 + binserde::serialized_size(&their_contact_info).unwrap();
 		their_contact_info.update(sender, is_tcp);
 
 		// Update our own external IP address with what is given by the other side
 		match sender {
 			SocketAddr::V4(_) => {
-				let ip: Ipv4Addr = binserde::deserialize(&packet[i..(i + 4)])?;
+				let ip: Ipv4Addr = binserde::deserialize(&packet[i..(i + 4)])
+					.map_err(|e| Into::<self::Error>::into(e))?;
 				let port = u16::from_le_bytes(*array_ref![packet, i + 4, 2]);
 				self.our_contact_info
 					.lock()
@@ -2774,7 +2808,8 @@ impl Server {
 					.update_v4(&ip, port, is_tcp);
 			}
 			SocketAddr::V6(_) => {
-				let ip: Ipv6Addr = binserde::deserialize(&packet[i..(i + 16)])?;
+				let ip: Ipv6Addr = binserde::deserialize(&packet[i..(i + 16)])
+					.map_err(|e| Into::<self::Error>::into(e))?;
 				let port = u16::from_le_bytes(*array_ref![packet, i + 16, 2]);
 				self.our_contact_info
 					.lock()
@@ -2826,14 +2861,14 @@ impl Server {
 			// Hole punching packets don't need to be responded to. They don't have any data other
 			// than the message type anyway.
 			MESSAGE_TYPE_PUNCH_HOLE => Ok(()),
-			other => Err(Error::InvalidMessageType(other)),
+			other => trace::err(Error::InvalidMessageType(other)),
 		};
 
 		match result {
 			// Ignore invalid session id exceptions, as they happen regularely due to the fact that
 			// the sender might resend some of their packets if they are still waiting on a
 			// response.
-			Err(e) => match e {
+			Err(e) => match &*e {
 				Error::InvalidSessionId(session_id) => {
 					// Close packets may be received after we've already closed the connection
 					// ourselves, at which point we've forgotten about the session ID already. So
@@ -2841,10 +2876,10 @@ impl Server {
 					if message_type == MESSAGE_TYPE_CLOSE {
 						Ok(())
 					} else {
-						Err(Error::InvalidSessionId(session_id))
+						trace::err(Error::InvalidSessionId(*session_id))
 					}
 				}
-				other => Err(other),
+				_ => Err(e),
 			},
 			Ok(()) => Ok(()),
 		}
@@ -2863,7 +2898,7 @@ impl Server {
 				spawn(async move {
 					match this2.process_packet(sender2, &address2, &packet2).await {
 						Ok(()) => {}
-						Err(e) => match e {
+						Err(e) => match *e {
 							// A connection is opened without sending anything all the time
 							Error::ConnectionClosed => {}
 							_ => warn!("SSTP I/O error: {}", e),

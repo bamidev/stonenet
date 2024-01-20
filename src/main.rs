@@ -13,6 +13,7 @@ mod model;
 mod net;
 #[cfg(test)]
 mod test;
+mod trace;
 mod web;
 
 use std::{

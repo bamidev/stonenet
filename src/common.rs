@@ -205,6 +205,7 @@ impl fmt::Display for IdFromBase58Error {
 
 impl Error for IdFromBase58Error {}
 
+
 #[cfg(test)]
 mod tests {
 	use super::*;

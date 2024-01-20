@@ -113,7 +113,8 @@ impl Bucket {
 		}
 	}
 
-	pub fn mark_problematic(&mut self, id: &IdType) {
+	pub fn mark_problematic(&mut self, id: &IdType) -> bool {
+		let mut removed = false;
 		match self.fingers.iter().position(|f| &f.node_info.node_id == id) {
 			None => {}
 			Some(index) => {
@@ -136,10 +137,12 @@ impl Bucket {
 					entry.failed_attempts += 1;
 					if entry.failed_attempts == 3 {
 						self.replacement_cache.remove(index);
+						removed = true;
 					}
 				}
 			}
 		}
+		removed
 	}
 
 	pub fn reject(&mut self, id: &IdType) {
