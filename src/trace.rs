@@ -19,13 +19,14 @@ pub struct Traced<E> {
 }
 
 
-/// Encapsulates the given error into a `Traced` struct, which includes tracing information.
+/// Encapsulates the given error into a `Traced` struct, which includes tracing
+/// information.
 pub fn err<T, E>(inner: E) -> Result<T, E> {
-    Err(Traced {
-        inner,
-        #[cfg(debug_assertions)]
-        backtrace: Backtrace::force_capture(),
-    })
+	Err(Traced {
+		inner,
+		#[cfg(debug_assertions)]
+		backtrace: Backtrace::force_capture(),
+	})
 }
 
 

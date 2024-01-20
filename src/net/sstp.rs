@@ -76,8 +76,9 @@ const MESSAGE_TYPE_HELLO_REQUEST: u8 = 0;
 const MESSAGE_TYPE_HELLO_RESPONSE: u8 = 1;
 const MESSAGE_TYPE_DATA: u8 = 2;
 const MESSAGE_TYPE_ACK: u8 = 3;
-const MESSAGE_TYPE_CLOSE: u8 = 4;
-const MESSAGE_TYPE_PUNCH_HOLE: u8 = 5;
+const MESSAGE_TYPE_ACK_WAIT: u8 = 4;
+const MESSAGE_TYPE_CLOSE: u8 = 5;
+const MESSAGE_TYPE_PUNCH_HOLE: u8 = 6;
 /// If nothing was received on a TCP connection for 2 minutes, assume the
 /// connection is broken.
 const TCP_CONNECTION_TIMEOUT: u64 = 120;
@@ -94,7 +95,7 @@ pub struct Connection {
 	/// A flag that indicates that a close packet has already been received from
 	/// the other side, and that the connection unusable after the last data
 	/// packet has been received.
-	is_closing: AtomicBool,
+	peer_is_closing: AtomicBool,
 	sender: Arc<dyn LinkSocketSender>,
 	receiver_handle: Option<JoinHandle<()>>,
 	peer_address: SocketAddr,
@@ -255,17 +256,22 @@ pub struct Server {
 
 struct Queues;
 
-type QueueReceiver = mpsc::UnboundedReceiver<(u16, u16, Vec<u8>)>;
-type QueueSender = mpsc::UnboundedSender<(u16, u16, Vec<u8>)>;
+type QueueReceiver<T = Vec<u8>> = mpsc::UnboundedReceiver<(u16, u16, T)>;
+type QueueSender<T = Vec<u8>> = mpsc::UnboundedSender<(u16, u16, T)>;
+
+enum DataQueueItem {
+	Data(Vec<u8>),
+	WaitingOnAck,
+}
 
 pub struct QueueReceivers {
-	data: QueueReceiver,
+	data: QueueReceiver<DataQueueItem>,
 	ack: QueueReceiver,
 	close: QueueReceiver,
 }
 
 pub struct QueueSenders {
-	data: QueueSender,
+	data: QueueSender<DataQueueItem>,
 	ack: QueueSender,
 	close: QueueSender,
 	session_id: u16,
@@ -377,10 +383,10 @@ impl Connection {
 	pub async fn close(&mut self) -> Result<()> {
 		#[cfg(debug_assertions)]
 		self.should_be_closed.store(false, Ordering::Relaxed);
-		let was_closing = self.is_closing.swap(true, Ordering::Relaxed);
+
 		// If the underlying transport protocol was connection-based, just close the
 		// underlying connection, don't bother with a exchanging close packets.
-		if !was_closing && !self.sender.is_connection_based() {
+		if !self.sender.is_connection_based() {
 			self.negotiate_close().await?;
 		}
 		self.sender
@@ -482,23 +488,65 @@ impl Connection {
 
 	fn max_data_packet_length(&self) -> usize { self.sender.max_packet_length() - 5 - 2 - 2 }
 
+	/// Wait for an ack packet, but keep sending ack_wait packets if they are
+	/// not arriving immediately. The other end might have sent a success ack
+	/// packet and therefore will think
+	async fn negotiate_ack(&mut self, timeout: Duration) -> Result<(u16, u16, Vec<u8>)> {
+		match self.receive_ack_packet(timeout / 8).await {
+			Ok(result) => return Ok(result),
+			Err(e) => match &*e {
+				Error::Timeout(_) => {
+					for _ in 0..7 {
+						self.send_ack_wait_packet().await?;
+
+						match self.receive_ack_packet(timeout / 8).await {
+							Ok(result) => return Ok(result),
+							Err(e) => match &*e {
+								Error::Timeout(_) => {}
+								_ => return Err(e),
+							},
+						}
+					}
+					trace::err(Error::Timeout(timeout))
+				}
+				_ => return Err(e),
+			},
+		}
+	}
+
+	// Keep sending out close packets until we receive one back.
+	// If we are still receiving ack-wait packets, returwn the last ack packet.
 	async fn negotiate_close(&mut self) -> Result<()> {
 		self.send_close_packet().await?;
 		let timeout = min(self.timeout / 8, MAXIMUM_RETRY_TIMEOUT);
 
-		let mut i = 1;
-		loop {
-			match self.receive_close_packet(timeout).await {
-				Ok(()) => break,
-				Err(e) => {
-					if i == 8 {
-						return Err(e);
+		let mut i = 0;
+		while i < 8 && !self.peer_is_closing.load(Ordering::Relaxed) {
+			tokio::select! {
+				// If the data queue is still receiving items, it may be because of ack-wait packets.
+				// If the other side is still sending ack-wait packets, they don't know we already sent a successful ack packet.
+				// In that case, we need to send out the last ack packet out again, while we hope the other side will sent out a close packet back eventually.
+				result = self.queues.data.recv() => {
+					if let Some((ks_seq, seq, queue_item)) = result {
+						match queue_item {
+							DataQueueItem::Data(_) => warn!("Receiving data while already closing down. ({} / {})", ks_seq, seq),
+							DataQueueItem::WaitingOnAck => {
+								self.send_previous_ack_packet().await?;
+								continue;
+							}
+						}
 					}
-					match *e {
-						Error::Timeout(_) => self.send_close_packet().await?,
-						_ => return Err(e),
+				},
+				// If a close packet is ready, processing it will set `self.is_closing`.
+				result = self.queues.close.recv() => {
+					if let Some(packet) = result {
+						let _ = self.process_close_packet(packet);
 					}
+				},
+				_ = sleep(timeout) => {
 					i += 1;
+					if i == 8 { return trace::err(Error::Timeout(self.timeout)); }
+					self.send_close_packet().await?;
 				}
 			}
 		}
@@ -683,7 +731,7 @@ impl Connection {
 	}
 
 	async fn receive_close_packet(&mut self, timeout: Duration) -> Result<()> {
-		while !self.is_closing.load(Ordering::Relaxed) {
+		while !self.peer_is_closing.load(Ordering::Relaxed) {
 			tokio::select! {
 				result = self.queues.close.recv() => {
 					if let Some(packet) = result {
@@ -693,7 +741,7 @@ impl Connection {
 					}
 				},
 				_ = sleep(timeout) => {
-					if self.is_closing.load(Ordering::Relaxed) {
+					if self.peer_is_closing.load(Ordering::Relaxed) {
 						return trace::err(Error::ConnectionClosed.into());
 					} else {
 						return trace::err(Error::Timeout(timeout));
@@ -743,7 +791,7 @@ impl Connection {
 	/// packet, and proceeds to receive the remainder at the connection's
 	/// configured timeout.
 	pub async fn receive_with_timeout(&mut self, first_timeout: Duration) -> Result<Vec<u8>> {
-		if self.is_closing.load(Ordering::Relaxed) {
+		if self.peer_is_closing.load(Ordering::Relaxed) {
 			return trace::err(Error::ConnectionClosed);
 		}
 
@@ -766,7 +814,7 @@ impl Connection {
 		let mut packet: Vec<u8>;
 		loop {
 			let keystate_sequence;
-			(keystate_sequence, packet_sequence, packet) = self.receive_ack_packet(timeout).await?;
+			(keystate_sequence, packet_sequence, packet) = self.negotiate_ack(timeout).await?;
 			// Drop ack packets for another window
 			if keystate_sequence != self.key_state.sequence {
 				continue;
@@ -900,11 +948,29 @@ impl Connection {
 			loop {
 				let (keystate_sequence, mut sequence, mut packet) =
 					match self.receive_data_packet(timeout).await {
-						Ok(r) => {
+						Ok((ks_seq, seq, queue_item)) => {
+							let packet = match queue_item {
+								DataQueueItem::WaitingOnAck =>
+									if ks_seq == self.key_state.sequence {
+										break;
+									} else if ks_seq == self.key_state.sequence.wrapping_sub(1) {
+										self.send_previous_ack_packet().await?;
+										continue;
+									} else {
+										trace!(
+											"Received ack-wait packet for invalid keystate \
+											 sequence {} ({})",
+											ks_seq,
+											self.key_state.sequence
+										);
+										continue;
+									},
+								DataQueueItem::Data(p) => p,
+							};
 							// We've received a data packet (again), so we shouldn't loop to retry
 							// sending ack packets (anymore).
 							sent_first_ack_packet = None;
-							r
+							(ks_seq, seq, packet)
 						}
 						Err(e) => {
 							match *e {
@@ -1111,7 +1177,7 @@ impl Connection {
 			tokio::select! {
 				result = queue.recv() => {
 					if result.is_none() {
-						if self.is_closing.load(Ordering::Relaxed) {
+						if self.peer_is_closing.load(Ordering::Relaxed) {
 							return trace::err(Error::ConnectionClosed.into());
 						} else {
 							return trace::err(Error::Timeout(timeout));
@@ -1125,7 +1191,7 @@ impl Connection {
 					}
 				},
 				_ = sleep(timeout) => {
-					if self.is_closing.load(Ordering::Relaxed) {
+					if self.peer_is_closing.load(Ordering::Relaxed) {
 						return trace::err(Error::ConnectionClosed.into());
 					} else {
 						return trace::err(Error::Timeout(timeout));
@@ -1140,7 +1206,7 @@ impl Connection {
 			tokio::select! {
 				result = self.queues.ack.recv() => {
 					if result.is_none() {
-						if self.is_closing.load(Ordering::Relaxed) {
+						if self.peer_is_closing.load(Ordering::Relaxed) {
 							return trace::err(Error::ConnectionClosed.into());
 						} else {
 							return trace::err(Error::Timeout(timeout));
@@ -1154,7 +1220,7 @@ impl Connection {
 					}
 				},
 				_ = sleep(timeout) => {
-					if self.is_closing.load(Ordering::Relaxed) {
+					if self.peer_is_closing.load(Ordering::Relaxed) {
 						return trace::err(Error::ConnectionClosed.into());
 					} else {
 						return trace::err(Error::Timeout(timeout));
@@ -1196,19 +1262,21 @@ impl Connection {
 			} else if &buffer[2..34] != self.peer_node_id.as_bytes() {
 				warn!("Received malformed close packet: node ID didn't match.");
 			} else {
-				self.is_closing.store(true, Ordering::Relaxed);
+				self.peer_is_closing.store(true, Ordering::Relaxed);
 				return true;
 			}
 		}
 		false
 	}
 
-	async fn receive_data_packet(&mut self, timeout: Duration) -> Result<(u16, u16, Vec<u8>)> {
+	async fn receive_data_packet(
+		&mut self, timeout: Duration,
+	) -> Result<(u16, u16, DataQueueItem)> {
 		loop {
 			tokio::select! {
 				result = self.queues.data.recv() => {
 					if result.is_none() {
-						if self.is_closing.load(Ordering::Relaxed) {
+						if self.peer_is_closing.load(Ordering::Relaxed) {
 							return trace::err(Error::ConnectionClosed.into());
 						} else {
 							return trace::err(Error::Timeout(timeout));
@@ -1222,7 +1290,7 @@ impl Connection {
 					}
 				},
 				_ = sleep(timeout) => {
-					if self.is_closing.load(Ordering::Relaxed) {
+					if self.peer_is_closing.load(Ordering::Relaxed) {
 						return trace::err(Error::ConnectionClosed.into());
 					} else {
 						return trace::err(Error::Timeout(timeout));
@@ -1307,6 +1375,16 @@ impl Connection {
 		buffer[3..35].copy_from_slice(dh_key.as_bytes());
 		self.send_crypted_packet(MESSAGE_TYPE_ACK, &self.key_state, key_sequence, &buffer)
 			.await
+	}
+
+	async fn send_ack_wait_packet(&self) -> Result<()> {
+		self.send_crypted_packet(
+			MESSAGE_TYPE_ACK_WAIT,
+			&self.key_state,
+			(self.key_state.keychain.len() - 1) as u16,
+			self.node_id.as_bytes(),
+		)
+		.await
 	}
 
 	/// Tries to send as much as of the buffer as made possible by the window
@@ -1988,7 +2066,7 @@ impl Server {
 					return Ok(Box::new(Connection {
 						server: self.clone(),
 						keep_alive_flag: AtomicBool::new(false),
-						is_closing: AtomicBool::new(false),
+						peer_is_closing: AtomicBool::new(false),
 						sender,
 						receiver_handle: handle,
 						peer_address: target.target.clone(),
@@ -2555,14 +2633,14 @@ impl Server {
 		}
 	}
 
-	async fn process_sequenced_packet(
+	async fn process_sequenced_packet<T>(
 		&self, packet: &[u8],
 		handle_queue: impl FnOnce(
 			&mut SessionData,
 			u16,
 			u16,
 			Vec<u8>,
-		) -> StdResult<(), SendError<(u16, u16, Vec<u8>)>>,
+		) -> StdResult<(), SendError<(u16, u16, T)>>,
 	) -> Result<()> {
 		let our_session_id = u16::from_le_bytes(*array_ref![packet, 0, 2]);
 		let keystate_sequence = u16::from_le_bytes(*array_ref![packet, 2, 2]);
@@ -2599,6 +2677,17 @@ impl Server {
 		.await
 	}
 
+	async fn process_ack_wait(&self, packet: &[u8]) -> Result<()> {
+		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
+			println!("process_ack_wait result {} {} {}", ks_seq, seq, data.len());
+			session
+				.queues
+				.data
+				.send((ks_seq, seq, DataQueueItem::WaitingOnAck))
+		})
+		.await
+	}
+
 	async fn process_close(&self, packet: &[u8]) -> Result<()> {
 		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
 			session.queues.close.send((ks_seq, seq, data))
@@ -2608,7 +2697,10 @@ impl Server {
 
 	async fn process_data(&self, packet: &[u8]) -> Result<()> {
 		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
-			session.queues.data.send((ks_seq, seq, data))
+			session
+				.queues
+				.data
+				.send((ks_seq, seq, DataQueueItem::Data(data)))
 		})
 		.await
 	}
@@ -2701,7 +2793,7 @@ impl Server {
 		let connection = Box::new(Connection {
 			server: self.clone(),
 			keep_alive_flag: AtomicBool::new(false),
-			is_closing: AtomicBool::new(false),
+			peer_is_closing: AtomicBool::new(false),
 			sender: sender.clone(),
 			receiver_handle: None,
 			peer_address: addr.clone(),
@@ -2857,6 +2949,7 @@ impl Server {
 					.await,
 			MESSAGE_TYPE_DATA => self.process_data(&packet[1..]).await,
 			MESSAGE_TYPE_ACK => self.process_ack(&packet[1..]).await,
+			MESSAGE_TYPE_ACK_WAIT => self.process_ack_wait(&packet[1..]).await,
 			MESSAGE_TYPE_CLOSE => self.process_close(&packet[1..]).await,
 			// Hole punching packets don't need to be responded to. They don't have any data other
 			// than the message type anyway.
@@ -3098,6 +3191,10 @@ mod tests {
 					.await
 					.expect("master unable to send third small message");
 				debug!("Sent third small message");
+				connection
+					.close()
+					.await
+					.expect("unable to close conenction with client");
 			});
 		});
 		master.spawn();
