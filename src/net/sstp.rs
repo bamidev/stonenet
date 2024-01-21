@@ -101,6 +101,7 @@ struct ConnectionInner {
 	/// the other side, and that the connection unusable after the last data
 	/// packet has been received.
 	peer_is_closing: AtomicBool,
+	is_closed: AtomicBool,
 	sender: Arc<dyn LinkSocketSender>,
 	socket_handle: Option<JoinHandle<()>>,
 	peer_address: SocketAddr,
@@ -593,6 +594,11 @@ impl Connection {
 		};
 
 		let key_states = self.key_state_manager.get_duo_mut();
+		self.inner
+			.process_unprocessed_close_packets(key_states.get_const())
+			.await;
+		self.inner.check_if_closing(key_states.current).await?;
+
 		let (next_window_size, new_public_key) = self
 			.inner
 			.receive_window(
@@ -625,10 +631,6 @@ impl Connection {
 	/// packet, and proceeds to receive the remainder at the connection's
 	/// configured timeout.
 	pub async fn receive_with_timeout(&mut self, first_timeout: Duration) -> Result<Vec<u8>> {
-		if self.inner.peer_is_closing.load(Ordering::Relaxed) {
-			return trace::err(Error::ConnectionClosed);
-		}
-
 		let mut buffer = Vec::new();
 		let mut first = true;
 		let mut timeout = first_timeout;
@@ -660,6 +662,11 @@ impl Connection {
 		let our_new_window_size = self.inner.send_window.increase_window_size();
 		let new_private_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let ks = self.key_state_manager.get_duo_mut();
+		self.inner
+			.process_unprocessed_close_packets(ks.get_const())
+			.await;
+		self.inner.check_if_closing(ks.current).await?;
+
 		let result = self
 			.inner
 			.send_window(
@@ -694,6 +701,10 @@ impl Connection {
 	async fn send_data(&mut self, buffer: &[u8]) -> Result<()> {
 		let mut send = 0usize;
 		loop {
+			self.inner
+				.check_if_closing(self.key_state_manager.current_key_state())
+				.await?;
+
 			send += self.send_chunk(&buffer[send..]).await?;
 			debug_assert!(send <= buffer.len(), "send too many bytes");
 			if send == buffer.len() {
@@ -729,6 +740,21 @@ impl Connection {
 }
 
 impl ConnectionInner {
+	async fn check_if_closing(&self, key_state: &KeyState) -> Result<()> {
+		self.check_if_closing_or(key_state, Ok(())).await
+	}
+
+	async fn check_if_closing_or<T>(&self, key_state: &KeyState, result: Result<T>) -> Result<T> {
+		if self.peer_is_closing.load(Ordering::Relaxed) {
+			self.send_close_packet(key_state).await?;
+			self.is_closed.store(true, Ordering::Relaxed);
+			return trace::err(Error::ConnectionClosed);
+		} else if self.is_closed.load(Ordering::Relaxed) {
+			return trace::err(Error::ConnectionClosed);
+		}
+		result
+	}
+
 	pub async fn close(&mut self, ks: KeyStateDuo<'_>) -> Result<()> {
 		#[cfg(debug_assertions)]
 		self.should_be_closed.store(false, Ordering::Relaxed);
@@ -736,7 +762,13 @@ impl ConnectionInner {
 		// If the underlying transport protocol was connection-based, just close the
 		// underlying connection, don't bother with a exchanging close packets.
 		if !self.sender.is_connection_based() {
-			self.negotiate_close(ks).await?;
+			// TODO: I need to do a good analysis of how to improve the transport protocol.
+			// Sometimes the close packet doesn't arrive in the unit tests, in which they
+			// shouldn't be able to disappear. First of all, the connection struct should be
+			// used on a seperate task to obtain the sent and received messages because the
+			// task that now has the connection instance may be waiting.
+			self.send_close_packet(ks.current).await?;
+			self.send_close_packet(ks.previous).await?;
 		}
 		self.sender
 			.close()
@@ -850,6 +882,8 @@ impl ConnectionInner {
 		self.send_close_packet(ks.current).await?;
 		let timeout = min(self.timeout / 8, MAXIMUM_RETRY_TIMEOUT);
 
+		self.process_unprocessed_close_packets(ks).await;
+
 		let mut i = 0;
 		while i < 8 && !self.peer_is_closing.load(Ordering::Relaxed) {
 			tokio::select! {
@@ -862,7 +896,6 @@ impl ConnectionInner {
 							DataQueueItem::Data(_) => warn!("Receiving data while already closing down. ({} / {})", ks_seq, seq),
 							DataQueueItem::WaitingOnAck => {
 								self.send_previous_ack_packet(ks.previous).await?;
-								continue;
 							}
 						}
 					}
@@ -912,11 +945,7 @@ impl ConnectionInner {
 					}
 				},
 				_ = sleep(timeout) => {
-					if self.peer_is_closing.load(Ordering::Relaxed) {
-						return trace::err(Error::ConnectionClosed.into());
-					} else {
-						return trace::err(Error::Timeout(timeout));
-					}
+					return self.check_if_closing_or(ks.current, trace::err(Error::Timeout(timeout))).await;
 				}
 			}
 		}
@@ -1291,37 +1320,6 @@ impl ConnectionInner {
 		}
 	}
 
-	async fn receive_packet(
-		&mut self, ks: KeyStateDuo<'_>, timeout: Duration, queue: &mut QueueReceiver,
-	) -> Result<(u16, u16, Vec<u8>)> {
-		loop {
-			tokio::select! {
-				result = queue.recv() => {
-					if result.is_none() {
-						if self.peer_is_closing.load(Ordering::Relaxed) {
-							return trace::err(Error::ConnectionClosed.into());
-						} else {
-							return trace::err(Error::Timeout(timeout));
-						}
-					}
-					return Ok(result.unwrap())
-				},
-				result = self.queues.close.recv() => {
-					if let Some(packet) = result {
-						let _ = self.process_close_packet(ks, packet);
-					}
-				},
-				_ = sleep(timeout) => {
-					if self.peer_is_closing.load(Ordering::Relaxed) {
-						return trace::err(Error::ConnectionClosed.into());
-					} else {
-						return trace::err(Error::Timeout(timeout));
-					}
-				}
-			}
-		}
-	}
-
 	async fn receive_ack_packet(
 		&mut self, ks: KeyStateDuo<'_>, timeout: Duration,
 	) -> Result<(u16, u16, Vec<u8>)> {
@@ -1329,11 +1327,7 @@ impl ConnectionInner {
 			tokio::select! {
 				result = self.queues.ack.recv() => {
 					if result.is_none() {
-						if self.peer_is_closing.load(Ordering::Relaxed) {
-							return trace::err(Error::ConnectionClosed.into());
-						} else {
-							return trace::err(Error::Timeout(timeout));
-						}
+						return self.check_if_closing_or(ks.current, trace::err(Error::Timeout(timeout))).await;
 					}
 					return Ok(result.unwrap())
 				},
@@ -1343,11 +1337,7 @@ impl ConnectionInner {
 					}
 				},
 				_ = sleep(timeout) => {
-					if self.peer_is_closing.load(Ordering::Relaxed) {
-						return trace::err(Error::ConnectionClosed.into());
-					} else {
-						return trace::err(Error::Timeout(timeout));
-					}
+					return self.check_if_closing_or(ks.current, trace::err(Error::Timeout(timeout))).await;
 				}
 			}
 		}
@@ -1395,37 +1385,29 @@ impl ConnectionInner {
 	}
 
 	async fn receive_data_packet(
-		&mut self, key_states: KeyStateDuo<'_>, timeout: Duration,
+		&mut self, ks: KeyStateDuo<'_>, timeout: Duration,
 	) -> Result<(u16, u16, DataQueueItem)> {
 		loop {
 			tokio::select! {
 				result = self.queues.data.recv() => {
 					if result.is_none() {
-						if self.peer_is_closing.load(Ordering::Relaxed) {
-							return trace::err(Error::ConnectionClosed.into());
-						} else {
-							return trace::err(Error::Timeout(timeout));
-						}
+						return self.check_if_closing_or(ks.current, trace::err(Error::Timeout(timeout))).await;
 					}
 					return Ok(result.unwrap())
 				},
 				result = self.queues.close.recv() => {
 					if let Some(packet) = result {
-						let _ = self.process_close_packet(key_states, packet);
+						let _ = self.process_close_packet(ks, packet);
 					}
 				},
 				_ = sleep(timeout) => {
-					if self.peer_is_closing.load(Ordering::Relaxed) {
-						return trace::err(Error::ConnectionClosed.into());
-					} else {
-						return trace::err(Error::Timeout(timeout));
-					}
+					return self.check_if_closing_or(ks.current, trace::err(Error::Timeout(timeout))).await;
 				}
 			}
 		}
 	}
 
-	async fn send_close_packet(&mut self, key_state: &KeyState) -> Result<()> {
+	async fn send_close_packet(&self, key_state: &KeyState) -> Result<()> {
 		self.send_crypted_packet(key_state, MESSAGE_TYPE_CLOSE, 0, self.node_id.as_bytes())
 			.await
 	}
@@ -1480,6 +1462,24 @@ impl ConnectionInner {
 		// Send all data in different packets
 		let mut send = 0;
 		for i in 0..(window_size as usize) {
+			// If the other side has not previously received our side's ack packet yet,
+			// resent it
+			if let Ok((ks_seq, seq, queue_item)) = self.queues.data.try_recv() {
+				match queue_item {
+					DataQueueItem::Data(_) =>
+						debug!("Received data packet while sending. ({} {})", ks_seq, seq),
+					DataQueueItem::WaitingOnAck =>
+						if ks_seq == ks.previous.sequence {
+							self.send_previous_ack_packet(ks.previous).await?;
+						} else {
+							debug!(
+								"Received ack-wait packet of unrecognized ks_seq={} (current {})",
+								ks_seq, seq
+							);
+						},
+				}
+			}
+
 			// The first packet of the window always contains the next DH pubkey
 			// to use.
 			let end = send
@@ -1519,6 +1519,24 @@ impl ConnectionInner {
 		// Wait until ack packet, and resent missing packets, until nothing is
 		// missing.
 		loop {
+			// If the other side has not previously received our side's ack packet yet,
+			// resent it
+			if let Ok((ks_seq, seq, queue_item)) = self.queues.data.try_recv() {
+				match queue_item {
+					DataQueueItem::Data(_) =>
+						debug!("Received data packet while sending. ({} {})", ks_seq, seq),
+					DataQueueItem::WaitingOnAck =>
+						if ks_seq == ks.previous.sequence {
+							self.send_previous_ack_packet(ks.previous).await?;
+						} else {
+							debug!(
+								"Received ack-wait packet of unrecognized ks_seq={} (current {})",
+								ks_seq, seq
+							);
+						},
+				}
+			}
+
 			let (completed, received_mask) =
 				match self.receive_ack(ks.get_const(), self.timeout).await? {
 					Err(mask) => mask,
@@ -2215,6 +2233,7 @@ impl Server {
 						inner: ConnectionInner {
 							keep_alive_flag: AtomicBool::new(false),
 							peer_is_closing: AtomicBool::new(false),
+							is_closed: AtomicBool::new(false),
 							sender,
 							socket_handle: handle,
 							peer_address: target.target.clone(),
@@ -2825,6 +2844,7 @@ impl Server {
 
 	async fn process_ack_wait(&self, packet: &[u8]) -> Result<()> {
 		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
+			// FIXME: Sent the data on the DataQueueItem.
 			session
 				.queues
 				.data
@@ -2941,6 +2961,7 @@ impl Server {
 			inner: ConnectionInner {
 				keep_alive_flag: AtomicBool::new(false),
 				peer_is_closing: AtomicBool::new(false),
+				is_closed: AtomicBool::new(false),
 				sender: sender.clone(),
 				socket_handle: None,
 				peer_address: addr.clone(),
