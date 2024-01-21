@@ -1426,10 +1426,6 @@ pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Con
 						// Opening and immediately closing connections is done to test presence, so
 						// ignore these two errors for now:
 						sstp::Error::ConnectionClosed => {
-							// FIXME: The connection struct should do this inside itself somewhere
-							// upon timeout or connection close
-							#[cfg(debug_assertions)]
-							connection.should_be_closed.store(false, Ordering::Relaxed);
 							break;
 						}
 						other => {
@@ -1492,10 +1488,6 @@ pub(super) async fn handle_find_value_connection(
 						// Opening and immediately closing connections is done to test presence, so
 						// ignore these two errors for now:
 						sstp::Error::ConnectionClosed => {
-							// FIXME: The connection struct should do this inside itself somewhere
-							// upon timeout or connection close
-							#[cfg(debug_assertions)]
-							connection.should_be_closed.store(false, Ordering::Relaxed);
 							break;
 						}
 						other => {

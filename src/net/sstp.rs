@@ -90,14 +90,19 @@ pub(super) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAXIMUM_RETRY_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub struct Connection {
+	inner: ConnectionInner,
 	server: Arc<Server>,
+	key_state_manager: KeyStateManager,
+}
+
+struct ConnectionInner {
 	keep_alive_flag: AtomicBool,
 	/// A flag that indicates that a close packet has already been received from
 	/// the other side, and that the connection unusable after the last data
 	/// packet has been received.
 	peer_is_closing: AtomicBool,
 	sender: Arc<dyn LinkSocketSender>,
-	receiver_handle: Option<JoinHandle<()>>,
+	socket_handle: Option<JoinHandle<()>>,
 	peer_address: SocketAddr,
 	their_node_info: NodeContactInfo,
 	their_session_id: u16,
@@ -105,12 +110,8 @@ pub struct Connection {
 	node_id: IdType,
 	peer_node_id: IdType,
 	private_key: identity::PrivateKey,
-	/// The next data packet that is send or received is expected to have this
-	/// sequence number.
 	queues: QueueReceivers,
-	//session: Arc<Mutex<SessionData>>,
-	pub key_state: KeyState,
-	previous_keystate: KeyState,
+
 	previous_window_ack_sequence: u16,
 	receive_window: WindowInfo,
 	send_window: WindowInfo,
@@ -178,12 +179,26 @@ type HelloWatchSender = watch::Sender<HelloWatchResult>;
 #[derive(Clone)]
 pub struct KeyState {
 	pub sequence: u16,
-	our_dh_key: x25519::StaticSecret,
-	their_dh_key: x25519::PublicKey,
-	/// The key of the next packet to process.
-	/// How far the `current_key` has advanced from the `initial_key`.
-	ratchet_position: u16,
+	private_key: x25519::StaticSecret,
+	public_key: x25519::PublicKey,
 	keychain: Vec<GenericArray<u8, U32>>,
+}
+
+struct KeyStateManager {
+	use_first: bool,
+	keystate1: KeyState,
+	keystate2: KeyState,
+}
+
+#[derive(Clone, Copy)]
+struct KeyStateDuo<'a> {
+	current: &'a KeyState,
+	previous: &'a KeyState,
+}
+
+struct KeyStateDuoMut<'a> {
+	current: &'a mut KeyState,
+	previous: &'a KeyState,
 }
 
 pub type OnPacket =
@@ -377,37 +392,18 @@ impl Connection {
 	/// This size includes the 4 byte message header, so to know the amount of
 	/// bytes you're able to sent in the first window, subtract 4 bytes.
 	fn calculate_window_data_length(&self, window_size: u16) -> usize {
-		window_size as usize * self.max_data_packet_length() - 32
+		window_size as usize * self.inner.max_data_packet_length() - 32
 	}
 
 	pub async fn close(&mut self) -> Result<()> {
-		#[cfg(debug_assertions)]
-		self.should_be_closed.store(false, Ordering::Relaxed);
-
-		// If the underlying transport protocol was connection-based, just close the
-		// underlying connection, don't bother with a exchanging close packets.
-		if !self.sender.is_connection_based() {
-			self.negotiate_close().await?;
-		}
-		self.sender
-			.close()
-			.await
-			.map_err(|e| Into::<sstp::Error>::into(e))?;
-		self.queues.ack.close();
-		self.queues.close.close();
-		self.queues.data.close();
-		match &mut self.receiver_handle {
-			None => {}
-			Some(h) => h.await.expect("join error"),
-		}
-		Ok(())
+		self.inner.close(self.key_state_manager.get_duo()).await
 	}
 
 	/// Like close, but closes the connection somewhere in the future and you
 	/// don't need to wait on it.
 	pub fn close_async(mut self: Box<Self>) {
 		#[cfg(debug_assertions)]
-		self.should_be_closed.store(false, Ordering::Relaxed);
+		self.inner.should_be_closed.store(false, Ordering::Relaxed);
 		spawn(async move {
 			if let Err(e) = self.close().await {
 				debug!("Unable to close connection: {}", e);
@@ -415,147 +411,20 @@ impl Connection {
 		});
 	}
 
-	fn compose_missing_mask(
-		&self, mut max_packet_count: u16, completed: u16, ooo_sequences: &[&u16],
-	) -> Vec<u8> {
-		debug_assert!(
-			max_packet_count as u16 >= completed,
-			"max_packet_count is incorrect: {} >= {}",
-			max_packet_count,
-			completed
-		);
-		// If the message size hasn't been determined yet (because the first packet
-		// didn't arrive), assume there has at least be one packet
-		if max_packet_count == 0 {
-			max_packet_count = ooo_sequences.iter().fold(0u16, |a, b| a.max(**b)) as u16 + 1;
-		}
-		let mask_bits = (max_packet_count - completed) as usize;
-		let mask_size = min(
-			mask_bits as usize / 8 + ((mask_bits % 8) > 0) as usize,
-			self.max_data_packet_length(),
-		);
-		let mut mask = vec![0u8; mask_size];
-
-		// Then reset individual bits back to 1 for those we still need.
-		for i in completed..(max_packet_count as u16) {
-			if !ooo_sequences.contains(&&(i as u16)) {
-				let x = i - completed;
-				let byte_index = (x / 8) as usize;
-				if byte_index > mask.len() {
-					break;
-				}
-				let bit_index = (x % 8) as usize;
-				mask[byte_index] ^= 1 << bit_index;
-			}
-		}
-
-		mask
-	}
-
 	pub fn contact_option(&self) -> ContactOption {
 		ContactOption {
-			target: self.peer_address.clone(),
-			use_tcp: self.sender.is_connection_based(),
+			target: self.inner.peer_address.clone(),
+			use_tcp: self.inner.sender.is_connection_based(),
 		}
 	}
 
-	/// Decrypts a packet that is expected to have a specific key sequence set
-	/// on its packet.
-	fn decrypt_packet(&self, keystate: &KeyState, key_sequence: u16, data: &mut [u8]) -> bool {
-		debug_assert!(
-			key_sequence < self.key_state.keychain.len() as u16,
-			"attempting to decrypt a packet out-of-order: {} >= {}",
-			key_sequence,
-			self.key_state.keychain.len()
-		);
-		let key = &keystate.keychain[key_sequence as usize];
-		decrypt(
-			self.our_session_id,
-			keystate.sequence,
-			key_sequence,
-			data,
-			key,
-		);
-
-		if !Self::verify_packet(&data) {
-			return false;
-		}
-
-		true
+	pub fn network_level(&self) -> NetworkLevel {
+		NetworkLevel::from_ip(&self.inner.peer_address.ip())
 	}
 
-	pub fn our_session_id(&self) -> u16 { self.our_session_id }
+	pub fn our_session_id(&self) -> u16 { self.inner.our_session_id }
 
-	fn max_data_packet_length(&self) -> usize { self.sender.max_packet_length() - 5 - 2 - 2 }
-
-	/// Wait for an ack packet, but keep sending ack_wait packets if they are
-	/// not arriving immediately. The other end might have sent a success ack
-	/// packet and therefore will think
-	async fn negotiate_ack(&mut self, timeout: Duration) -> Result<(u16, u16, Vec<u8>)> {
-		match self.receive_ack_packet(timeout / 8).await {
-			Ok(result) => return Ok(result),
-			Err(e) => match &*e {
-				Error::Timeout(_) => {
-					for _ in 0..7 {
-						self.send_ack_wait_packet().await?;
-
-						match self.receive_ack_packet(timeout / 8).await {
-							Ok(result) => return Ok(result),
-							Err(e) => match &*e {
-								Error::Timeout(_) => {}
-								_ => return Err(e),
-							},
-						}
-					}
-					trace::err(Error::Timeout(timeout))
-				}
-				_ => return Err(e),
-			},
-		}
-	}
-
-	// Keep sending out close packets until we receive one back.
-	// If we are still receiving ack-wait packets, returwn the last ack packet.
-	async fn negotiate_close(&mut self) -> Result<()> {
-		self.send_close_packet().await?;
-		let timeout = min(self.timeout / 8, MAXIMUM_RETRY_TIMEOUT);
-
-		let mut i = 0;
-		while i < 8 && !self.peer_is_closing.load(Ordering::Relaxed) {
-			tokio::select! {
-				// If the data queue is still receiving items, it may be because of ack-wait packets.
-				// If the other side is still sending ack-wait packets, they don't know we already sent a successful ack packet.
-				// In that case, we need to send out the last ack packet out again, while we hope the other side will sent out a close packet back eventually.
-				result = self.queues.data.recv() => {
-					if let Some((ks_seq, seq, queue_item)) = result {
-						match queue_item {
-							DataQueueItem::Data(_) => warn!("Receiving data while already closing down. ({} / {})", ks_seq, seq),
-							DataQueueItem::WaitingOnAck => {
-								self.send_previous_ack_packet().await?;
-								continue;
-							}
-						}
-					}
-				},
-				// If a close packet is ready, processing it will set `self.is_closing`.
-				result = self.queues.close.recv() => {
-					if let Some(packet) = result {
-						let _ = self.process_close_packet(packet);
-					}
-				},
-				_ = sleep(timeout) => {
-					i += 1;
-					if i == 8 { return trace::err(Error::Timeout(self.timeout)); }
-					self.send_close_packet().await?;
-				}
-			}
-		}
-		Ok(())
-	}
-
-	pub fn network_level(&self) -> NetworkLevel { NetworkLevel::from_ip(&self.peer_address.ip()) }
-
-	pub fn peer_address(&self) -> &SocketAddr { &self.peer_address }
+	pub fn peer_address(&self) -> &SocketAddr { &self.inner.peer_address }
 
 	/// Listen on the other connection and send all data on this connection.
 	pub async fn pipe(
@@ -574,7 +443,7 @@ impl Connection {
 	}
 
 	pub async fn pipe_mutex(
-		&mut self, other: Arc<Mutex<Box<Connection>>>, close_other: bool,
+		&mut self, ks: KeyStateDuo<'_>, other: Arc<Mutex<Box<Connection>>>, close_other: bool,
 		verify_data: impl FnMut(&[u8]) -> bool + Send + 'static,
 	) -> Result<usize> {
 		let (len_tx, len_rx) = oneshot::channel();
@@ -602,7 +471,7 @@ impl Connection {
 		let mut buffer = Vec::new();
 		let mut received;
 
-		let timeout: Duration = self.timeout;
+		let timeout: Duration = self.inner.timeout;
 		match self.receive_chunk(&mut buffer, true, timeout).await {
 			Err(e) => {
 				let _ = tx.send(Err(e));
@@ -631,7 +500,7 @@ impl Connection {
 			}
 		}
 		loop {
-			let timeout = self.timeout;
+			let timeout = self.inner.timeout;
 			match self.receive_chunk(&mut buffer, false, timeout).await {
 				Err(e) => {
 					let _ = tx.send(Err(e));
@@ -681,7 +550,7 @@ impl Connection {
 			buffer.extend(chunk);
 
 			let mut available = buffer.len() - already_sent;
-			while available >= self.calculate_window_data_length(self.send_window.size)
+			while available >= self.calculate_window_data_length(self.inner.send_window.size)
 				|| (available > 0 && buffer.len() == buffer.capacity())
 			// when something is still left to be sent out and we've already received the whole of
 			// the buffer
@@ -708,8 +577,314 @@ impl Connection {
 		);
 	}
 
+	pub async fn receive(&mut self) -> Result<Vec<u8>> {
+		self.receive_with_timeout(self.inner.timeout).await
+	}
+
+	async fn receive_chunk(
+		&mut self, buffer: &mut Vec<u8>, is_first_window: bool, timeout: Duration,
+	) -> Result<bool> {
+		let new_private_key = x25519::StaticSecret::random_from_rng(OsRng);
+		let our_public_key = x25519::PublicKey::from(&new_private_key);
+		let current_timeout = if is_first_window {
+			timeout
+		} else {
+			self.inner.timeout
+		};
+
+		let key_states = self.key_state_manager.get_duo_mut();
+		let (next_window_size, new_public_key) = self
+			.inner
+			.receive_window(
+				key_states,
+				current_timeout,
+				buffer,
+				self.inner.receive_window.size,
+				is_first_window,
+				&our_public_key,
+			)
+			.await?;
+
+		// Adjust window size
+		self.inner.receive_window.size = next_window_size;
+
+		// Update our shared key
+		self.key_state_manager.setup_next_keystate(
+			new_private_key,
+			new_public_key,
+			self.inner.receive_window.size,
+		);
+		//self.inner.process_unprocessed_close_packets(&current_key_state).await;
+
+		debug_assert!(buffer.capacity() > 0, "message length not set");
+		debug_assert!(buffer.len() > 0, "nothing was received");
+		Ok(buffer.len() == buffer.capacity())
+	}
+
+	/// Like `receive`, but waits a different amount of time for the first
+	/// packet, and proceeds to receive the remainder at the connection's
+	/// configured timeout.
+	pub async fn receive_with_timeout(&mut self, first_timeout: Duration) -> Result<Vec<u8>> {
+		if self.inner.peer_is_closing.load(Ordering::Relaxed) {
+			return trace::err(Error::ConnectionClosed);
+		}
+
+		let mut buffer = Vec::new();
+		let mut first = true;
+		let mut timeout = first_timeout;
+		loop {
+			if self.receive_chunk(&mut buffer, first, timeout).await? {
+				return Ok(buffer);
+			}
+			first = false;
+			timeout = self.inner.timeout;
+		}
+	}
+
+	pub async fn send(&mut self, message: &[u8]) -> Result<()> {
+		// The actual buffer to send contains a 4-byte message size as its header
+		assert!(message.len() > 0, "buffer is empty");
+		assert!(message.len() <= u32::MAX as usize, "buffer too big");
+		let mut buffer = vec![0u8; 4 + message.len()];
+		buffer[..4].copy_from_slice(&u32::to_le_bytes(message.len() as _));
+		buffer[4..].copy_from_slice(message);
+
+		self.send_data(&buffer).await
+	}
+
+	async fn send_chunk(&mut self, buffer: &[u8]) -> Result<usize> {
+		debug_assert!(buffer.len() > 0, "buffer is empty");
+		// The sending side has to sent their idea for the window size in the window
+		// data itself, and there is no way to determine if it will go error free, so
+		// always sent an optimistic window size.
+		let our_new_window_size = self.inner.send_window.increase_window_size();
+		let new_private_key = x25519::StaticSecret::random_from_rng(OsRng);
+		let ks = self.key_state_manager.get_duo_mut();
+		let result = self
+			.inner
+			.send_window(
+				ks,
+				&buffer,
+				self.inner.send_window.size,
+				&x25519::PublicKey::from(&new_private_key),
+				our_new_window_size,
+			)
+			.await;
+		let (send, their_new_window_size, public_key) = result?;
+		debug_assert!(
+			send <= buffer.len(),
+			"More data send out than exists! {} <= {}",
+			send,
+			buffer.len()
+		);
+
+		// Adjust window size
+		//self.previous_window_size = self.send_window.size;
+		self.inner.send_window.size = min(our_new_window_size, their_new_window_size);
+
+		// Apply new ephemeral DH secret.
+		self.key_state_manager.setup_next_keystate(
+			new_private_key,
+			public_key,
+			self.inner.send_window.size,
+		);
+		return Ok(send);
+	}
+
+	async fn send_data(&mut self, buffer: &[u8]) -> Result<()> {
+		let mut send = 0usize;
+		loop {
+			send += self.send_chunk(&buffer[send..]).await?;
+			debug_assert!(send <= buffer.len(), "send too many bytes");
+			if send == buffer.len() {
+				return Ok(());
+			}
+		}
+	}
+
+	/// Updates the cleanup timeout of the connection.
+	pub async fn set_keep_alive_timeout(&mut self, timeout: Duration) -> bool {
+		self.inner.keep_alive_timeout = timeout;
+		let sessions = self.server.sessions.lock().await;
+		if let Some(session_mutex) = sessions.map.get(&self.inner.our_session_id) {
+			let session_mutex2 = session_mutex.clone();
+			drop(sessions);
+			let mut session = session_mutex2.lock().await;
+			session.keep_alive_timeout = timeout;
+			true
+		} else {
+			false
+		}
+	}
+
+	pub fn their_node_info(&self) -> &NodeContactInfo { &self.inner.their_node_info }
+
+	pub fn their_node_id(&self) -> &IdType { &self.inner.their_node_info.node_id }
+
+	pub fn their_session_id(&self) -> u16 { self.inner.their_session_id }
+
+	pub fn update_their_node_info(&mut self, node_info: NodeContactInfo) {
+		self.inner.their_node_info = node_info;
+	}
+}
+
+impl ConnectionInner {
+	pub async fn close(&mut self, ks: KeyStateDuo<'_>) -> Result<()> {
+		#[cfg(debug_assertions)]
+		self.should_be_closed.store(false, Ordering::Relaxed);
+
+		// If the underlying transport protocol was connection-based, just close the
+		// underlying connection, don't bother with a exchanging close packets.
+		if !self.sender.is_connection_based() {
+			self.negotiate_close(ks).await?;
+		}
+		self.sender
+			.close()
+			.await
+			.map_err(|e| Into::<sstp::Error>::into(e))?;
+		self.queues.ack.close();
+		self.queues.close.close();
+		self.queues.data.close();
+		match &mut self.socket_handle {
+			None => {}
+			Some(h) => h.await.expect("join error"),
+		}
+		Ok(())
+	}
+
+	fn compose_missing_mask(
+		&self, mut max_packet_count: u16, completed: u16, ooo_sequences: &[&u16],
+	) -> Vec<u8> {
+		debug_assert!(
+			max_packet_count as u16 >= completed,
+			"max_packet_count is incorrect: {} >= {}",
+			max_packet_count,
+			completed
+		);
+		// If the message size hasn't been determined yet (because the first packet
+		// didn't arrive), assume there has at least be one packet
+		if max_packet_count == 0 {
+			max_packet_count = ooo_sequences.iter().fold(0u16, |a, b| a.max(**b)) as u16 + 1;
+		}
+		let mask_bits = (max_packet_count - completed) as usize;
+		let mask_size = min(
+			mask_bits as usize / 8 + ((mask_bits % 8) > 0) as usize,
+			self.max_data_packet_length(),
+		);
+		let mut mask = vec![0u8; mask_size];
+
+		// Then reset individual bits back to 1 for those we still need.
+		for i in completed..(max_packet_count as u16) {
+			if !ooo_sequences.contains(&&(i as u16)) {
+				let x = i - completed;
+				let byte_index = (x / 8) as usize;
+				if byte_index > mask.len() {
+					break;
+				}
+				let bit_index = (x % 8) as usize;
+				mask[byte_index] ^= 1 << bit_index;
+			}
+		}
+
+		mask
+	}
+
+	/// Decrypts a packet that is expected to have a specific key sequence set
+	/// on its packet.
+	fn decrypt_packet(&self, keystate: &KeyState, key_sequence: u16, data: &mut [u8]) -> bool {
+		debug_assert!(
+			key_sequence < keystate.keychain.len() as u16,
+			"attempting to decrypt a packet out-of-order: {} >= {}",
+			key_sequence,
+			keystate.keychain.len()
+		);
+		let key = &keystate.keychain[key_sequence as usize];
+		decrypt(
+			self.our_session_id,
+			keystate.sequence,
+			key_sequence,
+			data,
+			key,
+		);
+
+		if !Self::verify_packet(&data) {
+			return false;
+		}
+
+		true
+	}
+
+	fn max_data_packet_length(&self) -> usize { self.sender.max_packet_length() - 5 - 2 - 2 }
+
+	/// Wait for an ack packet, but keep sending ack_wait packets if they are
+	/// not arriving immediately. The other end might have sent a success ack
+	/// packet and therefore will think
+	async fn negotiate_ack(
+		&mut self, ks: KeyStateDuo<'_>, timeout: Duration,
+	) -> Result<(u16, u16, Vec<u8>)> {
+		match self.receive_ack_packet(ks, timeout / 8).await {
+			Ok(result) => return Ok(result),
+			Err(e) => match &*e {
+				Error::Timeout(_) => {
+					for _ in 0..7 {
+						self.send_ack_wait_packet(ks.current).await?;
+
+						match self.receive_ack_packet(ks, timeout / 8).await {
+							Ok(result) => return Ok(result),
+							Err(e) => match &*e {
+								Error::Timeout(_) => {}
+								_ => return Err(e),
+							},
+						}
+					}
+					trace::err(Error::Timeout(timeout))
+				}
+				_ => return Err(e),
+			},
+		}
+	}
+
+	// Keep sending out close packets until we receive one back.
+	// If we are still receiving ack-wait packets, returwn the last ack packet.
+	async fn negotiate_close(&mut self, ks: KeyStateDuo<'_>) -> Result<()> {
+		self.send_close_packet(ks.current).await?;
+		let timeout = min(self.timeout / 8, MAXIMUM_RETRY_TIMEOUT);
+
+		let mut i = 0;
+		while i < 8 && !self.peer_is_closing.load(Ordering::Relaxed) {
+			tokio::select! {
+				// If the data queue is still receiving items, it may be because of ack-wait packets.
+				// If the other side is still sending ack-wait packets, they don't know we already sent a successful ack packet.
+				// In that case, we need to send out the last ack packet out again, while we hope the other side will sent out a close packet back eventually.
+				result = self.queues.data.recv() => {
+					if let Some((ks_seq, seq, queue_item)) = result {
+						match queue_item {
+							DataQueueItem::Data(_) => warn!("Receiving data while already closing down. ({} / {})", ks_seq, seq),
+							DataQueueItem::WaitingOnAck => {
+								self.send_previous_ack_packet(ks.previous).await?;
+								continue;
+							}
+						}
+					}
+				},
+				// If a close packet is ready, processing it will set `self.is_closing`.
+				result = self.queues.close.recv() => {
+					if let Some(packet) = result {
+						let _ = self.process_close_packet(ks, packet);
+					}
+				},
+				_ = sleep(timeout) => {
+					i += 1;
+					if i == 8 { return trace::err(Error::Timeout(self.timeout)); }
+					self.send_close_packet(ks.current).await?;
+				}
+			}
+		}
+		Ok(())
+	}
+
 	/// Processes all the stored close packets that are left to be processed
-	async fn process_unprocessed_close_packets(&mut self) {
+	async fn process_unprocessed_close_packets(&mut self, ks: KeyStateDuo<'_>) {
 		if self.unprocessed_close_packets.len() == 0 {
 			return;
 		}
@@ -717,25 +892,21 @@ impl Connection {
 		let mut i = 0;
 		while i < self.unprocessed_close_packets.len() {
 			let item = &self.unprocessed_close_packets[i];
-			if item.0 <= self.key_state.sequence {
+			if item.0 <= ks.current.sequence {
 				let item = self.unprocessed_close_packets.remove(i);
-				self.process_close_packet(item);
+				self.process_close_packet(ks, item);
 			} else {
 				i += 1;
 			}
 		}
 	}
 
-	pub async fn receive(&mut self) -> Result<Vec<u8>> {
-		self.receive_with_timeout(self.timeout).await
-	}
-
-	async fn receive_close_packet(&mut self, timeout: Duration) -> Result<()> {
+	async fn receive_close_packet(&mut self, ks: KeyStateDuo<'_>, timeout: Duration) -> Result<()> {
 		while !self.peer_is_closing.load(Ordering::Relaxed) {
 			tokio::select! {
 				result = self.queues.close.recv() => {
 					if let Some(packet) = result {
-						if self.process_close_packet(packet) {
+						if self.process_close_packet(ks, packet) {
 							return Ok(());
 						}
 					}
@@ -752,77 +923,22 @@ impl Connection {
 		Ok(())
 	}
 
-	async fn receive_chunk(
-		&mut self, buffer: &mut Vec<u8>, is_first_window: bool, timeout: Duration,
-	) -> Result<bool> {
-		self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
-		let dh_public_key = x25519::PublicKey::from(&self.key_state.our_dh_key);
-		let current_timeout = if is_first_window {
-			timeout
-		} else {
-			self.timeout
-		};
-
-		let (next_window_size, new_public_key) = self
-			.receive_window(
-				current_timeout,
-				buffer,
-				self.receive_window.size,
-				is_first_window,
-				&dh_public_key,
-			)
-			.await?;
-
-		// Adjust window size
-		self.receive_window.size = next_window_size;
-
-		// Update our shared key
-		self.previous_keystate = self.key_state.clone();
-		self.key_state.their_dh_key = new_public_key;
-		self.key_state.reset_key(self.receive_window.size);
-		self.process_unprocessed_close_packets().await;
-
-		debug_assert!(buffer.capacity() > 0, "message length not set");
-		debug_assert!(buffer.len() > 0, "nothing was received");
-		Ok(buffer.len() == buffer.capacity())
-	}
-
-	/// Like `receive`, but waits a different amount of time for the first
-	/// packet, and proceeds to receive the remainder at the connection's
-	/// configured timeout.
-	pub async fn receive_with_timeout(&mut self, first_timeout: Duration) -> Result<Vec<u8>> {
-		if self.peer_is_closing.load(Ordering::Relaxed) {
-			return trace::err(Error::ConnectionClosed);
-		}
-
-		let mut buffer = Vec::new();
-		let mut first = true;
-		let mut timeout = first_timeout;
-		loop {
-			if self.receive_chunk(&mut buffer, first, timeout).await? {
-				return Ok(buffer);
-			}
-			first = false;
-			timeout = self.timeout;
-		}
-	}
-
 	async fn receive_ack(
-		&mut self, timeout: Duration,
+		&mut self, ks: KeyStateDuo<'_>, timeout: Duration,
 	) -> Result<StdResult<(u16, x25519::PublicKey), (u16, Vec<u8>)>> {
 		let mut packet_sequence;
 		let mut packet: Vec<u8>;
 		loop {
 			let keystate_sequence;
-			(keystate_sequence, packet_sequence, packet) = self.negotiate_ack(timeout).await?;
+			(keystate_sequence, packet_sequence, packet) = self.negotiate_ack(ks, timeout).await?;
 			// Drop ack packets for another window
-			if keystate_sequence != self.key_state.sequence {
+			if keystate_sequence != ks.current.sequence {
 				continue;
 			}
-			if packet_sequence as usize >= self.key_state.keychain.len() {
+			if packet_sequence as usize >= ks.current.keychain.len() {
 				return trace::err(Error::InvalidSequenceNumber(packet_sequence).into());
 			}
-			if self.decrypt_packet(&self.key_state, packet_sequence, &mut packet) {
+			if self.decrypt_packet(ks.current, packet_sequence, &mut packet) {
 				break;
 			} else {
 				warn!("Invalid checksum received for packet, dropping it...");
@@ -852,14 +968,14 @@ impl Connection {
 	}
 
 	fn process_packet(
-		&mut self, buffer: &mut Vec<u8>, packet: &[u8], first_window: bool, first_packet: bool,
-		completed: &mut u16,
+		&mut self, key_state: &mut KeyState, buffer: &mut Vec<u8>, packet: &[u8],
+		first_window: bool, first_packet: bool, completed: &mut u16,
 	) -> Result<Option<(u16, x25519::PublicKey)>> {
 		debug_assert!(
-			*completed <= (self.key_state.keychain.len() - 1) as u16,
+			*completed <= (key_state.keychain.len() - 1) as u16,
 			"processing received packet out-of-order ({} > ({}-1))",
 			*completed,
-			self.key_state.keychain.len()
+			key_state.keychain.len()
 		);
 		let mut their_window_size = 0u16;
 		let mut their_dh_key = None;
@@ -899,13 +1015,13 @@ impl Connection {
 		}
 
 		*completed += 1;
-		self.key_state.advance_key(&packet);
+		key_state.advance_key(&packet);
 		Ok(their_dh_key.map(|pk| (their_window_size, pk)))
 	}
 
 	async fn receive_window(
-		&mut self, first_timeout: Duration, buffer: &mut Vec<u8>, window_size: u16,
-		first_window: bool, new_dh_key: &x25519::PublicKey,
+		&mut self, ks: KeyStateDuoMut<'_>, first_timeout: Duration, buffer: &mut Vec<u8>,
+		window_size: u16, first_window: bool, new_dh_key: &x25519::PublicKey,
 	) -> Result<(u16, x25519::PublicKey)> {
 		// The buffer should be either not yet allocated, or allocated to accomodate for
 		// the amount of bytes that this window will provide.
@@ -947,21 +1063,21 @@ impl Connection {
 		loop {
 			loop {
 				let (keystate_sequence, mut sequence, mut packet) =
-					match self.receive_data_packet(timeout).await {
+					match self.receive_data_packet(ks.get_const(), timeout).await {
 						Ok((ks_seq, seq, queue_item)) => {
 							let packet = match queue_item {
 								DataQueueItem::WaitingOnAck =>
-									if ks_seq == self.key_state.sequence {
+									if ks_seq == ks.current.sequence {
 										break;
-									} else if ks_seq == self.key_state.sequence.wrapping_sub(1) {
-										self.send_previous_ack_packet().await?;
+									} else if ks_seq == ks.current.sequence.wrapping_sub(1) {
+										self.send_previous_ack_packet(ks.previous).await?;
 										continue;
 									} else {
 										trace!(
 											"Received ack-wait packet for invalid keystate \
 											 sequence {} ({})",
 											ks_seq,
-											self.key_state.sequence
+											ks.current.sequence
 										);
 										continue;
 									},
@@ -991,15 +1107,15 @@ impl Connection {
 
 				// If a packet of the previous keystate has been found, resend an ack packet of
 				// the previous window.
-				if keystate_sequence != self.key_state.sequence {
-					if keystate_sequence == self.key_state.sequence.wrapping_sub(1) {
+				if keystate_sequence != ks.current.sequence {
+					if keystate_sequence == ks.current.sequence.wrapping_sub(1) {
 						// Rate limitting for sending back previous ack packets
 						if let Some(time) = sent_previous_ack_packet {
 							if SystemTime::now() < (time + MAXIMUM_RETRY_TIMEOUT) {
 								continue;
 							}
 						}
-						self.send_previous_ack_packet().await?;
+						self.send_previous_ack_packet(ks.previous).await?;
 						sent_previous_ack_packet = Some(SystemTime::now());
 					} /*else {
 						debug!(
@@ -1022,8 +1138,9 @@ impl Connection {
 
 				// If the received packet is the next packet we're processing
 				let new = if packets_collected == sequence {
-					if self.decrypt_packet(&self.key_state, sequence, &mut packet) {
+					if self.decrypt_packet(ks.current, sequence, &mut packet) {
 						match self.process_packet(
+							ks.current,
 							buffer,
 							&packet[2..],
 							first_window,
@@ -1053,12 +1170,9 @@ impl Connection {
 							while packets_collected <= max_found_sequence {
 								if let Some(mut more_data) = ooo_cache.remove(&packets_collected) {
 									sequence = packets_collected;
-									if self.decrypt_packet(
-										&self.key_state,
-										sequence,
-										&mut more_data,
-									) {
+									if self.decrypt_packet(ks.current, sequence, &mut more_data) {
 										match self.process_packet(
+											ks.current,
 											buffer,
 											&more_data[2..],
 											first_window,
@@ -1072,6 +1186,12 @@ impl Connection {
 											}
 										}
 									} else {
+										#[cfg(test)]
+										panic!(
+											"Malformed ooo pakcet received (seq={}/{})",
+											sequence, window_size
+										);
+										#[cfg(not(test))]
 										debug!(
 											"Malformed ooo packet received. (seq={}/{})",
 											sequence, window_size
@@ -1118,6 +1238,7 @@ impl Connection {
 					};
 					let next_window_size = min(our_new_window_size, their_new_window_size);
 					self.send_ack_packet(
+						ks.current,
 						self.previous_window_ack_sequence,
 						next_window_size,
 						new_dh_key,
@@ -1154,7 +1275,7 @@ impl Connection {
 			let ooo_sequences: Vec<&u16> = ooo_cache.keys().collect();
 			let missing_mask =
 				self.compose_missing_mask(max_packets_needed, packets_collected, &ooo_sequences);
-			self.send_missing_mask_packet(packets_collected, missing_mask)
+			self.send_missing_mask_packet(ks.current, packets_collected, missing_mask)
 				.await?;
 			sent_first_ack_packet = Some(SystemTime::now());
 			// Reduce the last_packet_index to the highest index still needed
@@ -1171,7 +1292,7 @@ impl Connection {
 	}
 
 	async fn receive_packet(
-		&mut self, timeout: Duration, queue: &mut QueueReceiver,
+		&mut self, ks: KeyStateDuo<'_>, timeout: Duration, queue: &mut QueueReceiver,
 	) -> Result<(u16, u16, Vec<u8>)> {
 		loop {
 			tokio::select! {
@@ -1187,7 +1308,7 @@ impl Connection {
 				},
 				result = self.queues.close.recv() => {
 					if let Some(packet) = result {
-						let _ = self.process_close_packet(packet);
+						let _ = self.process_close_packet(ks, packet);
 					}
 				},
 				_ = sleep(timeout) => {
@@ -1201,7 +1322,9 @@ impl Connection {
 		}
 	}
 
-	async fn receive_ack_packet(&mut self, timeout: Duration) -> Result<(u16, u16, Vec<u8>)> {
+	async fn receive_ack_packet(
+		&mut self, ks: KeyStateDuo<'_>, timeout: Duration,
+	) -> Result<(u16, u16, Vec<u8>)> {
 		loop {
 			tokio::select! {
 				result = self.queues.ack.recv() => {
@@ -1216,7 +1339,7 @@ impl Connection {
 				},
 				result = self.queues.close.recv() => {
 					if let Some(packet) = result {
-						let _ = self.process_close_packet(packet);
+						let _ = self.process_close_packet(ks, packet);
 					}
 				},
 				_ = sleep(timeout) => {
@@ -1230,20 +1353,22 @@ impl Connection {
 		}
 	}
 
-	fn process_close_packet(&mut self, item: (u16, u16, Vec<u8>)) -> bool {
+	fn process_close_packet(
+		&mut self, key_states: KeyStateDuo<'_>, item: (u16, u16, Vec<u8>),
+	) -> bool {
 		let (keystate_sequence, sequence, mut buffer) = item;
-		let key_state_opt = if keystate_sequence == self.key_state.sequence {
-			Some(&self.key_state)
-		} else if keystate_sequence == (self.key_state.sequence.wrapping_sub(1)) {
-			Some(&self.previous_keystate)
-		} else if keystate_sequence > self.key_state.sequence {
+		let key_state_opt = if keystate_sequence == key_states.current.sequence {
+			Some(key_states.current)
+		} else if keystate_sequence == key_states.current.sequence.wrapping_sub(1) {
+			Some(key_states.previous)
+		} else if keystate_sequence > key_states.current.sequence {
 			self.unprocessed_close_packets
 				.push((keystate_sequence, sequence, buffer.clone()));
 			None
 		} else {
 			warn!(
 				"Received invalid close packet: keystate sequence is too old: {} (current: {})",
-				keystate_sequence, self.key_state.sequence
+				keystate_sequence, key_states.current.sequence
 			);
 			None
 		};
@@ -1255,7 +1380,7 @@ impl Connection {
 			} else if !self.decrypt_packet(key_state, sequence, &mut buffer) {
 				warn!(
 					"Received malformed close packet: checksum didn't match {} {} [{}]",
-					keystate_sequence, self.key_state.sequence, sequence
+					keystate_sequence, key_state.sequence, sequence
 				);
 			} else if buffer.len() < 34 {
 				warn!("Received malformed close packet: packet too small");
@@ -1270,7 +1395,7 @@ impl Connection {
 	}
 
 	async fn receive_data_packet(
-		&mut self, timeout: Duration,
+		&mut self, key_states: KeyStateDuo<'_>, timeout: Duration,
 	) -> Result<(u16, u16, DataQueueItem)> {
 		loop {
 			tokio::select! {
@@ -1286,7 +1411,7 @@ impl Connection {
 				},
 				result = self.queues.close.recv() => {
 					if let Some(packet) = result {
-						let _ = self.process_close_packet(packet);
+						let _ = self.process_close_packet(key_states, packet);
 					}
 				},
 				_ = sleep(timeout) => {
@@ -1300,88 +1425,28 @@ impl Connection {
 		}
 	}
 
-	pub async fn send(&mut self, message: &[u8]) -> Result<()> {
-		// The actual buffer to send contains a 4-byte message size as its header
-		assert!(message.len() > 0, "buffer is empty");
-		assert!(message.len() <= u32::MAX as usize, "buffer too big");
-		let mut buffer = vec![0u8; 4 + message.len()];
-		buffer[..4].copy_from_slice(&u32::to_le_bytes(message.len() as _));
-		buffer[4..].copy_from_slice(message);
-
-		self.send_data(&buffer).await
-	}
-
-	async fn send_close_packet(&mut self) -> Result<()> {
-		self.send_crypted_packet(
-			MESSAGE_TYPE_CLOSE,
-			&self.key_state,
-			0,
-			self.node_id.as_bytes(),
-		)
-		.await
-	}
-
-	async fn send_chunk(&mut self, buffer: &[u8]) -> Result<usize> {
-		debug_assert!(buffer.len() > 0, "buffer is empty");
-		// The sending side has to sent their idea for the window size in the window
-		// data itself, and there is no way to determine if it will go error free, so
-		// always sent an optimistic window size.
-		let our_new_window_size = self.send_window.increase_window_size();
-		self.key_state.our_dh_key = x25519::StaticSecret::random_from_rng(OsRng);
-		let result = self
-			.send_window(
-				&buffer,
-				self.send_window.size,
-				&x25519::PublicKey::from(&self.key_state.our_dh_key),
-				our_new_window_size,
-			)
-			.await;
-		let (send, their_new_window_size, their_dh_key) = result?;
-		debug_assert!(
-			send <= buffer.len(),
-			"More data send out than exists! {} <= {}",
-			send,
-			buffer.len()
-		);
-
-		// Adjust window size
-		//self.previous_window_size = self.send_window.size;
-		self.send_window.size = min(our_new_window_size, their_new_window_size);
-
-		// Apply new ephemeral DH secret.
-		self.previous_keystate = self.key_state.clone();
-		self.key_state.their_dh_key = their_dh_key;
-		self.key_state.reset_key(self.send_window.size);
-		return Ok(send);
-	}
-
-	async fn send_data(&mut self, buffer: &[u8]) -> Result<()> {
-		let mut send = 0usize;
-		loop {
-			send += self.send_chunk(&buffer[send..]).await?;
-			debug_assert!(send <= buffer.len(), "send too many bytes");
-			if send == buffer.len() {
-				return Ok(());
-			}
-		}
+	async fn send_close_packet(&mut self, key_state: &KeyState) -> Result<()> {
+		self.send_crypted_packet(key_state, MESSAGE_TYPE_CLOSE, 0, self.node_id.as_bytes())
+			.await
 	}
 
 	async fn send_ack_packet(
-		&self, key_sequence: u16, new_window_size: u16, dh_key: &x25519::PublicKey,
+		&self, key_state: &KeyState, key_sequence: u16, new_window_size: u16,
+		dh_key: &x25519::PublicKey,
 	) -> Result<()> {
 		let mut buffer = vec![0u8; 35];
 		buffer[0] = 0; // Success
 		buffer[1..3].copy_from_slice(&new_window_size.to_le_bytes());
 		buffer[3..35].copy_from_slice(dh_key.as_bytes());
-		self.send_crypted_packet(MESSAGE_TYPE_ACK, &self.key_state, key_sequence, &buffer)
+		self.send_crypted_packet(key_state, MESSAGE_TYPE_ACK, key_sequence, &buffer)
 			.await
 	}
 
-	async fn send_ack_wait_packet(&self) -> Result<()> {
+	async fn send_ack_wait_packet(&self, key_state: &KeyState) -> Result<()> {
 		self.send_crypted_packet(
+			&key_state,
 			MESSAGE_TYPE_ACK_WAIT,
-			&self.key_state,
-			(self.key_state.keychain.len() - 1) as u16,
+			(key_state.keychain.len() - 1) as u16,
 			self.node_id.as_bytes(),
 		)
 		.await
@@ -1390,8 +1455,8 @@ impl Connection {
 	/// Tries to send as much as of the buffer as made possible by the window
 	/// size, and waits untill all of it has been received
 	async fn send_window(
-		&mut self, buffer: &[u8], window_size: u16, public_key: &x25519::PublicKey,
-		requested_window_size: u16,
+		&mut self, ks: KeyStateDuoMut<'_>, buffer: &[u8], window_size: u16,
+		public_key: &x25519::PublicKey, requested_window_size: u16,
 	) -> Result<(usize, u16, x25519::PublicKey)> {
 		debug_assert!(buffer.len() > 0, "buffer is empty");
 
@@ -1440,7 +1505,8 @@ impl Connection {
 					.copy_from_slice(&buffer[send..][..length]);
 			}
 			let packet = &real_buffer[(i * packet_length)..][..packet_length];
-			self.send_data_packet(sequence, packet, true).await?;
+			self.send_data_packet(ks.current, sequence, packet, true)
+				.await?;
 			sequence = sequence.wrapping_add(1);
 
 			send = end;
@@ -1453,12 +1519,13 @@ impl Connection {
 		// Wait until ack packet, and resent missing packets, until nothing is
 		// missing.
 		loop {
-			let (completed, received_mask) = match self.receive_ack(self.timeout).await? {
-				Err(mask) => mask,
-				Ok((ws, public_key)) => {
-					return Ok((send, ws, public_key));
-				}
-			};
+			let (completed, received_mask) =
+				match self.receive_ack(ks.get_const(), self.timeout).await? {
+					Err(mask) => mask,
+					Ok((ws, public_key)) => {
+						return Ok((send, ws, public_key));
+					}
+				};
 			let mut errors = 0;
 			for i in 0..(received_mask.len() as u16) {
 				let byte = received_mask[i as usize];
@@ -1470,6 +1537,7 @@ impl Connection {
 
 						if buffer_start < real_buffer.len() {
 							self.send_data_packet(
+								ks.current,
 								packet_index,
 								&real_buffer[buffer_start..][..packet_length],
 								false,
@@ -1485,7 +1553,7 @@ impl Connection {
 	}
 
 	async fn send_crypted_packet(
-		&self, message_type: u8, keystate: &KeyState, key_sequence: u16, packet: &[u8],
+		&self, keystate: &KeyState, message_type: u8, key_sequence: u16, packet: &[u8],
 	) -> Result<()> {
 		debug_assert!(
 			packet.len() <= self.max_data_packet_length(),
@@ -1542,22 +1610,24 @@ impl Connection {
 			&buffer
 		};
 
-		self.send_crypted_packet(message_type, keystate, key_sequence, slice)
+		self.send_crypted_packet(keystate, message_type, key_sequence, slice)
 			.await
 	}
 
 	async fn send_data_packet(
-		&mut self, key_sequence: u16, packet: &[u8], advance_key: bool,
+		&mut self, key_state: &mut KeyState, key_sequence: u16, packet: &[u8], advance_key: bool,
 	) -> Result<()> {
 		if advance_key {
-			self.key_state.advance_key(&packet);
+			key_state.advance_key(&packet);
 		}
 
-		self.send_crypted_packet_filled(MESSAGE_TYPE_DATA, &self.key_state, key_sequence, &packet)
+		self.send_crypted_packet_filled(MESSAGE_TYPE_DATA, &key_state, key_sequence, &packet)
 			.await
 	}
 
-	async fn send_missing_mask_packet(&self, packet_sequence: u16, mask: Vec<u8>) -> Result<()> {
+	async fn send_missing_mask_packet(
+		&self, key_state: &KeyState, packet_sequence: u16, mask: Vec<u8>,
+	) -> Result<()> {
 		debug_assert!(mask.len() > 0, "mask is empty");
 		let max_len = self.max_data_packet_length();
 		let data_packet_length = max_len;
@@ -1573,44 +1643,24 @@ impl Connection {
 			buffer[1..].copy_from_slice(&mask[..(data_packet_length - 1)]);
 		}
 
-		self.send_crypted_packet(MESSAGE_TYPE_ACK, &self.key_state, packet_sequence, &buffer)
+		self.send_crypted_packet(key_state, MESSAGE_TYPE_ACK, packet_sequence, &buffer)
 			.await
 	}
 
-	async fn send_previous_ack_packet(&mut self) -> Result<()> {
-		let our_pubkey = x25519::PublicKey::from(&self.previous_keystate.our_dh_key); println!("SENDPREVACK {} {}", self.previous_keystate.sequence, self.previous_window_ack_sequence);
+	async fn send_previous_ack_packet(&mut self, prev_key_state: &KeyState) -> Result<()> {
+		let our_pubkey = x25519::PublicKey::from(&prev_key_state.private_key);
 
 		let mut buffer = vec![0u8; 35];
 		buffer[0] = 0; // Success
 		buffer[1..3].copy_from_slice(&self.receive_window.size.to_le_bytes());
 		buffer[3..35].copy_from_slice(our_pubkey.as_bytes());
-		self.send_crypted_packet(MESSAGE_TYPE_ACK, &self.previous_keystate, self.previous_window_ack_sequence, &buffer)
-			.await
-	}
-
-	/// Updates the cleanup timeout of the connection.
-	pub async fn set_keep_alive_timeout(&mut self, timeout: Duration) -> bool {
-		self.keep_alive_timeout = timeout;
-		let sessions = self.server.sessions.lock().await;
-		if let Some(session_mutex) = sessions.map.get(&self.our_session_id) {
-			let session_mutex2 = session_mutex.clone();
-			drop(sessions);
-			let mut session = session_mutex2.lock().await;
-			session.keep_alive_timeout = timeout;
-			true
-		} else {
-			false
-		}
-	}
-
-	pub fn their_node_info(&self) -> &NodeContactInfo { &self.their_node_info }
-
-	pub fn their_node_id(&self) -> &IdType { &self.their_node_info.node_id }
-
-	pub fn their_session_id(&self) -> u16 { self.their_session_id }
-
-	pub fn update_their_node_info(&mut self, node_info: NodeContactInfo) {
-		self.their_node_info = node_info;
+		self.send_crypted_packet(
+			prev_key_state,
+			MESSAGE_TYPE_ACK,
+			self.previous_window_ack_sequence,
+			&buffer,
+		)
+		.await
 	}
 
 	fn verify_packet(buffer: &[u8]) -> bool {
@@ -1624,8 +1674,11 @@ impl Connection {
 #[cfg(debug_assertions)]
 impl Drop for Connection {
 	fn drop(&mut self) {
-		if self.should_be_closed.load(Ordering::Relaxed) {
-			panic!("Connection {} not closed before drop", self.our_session_id);
+		if self.inner.should_be_closed.load(Ordering::Relaxed) {
+			panic!(
+				"Connection {} not closed before drop",
+				self.inner.our_session_id
+			);
 		}
 	}
 }
@@ -1645,9 +1698,9 @@ impl From<binserde::Error> for Error {
 
 impl KeyState {
 	pub fn new(
-		our_dh_key: x25519::StaticSecret, their_dh_key: x25519::PublicKey, window_size: u16,
+		private_key: x25519::StaticSecret, public_key: x25519::PublicKey, window_size: u16,
 	) -> Self {
-		let shared_secret = our_dh_key.diffie_hellman(&their_dh_key);
+		let shared_secret = private_key.diffie_hellman(&public_key);
 		let mut hasher = Sha256::new();
 		hasher.update(shared_secret.as_bytes());
 		let initial_key = hasher.finalize();
@@ -1655,9 +1708,8 @@ impl KeyState {
 		keychain.push(initial_key);
 
 		Self {
-			our_dh_key,
-			their_dh_key,
-			ratchet_position: 0,
+			private_key,
+			public_key,
 			keychain,
 			sequence: 0,
 		}
@@ -1665,18 +1717,16 @@ impl KeyState {
 
 	/// Calculates a new key based on the current DH keys.
 	pub fn reset_key(&mut self, window_size: u16) {
-		let shared_secret = self.our_dh_key.diffie_hellman(&self.their_dh_key);
+		let shared_secret = self.private_key.diffie_hellman(&self.public_key);
 		let mut hasher = Sha256::new();
 		hasher.update(shared_secret.as_bytes());
 		let initial_key = hasher.finalize();
-		self.ratchet_position = 0;
 		if self.keychain.capacity() < (window_size + 1) as usize {
 			self.keychain = Vec::with_capacity((window_size + 1) as usize);
 		} else {
 			self.keychain.clear();
 		}
 		self.keychain.push(initial_key);
-		self.sequence = self.sequence.wrapping_add(1);
 	}
 
 	/// Generates a new key
@@ -1686,7 +1736,107 @@ impl KeyState {
 		mac.update(data);
 		let new_key = mac.finalize().into_bytes();
 		self.keychain.push(new_key);
-		self.ratchet_position += 1;
+	}
+}
+
+impl<'a> From<KeyStateDuoMut<'a>> for KeyStateDuo<'a> {
+	fn from(other: KeyStateDuoMut<'a>) -> Self {
+		Self {
+			current: other.current,
+			previous: other.previous,
+		}
+	}
+}
+
+impl<'a> KeyStateDuoMut<'a> {
+	fn get_const(&'a self) -> KeyStateDuo<'a> {
+		KeyStateDuo {
+			current: self.current,
+			previous: self.previous,
+		}
+	}
+}
+
+impl KeyStateManager {
+	pub fn new(
+		our_dh_key: x25519::StaticSecret, their_dh_key: x25519::PublicKey, window_size: u16,
+	) -> Self {
+		Self {
+			use_first: true,
+			keystate1: KeyState::new(our_dh_key.clone(), their_dh_key.clone(), window_size),
+			keystate2: KeyState::new(our_dh_key, their_dh_key, 0),
+		}
+	}
+
+	pub fn current_key_state(&self) -> &KeyState {
+		if self.use_first {
+			&self.keystate1
+		} else {
+			&self.keystate2
+		}
+	}
+
+	pub fn current_key_state_mut(&mut self) -> &mut KeyState {
+		if self.use_first {
+			&mut self.keystate1
+		} else {
+			&mut self.keystate2
+		}
+	}
+
+	pub fn get_duo(&self) -> KeyStateDuo {
+		if self.use_first {
+			KeyStateDuo {
+				current: &self.keystate1,
+				previous: &self.keystate2,
+			}
+		} else {
+			KeyStateDuo {
+				current: &self.keystate2,
+				previous: &self.keystate1,
+			}
+		}
+	}
+
+	pub fn get_duo_mut(&mut self) -> KeyStateDuoMut {
+		if self.use_first {
+			KeyStateDuoMut {
+				current: &mut self.keystate1,
+				previous: &self.keystate2,
+			}
+		} else {
+			KeyStateDuoMut {
+				current: &mut self.keystate2,
+				previous: &self.keystate1,
+			}
+		}
+	}
+
+	pub fn previous_key_state(&self) -> &KeyState {
+		if self.use_first {
+			&self.keystate2
+		} else {
+			&self.keystate1
+		}
+	}
+
+	pub fn setup_next_keystate(
+		&mut self, private_key: x25519::StaticSecret, public_key: x25519::PublicKey,
+		new_window_size: u16,
+	) {
+		if self.use_first {
+			self.keystate2.sequence = self.keystate1.sequence + 1;
+			self.keystate2.public_key = public_key;
+			self.keystate2.private_key = private_key;
+			self.keystate2.reset_key(new_window_size);
+			self.use_first = false;
+		} else {
+			self.keystate1.sequence = self.keystate2.sequence + 1;
+			self.keystate1.public_key = public_key;
+			self.keystate1.private_key = private_key;
+			self.keystate1.reset_key(new_window_size);
+			self.use_first = true;
+		}
 	}
 }
 
@@ -2061,33 +2211,33 @@ impl Server {
 
 					return Ok(Box::new(Connection {
 						server: self.clone(),
-						keep_alive_flag: AtomicBool::new(false),
-						peer_is_closing: AtomicBool::new(false),
-						sender,
-						receiver_handle: handle,
-						peer_address: target.target.clone(),
-						their_session_id,
-						our_session_id,
-						their_node_info: NodeContactInfo {
-							node_id: their_node_id.clone(),
-							contact_info: their_contact_info,
-						},
-						node_id: self.node_id.clone(),
-						peer_node_id: their_node_id,
-						private_key: self.private_key.clone(),
-						queues,
-						//session,
-						key_state: KeyState::new(secret_key.clone(), their_public_key.clone(), 1),
-						previous_keystate: KeyState::new(secret_key, their_public_key, 0),
-						previous_window_ack_sequence: 0,
-						receive_window: WindowInfo::default(),
-						send_window: WindowInfo::default(),
-						last_activity,
-						#[cfg(debug_assertions)]
-						should_be_closed: AtomicBool::new(true),
-						unprocessed_close_packets: Vec::new(),
-						timeout,
-						keep_alive_timeout: timeout
+						key_state_manager: KeyStateManager::new(secret_key, their_public_key, 1),
+						inner: ConnectionInner {
+							keep_alive_flag: AtomicBool::new(false),
+							peer_is_closing: AtomicBool::new(false),
+							sender,
+							socket_handle: handle,
+							peer_address: target.target.clone(),
+							their_session_id,
+							our_session_id,
+							their_node_info: NodeContactInfo {
+								node_id: their_node_id.clone(),
+								contact_info: their_contact_info,
+							},
+							node_id: self.node_id.clone(),
+							peer_node_id: their_node_id,
+							private_key: self.private_key.clone(),
+							queues,
+							previous_window_ack_sequence: 0,
+							receive_window: WindowInfo::default(),
+							send_window: WindowInfo::default(),
+							last_activity,
+							#[cfg(debug_assertions)]
+							should_be_closed: AtomicBool::new(true),
+							unprocessed_close_packets: Vec::new(),
+							timeout,
+							keep_alive_timeout: timeout
+						}
 					}))
 				},
 				_ = sleep(sleep_time) => {}
@@ -2656,7 +2806,7 @@ impl Server {
 				should_close = true;
 			}
 		} else {
-			//debug!("Invalid session ID: {}", our_session_id);
+			trace!("Invalid session ID: {}", our_session_id);
 		}
 
 		if should_close {
@@ -2675,7 +2825,6 @@ impl Server {
 
 	async fn process_ack_wait(&self, packet: &[u8]) -> Result<()> {
 		self.process_sequenced_packet(packet, |session, ks_seq, seq, data| {
-			println!("process_ack_wait result {} {} {}", ks_seq, seq, data.len());
 			session
 				.queues
 				.data
@@ -2788,33 +2937,33 @@ impl Server {
 
 		let connection = Box::new(Connection {
 			server: self.clone(),
-			keep_alive_flag: AtomicBool::new(false),
-			peer_is_closing: AtomicBool::new(false),
-			sender: sender.clone(),
-			receiver_handle: None,
-			peer_address: addr.clone(),
-			their_session_id,
-			our_session_id,
-			their_node_info: NodeContactInfo {
-				node_id: node_id.clone(),
-				contact_info: their_contact_info,
+			key_state_manager: KeyStateManager::new(own_secret_key, their_public_key, 1),
+			inner: ConnectionInner {
+				keep_alive_flag: AtomicBool::new(false),
+				peer_is_closing: AtomicBool::new(false),
+				sender: sender.clone(),
+				socket_handle: None,
+				peer_address: addr.clone(),
+				their_session_id,
+				our_session_id,
+				their_node_info: NodeContactInfo {
+					node_id: node_id.clone(),
+					contact_info: their_contact_info,
+				},
+				node_id: self.node_id.clone(),
+				peer_node_id: node_id,
+				private_key: self.private_key.clone(),
+				queues: rx_queues,
+				previous_window_ack_sequence: 0,
+				receive_window: WindowInfo::default(),
+				send_window: WindowInfo::default(),
+				last_activity: Arc::new(StdMutex::new(SystemTime::now())),
+				#[cfg(debug_assertions)]
+				should_be_closed: AtomicBool::new(false),
+				unprocessed_close_packets: Vec::new(),
+				timeout: self.default_timeout,
+				keep_alive_timeout: self.default_timeout,
 			},
-			node_id: self.node_id.clone(),
-			peer_node_id: node_id,
-			private_key: self.private_key.clone(),
-			//session,
-			queues: rx_queues,
-			key_state: KeyState::new(own_secret_key.clone(), their_public_key.clone(), 1),
-			previous_keystate: KeyState::new(own_secret_key, their_public_key, 0),
-			previous_window_ack_sequence: 0,
-			receive_window: WindowInfo::default(),
-			send_window: WindowInfo::default(),
-			last_activity: Arc::new(StdMutex::new(SystemTime::now())),
-			#[cfg(debug_assertions)]
-			should_be_closed: AtomicBool::new(false),
-			unprocessed_close_packets: Vec::new(),
-			timeout: self.default_timeout,
-			keep_alive_timeout: self.default_timeout,
 		});
 		match self.on_connect.get() {
 			None => {}
