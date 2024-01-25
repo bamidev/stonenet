@@ -33,13 +33,6 @@ use crate::{common::*, config::Config};
 /// but we use 256.
 pub const KADEMLIA_BITS: usize = 256;
 
-// Messages for the overlay network:
-pub const NETWORK_MESSAGE_TYPE_PING_REQUEST: u8 = 0;
-//pub const NETWORK_MESSAGE_TYPE_PING_RESPONSE: u8 = 1;
-pub const NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST: u8 = 2;
-//pub const NETWORK_MESSAGE_TYPE_FIND_NODE_RESPONSE: u8 = 3;
-pub const NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST: u8 = 4;
-//pub const NETWORK_MESSAGE_TYPE_FIND_NODE_RESPONSE: u8 = 5;
 
 lazy_static! {
 	pub static ref NETWORK_INTERFACES: Mutex<HashMap<String, Vec<IpNetwork>>> =
@@ -327,6 +320,36 @@ impl ContactInfo {
 		}
 	}
 
+	pub fn pick_relay_option(&self, option: &ContactOption) -> Option<ContactOption> {
+		match option.target {
+			SocketAddr::V6(ipv6) =>
+				if let Some(e) = &self.ipv6 {
+					if option.use_tcp {
+						if e.availability.tcp.is_some() {
+							return Some(ContactOption::new(SocketAddr::V6(ipv6), true));
+						}
+					} else {
+						if e.availability.udp.is_some() {
+							return Some(ContactOption::new(SocketAddr::V6(ipv6), false));
+						}
+					}
+				},
+			SocketAddr::V4(ipv4) =>
+				if let Some(e) = &self.ipv4 {
+					if option.use_tcp {
+						if e.availability.tcp.is_some() {
+							return Some(ContactOption::new(SocketAddr::V4(ipv4), true));
+						}
+					} else {
+						if e.availability.udp.is_some() {
+							return Some(ContactOption::new(SocketAddr::V4(ipv4), false));
+						}
+					}
+				},
+		}
+		None
+	}
+
 	pub fn update(&mut self, addr: &SocketAddr, for_tcp: bool) {
 		match addr {
 			SocketAddr::V4(a) => self.update_v4(a.ip(), a.port(), for_tcp),
@@ -396,18 +419,18 @@ impl ContactInfo {
 		// FIXME: Don't give points for a protocol that we don't support ourselves, as
 		// we shouldn't care about those.
 		if let Some(e) = &self.ipv4 {
-			if let Some(udp) = &e.availability.udp {
+			if let Some(_udp) = &e.availability.udp {
 				score += 4;
 			}
-			if let Some(udp) = &e.availability.tcp {
+			if let Some(_udp) = &e.availability.tcp {
 				score += 1;
 			}
 		}
 		if let Some(e) = &self.ipv6 {
-			if let Some(udp) = &e.availability.udp {
+			if let Some(_udp) = &e.availability.udp {
 				score += 2;
 			}
-			if let Some(udp) = &e.availability.tcp {
+			if let Some(_udp) = &e.availability.tcp {
 				score += 1;
 			}
 		}

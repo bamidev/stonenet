@@ -52,6 +52,13 @@ bootstrap_nodes = [
 	"bootstrap2.stonenet.org:37337"
 ]
 
+# Enabling this feature makes it so that the first request message on a
+# connection is sometimes sent unencrypted, if the message is small enough to be
+# included in the very first packet. This speeds up node communication, at the
+# expense of privacy. The response message is never sent on the connection
+# unencrypted.
+leak_first_request = false
+
 # Maximum idle time for UDP hole-punching in seconds:
 udp_max_idle_time = 60
 

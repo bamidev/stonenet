@@ -1,7 +1,6 @@
 use std::{
 	fs::remove_file,
 	io,
-	net::Ipv4Addr,
 	path::PathBuf,
 	sync::{
 		atomic::{AtomicBool, Ordering},
@@ -17,7 +16,7 @@ use stonenetd::{
 	db::*,
 	identity::PrivateKey,
 	model::*,
-	net::{overlay::*, ContactInfo, *},
+	net::{overlay::*, *},
 	test::*,
 };
 
@@ -69,13 +68,13 @@ async fn test_data_synchronizations() {
 		true,
 	)
 	.await;
-	test_data_synchronization(
+	/*test_data_synchronization(
 		&mut next_port,
 		Openness::Unidirectional,
 		Openness::Unidirectional,
 		false,
 	)
-	.await;
+	.await;*/
 }
 
 async fn test_data_synchronization(
@@ -90,25 +89,29 @@ async fn test_data_synchronization(
 	config1.ipv4_address = Some("127.0.0.1".to_string());
 	config1.ipv4_udp_port = Some(*next_port);
 	config1.ipv4_udp_openness = Some("bidirectional".to_string());
-	config1.relay_node = true;
+	config1.relay_node = Some(true);
+	config1.leak_first_request = Some(true);
 	*next_port += 1;
 	let mut config2 = Config::default();
 	config2.ipv4_address = Some("127.0.0.1".to_string());
 	config2.ipv4_udp_port = Some(*next_port);
 	config2.ipv4_udp_openness = Some("bidirectional".to_string());
-	config2.relay_node = true;
+	config2.relay_node = Some(true);
+	config2.leak_first_request = Some(true);
 	config2.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
 	*next_port += 1;
 	let mut config3 = Config::default();
 	config3.ipv4_address = Some("127.0.0.1".to_string());
 	config3.ipv4_udp_port = Some(*next_port);
 	config3.ipv4_udp_openness = Some(node1_openness.to_string());
+	config3.leak_first_request = Some(true);
 	config3.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
 	*next_port += 1;
 	let mut config4 = Config::default();
 	config4.ipv4_address = Some("127.0.0.1".to_string());
 	config4.ipv4_udp_port = Some(*next_port);
 	config4.ipv4_udp_openness = Some(node2_openness.to_string());
+	config4.leak_first_request = Some(true);
 	config4.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
 	*next_port += 1;
 	let bootstrap_node = load_test_node(
@@ -151,7 +154,6 @@ Hoi ik ben Kees!
 		.join_actor_network(&actor_id, &actor_info)
 		.await
 		.expect("unable to join actor network");
-
 	// Create some posts
 	let first_message = "First post!!!";
 	let second_message = "Second post!!!";

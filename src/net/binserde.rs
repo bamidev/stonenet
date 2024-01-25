@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use bincode::{self, Options};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -42,6 +44,14 @@ pub fn serialize<S: ?Sized + Serialize>(t: &S) -> bincode::Result<Vec<u8>> {
 		.reject_trailing_bytes();
 
 	options.serialize(t)
+}
+
+pub fn serialize_into<S: ?Sized + Serialize, W: Write>(w: W, t: &S) -> bincode::Result<()> {
+	let options = bincode::options()
+		.with_varint_encoding()
+		.reject_trailing_bytes();
+
+	options.serialize_into(w, t)
 }
 
 pub fn serialized_size<T: ?Sized>(value: &T) -> bincode::Result<usize>

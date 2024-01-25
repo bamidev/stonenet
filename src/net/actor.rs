@@ -5,7 +5,14 @@ use futures::future::join_all;
 use serde::de::DeserializeOwned;
 use tokio::{spawn, sync::Mutex, time::sleep};
 
-use super::{connection_manager::*, message::*, node::*, overlay::OverlayNode, sstp, *};
+use super::{
+	connection_manager::*,
+	message::*,
+	node::*,
+	overlay::OverlayNode,
+	sstp::{self, MessageProcessorResult, MessageWorkToDo},
+	*,
+};
 use crate::{
 	common::*,
 	db::{self, Database},
@@ -15,9 +22,9 @@ use crate::{
 
 
 pub const ACTOR_MESSAGE_TYPE_HEAD_REQUEST: u8 = 64;
-//pub const ACTOR_MESSAGE_TYPE_HEAD_RESPONSE: u8 = 65;
+pub const ACTOR_MESSAGE_TYPE_HEAD_RESPONSE: u8 = 65;
 pub const ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST: u8 = 66;
-//pub const ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE: u8 = 67;
+pub const ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE: u8 = 67;
 pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST: u8 = 70;
 pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE: u8 = 71;
 
@@ -35,6 +42,11 @@ pub struct ActorInterface {
 	actor_info: ActorInfo,
 	is_lurker: bool,
 	pub(super) connection_manager: Arc<ConnectionManager>,
+}
+
+struct PublishObjectToDo {
+	node: Arc<ActorNode>,
+	hash: IdType,
 }
 
 impl ActorInterface {
@@ -90,7 +102,7 @@ impl NodeInterface for ActorInterface {
 		real_buffer.push(message_type);
 		real_buffer.extend(self.actor_id.as_bytes());
 		real_buffer.extend(buffer);
-		connection.send(&real_buffer).await?;
+		connection.send(real_buffer).await?;
 
 		// Receive response
 		let mut response = connection.receive().await?;
@@ -131,13 +143,14 @@ impl NodeInterface for ActorInterface {
 		real_buffer.extend(buffer);
 
 		// Send request
-		connection.send(&real_buffer).await
+		connection.send(real_buffer).await
 	}
 
 	async fn respond(
 		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
 	) -> sstp::Result<()> {
-		self.send(connection, message_type, buffer).await
+		self.send(connection, message_type, buffer).await?;
+		Ok(())
 	}
 }
 
@@ -421,7 +434,6 @@ impl ActorNode {
 	pub async fn initialize_with_connection(self: &Arc<Self>, mut connection: Box<Connection>) {
 		self.synchronize_recent_objects_on_connection(&mut connection)
 			.await;
-		connection.close_async();
 	}
 
 	/// Returns a list of block hashes that we'd like to have.
@@ -517,15 +529,13 @@ impl ActorNode {
 		// synchronize by using the whole network. If there are only nodes that require
 		// communication via a relay, we savour the open connection and use it to
 		// synchronize at least the last 10 objects.
-		if fingers.iter().any(|f| {
+		if !fingers.iter().any(|f| {
 			if let Some(strategy) = self.base.pick_contact_strategy(&f.contact_info) {
 				&f.node_id != &self.base.node_id && strategy.method != ContactStrategyMethod::Relay
 			} else {
 				false
 			}
 		}) {
-			connection.close_async();
-		} else {
 			self.initialize_with_connection(connection).await;
 			return Some(false);
 		}
@@ -556,7 +566,7 @@ impl ActorNode {
 	pub fn new(
 		stop_flag: Arc<AtomicBool>, overlay_node: Arc<OverlayNode>, node_id: IdType,
 		socket: Arc<sstp::Server>, actor_id: IdType, actor_info: ActorInfo, db: Database,
-		bucket_size: usize, is_lurker: bool,
+		bucket_size: usize, leak_first_request: bool, is_lurker: bool,
 	) -> Self {
 		let interface = ActorInterface {
 			overlay_node,
@@ -574,6 +584,7 @@ impl ActorNode {
 				socket,
 				interface,
 				bucket_size,
+				leak_first_request,
 			)),
 			downloading_objects: Mutex::new(Vec::new()),
 		}
@@ -582,6 +593,7 @@ impl ActorNode {
 	pub(super) fn new_lurker(
 		stop_flag: Arc<AtomicBool>, overlay_node: Arc<OverlayNode>, socket: Arc<sstp::Server>,
 		actor_id: IdType, actor_info: ActorInfo, db: Database, bucket_size: usize,
+		leak_first_request: bool,
 	) -> Self {
 		let keypair = PrivateKey::generate();
 		let public_key = keypair.public();
@@ -603,6 +615,7 @@ impl ActorNode {
 				socket,
 				interface,
 				bucket_size,
+				leak_first_request,
 			)),
 			downloading_objects: Mutex::new(Vec::new()),
 		}
@@ -623,15 +636,15 @@ impl ActorNode {
 		};
 		let fingers = self.base.find_nearest_fingers(id).await;
 		let response = FindNodeResponse {
-			is_super_node: self.base.interface.overlay_node().is_super_node,
-			connection,
+			is_super_node: self.base.interface.overlay_node().is_relay_node,
+			connected: connection,
 			fingers,
 		};
 		let result: Result<(), FindNodeResponse> = Err(response);
 		binserde::serialize(&result).unwrap()
 	}
 
-	async fn process_get_profile_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
+	async fn process_get_profile_request(&self, buffer: &[u8]) -> MessageProcessorResult {
 		let _request: GetProfileRequest = match binserde::deserialize(buffer) {
 			Ok(r) => r,
 			Err(e) => {
@@ -656,34 +669,33 @@ impl ActorNode {
 		};
 
 		let response = GetProfileResponse { object };
-		Some(binserde::serialize(&response).unwrap())
+		self.base
+			.simple_result(ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE, &response)
 	}
 
 	pub(super) async fn process_request(
-		self: &Arc<Self>, connection: &mut Connection, _mutex: &Arc<Mutex<Box<Connection>>>,
-		message_type: u8, buffer: &[u8],
-	) -> Option<Vec<u8>> {
+		self: &Arc<Self>, message_type: u8, buffer: &[u8], addr: &SocketAddr,
+		_node_info: &NodeContactInfo,
+	) -> MessageProcessorResult {
 		match message_type {
 			ACTOR_MESSAGE_TYPE_HEAD_REQUEST => self.process_head_request(buffer).await,
 			ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST =>
 				self.process_get_profile_request(buffer).await,
 			ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST => {
-				self.process_publish_object_request(connection, buffer)
-					.await;
-				None
+				self.process_publish_object_request(buffer, addr).await;
+				return None;
 			}
 			other_id => {
 				error!(
 					"Unknown actor message type ID received from {}: {}",
-					connection.peer_address(),
-					other_id
+					addr, other_id
 				);
-				None
+				return None;
 			}
 		}
 	}
 
-	async fn process_head_request(&self, buffer: &[u8]) -> Option<Vec<u8>> {
+	async fn process_head_request(&self, buffer: &[u8]) -> MessageProcessorResult {
 		if buffer.len() > 0 {
 			warn!("Malformed head request");
 			return None;
@@ -701,7 +713,7 @@ impl ActorNode {
 				Ok(h) => h,
 				Err(e) => {
 					error!("Unable to fetch head: {}", e);
-					None
+					return None;
 				}
 			}
 		});
@@ -716,75 +728,19 @@ impl ActorNode {
 			}
 			Some((hash, object, ..)) => HeadResponse { hash, object },
 		};
-		Some(binserde::serialize(&response).unwrap())
+		self.base
+			.simple_result(ACTOR_MESSAGE_TYPE_HEAD_RESPONSE, &response)
 	}
 
-	async fn process_publish_object_request_receive_object(
-		self: &Arc<Self>, c: &mut Connection, object_id: &IdType, needed: bool,
-		public_key: &PublicKey,
-	) -> Option<Object> {
-		let response = PublishObjectResponse { needed };
-		match self
-			.base
-			.interface
-			.respond(
-				c,
-				ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE,
-				&binserde::serialize(&response).unwrap(),
-			)
-			.await
-		{
-			Ok(()) => {}
-			Err(e) => {
-				error!("Unable to respond to publish object request: {}", e);
-				return None;
-			}
-		}
-
-		if needed {
-			let buffer = match c.receive().await {
-				Ok(v) => Arc::new(v),
-				Err(e) => {
-					error!("Unable to download object data: {}", e);
-					return None;
-				}
-			};
-			let upload: PublishObjectMessage = match binserde::deserialize(&buffer) {
-				Ok(r) => r,
-				Err(e) => {
-					warn!("Object upload message was malformed: {}", e);
-					return None;
-				}
-			};
-
-			if !self.verify_object(&object_id, &upload.object, public_key) {
-				warn!("Invalid object received: verification failed.");
-				return None;
-			}
-
-			// If everything checks out, use the same connection to start synchronizing all
-			// the files and blocks on it, then close it ourselves.
-			// self.synchronize_object(c, object_id, &upload.object).await;
-			//self.process_new_object(c, object_id, &upload.object).await.expect("db
-			// error"); c.close().await;
-
-			return Some(upload.object);
-		}
-
-		None
-	}
-
-	async fn process_publish_object_request(self: &Arc<Self>, c: &mut Connection, buffer: &[u8]) {
+	async fn process_publish_object_request(
+		self: &Arc<Self>, buffer: &[u8], addr: &SocketAddr,
+	) -> MessageProcessorResult {
 		let request: PublishObjectRequest = match binserde::deserialize(buffer) {
 			Ok(r) => r,
 			Err(e) => {
-				warn!(
-					"Malformed publish block request from {}: {}",
-					c.peer_address(),
-					e
-				);
+				warn!("Malformed publish block request from {}: {}", addr, e);
 				// TODO: Reject node
-				return;
+				return None;
 			}
 		};
 
@@ -802,24 +758,23 @@ impl ActorNode {
 			needed
 		};
 
-		let public_key = &self.base.interface.actor_info.public_key;
-		let object_result = self
-			.process_publish_object_request_receive_object(c, &request.id, needed, public_key)
-			.await;
-
-		// Forget we were downloading this object
-		let mut downloading_objects = self.downloading_objects.lock().await;
-		if let Some(p) = downloading_objects.iter().position(|i| i == &request.id) {
-			downloading_objects.remove(p);
+		// If not needed, immediately respond
+		let response = PublishObjectResponse { needed };
+		let response_buffer = self
+			.base
+			.simple_response(ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE, &response);
+		if !response.needed {
+			return Some((response_buffer, None));
 		}
 
-		// Store & rebroadcast object if needed
-		if let Some(object) = object_result {
-			let this = self.clone();
-			if let Err(e) = this.process_new_object(c, &request.id, &object).await {
-				error!("Database error while processing new object: {}", e);
-			}
-		}
+		// Otherwise,
+		Some((
+			response_buffer,
+			Some(Box::new(PublishObjectToDo {
+				node: self.clone(),
+				hash: request.id.clone(),
+			})),
+		))
 	}
 
 	fn needs_object(&self, actor_id: &IdType, id: &IdType) -> bool {
@@ -981,15 +936,9 @@ impl ActorNode {
 			let id2 = id.clone();
 			let object2 = object.clone();
 			futs.push(async move {
-				if let Some(mut connection) = this.base.select_connection(&finger).await {
-					this.publish_object_on_connection(
-						overlay_node2,
-						&mut connection,
-						&id2,
-						&object2,
-					)
-					.await;
-					connection.close_async();
+				if let Some((connection, _)) = this.base.select_connection(&finger, None).await {
+					this.publish_object_on_connection(overlay_node2, connection, &id2, &object2)
+						.await;
 				}
 			});
 		}
@@ -997,16 +946,16 @@ impl ActorNode {
 	}
 
 	pub async fn publish_object_on_connection(
-		self: &Arc<Self>, overlay_node: Arc<OverlayNode>, connection: &mut Connection, id: &IdType,
-		object: &Object,
+		self: &Arc<Self>, _overlay_node: Arc<OverlayNode>, mut connection: Box<Connection>,
+		id: &IdType, object: &Object,
 	) {
 		if let Some(wants_it) = self
-			.exchange_publish_object_on_connection(connection, id)
+			.exchange_publish_object_on_connection(&mut connection, id)
 			.await
 		{
 			if wants_it {
 				let buffer = binserde::serialize(object).unwrap();
-				if let Err(e) = connection.send(&buffer).await {
+				if let Err(e) = connection.send(buffer).await {
 					error!(
 						"Unable to upload object {} to node {}: {}",
 						id,
@@ -1015,8 +964,8 @@ impl ActorNode {
 					);
 				}
 				// Keep the connection open so that the other side can continue to make
-				// requests to us, and once (s)he closes, we return our function.
-				node::handle_find_value_connection(&overlay_node, connection).await;
+				// requests to us, like downloading any data
+				self.base.socket.handle_connection(connection);
 			}
 			return;
 		}
@@ -1179,11 +1128,12 @@ impl ActorNode {
 
 	async fn synchronize_head(self: &Arc<Self>, fingers: &[NodeContactInfo]) -> db::Result<()> {
 		for finger in fingers {
-			if let Some(mut connection) = self.base.select_direct_connection(&finger).await {
+			if let Some((mut connection, _)) =
+				self.base.select_direct_connection(&finger, None).await
+			{
 				if let Err(e) = self.synchronize_head_on_connection(&mut connection).await {
 					error!("Database issue with synchronizing head: {}", e);
 				}
-				connection.close_async();
 			}
 		}
 		Ok(())
@@ -1355,5 +1305,72 @@ impl ActorNode {
 				return;
 			}
 		}
+	}
+}
+
+impl PublishObjectToDo {
+	async fn receive_object(
+		&self, c: &mut Connection, object_id: &IdType, public_key: &PublicKey,
+	) -> Option<Object> {
+		let buffer = match c.receive().await {
+			Ok(v) => Arc::new(v),
+			Err(e) => {
+				error!("Unable to download object data: {}", e);
+				return None;
+			}
+		};
+		let upload: PublishObjectMessage = match binserde::deserialize(&buffer) {
+			Ok(r) => r,
+			Err(e) => {
+				warn!("Object upload message was malformed: {}", e);
+				return None;
+			}
+		};
+
+		if !self
+			.node
+			.verify_object(&object_id, &upload.object, public_key)
+		{
+			warn!("Invalid object received: verification failed.");
+			return None;
+		}
+
+		// If everything checks out, use the same connection to start synchronizing all
+		// the files and blocks on it, then close it ourselves.
+		// self.synchronize_object(c, object_id, &upload.object).await;
+		//self.process_new_object(c, object_id, &upload.object).await.expect("db
+		// error"); c.close().await;
+
+		return Some(upload.object);
+	}
+}
+
+#[async_trait]
+impl MessageWorkToDo for PublishObjectToDo {
+	async fn run(&mut self, mut connection: Box<Connection>) -> Option<Box<Connection>> {
+		let public_key = &self.node.base.interface.actor_info.public_key;
+		let object_result = self
+			.receive_object(&mut connection, &self.hash, public_key)
+			.await;
+
+		// Forget we were downloading this object
+		let mut downloading_objects = self.node.downloading_objects.lock().await;
+		if let Some(p) = downloading_objects.iter().position(|i| i == &self.hash) {
+			downloading_objects.remove(p);
+		}
+
+		// Store & rebroadcast object if needed
+		if let Some(object) = object_result {
+			let this = self.node.clone();
+			if let Err(e) = this
+				.process_new_object(&mut connection, &self.hash, &object)
+				.await
+			{
+				error!("Database error while processing new object: {}", e);
+				return None;
+			}
+		}
+
+		Some(connection)
 	}
 }

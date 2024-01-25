@@ -27,8 +27,9 @@ pub struct Config {
 	pub bootstrap_nodes: Vec<String>,
 	pub load_web_interface: bool,
 	pub udp_max_idle_time: usize,
-	pub bucket_size: usize,
-	pub relay_node: bool,
+	pub bucket_size: Option<usize>,
+	pub relay_node: Option<bool>,
+	pub leak_first_request: Option<bool>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -54,8 +55,9 @@ impl Default for Config {
 			bootstrap_nodes: vec![],
 			load_web_interface: false,
 			udp_max_idle_time: 60,
-			bucket_size: 4,
-			relay_node: false,
+			bucket_size: Some(4),
+			relay_node: None,
+			leak_first_request: None,
 		}
 	}
 }

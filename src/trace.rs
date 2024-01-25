@@ -9,7 +9,10 @@ use std::{
 pub type Result<T, E> = std::result::Result<T, Traced<E>>;
 
 pub trait Traceable<E> {
+	#[cfg(debug_assertions)]
 	fn trace(self) -> Traced<E>;
+	#[cfg(not(debug_assertions))]
+	fn trace(self) -> E;
 }
 
 pub struct Traced<E> {
@@ -34,7 +37,11 @@ impl<E> Traceable<E> for E
 where
 	E: Error,
 {
+	#[cfg(debug_assertions)]
 	fn trace(self) -> Traced<E> { Traced::new(self) }
+
+	#[cfg(not(debug_assertions))]
+	fn trace(self) -> Traced<E> { self }
 }
 
 #[cfg(debug_assertions)]
@@ -49,7 +56,10 @@ impl<E> Traced<E> {
 }
 
 #[cfg(debug_assertions)]
-impl<E> From<E> for Traced<E> {
+impl<E> From<E> for Traced<E>
+where
+	E: Error,
+{
 	fn from(other: E) -> Self { Self::new(other) }
 }
 

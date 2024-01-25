@@ -136,20 +136,18 @@ where
 	_phantom: PhantomData<UnsafeSendSync<V>>,
 }
 
-/*pub type UdpServerV4 = UdpServer<SocketAddrV4>;
-pub type UdpServerV6 = UdpServer<SocketAddrV6>;
-pub type UdpSocketV4 = UdpSocket<SocketAddrV4>;
-pub type UdpSocketV6 = UdpSocket<SocketAddrV6>;
-pub type UdpSocketSenderV4 = UdpSocketSender<SocketAddrV4>;
-pub type UdpSocketSenderV6 = UdpSocketSender<SocketAddrV6>;
-pub type TcpListenerV4 = TcpListener<SocketAddrV4>;
-pub type TcpListenerV6 = TcpListener<SocketAddrV6>;
-pub type TcpServerV4 = TcpServer<SocketAddrV4>;
-pub type TcpServerV6 = TcpServer<SocketAddrV6>;
-pub type TcpSocketV4 = TcpSocket<SocketAddrV4>;
-pub type TcpSocketV6 = TcpSocket<SocketAddrV6>;
-pub type TcpSocketSenderV4 = TcpSocketSender<SocketAddrV4>;
-pub type TcpSocketSenderV6 = TcpSocketSender<SocketAddrV6>;*/
+pub type UdpServerV4 = UdpServer<SocketAddrV4>;
+//pub type UdpServerV6 = UdpServer<SocketAddrV6>;
+//pub type UdpSocketV4 = UdpSocket<SocketAddrV4>;
+//pub type UdpSocketV6 = UdpSocket<SocketAddrV6>;
+//pub type UdpSocketSenderV4 = UdpSocketSender<SocketAddrV4>;
+//pub type UdpSocketSenderV6 = UdpSocketSender<SocketAddrV6>;
+//pub type TcpServerV4 = TcpServer<SocketAddrV4>;
+//pub type TcpServerV6 = TcpServer<SocketAddrV6>;
+//pub type TcpSocketV4 = TcpSocket<SocketAddrV4>;
+//pub type TcpSocketV6 = TcpSocket<SocketAddrV6>;
+//pub type TcpSocketSenderV4 = TcpSocketSender<SocketAddrV4>;
+//pub type TcpSocketSenderV6 = TcpSocketSender<SocketAddrV6>;
 
 
 // A workaround of something that should actually be fixed with specialization
