@@ -6,13 +6,17 @@ use std::{
 use ed25519_dalek::{self, Signer};
 use rand::{prelude::*, rngs::OsRng};
 use rusqlite::{types::*, ToSql};
-use serde::{Deserialize, Serialize};
+use serde::{
+	de::{IntoDeserializer, Visitor},
+	ser::SerializeTuple,
+	Deserialize, Serialize,
+};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::common::*;
 
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, PartialEq)]
 pub struct PublicKey(ed25519_dalek::VerifyingKey);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -160,12 +164,54 @@ impl DerefMut for PublicKey {
 	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
 }
 
+impl<'de> Deserialize<'de> for PublicKey {
+	fn deserialize<D>(d: D) -> Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>,
+	{
+		//let mut bytes = [0u8; 32];
+		let bytes: [u8; ed25519_dalek::PUBLIC_KEY_LENGTH] = Deserialize::deserialize(d)?;
+		Ok(Self(
+			ed25519_dalek::VerifyingKey::from_bytes(&bytes).unwrap(),
+		))
+	}
+}
+
+impl Serialize for PublicKey {
+	fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+	where
+		S: serde::Serializer,
+	{
+		self.0.to_bytes().serialize(s)
+	}
+}
+
+
 #[cfg(test)]
 mod tests {
+	use ed25519_dalek::{PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 	use rand::RngCore;
 
 	use super::*;
-	use crate::test;
+	use crate::{net::binserde, test};
+
+	#[test]
+	fn test_type_sizes() {
+		let public_key = PublicKey::from_bytes([0u8; PUBLIC_KEY_LENGTH]).unwrap();
+		assert_eq!(
+			binserde::serialized_size(&public_key).unwrap(),
+			PUBLIC_KEY_LENGTH
+		);
+
+		let signature = Signature::from_bytes([0u8; SIGNATURE_LENGTH]);
+		assert_eq!(
+			binserde::serialized_size(&signature).unwrap(),
+			SIGNATURE_LENGTH
+		);
+
+		let dh_public_key = x25519_dalek::PublicKey::from([0u8; 32]);
+		assert_eq!(binserde::serialized_size(&dh_public_key).unwrap(), 32);
+	}
 
 	#[test]
 	fn test_signature() {
