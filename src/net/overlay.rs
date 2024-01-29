@@ -316,7 +316,9 @@ impl MessageWorkToDo for KeepAliveToDo {
 			}
 
 			if bucket.connection.is_none() {
-				connection.set_keep_alive_timeout(Duration::from_secs(120));
+				connection
+					.set_keep_alive_timeout(Duration::from_secs(120))
+					.await;
 				info!(
 					"Keeping connection with {} alive.",
 					connection.peer_address()
@@ -325,7 +327,10 @@ impl MessageWorkToDo for KeepAliveToDo {
 					.node
 					.base
 					.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
-				connection.send_async(response);
+				if let Err(e) = connection.send_async(response) {
+					error!("Unable to send response to keep-alive request: {:?}", e);
+					return None;
+				}
 
 				bucket.connection = Some((
 					connection.their_node_info().clone(),
@@ -339,7 +344,10 @@ impl MessageWorkToDo for KeepAliveToDo {
 			.node
 			.base
 			.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
-		connection.send_async(response);
+		if let Err(e) = connection.send_async(response) {
+			error!("Unable to send response to keep-alive request: {:?}", e);
+			return None;
+		}
 		Some(connection)
 	}
 }

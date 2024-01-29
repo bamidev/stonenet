@@ -351,13 +351,24 @@ impl From<binserde::Error> for Traced<Error> {
 
 #[cfg(test)]
 mod tests {
+	use std::{
+		net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+		sync::{atomic::AtomicBool, Arc},
+	};
+
+	use rand::RngCore;
+	use sstp::ContactOption;
+
+	use crate::{config::*, net::sstp::*, test};
 
 
 	#[ctor::ctor]
 	fn initialize() { env_logger::init(); }
 
-	/*#[tokio::test]
-	async fn test_connection_with_tcp() { test_connection(false).await; }
+	// Disable the TCP test for now because I've disabled the packet processing of
+	// the outgoing connection.
+	//#[tokio::test]
+	//async fn test_connection_with_tcp() { test_connection(false).await; }
 
 	#[tokio::test]
 	async fn test_connection_with_udp() { test_connection(true).await; }
@@ -406,6 +417,10 @@ mod tests {
 			.expect("unable to bind slave"),
 		);
 
+		let mut tiny_message = vec![0u8; 100];
+		rng.fill_bytes(&mut tiny_message);
+		let mut tiny_message2 = vec![0u8; 100];
+		rng.fill_bytes(&mut tiny_message2);
 		let mut small_message = vec![0u8; 1000];
 		rng.fill_bytes(&mut small_message);
 		let mut small_message2 = vec![0u8; 1000];
@@ -415,25 +430,38 @@ mod tests {
 		let mut small_message3 = vec![0u8; 1000];
 		rng.fill_bytes(&mut small_message3);
 
-		let (small1, small2, small3, big) = (small_message.clone(), small_message2.clone(), small_message3.clone(), big_message.clone());
+		let (tiny1, tiny2, small1, small2, small3, big) = (
+			tiny_message.clone(),
+			tiny_message2.clone(),
+			small_message.clone(),
+			small_message2.clone(),
+			small_message3.clone(),
+			big_message.clone(),
+		);
 		master.listen(move |request, _, _| {
+			let tiny_message = tiny1.clone();
+			let tiny_message2 = tiny2.clone();
 			let small_message_clone = small1.clone();
 			let small_message_clone2 = small2.clone();
 			let small_message_clone3 = small3.clone();
 			let big_message_clone = big.clone();
 
 			Box::pin(async move {
+				let tiny = tiny_message;
+				let tiny2 = tiny_message2;
 				let small = small_message_clone;
 				let small2 = small_message_clone2;
 				let small3 = small_message_clone3;
 				let big = big_message_clone;
 
-				if request == small {
+				if request == tiny {
+					Some((tiny2, None))
+				} else if request == small {
 					Some((small2, None))
 				} else if request == big {
 					Some((small3, None))
 				} else {
-					panic!("unknown message");
+					panic!("unknown message: {:?}", request);
 				}
 			})
 		});
@@ -441,11 +469,18 @@ mod tests {
 		let slave2 = slave.clone();
 		slave2.spawn();
 
-		let (mut connection, _) = slave
+		let (mut connection, first_response) = slave
 			.clone()
-			.connect(&ContactOption::new(master_addr, !use_udp), None, None)
+			.connect(
+				&ContactOption::new(master_addr, !use_udp),
+				None,
+				Some(&tiny_message),
+			)
 			.await
 			.unwrap();
+		assert_eq!(first_response, Some(tiny_message2));
+
+		connection.send(small_message).await.unwrap();
 		debug!("Sent small message");
 		let message = connection.receive().await.unwrap();
 		assert_eq!(&message, &small_message2);
@@ -459,7 +494,7 @@ mod tests {
 
 		connection.close().await.unwrap();
 		stop_flag.store(true, Ordering::Relaxed);
-	}*/
+	}
 
 	//#[tokio::test]
 	// Sent and receive a message through a relay
