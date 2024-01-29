@@ -468,6 +468,8 @@ mod tests {
 		master.spawn();
 		let slave2 = slave.clone();
 		slave2.spawn();
+		master.set_next_session_id(100).await;
+		slave.set_next_session_id(200).await;
 
 		let (mut connection, first_response) = slave
 			.clone()

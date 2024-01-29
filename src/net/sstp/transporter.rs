@@ -393,7 +393,7 @@ impl Transporter {
 					let ks = self.key_state_manager.get_duo();
 					if let Some(packet) = result {
 						if let Err(e) = self.inner.process_stray_packet(ks, packet).await {
-							debug!("Error while processing stray packet: {}", e);
+							warn!("Error while processing stray packet: {}", e);
 						}
 					} else {
 						error!("Packet channel with transporter has been disconnected.");
@@ -517,7 +517,7 @@ impl Transporter {
 				tx.send(Ok((sent - MESSAGE_HEADER_SIZE) as u32))
 			};
 			if let Err(_) = r {
-				debug!("Transporter send result oneshot disconnected.");
+				warn!("Transporter send result oneshot disconnected.");
 			}
 		}
 		ok
@@ -816,7 +816,6 @@ impl TransporterInner {
 	}
 
 	async fn process_current_ack_wait_packet(&self, ks: &KeyState, packet: Vec<u8>) -> Result<()> {
-		debug!("CRYPTED_PACKET_TYPE_ACK_WAIT process_current_ack_wait_packet");
 		if self.verify_peer_node_id(&packet) {
 			self.send_missing_ack_packet(ks).await?;
 		}
@@ -884,9 +883,9 @@ impl TransporterInner {
 		&mut self, ks: &KeyState, seq: u16, mut data: Vec<u8>,
 	) -> Result<Option<StdResult<(u16, x25519::PublicKey), Vec<u8>>>> {
 		if !self.decrypt_packet(ks, seq, &mut data) {
-			debug!(
-				"Dropping malformed packet (ks_seq={}, seq={}",
-				ks.sequence, seq
+			warn!(
+				"Dropping malformed packet (ks_seq={}, seq={}, session_id={})",
+				ks.sequence, seq, self.local_session_id
 			);
 		}
 
@@ -942,7 +941,7 @@ impl TransporterInner {
 			self.next_ks_unprocessed_packets
 				.push((packet.seq, packet.data));
 		} else {
-			panic!(
+			warn!(
 				"Dropping packet with invalid ks_seq={} (session_id={})",
 				packet.ks_seq, self.local_session_id
 			);
@@ -964,7 +963,7 @@ impl TransporterInner {
 			self.next_ks_unprocessed_packets
 				.push((packet.seq, packet.data));
 		} else {
-			panic!(
+			warn!(
 				"Dropping packet with invalid ks_seq={} (session_id={})",
 				packet.ks_seq, self.local_session_id
 			);
@@ -1006,14 +1005,16 @@ impl TransporterInner {
 		&mut self, ks: &KeyState, seq: u16, mut data: Vec<u8>,
 	) -> Result<bool> {
 		if !self.decrypt_packet(ks, seq, &mut data) {
-			debug!(
-				"Dropping malformed packet (ks_seq={}, seq={}",
-				ks.sequence, seq
+			warn!(
+				"Dropping malformed packet (ks_seq={}, seq={}, session_id={})",
+				ks.sequence, seq, self.local_session_id
 			);
 		}
 
 		let packet_type = data.drain(0..3).last().unwrap();
 		match packet_type {
+			CRYPTED_PACKET_TYPE_ACK => {}
+			// FIXME: Handle CRYPTED_PACKET_TYPE_ACK_WAIT so that the sending end can finish.
 			CRYPTED_PACKET_TYPE_CLOSE =>
 				if self.process_close_packet(data).is_err() {
 					self.send_close_ack_packet(ks).await?;
@@ -1149,11 +1150,6 @@ impl TransporterInner {
 	async fn process_previous_ack_wait_packet(
 		&self, ks: KeyStateDuo<'_>, packet: Vec<u8>,
 	) -> Result<()> {
-		debug!(
-			"CRYPTED_PACKET_TYPE_ACK_WAIT process_previous_ack_wait_packet ks_seq={} prev={} \
-			 previous_window_size={}",
-			ks.current.sequence, ks.previous.sequence, self.previous_window_size
-		);
 		if self.previous_window_size > 0 {
 			if self.verify_peer_node_id(&packet) {
 				let our_public_key = x25519::PublicKey::from(&ks.current.private_key);
@@ -1250,12 +1246,12 @@ impl TransporterInner {
 		&mut self, ks: KeyStateDuo<'_>, seq: u16, mut packet: Vec<u8>,
 	) -> Result<()> {
 		if seq as usize >= ks.previous.keychain.len() {
-			debug!("Dropping packet with higher sequence than possible for the previous keystate");
+			warn!("Dropping packet with higher sequence than possible for the previous keystate");
 			return Ok(());
 		}
 
 		if !self.decrypt_packet(ks.previous, seq, &mut packet) {
-			debug!("Malformed stray packet found, dropping it...");
+			warn!("Malformed stray packet found, dropping it...");
 			return Ok(());
 		}
 
@@ -1290,7 +1286,7 @@ impl TransporterInner {
 			self.next_ks_unprocessed_packets
 				.push((packet.seq, packet.data));
 		} else {
-			panic!(
+			warn!(
 				"Dropping packet with invalid ks_seq={} (session_id={})",
 				packet.ks_seq, self.local_session_id
 			);
@@ -1300,26 +1296,14 @@ impl TransporterInner {
 
 	fn process_unexpected_packet(&self, ks_seq: u16, seq: u16, packet_type: u8) {
 		if packet_type <= CRYPTED_PACKET_TYPE_CLOSE_ACK {
-			panic!(
+			warn!(
 				"Dropping unexpected packet type {} (ks_seq={}, seq={}, session_id={})",
 				packet_type, ks_seq, seq, self.local_session_id
 			);
-			trace!(
-				"Dropping unexpected packet type {} (ks_seq={}, seq={})",
-				packet_type,
-				ks_seq,
-				seq
-			);
 		} else {
-			#[cfg(debug_assertions)]
-			panic!(
+			warn!(
 				"Dropping unknown packet type {} (ks_seq={}, seq={}, session_id={})",
 				packet_type, ks_seq, seq, self.local_session_id
-			);
-			#[cfg(not(debug_assertions))]
-			debug!(
-				"Dropping unknown packet type {} (ks_seq={}, seq={})",
-				packet_type, ks_seq, seq
 			);
 		}
 	}
@@ -1526,12 +1510,6 @@ impl TransporterInner {
 	}
 
 	async fn send_ack_wait_packet(&self, key_state: &KeyState) -> Result<()> {
-		trace!(
-			"send_ack_wait_packet {} to {} (ks_seq={})",
-			self.node_id,
-			self.peer_node_id,
-			key_state.sequence
-		);
 		self.send_crypted_packet(
 			&key_state,
 			CRYPTED_PACKET_TYPE_ACK_WAIT,
@@ -1657,12 +1635,6 @@ impl TransporterInner {
 	async fn send_success_ack_packet(
 		&self, ks: &KeyState, seq: u16, new_window_size: u16, public_key: &x25519::PublicKey,
 	) -> Result<()> {
-		trace!(
-			"send_success_ack_packet {} to {} (ks_seq={})",
-			self.node_id,
-			self.peer_node_id,
-			ks.sequence
-		);
 		let mut buffer = vec![0u8; 35];
 		buffer[0] = 0; // Success
 		buffer[1..3].copy_from_slice(&new_window_size.to_le_bytes());

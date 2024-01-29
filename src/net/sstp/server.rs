@@ -448,7 +448,7 @@ impl Server {
 			packet_processor: packet_sender,
 			handle: None,
 		});
-		let secret_key = x25519::StaticSecret::random_from_rng(OsRng);
+		let dh_private_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let (local_session_id, session) = self
 			.new_outgoing_session(node_id.map(|id| id.clone()), data, timeout)
 			.await
@@ -459,7 +459,7 @@ impl Server {
 		let sleep_time = min(timeout / 4, MAXIMUM_RETRY_TIMEOUT);
 		let (hello_packet, hello_request_included) = self.new_hello_packet(
 			sender.max_packet_length(),
-			&secret_key,
+			&dh_private_key,
 			local_session_id,
 			request,
 		);
@@ -475,7 +475,7 @@ impl Server {
 
 					if let Some(mut response_buffer) = opt_response.as_mut() {
 						// TODO: Prevent the diffie hellman from being generated twice
-						let key = KeyState::calculate_initial_key(&secret_key, &their_public_key);
+						let key = KeyState::calculate_initial_key(&dh_private_key, &their_public_key);
 						decrypt(local_session_id, 0, 0, &mut response_buffer, &key);
 					}
 
@@ -497,7 +497,7 @@ impl Server {
 						self.node_id.clone(),
 						their_node_id.clone(),
 						timeout,
-						secret_key,
+						dh_private_key,
 						their_public_key,
 						packet_receiver
 					);
@@ -1075,10 +1075,11 @@ impl Server {
 				)
 				.await
 			{
-				// Decrypt the response
+				// Decrypt the response (TODO: Use the initial key for the newly created
+				// transporter)
 				let shared_secret =
-					KeyState::calculate_initial_key(&dh_private_key, &our_dh_public_key);
-				decrypt(encrypt_session_id, 0, 0, &mut response, &shared_secret);
+					KeyState::calculate_initial_key(&dh_private_key, &dh_public_key);
+				encrypt(encrypt_session_id, 0, 0, &mut response, &shared_secret);
 
 				(Some(response), todo)
 			} else {
@@ -1116,7 +1117,7 @@ impl Server {
 
 		// Spawn transporter
 		let transporter = Transporter::new_with_receiver(
-			our_session_id,
+			encrypt_session_id,
 			our_session_id,
 			dest_session_id,
 			sender.clone(),
@@ -1509,6 +1510,8 @@ impl Server {
 		*self.our_contact_info.lock().unwrap() = contact_info;
 	}
 
+	pub async fn set_next_session_id(&self, id: u16) { self.sessions.lock().await.next_id = id; }
+
 	pub fn spawn(self: &Arc<Self>) {
 		self.clone().spawn_garbage_collector();
 
@@ -1805,7 +1808,7 @@ impl Sessions {
 	pub fn next_id(&mut self) -> Option<u16> {
 		let mut i = 0u16;
 		while self.map.contains_key(&self.next_id) {
-			self.next_id += 1;
+			self.next_id = self.next_id.wrapping_add(1);
 			i += 1;
 
 			if i == 0xFFFF {
@@ -1813,7 +1816,7 @@ impl Sessions {
 			}
 		}
 		let new_id = self.next_id;
-		self.next_id += 1;
+		self.next_id = self.next_id.wrapping_add(1);
 		Some(new_id)
 	}
 }
