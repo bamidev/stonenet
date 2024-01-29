@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
 	backtrace::Backtrace,
 	error::Error,
@@ -33,33 +35,38 @@ pub fn err<T, E>(inner: E) -> Result<T, E> {
 }
 
 
-impl<E> Traceable<E> for E
-where
-	E: Error,
-{
+impl<T> Traceable<T> for T {
 	#[cfg(debug_assertions)]
-	fn trace(self) -> Traced<E> { Traced::new(self) }
+	fn trace(self) -> Traced<T> { Traced::new(self) }
 
 	#[cfg(not(debug_assertions))]
-	fn trace(self) -> Traced<E> { self }
+	fn trace(self) -> Traced<T> { self }
 }
 
-#[cfg(debug_assertions)]
-impl<E> Traced<E> {
-	pub fn new(inner: E) -> Self {
+impl<T> Traced<T> {
+	pub fn new(inner: T) -> Self {
 		Self {
 			inner,
 			#[cfg(debug_assertions)]
 			backtrace: Backtrace::force_capture(),
 		}
 	}
+
+	#[cfg(debug_assertions)]
+	pub fn backtrace(&self) -> Option<&Backtrace> { Some(&self.backtrace) }
+
+	#[cfg(not(debug_assertions))]
+	pub fn backtrace(&self) -> Option<&Backtrace> { None }
+
+	#[cfg(debug_assertions)]
+	pub fn unwrap(self) -> (T, Option<Backtrace>) { (self.inner, Some(self.backtrace)) }
+
+	#[cfg(not(debug_assertions))]
+	pub fn unwrap(self) -> (T, Option<Backtrace>) { (self.inner, None) }
 }
 
 #[cfg(debug_assertions)]
-impl<E> From<E> for Traced<E>
-where
-	E: Error,
-{
+impl<E> From<E> for Traced<E> {
 	fn from(other: E) -> Self { Self::new(other) }
 }
 

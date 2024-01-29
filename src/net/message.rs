@@ -43,7 +43,7 @@ pub struct FindNodeRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FindNodeResponse {
-	pub is_super_node: bool,
+	pub is_relay_node: bool,
 	pub connected: Option<NodeContactInfo>,
 	/// A list of other nodes this node knows about. Are less likely to be still
 	/// available.

@@ -1,3 +1,5 @@
+use std::backtrace::Backtrace;
+
 use futures::Stream;
 use tokio::{
 	select,
@@ -9,7 +11,7 @@ use tokio::{
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use super::{server::PACKET_TYPE_CRYPTED, *};
-use crate::trace::Traceable;
+use crate::trace::{Traceable, Traced};
 
 
 const CRYPTED_PACKET_TYPE_DATA: u8 = 0;
@@ -57,6 +59,7 @@ pub struct Transporter {
 }
 
 pub(super) struct TransporterInner {
+	current_backtrace: Option<Backtrace>,
 	socket_sender: Arc<dyn LinkSocketSender>,
 	packet_receiver: UnboundedReceiver<CryptedPacket>,
 
@@ -92,7 +95,7 @@ pub(super) struct TransporterInner {
 
 #[derive(Clone)]
 pub struct TransporterHandle {
-	sender: UnboundedSender<TransporterTask>,
+	sender: UnboundedSender<Traced<TransporterTask>>,
 	is_connection_based: bool,
 	alive_flag: Arc<AtomicBool>,
 }
@@ -362,7 +365,7 @@ impl Transporter {
 		true
 	}
 
-	async fn run(mut self, mut receiver: UnboundedReceiver<TransporterTask>) {
+	async fn run(mut self, mut receiver: UnboundedReceiver<Traced<TransporterTask>>) {
 		// Keep executing tasks until either a close packet has been received, or the
 		// task channel has been closed, in which case we should close the connection
 		// ourselves.
@@ -371,7 +374,9 @@ impl Transporter {
 		while !self.inner.close_received {
 			select! {
 				result = receiver.recv() => {
-					if let Some(task) = result {
+					if let Some(traced_task) = result {
+						let task;
+						(task, self.inner.current_backtrace) = traced_task.unwrap();
 						trace!("Running task {} for {}", &task, self.inner.node_id);
 						let success = match task {
 							TransporterTask::Receive(size_sender, packet_sender, wait_time) => self.receive(size_sender, packet_sender, wait_time.unwrap_or(self.inner.timeout)).await,
@@ -404,6 +409,9 @@ impl Transporter {
 		}
 
 		// The closing sequence
+		if self.inner.local_session_id == 3 {
+			warn!("Closing sequence session 3: {}", self.inner.close_received);
+		}
 		self.alive_flag.store(false, Ordering::Relaxed);
 		let ks = self.key_state_manager.get_duo();
 		let result = if self.inner.close_received {
@@ -433,6 +441,7 @@ impl Transporter {
 	async fn send(
 		&mut self, message: Vec<u8>, result_sender: Option<oneshot::Sender<Result<u32>>>,
 	) -> bool {
+		debug_assert!(message.len() > 0, "empty message");
 		let mut buffer = Vec::with_capacity(MESSAGE_HEADER_SIZE + message.len());
 		buffer.extend((message.len() as u32).to_le_bytes()); // The message header
 		buffer.extend(message);
@@ -699,6 +708,7 @@ impl TransporterInner {
 	) -> Self {
 		Self {
 			close_received: false,
+			current_backtrace: None,
 			current_ks_unprocessed_first_packet: None,
 			current_ks_unprocessed_packets: HashMap::new(),
 			encrypt_session_id,
@@ -942,8 +952,12 @@ impl TransporterInner {
 				.push((packet.seq, packet.data));
 		} else {
 			warn!(
-				"Dropping packet with invalid ks_seq={} (session_id={})",
-				packet.ks_seq, self.local_session_id
+				"Dropping packet with invalid ks_seq={} (current={}, session_id={})2 {} {}",
+				packet.ks_seq,
+				ks.current.sequence,
+				self.local_session_id,
+				self.node_id,
+				self.peer_node_id
 			);
 		}
 		Ok(None)
@@ -964,7 +978,7 @@ impl TransporterInner {
 				.push((packet.seq, packet.data));
 		} else {
 			warn!(
-				"Dropping packet with invalid ks_seq={} (session_id={})",
+				"Dropping packet with invalid ks_seq={} (session_id={})3",
 				packet.ks_seq, self.local_session_id
 			);
 		}
@@ -992,9 +1006,12 @@ impl TransporterInner {
 		} else if packet.ks_seq == ks.previous.sequence {
 			self.process_closing_sequence_packet_for_ks(ks.previous, packet.seq, packet.data)
 				.await
+		} else if packet.ks_seq == ks.current.sequence.wrapping_add(1) {
+			trace!("Dropping packet after closing sequence.");
+			Ok(false)
 		} else {
 			warn!(
-				"Dropping packet with invalid ks_seq={} (session_id={})",
+				"Dropping packet with invalid ks_seq={} (session_id={})4",
 				packet.ks_seq, self.local_session_id
 			);
 			Ok(false)
@@ -1287,7 +1304,7 @@ impl TransporterInner {
 				.push((packet.seq, packet.data));
 		} else {
 			warn!(
-				"Dropping packet with invalid ks_seq={} (session_id={})",
+				"Dropping packet with invalid ks_seq={} (session_id={})1",
 				packet.ks_seq, self.local_session_id
 			);
 		}
@@ -1509,12 +1526,15 @@ impl TransporterInner {
 			.await
 	}
 
-	async fn send_ack_wait_packet(&self, key_state: &KeyState) -> Result<()> {
+	async fn send_ack_wait_packet(&self, ks: &KeyState) -> Result<()> {
+		//panic!("send_ack_wait_packet[{}] {} {:?}", ks.sequence,
+		// self.next_ks_unprocessed_packets.len(), self.current_backtrace);
 		self.send_crypted_packet(
-			&key_state,
+			&ks,
 			CRYPTED_PACKET_TYPE_ACK_WAIT,
 			0, /* Send with seq 0 because we don't know what packets the other side received,
-			    * however, we should use self.previous_window_size */
+			    * however, we should keep track of what the other side already received as
+			    * mentioned in their last ack packet. */
 			self.node_id.as_bytes(),
 		)
 		.await
@@ -1743,7 +1763,7 @@ impl TransporterHandle {
 	/// Initiate the closing sequence on the connection
 	pub async fn close(&mut self) -> Option<Result<()>> {
 		let (tx, rx) = oneshot::channel();
-		self.sender.send(TransporterTask::Close(tx)).ok()?;
+		self.sender.send(TransporterTask::Close(tx).trace()).ok()?;
 		rx.await.ok()
 	}
 
@@ -1766,7 +1786,7 @@ impl TransporterHandle {
 		let (size_tx, size_rx) = oneshot::channel();
 		let (tx, rx) = unbounded_channel::<Result<Vec<u8>>>();
 		self.sender
-			.send(TransporterTask::Receive(size_tx, tx, None))
+			.send(TransporterTask::Receive(size_tx, tx, None).trace())
 			.ok()?;
 		Some((size_rx.await.ok(), UnboundedReceiverStream::new(rx)))
 	}
@@ -1780,7 +1800,7 @@ impl TransporterHandle {
 		let (size_tx, size_rx) = oneshot::channel();
 		let (tx, rx) = unbounded_channel::<Result<Vec<u8>>>();
 		self.sender
-			.send(TransporterTask::Receive(size_tx, tx, Some(wait_time)))
+			.send(TransporterTask::Receive(size_tx, tx, Some(wait_time)).trace())
 			.ok()?;
 		Some((size_rx.await.ok(), UnboundedReceiverStream::new(rx)))
 	}
@@ -1788,14 +1808,20 @@ impl TransporterHandle {
 	/// Sends the provided message on the connection.
 	/// Blocks if it is still sending or receiving something.
 	pub async fn send(&mut self, message: Vec<u8>) -> Option<Result<()>> {
+		debug_assert!(message.len() > 0, "empty message");
 		let (tx, rx) = oneshot::channel();
-		self.sender.send(TransporterTask::Send(message, tx)).ok()?;
+		self.sender
+			.send(TransporterTask::Send(message, tx).trace())
+			.ok()?;
 		let _ = rx.await.ok()?;
 		Some(Ok(()))
 	}
 
 	pub fn send_async(&self, message: Vec<u8>) -> Option<()> {
-		self.sender.send(TransporterTask::SendAsync(message)).ok()?;
+		debug_assert!(message.len() > 0, "empty message");
+		self.sender
+			.send(TransporterTask::SendAsync(message).trace())
+			.ok()?;
 		Some(())
 	}
 }

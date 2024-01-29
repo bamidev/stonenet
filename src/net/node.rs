@@ -95,20 +95,40 @@ pub trait NodeInterface {
 	async fn close(&self);
 
 	async fn exchange(
-		&self, connection: &mut Connection, message_type: u8, request: &[u8],
-	) -> sstp::Result<Vec<u8>>;
+		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
+	) -> sstp::Result<Vec<u8>> {
+		let real_buffer = self.prepare(message_type, buffer);
+		let request_message_type = real_buffer[0];
+		connection.send(real_buffer).await?;
+
+		// Receive response
+		let mut response = connection.receive().await?;
+		if response[0] != (request_message_type + 1) {
+			return Err(sstp::Error::InvalidResponseMessageType((
+				response[0],
+				request_message_type + 1,
+			))
+			.into());
+		}
+
+		response.remove(0);
+		return Ok(response);
+	}
 
 	async fn find_value(&self, value_type: u8, id: &IdType) -> db::Result<Option<Vec<u8>>>;
 
 	fn overlay_node(&self) -> Arc<OverlayNode>;
 
-	async fn send(
-		&self, connection: &mut Connection, message_type: u8, request: &[u8],
-	) -> sstp::Result<()>;
+	fn prepare(&self, message_type: u8, request: &[u8]) -> Vec<u8>;
 
-	async fn respond(
-		&self, connection: &mut Connection, message_type: u8, message: &[u8],
-	) -> sstp::Result<()>;
+	async fn send(
+		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
+	) -> sstp::Result<()> {
+		let real_buffer = self.prepare(message_type, buffer);
+
+		// Send request
+		connection.send(real_buffer).await
+	}
 }
 
 pub fn differs_at_bit(a: &IdType, b: &IdType) -> Option<u8> { a.differs_at_bit(b) }
@@ -344,7 +364,9 @@ where
 		&self, target: &NodeContactInfo, message_type: u8, buffer: &[u8],
 	) -> Option<Vec<u8>> {
 		// If no existing connection already existed, open one
-		let opt_request = self.first_request(buffer);
+		let first_buffer = self.interface.prepare(message_type, buffer);
+		let opt_request = self.first_request(&first_buffer);
+
 		let (connection, opt_response) = self.select_direct_connection(target, opt_request).await?;
 		self.handle_exchange_result(
 			connection,
@@ -361,7 +383,8 @@ where
 		&self, node_id: &IdType, target: &ContactOption, message_type: u8, buffer: &[u8],
 	) -> Option<Vec<u8>> {
 		// TODO: Use an existing connection if possible.
-		let opt_request = self.first_request(buffer);
+		let first_buffer = self.interface.prepare(message_type, buffer);
+		let opt_request = self.first_request(&first_buffer);
 		let (connection, opt_response) = self.connect(target, Some(node_id), opt_request).await?;
 		self.handle_exchange_result(
 			connection,
@@ -708,7 +731,7 @@ where
 							debug!("Disregarding finger {}", &candidate_contact.node_id);
 						}
 						Some(response) => {
-							if response.is_super_node
+							if response.is_relay_node
 								&& strategy.method == ContactStrategyMethod::Direct
 							{
 								self.overlay_node()
@@ -820,17 +843,17 @@ where
 	) -> Option<T> {
 		match result {
 			Err(e) => {
-				match *e {
+				match &*e {
 					sstp::Error::Timeout(_) => {
 						warn!("Problematic node {}: {:?}", node_info, e);
 						self.mark_node_problematic(&node_info.node_id).await;
 					}
 					_ =>
 						if !e.forgivable() {
-							warn!("Problematic node {}: {}", node_info, e);
+							warn!("Problematic node {}: {:?}", node_info, e);
 							self.reject_node(&node_info.node_id).await;
 						} else {
-							debug!("Connection issue with node {}: {}", node_info, e);
+							debug!("Connection issue with node {}: {:?}", node_info, e);
 						},
 				}
 				None
@@ -1016,7 +1039,7 @@ where
 		// Collect all fingers we have
 		let (connected, fingers) = self.find_nearest_contacts(&request.node_id).await;
 		let response = FindNodeResponse {
-			is_super_node: self.overlay_node().is_relay_node,
+			is_relay_node: self.overlay_node().is_relay_node,
 			connected,
 			fingers,
 		};
@@ -1112,11 +1135,11 @@ where
 		};
 
 		// Start response with a FindNodeResponse if not found or expected anyway
-		let b = if force_including_fingers {
+		let mut b = if force_including_fingers {
 			// Collect all fingers we have
 			let (connection, fingers) = self.find_nearest_contacts(&request.id).await;
 			let response = FindNodeResponse {
-				is_super_node: self.overlay_node().is_relay_node,
+				is_relay_node: self.overlay_node().is_relay_node,
 				connected: connection,
 				fingers,
 			};
@@ -1132,7 +1155,7 @@ where
 			} else {
 				let (connection, fingers) = self.find_nearest_contacts(&request.id).await;
 				let response = FindNodeResponse {
-					is_super_node: self.overlay_node().is_relay_node,
+					is_relay_node: self.overlay_node().is_relay_node,
 					connected: connection,
 					fingers,
 				};
@@ -1141,13 +1164,15 @@ where
 			}
 			buffer
 		};
-		self.simple_result(NETWORK_MESSAGE_TYPE_FIND_VALUE_RESPONSE, &b)
+
+		b.insert(0, NETWORK_MESSAGE_TYPE_FIND_VALUE_RESPONSE);
+		Some((b, None))
 	}
 
 	async fn process_ping_request(&self, addr: &SocketAddr) -> MessageProcessorResult {
 		debug!("Received ping request from {}", addr);
 		let response = PingResponse {};
-		self.simple_result(NETWORK_MESSAGE_TYPE_PING_REQUEST, &response)
+		self.simple_result(NETWORK_MESSAGE_TYPE_PING_RESPONSE, &response)
 	}
 
 	pub(super) async fn process_request(
@@ -1359,7 +1384,7 @@ where
 						Some((possible_value, possible_contacts)) => {
 							// If node returned new fingers, append them to our list
 							if let Some(find_node_response) = possible_contacts {
-								if find_node_response.is_super_node
+								if find_node_response.is_relay_node
 									&& strategy.method == ContactStrategyMethod::Direct
 								{
 									self.node

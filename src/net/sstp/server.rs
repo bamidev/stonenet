@@ -291,7 +291,7 @@ impl Server {
 		}
 
 		for done_id in done_ids {
-			trace!("Closed session {}.", done_id);
+			trace!("Closed session during cleanup routine {}.", done_id);
 			sessions.map.remove(&done_id).unwrap();
 		}
 	}
@@ -512,6 +512,7 @@ impl Server {
 					}
 
 					//self.send_hello_ack_ack_packet(target, dest_session_id).await?;
+					info!("Connecting {} to {} ({}, {})", self.node_id, their_node_id, local_session_id, dest_session_id);
 
 					return Ok((Box::new(Connection {
 						transporter: transporter_handle,
@@ -648,7 +649,10 @@ impl Server {
 	) -> Result<(u16, bool, Arc<Mutex<SessionData>>)> {
 		// Check if session doesn't already exists
 		let mut sessions = self.sessions.lock().await;
-		match sessions.find_their_session(dest_session_id).await {
+		match sessions
+			.find_their_session(&their_node_id, dest_session_id)
+			.await
+		{
 			None => {}
 			// If it exists, return None
 			Some((our_session_id, session_data)) =>
@@ -1079,7 +1083,7 @@ impl Server {
 				// transporter)
 				let shared_secret =
 					KeyState::calculate_initial_key(&dh_private_key, &dh_public_key);
-				encrypt(encrypt_session_id, 0, 0, &mut response, &shared_secret);
+				decrypt(encrypt_session_id, 0, 0, &mut response, &shared_secret);
 
 				(Some(response), todo)
 			} else {
@@ -1779,13 +1783,15 @@ impl SessionData {
 
 impl Sessions {
 	pub async fn find_their_session(
-		&self, their_session_id: u16,
+		&self, their_node_id: &IdType, their_session_id: u16,
 	) -> Option<(u16, Arc<Mutex<SessionData>>)> {
 		for (our_session_id, session_data_mutex) in self.map.iter() {
 			let session_data = session_data_mutex.lock().await;
 			match &session_data.transport_data {
 				SessionTransportData::Direct(data) => {
-					if data.dest_session_id.is_some()
+					if session_data.their_node_id.is_some()
+						&& session_data.their_node_id.as_ref().unwrap() == their_node_id
+						&& data.dest_session_id.is_some()
 						&& data.dest_session_id.unwrap() == their_session_id
 					{
 						return Some((*our_session_id, session_data_mutex.clone()));
@@ -1816,6 +1822,7 @@ impl Sessions {
 			}
 		}
 		let new_id = self.next_id;
+		debug!("NEXT ID: {}", new_id);
 		self.next_id = self.next_id.wrapping_add(1);
 		Some(new_id)
 	}
@@ -2289,11 +2296,13 @@ async fn handle_connection_loop(server: Arc<Server>, connection: Box<Connection>
 				)
 				.await
 				{
-					match connection.send(response).await {
-						Ok(_) => {}
-						Err(e) => {
-							error!("Unable to respond on connection: {:?}", e);
-							return;
+					if response.len() > 0 {
+						match connection.send(response).await {
+							Ok(_) => {}
+							Err(e) => {
+								warn!("Unable to respond to request on connection: {:?}", e);
+								return;
+							}
 						}
 					}
 

@@ -22,11 +22,11 @@ use crate::{
 
 
 pub const ACTOR_MESSAGE_TYPE_HEAD_REQUEST: u8 = 64;
-pub const ACTOR_MESSAGE_TYPE_HEAD_RESPONSE: u8 = 65;
+pub const ACTOR_MESSAGE_TYPE_HEAD_RESPONSE: u8 = 65 | 0x80;
 pub const ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST: u8 = 66;
-pub const ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE: u8 = 67;
+pub const ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE: u8 = 67 | 0x80;
 pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST: u8 = 70;
-pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE: u8 = 71;
+pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE: u8 = 71 | 0x80;
 
 
 pub struct ActorNode {
@@ -94,28 +94,6 @@ impl ActorInterface {
 impl NodeInterface for ActorInterface {
 	async fn close(&self) {}
 
-	async fn exchange(
-		&self, connection: &mut Connection, mut message_type: u8, buffer: &[u8],
-	) -> sstp::Result<Vec<u8>> {
-		message_type |= 0x80;
-		let mut real_buffer = Vec::with_capacity(33 + buffer.len());
-		real_buffer.push(message_type);
-		real_buffer.extend(self.actor_id.as_bytes());
-		real_buffer.extend(buffer);
-		connection.send(real_buffer).await?;
-
-		// Receive response
-		let mut response = connection.receive().await?;
-		if response[0] != (message_type + 1) {
-			return Err(
-				sstp::Error::InvalidResponseMessageType((response[0], message_type + 1)).into(),
-			);
-		}
-
-		response.remove(0);
-		return Ok(response);
-	}
-
 	async fn find_value(&self, value_type: u8, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		const VALUE_TYPE_BLOCK: u8 = ValueType::Block as _;
 		const VALUE_TYPE_FILE: u8 = ValueType::File as _;
@@ -135,22 +113,12 @@ impl NodeInterface for ActorInterface {
 
 	fn overlay_node(&self) -> Arc<OverlayNode> { self.overlay_node.clone() }
 
-	async fn send(
-		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
-	) -> sstp::Result<()> {
-		let mut real_buffer = Vec::with_capacity(1 + buffer.len());
-		real_buffer.push(message_type | 0x80);
-		real_buffer.extend(buffer);
-
-		// Send request
-		connection.send(real_buffer).await
-	}
-
-	async fn respond(
-		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
-	) -> sstp::Result<()> {
-		self.send(connection, message_type, buffer).await?;
-		Ok(())
+	fn prepare(&self, message_type: u8, buffer: &[u8]) -> Vec<u8> {
+		let mut new_buffer = Vec::with_capacity(1 + 32 + buffer.len());
+		new_buffer.push(message_type | 0x80);
+		new_buffer.extend(self.actor_id.as_bytes());
+		new_buffer.extend(buffer);
+		new_buffer
 	}
 }
 
@@ -636,7 +604,7 @@ impl ActorNode {
 		};
 		let fingers = self.base.find_nearest_fingers(id).await;
 		let response = FindNodeResponse {
-			is_super_node: self.base.interface.overlay_node().is_relay_node,
+			is_relay_node: self.base.interface.overlay_node().is_relay_node,
 			connected: connection,
 			fingers,
 		};

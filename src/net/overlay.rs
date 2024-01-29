@@ -169,28 +169,21 @@ impl NodeInterface for OverlayInterface {
 			.clone()
 	}
 
+	fn prepare(&self, message_type: u8, buffer: &[u8]) -> Vec<u8> {
+		let mut new_buffer = Vec::with_capacity(1 + buffer.len());
+		new_buffer.push(message_type);
+		new_buffer.extend(buffer);
+		new_buffer
+	}
+
 	async fn send(
 		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
 	) -> sstp::Result<()> {
 		*self.last_message_time.lock().unwrap() = SystemTime::now();
 
 		// Send request
-		let mut real_buffer = Vec::with_capacity(1 + buffer.len());
-		real_buffer.push(message_type);
-		real_buffer.extend(buffer);
+		let real_buffer = self.prepare(message_type, buffer);
 		connection.send(real_buffer).await
-	}
-
-	async fn respond(
-		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
-	) -> sstp::Result<()> {
-		trace!(
-			"Responding with message type {} to {}",
-			message_type,
-			connection.peer_address()
-		);
-		self.send(connection, message_type, buffer).await?;
-		Ok(())
 	}
 }
 
@@ -1033,14 +1026,14 @@ impl OverlayNode {
 	fn maintain_keep_alive_connection(self: &Arc<Self>, connection: Box<Connection>) {
 		let alive_flag = connection.alive_flag();
 		self.base.socket.handle_connection(connection);
-		while alive_flag.load(Ordering::Relaxed) == false {
-			sleep(Duration::from_secs(1));
-		}
 
 		let this = self.clone();
 		spawn(async move {
+			while alive_flag.load(Ordering::Relaxed) == false {
+				sleep(Duration::from_secs(1)).await;
+			}
 			while alive_flag.load(Ordering::Relaxed) == true {
-				sleep(Duration::from_secs(10));
+				sleep(Duration::from_secs(10)).await;
 			}
 
 			// After the connection has closed, try to find a new one.
@@ -1411,7 +1404,7 @@ impl OverlayNode {
 		let (connected, fingers) = self.base.find_nearest_contacts(&request.node_id).await;
 		let mut response = FindActorResponse {
 			contacts: FindNodeResponse {
-				is_super_node: self.is_relay_node,
+				is_relay_node: self.is_relay_node,
 				connected,
 				fingers,
 			},
@@ -1551,7 +1544,7 @@ impl OverlayNode {
 			OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST =>
 				return self.process_keep_alive_request(buffer, node_info).await,
 			other_id => {
-				error!(
+				warn!(
 					"Unknown overlay message type ID received from {}: {}",
 					addr, other_id
 				);
@@ -1564,7 +1557,7 @@ impl OverlayNode {
 		self: &Arc<Self>, actor_node: &Arc<ActorNode>, message_type: u8, buffer: &[u8],
 		addr: &SocketAddr, node_info: &NodeContactInfo,
 	) -> MessageProcessorResult {
-		let (connection2, processed) = actor_node
+		let (result, processed) = actor_node
 			.base
 			.process_request(
 				self.clone(),
@@ -1575,14 +1568,21 @@ impl OverlayNode {
 				Some(actor_node.actor_id()),
 			)
 			.await;
-		debug_assert!(processed || connection2.is_some());
+		if !processed {
+			debug_assert!(result.is_none());
+		}
 
 		if !processed {
 			actor_node
 				.process_request(message_type, buffer, addr, node_info)
 				.await
 		} else {
-			connection2
+			result.map(|(mut b, t)| {
+				if b.len() > 0 {
+					b[0] |= 0x80;
+				}
+				(b, t)
+			})
 		}
 	}
 
