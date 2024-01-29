@@ -2,6 +2,7 @@ use std::{
 	boxed::Box,
 	collections::HashMap,
 	net::SocketAddr,
+	result::Result as StdResult,
 	sync::{atomic::*, Arc, Mutex as StdMutex, OnceLock},
 };
 
@@ -16,7 +17,7 @@ use super::{
 	binserde,
 	message::*,
 	node::*,
-	sstp::{self, MessageProcessorResult, MessageWorkToDo, SocketBindError},
+	sstp::{self, MessageProcessorResult, MessageWorkToDo, Result, SocketBindError},
 };
 use crate::{
 	common::*,
@@ -98,11 +99,6 @@ impl NodeInterface for OverlayInterface {
 	async fn exchange(
 		&self, connection: &mut Connection, message_type: u8, buffer: &[u8],
 	) -> sstp::Result<Vec<u8>> {
-		trace!(
-			"Sending request with message type {} to {}",
-			message_type,
-			connection.peer_address()
-		);
 		self.send(connection, message_type, buffer).await?;
 
 		// Receive response
@@ -295,7 +291,7 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 
 #[async_trait]
 impl MessageWorkToDo for KeepAliveToDo {
-	async fn run(&mut self, mut connection: Box<Connection>) -> Option<Box<Connection>> {
+	async fn run(&mut self, mut connection: Box<Connection>) -> Result<Option<Box<Connection>>> {
 		let response = KeepAliveResponse { ok: false };
 
 		if let Some(bucket_index) = self.node.base.differs_at_bit(&self.node_id) {
@@ -320,16 +316,13 @@ impl MessageWorkToDo for KeepAliveToDo {
 					.node
 					.base
 					.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
-				if let Err(e) = connection.send_async(response) {
-					error!("Unable to send response to keep-alive request: {:?}", e);
-					return None;
-				}
+				connection.send_async(response)?;
 
 				bucket.connection = Some((
 					connection.their_node_info().clone(),
 					Arc::new(Mutex::new(connection)),
 				));
-				return None;
+				return Ok(None);
 			}
 		}
 
@@ -337,11 +330,8 @@ impl MessageWorkToDo for KeepAliveToDo {
 			.node
 			.base
 			.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
-		if let Err(e) = connection.send_async(response) {
-			error!("Unable to send response to keep-alive request: {:?}", e);
-			return None;
-		}
-		Some(connection)
+		connection.send_async(response)?;
+		Ok(Some(connection))
 	}
 }
 
@@ -351,7 +341,7 @@ impl OverlayNode {
 	pub async fn start(
 		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: PrivateKey,
 		db: Database,
-	) -> Result<Arc<Self>, SocketBindError> {
+	) -> StdResult<Arc<Self>, SocketBindError> {
 		let bootstrap_nodes = resolve_bootstrap_addresses(&config.bootstrap_nodes, true, true);
 
 		let socket = sstp::Server::bind(
@@ -386,10 +376,21 @@ impl OverlayNode {
 		debug_assert!(this.base.interface.node.set(Some(this.clone())).is_ok());
 
 		let this2 = this.clone();
-		socket.listen(move |message, addr, node_info| {
-			let this3 = this2.clone();
-			Box::pin(async move { process_request_message(this3, message, addr, node_info).await })
-		});
+		let this3 = this.clone();
+		socket.listen(
+			move |message, addr, node_info| {
+				let this4 = this2.clone();
+				Box::pin(
+					async move { process_request_message(this4, message, addr, node_info).await },
+				)
+			},
+			move |result, node_info| {
+				let this4 = this3.clone();
+				Box::pin(async move {
+					this4.base.handle_connection_issue(result, &node_info).await;
+				})
+			},
+		);
 		socket.spawn();
 
 		Ok(this)
@@ -1025,7 +1026,7 @@ impl OverlayNode {
 
 	fn maintain_keep_alive_connection(self: &Arc<Self>, connection: Box<Connection>) {
 		let alive_flag = connection.alive_flag();
-		self.base.socket.handle_connection(connection);
+		self.base.socket.spawn_connection(connection);
 
 		let this = self.clone();
 		spawn(async move {
@@ -1119,7 +1120,7 @@ impl OverlayNode {
 				.await
 			{
 				if success {
-					this.base.socket.handle_connection(connection);
+					this.base.socket.spawn_connection(connection);
 					return true;
 				} else {
 					debug!("Keep alive connection was denied.");
@@ -1577,12 +1578,23 @@ impl OverlayNode {
 				.process_request(message_type, buffer, addr, node_info)
 				.await
 		} else {
-			result.map(|(mut b, t)| {
-				if b.len() > 0 {
-					b[0] |= 0x80;
+			// FIXME: Remember the actor node somewhere else.
+			// The following marks the node helpful or problematic based on whether a
+			// response is decided to be made. However, sometimes a respond isn't made
+			// because we had an internal error, like unexpected database errors.
+			if let Some(mut x) = result {
+				actor_node.base.mark_node_helpful(node_info).await;
+				if x.0.len() > 0 {
+					x.0[0] |= 0x80;
 				}
-				(b, t)
-			})
+				Some(x)
+			} else {
+				actor_node
+					.base
+					.mark_node_problematic(&node_info.node_id)
+					.await;
+				None
+			}
 		}
 	}
 
@@ -1946,7 +1958,10 @@ pub(super) async fn process_request_message(
 		let actor_id: IdType = binserde::deserialize(&buffer[1..33]).unwrap();
 		let actor_nodes = overlay_node.base.interface.actor_nodes.lock().await;
 		let actor_node = match actor_nodes.get(&actor_id) {
-			None => return None, /* Don't respond to requests for networks we are not connected */
+			None => {
+				warn!("Received actor request for actor network we've not joined.");
+				return None; /* Don't respond to requests for networks we are not connected */
+			}
 			// to.
 			Some(n) => n.clone(),
 		};

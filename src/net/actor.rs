@@ -1,4 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+	result::Result as StdResult,
+	time::{SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use futures::future::join_all;
@@ -10,7 +13,7 @@ use super::{
 	message::*,
 	node::*,
 	overlay::OverlayNode,
-	sstp::{self, MessageProcessorResult, MessageWorkToDo},
+	sstp::{self, MessageProcessorResult, MessageWorkToDo, Result},
 	*,
 };
 use crate::{
@@ -608,7 +611,7 @@ impl ActorNode {
 			connected: connection,
 			fingers,
 		};
-		let result: Result<(), FindNodeResponse> = Err(response);
+		let result: StdResult<(), FindNodeResponse> = Err(response);
 		binserde::serialize(&result).unwrap()
 	}
 
@@ -649,10 +652,8 @@ impl ActorNode {
 			ACTOR_MESSAGE_TYPE_HEAD_REQUEST => self.process_head_request(buffer).await,
 			ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST =>
 				self.process_get_profile_request(buffer).await,
-			ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST => {
-				self.process_publish_object_request(buffer, addr).await;
-				return None;
-			}
+			ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST =>
+				self.process_publish_object_request(buffer, addr).await,
 			other_id => {
 				error!(
 					"Unknown actor message type ID received from {}: {}",
@@ -933,7 +934,7 @@ impl ActorNode {
 				}
 				// Keep the connection open so that the other side can continue to make
 				// requests to us, like downloading any data
-				self.base.socket.handle_connection(connection);
+				self.base.socket.handle_connection(connection).await;
 			}
 			return;
 		}
@@ -1315,7 +1316,7 @@ impl PublishObjectToDo {
 
 #[async_trait]
 impl MessageWorkToDo for PublishObjectToDo {
-	async fn run(&mut self, mut connection: Box<Connection>) -> Option<Box<Connection>> {
+	async fn run(&mut self, mut connection: Box<Connection>) -> Result<Option<Box<Connection>>> {
 		let public_key = &self.node.base.interface.actor_info.public_key;
 		let object_result = self
 			.receive_object(&mut connection, &self.hash, public_key)
@@ -1335,10 +1336,10 @@ impl MessageWorkToDo for PublishObjectToDo {
 				.await
 			{
 				error!("Database error while processing new object: {}", e);
-				return None;
+				return Ok(None);
 			}
 		}
 
-		Some(connection)
+		Ok(Some(connection))
 	}
 }

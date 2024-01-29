@@ -412,7 +412,6 @@ impl Transporter {
 		if self.inner.local_session_id == 3 {
 			warn!("Closing sequence session 3: {}", self.inner.close_received);
 		}
-		self.alive_flag.store(false, Ordering::Relaxed);
 		let ks = self.key_state_manager.get_duo();
 		let result = if self.inner.close_received {
 			self.inner.acknowledge_close(ks).await
@@ -436,6 +435,9 @@ impl Transporter {
 				warn!("Transporter handle has been closed before the closing sequence finished.");
 			}
 		}
+
+		// Once we're done, we can let the garbage collector clean up our session ID.
+		self.alive_flag.store(false, Ordering::Relaxed);
 	}
 
 	async fn send(
@@ -1527,8 +1529,6 @@ impl TransporterInner {
 	}
 
 	async fn send_ack_wait_packet(&self, ks: &KeyState) -> Result<()> {
-		//panic!("send_ack_wait_packet[{}] {} {:?}", ks.sequence,
-		// self.next_ks_unprocessed_packets.len(), self.current_backtrace);
 		self.send_crypted_packet(
 			&ks,
 			CRYPTED_PACKET_TYPE_ACK_WAIT,
@@ -1776,6 +1776,8 @@ impl TransporterHandle {
 			is_connection_based: false,
 		}
 	}
+
+	pub fn is_alive(&self) -> bool { self.alive_flag.load(Ordering::Relaxed) }
 
 	pub fn is_connection_based(&self) -> bool { self.is_connection_based }
 

@@ -134,7 +134,7 @@ pub enum Error {
 pub trait MessageWorkToDo: Send + Sync {
 	/// Should return whether or not it will take ownership of the
 	/// `connection_mutex` after the function returns.
-	async fn run(&mut self, connection: Box<Connection>) -> Option<Box<Connection>>;
+	async fn run(&mut self, connection: Box<Connection>) -> Result<Option<Box<Connection>>>;
 }
 
 pub type OnPacket =
@@ -438,33 +438,40 @@ mod tests {
 			small_message3.clone(),
 			big_message.clone(),
 		);
-		master.listen(move |request, _, _| {
-			let tiny_message = tiny1.clone();
-			let tiny_message2 = tiny2.clone();
-			let small_message_clone = small1.clone();
-			let small_message_clone2 = small2.clone();
-			let small_message_clone3 = small3.clone();
-			let big_message_clone = big.clone();
+		master.listen(
+			move |request, _, _| {
+				let tiny_message = tiny1.clone();
+				let tiny_message2 = tiny2.clone();
+				let small_message_clone = small1.clone();
+				let small_message_clone2 = small2.clone();
+				let small_message_clone3 = small3.clone();
+				let big_message_clone = big.clone();
 
-			Box::pin(async move {
-				let tiny = tiny_message;
-				let tiny2 = tiny_message2;
-				let small = small_message_clone;
-				let small2 = small_message_clone2;
-				let small3 = small_message_clone3;
-				let big = big_message_clone;
+				Box::pin(async move {
+					let tiny = tiny_message;
+					let tiny2 = tiny_message2;
+					let small = small_message_clone;
+					let small2 = small_message_clone2;
+					let small3 = small_message_clone3;
+					let big = big_message_clone;
 
-				if request == tiny {
-					Some((tiny2, None))
-				} else if request == small {
-					Some((small2, None))
-				} else if request == big {
-					Some((small3, None))
-				} else {
-					panic!("unknown message: {:?}", request);
-				}
-			})
-		});
+					if request == tiny {
+						Some((tiny2, None))
+					} else if request == small {
+						Some((small2, None))
+					} else if request == big {
+						Some((small3, None))
+					} else {
+						panic!("unknown message for: {:?}", request);
+					}
+				})
+			},
+			|result, _| {
+				Box::pin(async move {
+					result.expect("message error");
+				})
+			},
+		);
 		master.spawn();
 		let slave2 = slave.clone();
 		slave2.spawn();

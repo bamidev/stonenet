@@ -718,7 +718,7 @@ where
 				.connect(&strategy.contact, Some(&candidate_contact.node_id), None)
 				.await
 			{
-				None => debug!(
+				None => info!(
 					"Disregarding finger {}, unable to connect...",
 					&candidate_contact.node_id
 				),
@@ -728,7 +728,7 @@ where
 						.await
 					{
 						None => {
-							debug!("Disregarding finger {}", &candidate_contact.node_id);
+							info!("Disregarding finger {}", &candidate_contact.node_id);
 						}
 						Some(response) => {
 							if response.is_relay_node
@@ -853,7 +853,7 @@ where
 							warn!("Problematic node {}: {:?}", node_info, e);
 							self.reject_node(&node_info.node_id).await;
 						} else {
-							debug!("Connection issue with node {}: {:?}", node_info, e);
+							warn!("Connection issue with node {}: {:?}", node_info, e);
 						},
 				}
 				None
@@ -951,7 +951,7 @@ where
 	}
 
 	/// Use this if a node is giving a timeout.
-	async fn mark_node_problematic(&self, node_id: &IdType) {
+	pub(super) async fn mark_node_problematic(&self, node_id: &IdType) {
 		if let Some(bucket_index) = self.differs_at_bit(node_id) {
 			let removed = {
 				let mut bucket = self.buckets[bucket_index as usize].lock().await;
@@ -963,7 +963,7 @@ where
 		}
 	}
 
-	async fn mark_node_helpful(&self, node_info: &NodeContactInfo) {
+	pub(super) async fn mark_node_helpful(&self, node_info: &NodeContactInfo) {
 		if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
 			bucket.mark_helpful(node_info, false);
@@ -1364,7 +1364,7 @@ where
 			{
 				None => {
 					special_connection.take();
-					debug!("Disregarding finger {}", &candidate_contact)
+					info!("Disregarding finger {}", &candidate_contact)
 				}
 				Some((mut connection, _)) => {
 					special_connection.take();

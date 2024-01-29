@@ -37,6 +37,11 @@ pub type MessageProcessor = dyn Fn(
 	+ 'static;
 pub type MessageProcessorResult = Option<(Vec<u8>, Option<Box<dyn MessageWorkToDo>>)>;
 
+pub type MessageFinishProcessor = dyn Fn(Result<()>, NodeContactInfo) -> Pin<Box<dyn Future<Output = ()> + Send>>
+	+ Send
+	+ Sync
+	+ 'static;
+
 
 #[derive(Deserialize, Serialize)]
 struct RelayHelloPacket {
@@ -158,7 +163,8 @@ pub struct Server {
 	node_id: IdType,
 	private_key: identity::PrivateKey,
 	default_timeout: Duration,
-	message_processor: OnceCell<Box<MessageProcessor>>,
+	// TODO: Remove pub in following line:
+	pub message_processors: OnceCell<(Box<MessageProcessor>, Box<MessageFinishProcessor>)>,
 }
 
 pub(super) struct SessionData {
@@ -261,7 +267,7 @@ impl Server {
 			node_id,
 			private_key,
 			default_timeout,
-			message_processor: OnceCell::new(),
+			message_processors: OnceCell::new(),
 		}))
 	}
 
@@ -270,16 +276,18 @@ impl Server {
 		let mut done_ids = Vec::with_capacity(0);
 		for (session_id, session_mutex) in sessions.map.iter() {
 			let mut session = session_mutex.lock().await;
-			let last_activity = session.last_activity.lock().unwrap();
-			if SystemTime::now().duration_since(*last_activity).unwrap()
+			let last_activity = *session.last_activity.lock().unwrap();
+			if SystemTime::now().duration_since(last_activity).unwrap()
 				>= session.keep_alive_timeout
 			{
 				drop(last_activity);
 				match &mut session.transport_data {
 					SessionTransportData::Empty => {}
 					SessionTransportData::Direct(data) =>
-						if data.handle.is_some() {
-							data.handle = None;
+						if let Some(h) = &data.handle {
+							if !h.is_alive() {
+								data.handle = None;
+							}
 						} else {
 							done_ids.push(*session_id);
 						},
@@ -512,7 +520,6 @@ impl Server {
 					}
 
 					//self.send_hello_ack_ack_packet(target, dest_session_id).await?;
-					info!("Connecting {} to {} ({}, {})", self.node_id, their_node_id, local_session_id, dest_session_id);
 
 					return Ok((Box::new(Connection {
 						transporter: transporter_handle,
@@ -542,11 +549,9 @@ impl Server {
 	}
 
 	/// Gives the connection away to be start listening on it for requests
-	pub fn handle_connection(self: &Arc<Self>, connection: Box<Connection>) {
+	pub async fn handle_connection(self: &Arc<Self>, connection: Box<Connection>) {
 		let this = self.clone();
-		spawn(async move {
-			handle_connection_loop(this, connection).await;
-		});
+		handle_connection_loop(this, connection).await;
 	}
 
 	pub fn listen(
@@ -559,9 +564,13 @@ impl Server {
 		+ Send
 		+ Sync
 		+ 'static,
+		on_finish: impl Fn(Result<()>, NodeContactInfo) -> Pin<Box<dyn Future<Output = ()> + Send>>
+		+ Send
+		+ Sync
+		+ 'static,
 	) -> bool {
-		self.message_processor
-			.set(Box::new(message_processor))
+		self.message_processors
+			.set((Box::new(message_processor), Box::new(on_finish)))
 			.is_ok()
 	}
 
@@ -995,7 +1004,7 @@ impl Server {
 			node_id: node_id.clone(),
 			contact_info: contact_info.clone(),
 		};
-		if let Some(processor) = self.message_processor.get() {
+		if let Some((processor, _)) = self.message_processors.get() {
 			processor(buffer, addr, node_info).await
 		} else {
 			warn!("Tried to process message while message processor is not yet set.");
@@ -1151,15 +1160,16 @@ impl Server {
 		}
 
 		// Transporter is running, set up connection and pass it along
+		let peer_node_info = NodeContactInfo {
+			node_id: their_node_id,
+			contact_info,
+		};
 		let connection = Box::new(Connection {
 			transporter: transporter_handle,
 			server: self.clone(),
 			keep_alive_timeout: self.default_timeout,
 			peer_address: addr.clone(),
-			peer_node_info: NodeContactInfo {
-				node_id: their_node_id,
-				contact_info,
-			},
+			peer_node_info: peer_node_info.clone(),
 			dest_session_id,
 			encrypt_session_id,
 			local_session_id: our_session_id,
@@ -1171,16 +1181,25 @@ impl Server {
 		} else {
 			// Perform the remaining communication work if the request was passed along on
 			// the hello packet.
-			let connection2 = if let Some(mut todo) = opt_todo {
+			let result = if let Some(mut todo) = opt_todo {
 				// If the connection required more work to be done on it, do that before passing
 				// it to the `on_connect` handler.
 				todo.run(connection).await
 			} else {
-				Some(connection)
+				Ok(Some(connection))
 			};
 
-			if let Some(c) = connection2 {
-				handle_connection_loop(self.clone(), c).await;
+			if let Some((_, on_finish)) = self.message_processors.get() {
+				match result {
+					Err(e) => on_finish(Err(e), peer_node_info).await,
+					Ok(opt_connection) => {
+						on_finish(Ok(()), peer_node_info).await;
+
+						if let Some(c) = opt_connection {
+							handle_connection_loop(self.clone(), c).await;
+						}
+					}
+				}
 			}
 		}
 		Ok(())
@@ -1514,6 +1533,7 @@ impl Server {
 		*self.our_contact_info.lock().unwrap() = contact_info;
 	}
 
+	#[cfg(test)]
 	pub async fn set_next_session_id(&self, id: u16) { self.sessions.lock().await.next_id = id; }
 
 	pub fn spawn(self: &Arc<Self>) {
@@ -1537,6 +1557,14 @@ impl Server {
 					}
 				});
 			});
+	}
+
+	/// Gives the connection away to be start listening on it for requests
+	pub fn spawn_connection(self: &Arc<Self>, connection: Box<Connection>) {
+		let this = self.clone();
+		spawn(async move {
+			handle_connection_loop(this, connection).await;
+		});
 	}
 
 	/// Starts garbage collecting the unresponded requests.
@@ -1822,7 +1850,6 @@ impl Sessions {
 			}
 		}
 		let new_id = self.next_id;
-		debug!("NEXT ID: {}", new_id);
 		self.next_id = self.next_id.wrapping_add(1);
 		Some(new_id)
 	}
@@ -2266,9 +2293,9 @@ impl Into<SocketAddr> for SocketAddrSstp {
 }
 
 
-async fn handle_connection_loop(server: Arc<Server>, connection: Box<Connection>) {
-	let mut result = Some(connection);
-	while let Some(mut connection) = result {
+async fn handle_connection_loop(server: Arc<Server>, connection_original: Box<Connection>) {
+	let mut result = Some(connection_original);
+	while let Some(mut connection) = result.take() {
 		match connection.wait_for(Duration::from_secs(120)).await {
 			Err(e) => {
 				match &*e {
@@ -2284,9 +2311,14 @@ async fn handle_connection_loop(server: Arc<Server>, connection: Box<Connection>
 					return;
 				}
 
-				let processor = if let Some(p) = server.message_processor.get() {
-					p
+				let (processor, on_finish) = if let Some(r) = server.message_processors.get() {
+					r
 				} else {
+					error!(
+						"Not processing the connection {}, because the message processors aren't \
+						 set.",
+						connection.local_session_id
+					);
 					return;
 				};
 				if let Some((response, opt_todo)) = processor(
@@ -2296,18 +2328,24 @@ async fn handle_connection_loop(server: Arc<Server>, connection: Box<Connection>
 				)
 				.await
 				{
-					if response.len() > 0 {
-						match connection.send(response).await {
-							Ok(_) => {}
-							Err(e) => {
-								warn!("Unable to respond to request on connection: {:?}", e);
-								return;
-							}
+					debug_assert!(response.len() > 0, "empty response from message processor");
+					match connection.send(response).await {
+						Ok(_) => {}
+						Err(e) => {
+							warn!("Unable to respond to request on connection: {:?}", e);
+							return;
 						}
 					}
 
+					let node_info = connection.their_node_info().clone();
 					if let Some(mut todo) = opt_todo {
-						result = todo.run(connection).await;
+						match todo.run(connection).await {
+							Err(e) => on_finish(Err(e), node_info).await,
+							Ok(r) => {
+								result = r;
+								on_finish(Ok(()), node_info).await;
+							}
+						}
 					} else {
 						result = Some(connection);
 					}
