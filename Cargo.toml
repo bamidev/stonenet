@@ -29,6 +29,7 @@ generic-array = "0"
 hmac = ">=0.12, <1.0"
 ipnetwork = "*"
 lazy_static = "1"
+libsqlite3-sys = "^0.27"
 log = ">=0.4"
 multipart = "0"
 num = "0"
@@ -37,7 +38,7 @@ rand = { version = "0.8", features = ["getrandom"] }
 rand_chacha = "0.3"
 rocket = "0.5.0"
 rocket_dyn_templates = { version = "0.1.0", features = ["tera"] }
-rusqlite = "0"
+rusqlite = "^0.30"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 sha2 = ">=0.10"
