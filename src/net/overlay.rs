@@ -1893,57 +1893,6 @@ impl OverlayNode {
 	}
 }
 
-
-/*async fn handle_relay_connection(
-	client_connection: &mut Connection, server_connection: &mut Connection,
-) -> sstp::Result<()> {
-	fn verify_request(buffer: &[u8]) -> Option<u8> {
-		const MESSAGE_TYPE_WHITELIST: &[u8] = &[
-			NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST,
-			NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST,
-			ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST,
-			ACTOR_MESSAGE_TYPE_HEAD_REQUEST,
-			//ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST <-- not supported yet because after
-			// response, client may send an additional message, and then direction reverses.
-		];
-
-		// Only allow the whitelisted message types
-		let message_type = buffer[0];
-		if message_type < 0x80 {
-			return None;
-		}
-		if MESSAGE_TYPE_WHITELIST.contains(&(buffer[0] & 0x7F)) {
-			return Some(message_type);
-		}
-		None
-	}
-	Ok(())
-
-	// Keep relaying requests & responses until one connection closes or errors
-	// out
-	loop {
-		let mut message_type = 0u8;
-		server_connection
-			.pipe(client_connection, |buf| {
-				if let Some(mt) = verify_request(buf) {
-					message_type = mt;
-					true
-				} else {
-					false
-				}
-			})
-			.await?;
-		client_connection
-			.pipe(server_connection, |buf| {
-				if buf.len() == 0 {
-					return false;
-				}
-				buf[0] == (message_type + 1)
-			})
-			.await?;
-	}*/
-//}
-
 pub(super) async fn process_request_message(
 	overlay_node: Arc<OverlayNode>, buffer: Vec<u8>, addr: SocketAddr, node_info: NodeContactInfo,
 ) -> Option<(Vec<u8>, Option<Box<dyn MessageWorkToDo>>)> {

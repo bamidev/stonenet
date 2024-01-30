@@ -136,7 +136,7 @@ where
 	_phantom: PhantomData<UnsafeSendSync<V>>,
 }
 
-pub type UdpServerV4 = UdpServer<SocketAddrV4>;
+//pub type UdpServerV4 = UdpServer<SocketAddrV4>;
 //pub type UdpServerV6 = UdpServer<SocketAddrV6>;
 //pub type UdpSocketV4 = UdpSocket<SocketAddrV4>;
 //pub type UdpSocketV6 = UdpSocket<SocketAddrV6>;
