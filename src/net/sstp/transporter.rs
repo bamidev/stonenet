@@ -409,9 +409,6 @@ impl Transporter {
 		}
 
 		// The closing sequence
-		if self.inner.local_session_id == 3 {
-			warn!("Closing sequence session 3: {}", self.inner.close_received);
-		}
 		let ks = self.key_state_manager.get_duo();
 		let result = if self.inner.close_received {
 			self.inner.acknowledge_close(ks).await

@@ -63,18 +63,18 @@ async fn test_data_synchronizations() {
 	let mut next_port = 20000;
 	test_data_synchronization(
 		&mut next_port,
-		Openness::Bidirectional,
+		Openness::Unidirectional,
 		Openness::Bidirectional,
 		true,
 	)
 	.await;
-	/*test_data_synchronization(
+	test_data_synchronization(
 		&mut next_port,
 		Openness::Unidirectional,
 		Openness::Unidirectional,
-		false,
+		true,
 	)
-	.await;*/
+	.await;
 }
 
 async fn test_data_synchronization(

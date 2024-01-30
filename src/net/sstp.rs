@@ -505,9 +505,9 @@ mod tests {
 		stop_flag.store(true, Ordering::Relaxed);
 	}
 
-	//#[tokio::test]
+	#[tokio::test]
 	// Sent and receive a message through a relay
-	/*async fn test_connection_piping() {
+	async fn test_relaying() {
 		let mut rng = test::initialize_rng();
 		let mut relay_config = Config::default();
 		relay_config.ipv4_address = Some("127.0.0.1".to_string());
@@ -536,7 +536,7 @@ mod tests {
 		let node1 = sstp::Server::bind(
 			stop_flag.clone(),
 			&node1_config,
-			node1_node_id,
+			node1_node_id.clone(),
 			node1_private_key,
 			DEFAULT_TIMEOUT,
 		)
@@ -556,43 +556,46 @@ mod tests {
 			.expect("unable to bind node 2"),
 		);
 
-		let mut message = vec![0u8; 100000];
-		rng.fill_bytes(&mut message);
+		let mut request = vec![0u8; 1000];
+		rng.fill_bytes(&mut request);
+		let mut response = vec![0u8; 100000];
+		rng.fill_bytes(&mut response);
 
 		// Set up the relay node
-		let relay2 = relay.clone();
-		let node2_node_id2 = node2_node_id.clone();
-		let message_len = message.len();
-		relay.listen(move |mut connection1| {
-			let relay3 = relay2.clone();
-			let node2_node_id3 = node2_node_id2.clone();
-			spawn(async move {
-				let mut connection2 = relay3
-					.connect(&ContactOption::use_udp(node2_addr), Some(&node2_node_id3))
-					.await
-					.expect("unable to connect to node 2");
-				let sent = connection1
-					.pipe(&mut connection2, |_| true)
-					.await
-					.expect("unable to pipe data");
-				connection2.close().await.expect("unable to close");
-				connection1.close().await.expect("unable to close");
-				assert_eq!(sent, message_len);
-			});
-		});
+		relay.listen(
+			move |_, _, _| {
+				Box::pin(async {
+					panic!("No messages expected");
+				})
+			},
+			|result, _| {
+				Box::pin(async move {
+					result.expect("message error");
+				})
+			},
+		);
 
 		// Set up the node that has the message
-		let message2 = message.clone();
-		node2.listen(move |mut connection| {
-			let message3 = message2.clone();
-			spawn(async move {
-				connection
-					.send(message3)
-					.await
-					.expect("unable to send message from node 2");
-				connection.close().await.expect("unable to close");
-			});
-		});
+		let request2 = request.clone();
+		let response2 = response.clone();
+		node2.listen(
+			move |message, _, _| {
+				let request3 = request2.clone();
+				let response3 = response2.clone();
+				Box::pin(async move {
+					if message == request3 {
+						Some((response3, None))
+					} else {
+						None
+					}
+				})
+			},
+			|result, _| {
+				Box::pin(async move {
+					result.expect("message error");
+				})
+			},
+		);
 
 		relay.spawn();
 		node1.spawn();
@@ -600,14 +603,22 @@ mod tests {
 
 		// Receive relayed message
 		let mut connection = node1
-			.connect(&ContactOption::use_udp(relay_addr), Some(&relay_node_id))
+			.relay(
+				&ContactOption::use_udp(relay_addr),
+				relay_node_id.clone(),
+				&node2_addr,
+				&node2_node_id,
+			)
 			.await
 			.expect("unable to connect to relay node");
+		connection
+			.send(request)
+			.await
+			.expect("unable to send message");
 		let received_message = connection
 			.receive()
 			.await
 			.expect("unable to receive message");
-		connection.close().await.expect("unable to close");
-		assert_eq!(received_message, message, "relayed message got corrupted");
-	}*/
+		assert_eq!(received_message, response, "relayed message got corrupted");
+	}
 }

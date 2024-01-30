@@ -30,6 +30,8 @@ use crate::{
 };
 
 
+const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(120);
+
 // Messages for the overlay network:
 pub const OVERLAY_MESSAGE_TYPE_FIND_ACTOR_REQUEST: u8 = 64;
 pub const OVERLAY_MESSAGE_TYPE_FIND_ACTOR_RESPONSE: u8 = 65;
@@ -305,9 +307,7 @@ impl MessageWorkToDo for KeepAliveToDo {
 			}
 
 			if bucket.connection.is_none() {
-				connection
-					.set_keep_alive_timeout(Duration::from_secs(120))
-					.await;
+				connection.set_keep_alive_timeout(KEEP_ALIVE_TIMEOUT).await;
 				info!(
 					"Keeping connection with {} alive.",
 					connection.peer_address()
@@ -1075,12 +1075,6 @@ impl OverlayNode {
 								"Unable to ping on keep alive node connection of node {}",
 								connection.their_node_id()
 							);
-							if let Err(e) = connection.close().await {
-								warn!(
-									"Unable to close connection that was being kept alive: {}",
-									e
-								);
-							}
 							let mut bucket = this.base.buckets[i].lock().await;
 							bucket.connection = None;
 						}
@@ -1120,6 +1114,7 @@ impl OverlayNode {
 				.await
 			{
 				if success {
+					connection.set_keep_alive_timeout(KEEP_ALIVE_TIMEOUT).await;
 					this.base.socket.spawn_connection(connection);
 					return true;
 				} else {
