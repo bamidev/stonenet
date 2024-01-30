@@ -25,7 +25,10 @@ pub struct Config {
 	pub ipv6_tcp_openness: Option<String>,
 
 	pub bootstrap_nodes: Vec<String>,
-	pub load_web_interface: bool,
+	pub load_web_interface: Option<bool>,
+	pub web_interface_port: Option<u16>,
+	pub load_user_interface: Option<bool>,
+	pub user_interface_port: Option<u16>,
 	pub udp_max_idle_time: usize,
 	pub bucket_size: Option<usize>,
 	pub relay_node: Option<bool>,
@@ -53,11 +56,14 @@ impl Default for Config {
 			ipv6_udp_openness: None,
 			ipv6_tcp_openness: None,
 			bootstrap_nodes: vec![],
-			load_web_interface: false,
+			load_web_interface: None,
 			udp_max_idle_time: 60,
 			bucket_size: Some(4),
 			relay_node: None,
 			leak_first_request: None,
+			web_interface_port: None,
+			load_user_interface: None,
+			user_interface_port: None,
 		}
 	}
 }

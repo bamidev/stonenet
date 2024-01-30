@@ -43,7 +43,13 @@ ipv6_udp_port = 37339
 ipv6_tcp_port = 37339
 
 # If set to true, will run a web server for the user interface
-load_web_interface = true
+load_web_interface = false
+web_interface_port = 80
+
+# If set to true, will run a local web server for the user interface. This
+# will be bound to IP 127.0.0.1 .
+load_user_interface = true
+user_interface_port = 37338
 
 # These are the nodes to fallback to when none of the saved nodes respond
 # anymore.
@@ -55,8 +61,8 @@ bootstrap_nodes = [
 # Enabling this feature makes it so that the first request message on a
 # connection is sometimes sent unencrypted, if the message is small enough to be
 # included in the very first packet. This speeds up node communication, at the
-# expense of privacy. The response message is never sent on the connection
-# unencrypted.
+# expense of privacy. The response message, and any further message, are never
+# sent on the connection unencrypted.
 leak_first_request = false
 
 # Maximum idle time for UDP hole-punching in seconds:

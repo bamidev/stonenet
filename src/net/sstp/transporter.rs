@@ -54,7 +54,7 @@ struct KeyStateDuoMut<'a> {
 /// messages for a connection.
 pub struct Transporter {
 	pub(super) inner: TransporterInner,
-	alive_flag: Arc<AtomicBool>,
+	pub alive_flag: Arc<AtomicBool>,
 	key_state_manager: KeyStateManager,
 }
 
@@ -96,8 +96,8 @@ pub(super) struct TransporterInner {
 #[derive(Clone)]
 pub struct TransporterHandle {
 	sender: UnboundedSender<Traced<TransporterTask>>,
+	pub(super) alive_flag: Arc<AtomicBool>,
 	is_connection_based: bool,
-	alive_flag: Arc<AtomicBool>,
 }
 
 /// The instruction that is sent to the transporter task to make it do what we
@@ -1755,8 +1755,6 @@ impl TransporterInner {
 }
 
 impl TransporterHandle {
-	pub fn alive_flag(&self) -> Arc<AtomicBool> { self.alive_flag.clone() }
-
 	/// Initiate the closing sequence on the connection
 	pub async fn close(&mut self) -> Option<Result<()>> {
 		let (tx, rx) = oneshot::channel();

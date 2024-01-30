@@ -121,26 +121,52 @@ async fn main() {
 		let node = load_node(stop_flag.clone(), db.clone(), &config).await;
 
 		// Test openness
-		let globals = Api { node, db };
-		test_openness(&globals, &config).await;
+		let api = Api { node, db };
+		test_openness(&api, &config).await;
 
-		// Spawn threads
-		if config.load_web_interface {
-			let g2 = globals.clone();
-			let (shutdown, join) = web::spawn(g2).await;
-			node_main(stop_flag, &globals, &config).await;
-			shutdown.notify();
+		// Spawn web servers
+		let mut rocket_handles = Vec::new();
+		let mut join_handles = Vec::new();
+		if config.load_web_interface.unwrap_or(false) {
+			let global_state = web::Global {
+				context: web::GlobalContext { is_local: false },
+				api: api.clone(),
+			};
+			let (shutdown, join) =
+				web::spawn(global_state, config.web_interface_port.unwrap_or(80), None).await;
+			rocket_handles.push(shutdown);
+			join_handles.push(join);
+		}
+		if config.load_user_interface.unwrap_or(false) {
+			let global_state = web::Global {
+				context: web::GlobalContext { is_local: true },
+				api: api.clone(),
+			};
+			let (shutdown, join) = web::spawn(
+				global_state,
+				config.user_interface_port.unwrap_or(37338),
+				None,
+			)
+			.await;
+			rocket_handles.push(shutdown);
+			join_handles.push(join);
+		}
 
-			info!("Exiting stonenetd...");
-			//globals.node.remember_nodes().await;
-			match join.await {
+		// Run the main loop, until it exits because of a signal
+		node_main(stop_flag, &api, &config).await;
+
+		// Shutdown rocket servers
+		info!("Exiting stonenetd...");
+		for handle in rocket_handles {
+			handle.notify();
+		}
+		for handle in join_handles {
+			match handle.await {
 				Ok(()) => {}
 				Err(e) => error!("Rocket error after shutdown: {}", e),
 			}
-		} else {
-			node_main(stop_flag, &globals, &config).await;
 		}
-		info!("Finished.");
+		info!("Done.");
 	}
 }
 

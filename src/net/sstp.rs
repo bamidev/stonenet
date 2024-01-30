@@ -228,7 +228,7 @@ impl Into<io::Error> for Error {
 }
 
 impl Connection {
-	pub fn alive_flag(&self) -> Arc<AtomicBool> { self.transporter.alive_flag() }
+	pub fn alive_flag(&self) -> Arc<AtomicBool> { self.transporter.alive_flag.clone() }
 
 	pub async fn close(&mut self) -> Result<()> { self.transporter.close().await.unwrap_or(Ok(())) }
 

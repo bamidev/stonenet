@@ -6,11 +6,7 @@ use std::{
 use ed25519_dalek::{self, Signer};
 use rand::{prelude::*, rngs::OsRng};
 use rusqlite::{types::*, ToSql};
-use serde::{
-	de::{IntoDeserializer, Visitor},
-	ser::SerializeTuple,
-	Deserialize, Serialize,
-};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 

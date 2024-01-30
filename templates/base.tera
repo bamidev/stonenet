@@ -21,9 +21,11 @@
 						<li class="nav-item">
 							<a class="nav-link active" aria-current="page" href="/">Home</a>
 						</li>
-						<li class="nav-item">
-							<a class="nav-link" href="/my-identity">Identities</a>
-						</li>
+						{% if global.is_local %}
+							<li class="nav-item">
+								<a class="nav-link" href="/my-identity">Identities</a>
+							</li>
+						{% endif %}
 					</ul>
 				</div>
 

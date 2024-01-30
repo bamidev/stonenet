@@ -2,10 +2,12 @@ mod common;
 
 use std::{
 	io,
+	net::{IpAddr, Ipv4Addr},
 	path::{Path, PathBuf},
 	str::FromStr,
 };
 
+use ::serde::*;
 use base58::FromBase58;
 use multipart::server::Multipart;
 use rocket::{
@@ -14,7 +16,6 @@ use rocket::{
 	http::{ContentType, MediaType},
 	log::LogLevel,
 	response::{stream::ByteStream, Redirect},
-	serde::Serialize,
 	Data, *,
 };
 use rocket_dyn_templates::{context, Template};
@@ -23,6 +24,17 @@ use tokio_stream::StreamExt;
 
 use self::common::*;
 use crate::{api::Api, common::*, db, model::*};
+
+
+pub struct Global {
+	pub context: GlobalContext,
+	pub api: Api,
+}
+
+#[derive(Clone, Copy, Serialize)]
+pub struct GlobalContext {
+	pub is_local: bool,
+}
 
 
 fn render_db_error(error: db::Error, message: &str) -> Template {
@@ -53,8 +65,8 @@ struct IdentityData {
 }
 
 #[get("/?<page>")]
-async fn index(page: Option<u64>, api: &State<Api>) -> Template {
-	let identities = match api.fetch_my_identities() {
+async fn index(page: Option<u64>, g: &State<Global>) -> Template {
+	let identities = match g.api.fetch_my_identities() {
 		Ok(i) => i,
 		Err(e) => return render_db_error(e, "unable to fetch my identities"),
 	};
@@ -71,7 +83,7 @@ async fn index(page: Option<u64>, api: &State<Api>) -> Template {
 
 	let p = page.unwrap_or(0);
 	let start = p * 5;
-	let objects: Vec<ObjectDisplayInfo> = match api.fetch_home_feed(5, start) {
+	let objects: Vec<ObjectDisplayInfo> = match g.api.fetch_home_feed(5, start) {
 		Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
 		Err(e) => return render_db_error(e, "unable to fetch home feed"),
 	};
@@ -79,6 +91,7 @@ async fn index(page: Option<u64>, api: &State<Api>) -> Template {
 	Template::render(
 		"home",
 		context! {
+			global: g.context,
 			identities: identities_data,
 			objects,
 			page: p
@@ -94,7 +107,7 @@ struct PostPostData {
 
 #[post("/", data = "<data>")]
 async fn index_post(
-	api: &State<Api>, content_type: &ContentType, data: Data<'_>,
+	g: &State<Global>, content_type: &ContentType, data: Data<'_>,
 ) -> Result<Template, Template> {
 	let (_, boundary) = content_type
 		.params()
@@ -113,60 +126,63 @@ async fn index_post(
 		})?;
 
 	if message.len() == 0 {
-		return Ok(index(None, api).await);
+		return Ok(index(None, g).await);
 	}
 
 	let identity_address = IdType::from_base58(&identity).expect("unable to parse post identity");
-	let (_label, keypair) = match api.fetch_my_identity(&identity_address) {
+	let (_label, keypair) = match g.api.fetch_my_identity(&identity_address) {
 		Ok(k) => k.expect("my identity not found"),
 		Err(e) => return Err(render_db_error(e, "unable to fetch my identity")),
 	};
 
 	// TODO: Parse tags from post.
-	api.publish_post(
-		&identity_address,
-		&keypair,
-		&message,
-		Vec::new(),
-		&attachments,
-		None,
-	)
-	.await
-	.map_err(|e| render_db_error(e, "unable to publish post"))?;
+	g.api
+		.publish_post(
+			&identity_address,
+			&keypair,
+			&message,
+			Vec::new(),
+			&attachments,
+			None,
+		)
+		.await
+		.map_err(|e| render_db_error(e, "unable to publish post"))?;
 
-	Ok(index(None, api).await)
+	Ok(index(None, g).await)
 }
 
-pub async fn spawn(g: Api) -> (Shutdown, JoinHandle<()>) {
+pub async fn spawn(g: Global, port: u16, workers: Option<usize>) -> (Shutdown, JoinHandle<()>) {
 	// Set up rocket's config to not detect ctrlc itself
 	let mut config = rocket::Config::default();
-	config.log_level = LogLevel::Off;
-	config.port = 37338;
+	//config.log_level = LogLevel::Off;
+	config.port = port;
 	config.shutdown.ctrlc = false;
 	#[cfg(unix)]
 	config.shutdown.signals.clear();
-	config.workers = 1;
+	if let Some(w) = workers {
+		config.workers = w;
+	}
+	if g.context.is_local {
+		config.address = IpAddr::V4(Ipv4Addr::LOCALHOST);
+	} else {
+		config.address = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+	}
 
+	let mut routes = routes![actor, actor_file, actor_object, static_, index, search];
+	if g.context.is_local {
+		routes.extend(routes![
+			actor_object_post,
+			actor_post,
+			index_post,
+			my_identity,
+			my_identity_new,
+			my_identity_new_post,
+		]);
+	}
 	let r = rocket::custom(&config)
 		.attach(Template::fairing())
 		.manage(g)
-		.mount(
-			"/",
-			routes![
-				actor,
-				actor_file,
-				actor_object,
-				actor_object_post,
-				actor_post,
-				static_,
-				index,
-				index_post,
-				my_identity,
-				my_identity_new,
-				my_identity_new_post,
-				search
-			],
-		)
+		.mount("/", routes)
 		.ignite()
 		.await
 		.expect("Rocket ignition failed");
@@ -178,7 +194,7 @@ pub async fn spawn(g: Api) -> (Shutdown, JoinHandle<()>) {
 }
 
 #[get("/actor/<address_str>")]
-async fn actor(address_str: &str, g: &State<Api>) -> Template {
+async fn actor(address_str: &str, g: &State<Global>) -> Template {
 	#[derive(rocket::serde::Serialize)]
 	struct Object {
 		body: String,
@@ -188,11 +204,11 @@ async fn actor(address_str: &str, g: &State<Api>) -> Template {
 		Ok(a) => a,
 		Err(_) => return render_error("Error", &format!("This is not a valid address")),
 	};
-	let profile = match g.fetch_profile_info(&address).await {
+	let profile = match g.api.fetch_profile_info(&address).await {
 		Ok(p) => p,
 		Err(e) => return render_db_error(e, "Unable to fetch profile"),
 	};
-	let is_following: bool = match g.is_following(&address) {
+	let is_following: bool = match g.api.is_following(&address) {
 		Ok(f) => f,
 		Err(e) => return render_db_error(e, "Unable to fetch follow status"),
 	};
@@ -220,7 +236,7 @@ async fn actor(address_str: &str, g: &State<Api>) -> Template {
 
 #[get("/actor/<address_str>/file/<hash_str>")]
 async fn actor_file(
-	address_str: &str, hash_str: &str, g: &State<Api>,
+	address_str: &str, hash_str: &str, g: &State<Global>,
 ) -> Result<(ContentType, ByteStream![Vec<u8>]), Template> {
 	let address = match IdType::from_base58(address_str) {
 		Ok(a) => a,
@@ -235,7 +251,7 @@ async fn actor_file(
 		Err(_) => return Err(render_error("Error", &format!("This is not a valid hash"))),
 	};
 
-	let (mime_type, mut loader) = match g.stream_file(address, hash).await {
+	let (mime_type, mut loader) = match g.api.stream_file(address, hash).await {
 		Ok(x) => match x {
 			Some(r) => r,
 			None => return Err(render_error("Error", &format!("File doesn't exist"))),
@@ -269,18 +285,20 @@ async fn actor_file(
 
 #[get("/actor/<address_str>/object/<sequence>")]
 async fn actor_object(
-	api: &State<Api>, address_str: &str, sequence: u64,
+	g: &State<Global>, address_str: &str, sequence: u64,
 ) -> Result<Template, Template> {
 	let address = IdType::from_base58(address_str)
 		.map_err(|_e| render_error("Input error", "Invalid address"))?;
-	let object_info = api
+	let object_info = g
+		.api
 		.fetch_object_info(&address, sequence)
 		.await
 		.map_err(|e| render_db_error(e, "Unable to load object"))?;
 	if object_info.is_none() {
 		return Err(render_error("Not found", "Object not found"));
 	}
-	let identities = api
+	let identities = g
+		.api
 		.fetch_my_identities()
 		.map_err(|e| render_db_error(e, "Unable to load my identities"))?;
 	let identities_data: Vec<IdentityData> = identities
@@ -303,7 +321,7 @@ async fn actor_object(
 
 #[post("/actor/<address_str>/object/<hash_str>", data = "<form_data>")]
 async fn actor_object_post(
-	api: &State<Api>, address_str: &str, hash_str: &str, form_data: Form<PostPostData>,
+	g: &State<Global>, address_str: &str, hash_str: &str, form_data: Form<PostPostData>,
 ) -> Result<Redirect, Template> {
 	let address = IdType::from_base58(address_str)
 		.map_err(|_e| render_error("Input error", "Invalid actor address"))?;
@@ -311,22 +329,24 @@ async fn actor_object_post(
 		.map_err(|_e| render_error("Input error", "Invalid object hash"))?;
 	let identity_address = IdType::from_base58(&form_data.identity)
 		.map_err(|_e| render_error("Input error", "Invalid identity address"))?;
-	let (_label, keypair) = api
+	let (_label, keypair) = g
+		.api
 		.fetch_my_identity(&identity_address)
 		.map_err(|e| render_db_error(e, "unable to fetch my identity"))?
 		.expect("my identity not found");
 
 	// TODO: Parse tags from post.
-	api.publish_post(
-		&identity_address,
-		&keypair,
-		&form_data.message,
-		Vec::new(),
-		&Vec::new(),
-		Some((address, hash)),
-	)
-	.await
-	.map_err(|e| render_db_error(e, "Unable to publish post"))?;
+	g.api
+		.publish_post(
+			&identity_address,
+			&keypair,
+			&form_data.message,
+			Vec::new(),
+			&Vec::new(),
+			Some((address, hash)),
+		)
+		.await
+		.map_err(|e| render_db_error(e, "Unable to publish post"))?;
 	Ok(Redirect::to("/"))
 }
 
@@ -336,7 +356,9 @@ struct ActorActions {
 }
 
 #[post("/actor/<address_str>", data = "<form_data>")]
-async fn actor_post(address_str: &str, g: &State<Api>, form_data: Form<ActorActions>) -> Template {
+async fn actor_post(
+	address_str: &str, g: &State<Global>, form_data: Form<ActorActions>,
+) -> Template {
 	match form_data.follow.as_ref() {
 		None => {}
 		Some(follow) => {
@@ -347,7 +369,7 @@ async fn actor_post(address_str: &str, g: &State<Api>, form_data: Form<ActorActi
 
 			// Follow
 			if follow == "1" {
-				match g.follow(&address, true).await {
+				match g.api.follow(&address, true).await {
 					Ok(success) =>
 						if !success {
 							return render_error(
@@ -361,7 +383,7 @@ async fn actor_post(address_str: &str, g: &State<Api>, form_data: Form<ActorActi
 				}
 			// Unfollow
 			} else {
-				match g.unfollow(&address).await {
+				match g.api.unfollow(&address).await {
 					Ok(_) => {}
 					Err(e) => return render_db_error(e, &format!("Unable to unfollow person")),
 				}
@@ -373,7 +395,7 @@ async fn actor_post(address_str: &str, g: &State<Api>, form_data: Form<ActorActi
 }
 
 #[get("/my-identity")]
-async fn my_identity(api: &State<Api>) -> Template {
+async fn my_identity(g: &State<Global>) -> Template {
 	#[derive(rocket::serde::Serialize)]
 	struct Object {
 		id: u64,
@@ -381,7 +403,7 @@ async fn my_identity(api: &State<Api>) -> Template {
 		address: String,
 	}
 
-	let identities = match api.fetch_my_identities() {
+	let identities = match g.api.fetch_my_identities() {
 		Ok(i) => i,
 		Err(e) => return render_db_error(e, "unable to fetch identities"),
 	};
@@ -409,7 +431,7 @@ async fn my_identity_new() -> Template { Template::render("identity/new", contex
 
 #[post("/my-identity/new", data = "<data>")]
 async fn my_identity_new_post(
-	api: &State<Api>, content_type: &ContentType, data: Data<'_>,
+	g: &State<Global>, content_type: &ContentType, data: Data<'_>,
 ) -> Result<Redirect, Template> {
 	if !content_type.is_form_data() {
 		return Err(render_error("bad request", "invalid content type header"));
@@ -433,7 +455,7 @@ async fn my_identity_new_post(
 			))
 		})?;
 
-	match api.create_my_identity(
+	match g.api.create_my_identity(
 		&label,
 		&name,
 		avatar_file_data.as_ref(),
@@ -606,7 +628,7 @@ async fn static_(file: PathBuf) -> Option<NamedFile> {
 }
 
 #[get("/search?<query>")]
-async fn search(query: &str, _g: &State<Api>) -> Result<Redirect, Template> {
+async fn search(query: &str, _g: &State<Global>) -> Result<Redirect, Template> {
 	match query.from_base58() {
 		Err(_) => Err(render_error(
 			"Query error",
