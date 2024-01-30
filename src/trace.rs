@@ -11,10 +11,7 @@ use std::{
 pub type Result<T, E> = std::result::Result<T, Traced<E>>;
 
 pub trait Traceable<E> {
-	#[cfg(debug_assertions)]
 	fn trace(self) -> Traced<E>;
-	#[cfg(not(debug_assertions))]
-	fn trace(self) -> E;
 }
 
 pub struct Traced<E> {
@@ -36,11 +33,7 @@ pub fn err<T, E>(inner: E) -> Result<T, E> {
 
 
 impl<T> Traceable<T> for T {
-	#[cfg(debug_assertions)]
 	fn trace(self) -> Traced<T> { Traced::new(self) }
-
-	#[cfg(not(debug_assertions))]
-	fn trace(self) -> Traced<T> { self }
 }
 
 impl<T> Traced<T> {
@@ -65,7 +58,6 @@ impl<T> Traced<T> {
 	pub fn unwrap(self) -> (T, Option<Backtrace>) { (self.inner, None) }
 }
 
-#[cfg(debug_assertions)]
 impl<E> From<E> for Traced<E> {
 	fn from(other: E) -> Self { Self::new(other) }
 }
@@ -93,7 +85,10 @@ where
 {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		writeln!(f, "{:?}", &self.inner)?;
-		write!(f, "{}", self.backtrace)
+		if let Some(b) = self.backtrace() {
+			write!(f, "{}", b)?;
+		}
+		Ok(())
 	}
 }
 
