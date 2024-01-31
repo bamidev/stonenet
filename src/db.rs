@@ -764,8 +764,7 @@ impl Connection {
 				} else {
 					None
 				},
-				tags,
-				files,
+				data: PostObjectCryptedData::Plain(PostObjectDataPlain { tags, files }),
 			}))
 		} else {
 			Ok(None)
@@ -1384,15 +1383,20 @@ impl Connection {
 			VALUES (?,?,?,?)
 		"#,
 		)?;
-		let post_id = stat.insert(params![
-			object_id,
-			payload.files.len(),
-			payload.in_reply_to.as_ref().map(|irt| irt.0.to_string()),
-			payload.in_reply_to.as_ref().map(|irt| irt.1.to_string())
-		])?;
 
-		Self::_store_post_tags(tx, post_id, &payload.tags)?;
-		Self::_store_post_files(tx, actor_id, post_id, &payload.files)
+		match &payload.data {
+			PostObjectCryptedData::Plain(plain) => {
+				let post_id = stat.insert(params![
+					object_id,
+					plain.files.len(),
+					payload.in_reply_to.as_ref().map(|irt| irt.0.to_string()),
+					payload.in_reply_to.as_ref().map(|irt| irt.1.to_string())
+				])?;
+
+				Self::_store_post_tags(tx, post_id, &plain.tags)?;
+				Self::_store_post_files(tx, actor_id, post_id, &plain.files)
+			}
+		}
 	}
 
 	fn _store_post_tags(

@@ -470,8 +470,10 @@ impl Api {
 			let next_object_sequence = db::Connection::_next_object_sequence(&tx, identity_id)?;
 			let object_payload = ObjectPayload::Post(PostObject {
 				in_reply_to: in_reply_to.clone(),
-				tags: tags.clone(),
-				files: files.clone(),
+				data: PostObjectCryptedData::Plain(PostObjectDataPlain {
+					tags: tags.clone(),
+					files: files.clone(),
+				}),
 			});
 			let created = Utc::now().timestamp_millis() as u64;
 			let previous_hash = db::Connection::_fetch_object_hash_by_sequence(

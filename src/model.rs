@@ -56,6 +56,16 @@ pub struct MoveObject {
 pub struct PostObject {
 	/// If this post is a reply, a tuple of the actor's ID and the post.
 	pub in_reply_to: Option<(IdType, IdType)>,
+	pub data: PostObjectCryptedData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum PostObjectCryptedData {
+	Plain(PostObjectDataPlain),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PostObjectDataPlain {
 	/// Searchable keywords
 	pub tags: Vec<String>,
 	/// A list of (mime-type, hash) tuples.

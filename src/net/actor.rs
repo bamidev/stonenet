@@ -204,14 +204,16 @@ impl ActorNode {
 					}
 				}
 			}
-			ObjectPayload::Post(payload) =>
-				for hash in &payload.files {
-					if self.needs_file(&hash) {
-						if !self.collect_file(connection, &hash).await? {
-							return Ok(false);
+			ObjectPayload::Post(payload) => match &payload.data {
+				PostObjectCryptedData::Plain(plain) =>
+					for hash in &plain.files {
+						if self.needs_file(&hash) {
+							if !self.collect_file(connection, &hash).await? {
+								return Ok(false);
+							}
 						}
-					}
-				},
+					},
+			},
 			_ => {}
 		}
 		Ok(true)
@@ -442,12 +444,14 @@ impl ActorNode {
 								}
 							}
 						}
-						ObjectPayload::Post(payload) =>
-							for file_hash in payload.files {
-								if !c.has_file(self.actor_id(), &file_hash)? {
-									results.push(file_hash.clone());
-								}
-							},
+						ObjectPayload::Post(payload) => match &payload.data {
+							PostObjectCryptedData::Plain(plain) =>
+								for file_hash in &plain.files {
+									if !c.has_file(self.actor_id(), file_hash)? {
+										results.push(file_hash.clone());
+									}
+								},
+						},
 						ObjectPayload::Boost(_) => {}
 					}
 				}
@@ -474,12 +478,14 @@ impl ActorNode {
 						}
 					}
 				}
-				ObjectPayload::Post(payload) =>
-					for file_hash in &payload.files {
-						if !c.has_file(self.actor_id(), &file_hash)? {
-							results.push(file_hash.clone());
-						}
-					},
+				ObjectPayload::Post(payload) => match &payload.data {
+					PostObjectCryptedData::Plain(plain) =>
+						for file_hash in &plain.files {
+							if !c.has_file(self.actor_id(), &file_hash)? {
+								results.push(file_hash.clone());
+							}
+						},
+				},
 				ObjectPayload::Boost(_) => {}
 			}
 			Ok(results)
