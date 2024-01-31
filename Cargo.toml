@@ -67,7 +67,7 @@ windows = { version = "0", features = [
 
 [package.metadata.deb]
 name = "stonenet"
-revision = "1"
+revision = "main"
 section = "net"
 priority = "optional"
 conf-files = ["etc/stonenet/config.toml"]
@@ -82,3 +82,8 @@ assets = [
 depends = ["libsqlite3-0", "$auto"]
 maintainer-scripts = "assets/debian"
 systemd-units = { unit-scripts = "assets/debian/systemd" }
+
+[package.metadata.deb.variants.bundled]
+depends = []
+revision = "bundled"
+features = ["bundled"]
