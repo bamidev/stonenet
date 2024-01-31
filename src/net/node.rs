@@ -1,6 +1,5 @@
 use std::{
 	collections::VecDeque,
-	ops::Deref,
 	sync::{atomic::*, Arc},
 	time::SystemTime,
 };
@@ -998,6 +997,8 @@ where
 
 	pub fn node_id(&self) -> &IdType { &self.node_id }
 
+	pub fn overlay_node(&self) -> Arc<OverlayNode> { self.overlay_node() }
+
 	fn pick_contact_option(&self, target: &ContactInfo) -> Option<(ContactOption, Openness)> {
 		self.socket.pick_contact_option(target)
 	}
@@ -1441,15 +1442,6 @@ where
 		}
 		None
 	}
-}
-
-impl<I> Deref for Node<I>
-where
-	I: NodeInterface,
-{
-	type Target = I;
-
-	fn deref(&self) -> &I { &self.interface }
 }
 
 // Runs a loop that continiously accepts requests, processes them (which

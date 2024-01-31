@@ -1090,6 +1090,7 @@ impl OverlayNode {
 			while stop_flag.load(Ordering::Relaxed) {
 				let actor_nodes: Vec<Arc<ActorNode>> = this
 					.base
+					.interface
 					.actor_nodes
 					.lock()
 					.await
