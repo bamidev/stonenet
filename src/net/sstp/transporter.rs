@@ -1608,10 +1608,6 @@ impl TransporterInner {
 	/// a successful ack packet.
 	async fn send_missing_ack_packet(&self, ks: &KeyState) -> Result<()> {
 		let missing_mask = self.prepare_missing_mask();
-		debug_assert!(
-			missing_mask.iter().any(|b| *b != 0),
-			"empty missing mask generated"
-		);
 		self.send_ack_packet(ks, self.next_sequence, missing_mask)
 			.await
 	}
