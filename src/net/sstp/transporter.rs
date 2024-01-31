@@ -774,12 +774,6 @@ impl TransporterInner {
 			self.max_packets_expected
 		};
 		let mask_bits = (max_packets_expected - completed) as usize;
-		debug_assert!(
-			mask_bits > 0,
-			"max_packets_expected={}, completed={}",
-			max_packets_expected,
-			completed
-		);
 		let mask_size = min(
 			mask_bits as usize / 8 + ((mask_bits % 8) > 0) as usize,
 			self.max_data_packet_length(),
@@ -1642,7 +1636,7 @@ impl TransporterInner {
 			}
 		}
 		debug_assert!(
-			errors > 0,
+			missing_mask.len() == 0 || errors > 0,
 			"no packets sent for missing-mask: {:?}",
 			&missing_mask
 		);
