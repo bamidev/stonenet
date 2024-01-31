@@ -997,7 +997,7 @@ where
 
 	pub fn node_id(&self) -> &IdType { &self.node_id }
 
-	pub fn overlay_node(&self) -> Arc<OverlayNode> { self.overlay_node() }
+	pub fn overlay_node(&self) -> Arc<OverlayNode> { self.interface.overlay_node() }
 
 	fn pick_contact_option(&self, target: &ContactInfo) -> Option<(ContactOption, Openness)> {
 		self.socket.pick_contact_option(target)
