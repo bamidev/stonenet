@@ -81,11 +81,11 @@ impl Api {
 		};
 
 		// Generate an actor ID with our new object hash.
-		let actor_info = ActorInfo {
+		let actor_info = ActorInfo::V1(ActorInfoV1 {
 			public_key: private_key.public(),
 			first_object: object_hash.clone(),
 			actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
-		};
+		});
 		let actor_id = actor_info.generate_id();
 
 		// Create the identity on disk

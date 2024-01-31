@@ -537,7 +537,9 @@ impl ActorNode {
 				.expect("unable to load identity for actor node")
 				.expect("no identity for actor node")
 		});
-		actor_info.public_key
+		match actor_info {
+			ActorInfo::V1(ai) => ai.public_key,
+		}
 	}
 
 	pub fn new(

@@ -1,5 +1,10 @@
-use std::sync::Arc;
+use std::{
+	fmt,
+	ops::{Deref, DerefMut},
+	sync::Arc,
+};
 
+use base58::{FromBase58, ToBase58};
 use serde::{Deserialize, Serialize};
 
 use super::{common::*, identity::*};
@@ -10,7 +15,18 @@ pub const ACTOR_TYPE_BLOGCHAIN: &str = "blogchain";
 
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct ActorInfo {
+pub enum ActorInfo {
+	V1(ActorInfoV1),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum Address {
+	Actor(IdType),
+	Node(IdType),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ActorInfoV1 {
 	pub public_key: PublicKey,
 	pub first_object: IdType,
 	pub actor_type: String,
@@ -121,8 +137,33 @@ pub struct ObjectHeader {
 	pub signature: Signature,
 }
 
-
 impl ActorInfo {
+	pub fn generate_id(&self) -> IdType {
+		match self {
+			Self::V1(this) => this.generate_id(),
+		}
+	}
+}
+
+impl Deref for ActorInfo {
+	type Target = ActorInfoV1;
+
+	fn deref(&self) -> &Self::Target {
+		match self {
+			Self::V1(this) => this,
+		}
+	}
+}
+
+impl DerefMut for ActorInfo {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		match self {
+			Self::V1(this) => this,
+		}
+	}
+}
+
+impl ActorInfoV1 {
 	pub fn generate_id(&self) -> IdType {
 		let buffer = binserde::serialize(self).unwrap();
 		IdType::hash(&buffer)

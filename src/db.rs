@@ -1257,7 +1257,7 @@ impl Connection {
 		tx: &impl DerefConnection, label: &str, private_key: &PrivateKey, first_object: &IdType,
 		actor_type: String,
 	) -> rusqlite::Result<i64> {
-		let actor_info = ActorInfo {
+		let actor_info = ActorInfoV1 {
 			public_key: private_key.public(),
 			first_object: first_object.clone(),
 			actor_type,
@@ -1696,11 +1696,11 @@ impl Connection {
 					.map_err(|_| Error::InvalidPublicKey(None))?,
 			)?;
 			let first_object = IdType::from_base58(&first_object_string)?;
-			let actor_info = ActorInfo {
+			let actor_info = ActorInfo::V1(ActorInfoV1 {
 				public_key,
 				first_object,
 				actor_type,
-			};
+			});
 			list.push((address, actor_info));
 		}
 		Ok(list)
@@ -1851,11 +1851,11 @@ impl Connection {
 			}
 			let public_key = PublicKey::from_bytes(bytes.try_into().unwrap())?;
 			let first_object = IdType::from_base58(&hash)?;
-			Ok(Some(ActorInfo {
+			Ok(Some(ActorInfo::V1(ActorInfoV1 {
 				public_key,
 				first_object,
 				actor_type,
-			}))
+			})))
 		} else {
 			Ok(None)
 		}
@@ -2532,11 +2532,11 @@ mod tests {
 		)
 		.expect("unable to create personal identity");
 
-		let actor_info = ActorInfo {
+		let actor_info = ActorInfo::V1(ActorInfoV1 {
 			public_key: private_key.public(),
 			first_object: first_object_id,
 			actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
-		};
+		});
 		let actor_id = actor_info.generate_id();
 
 		let (fetched_address, fetched_private_key) = c

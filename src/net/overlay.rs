@@ -897,11 +897,11 @@ impl OverlayNode {
 									|(id, first_object, actor_type, private_key)| {
 										(
 											id,
-											ActorInfo {
+											ActorInfo::V1(ActorInfoV1 {
 												public_key: private_key.public(),
 												first_object,
 												actor_type,
-											},
+											}),
 										)
 									},
 								));
