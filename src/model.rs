@@ -1,10 +1,9 @@
 use std::{
-	fmt,
 	ops::{Deref, DerefMut},
 	sync::Arc,
 };
 
-use base58::{FromBase58, ToBase58};
+
 use serde::{Deserialize, Serialize};
 
 use super::{common::*, identity::*};

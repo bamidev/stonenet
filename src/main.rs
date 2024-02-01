@@ -18,9 +18,11 @@ mod web;
 
 use std::{
 	env,
+	fmt,
 	fs::File,
 	io::{self, prelude::*},
 	net::SocketAddr,
+	path::{Path, PathBuf},
 	process,
 	str::FromStr,
 	sync::{
@@ -43,6 +45,18 @@ use tokio;
 use toml;
 
 
+#[cfg(not(target_family = "windows"))]
+fn config_path(_install_dir: PathBuf) -> PathBuf {
+	PathBuf::from_str(config::CONFIG_FILE_PATH).unwrap()
+}
+
+#[cfg(target_family = "windows")]
+fn config_path(install_dir: PathBuf) -> PathBuf {
+	let mut path = install_dir;
+	path.push("config.toml");
+	path
+}
+
 fn initialize_logging() {
 	match env::var_os("SYSTEM_LOG_FILE") {
 		None => env_logger::init(),
@@ -51,19 +65,18 @@ fn initialize_logging() {
 	}
 }
 
-fn load_config() -> Option<Config> {
-	let mut file = match File::open(config::CONFIG_FILE_PATH) {
+fn load_config<P>(path: P) -> Option<Config>
+where
+	P: AsRef<Path> + fmt::Debug,
+{
+	let mut file = match File::open(&path) {
 		Err(e) => match e.kind() {
 			io::ErrorKind::NotFound => {
-				eprintln!("Config file {} not found!", config::CONFIG_FILE_PATH);
+				error!("Config file {:?} not found!", path);
 				return None;
 			}
 			_ => {
-				eprintln!(
-					"Unable to open config file {}: {}",
-					config::CONFIG_FILE_PATH,
-					e
-				);
+				error!("Unable to open config file {:?}: {}", path, e);
 				return None;
 			}
 		},
@@ -73,7 +86,7 @@ fn load_config() -> Option<Config> {
 	let mut content = String::new();
 	match file.read_to_string(&mut content) {
 		Err(e) => {
-			error!("Unable to read config file {}: {}", CONFIG_FILE_PATH, e);
+			error!("Unable to read config file {:?}: {}", path, e);
 			return None;
 		}
 		Ok(_) => {}
@@ -81,19 +94,62 @@ fn load_config() -> Option<Config> {
 
 	match toml::from_str(&content) {
 		Err(e) => {
-			error!("Unable to parse config file {}: {}", CONFIG_FILE_PATH, e);
+			error!("Unable to parse config file {:?}: {}", path, e);
 			None
 		}
 		Ok(c) => Some(c),
 	}
 }
 
+#[cfg(not(target_family = "windows"))]
+fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Database> {
+	Database::load(
+		PathBuf::from_str(&config.database_path)
+			.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+	)
+	.map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+}
+
+#[cfg(target_family = "windows")]
+fn load_database(_config: &Config, install_dir: PathBuf) -> io::Result<Database> {
+	let mut db_path = install_dir;
+	db_path.push("db.sqlite");
+	Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+}
+
+#[cfg(not(target_family = "windows"))]
+fn load_install_dir() -> io::Result<PathBuf> { Ok(PathBuf::new()) }
+
+#[cfg(target_family = "windows")]
+fn load_install_dir() -> io::Result<PathBuf> {
+	use std::path::PathBuf;
+
+	use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+
+	let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+	let cur_ver = hklm.open_subkey("Software\\Wow6432Node\\Stonenet")?;
+	let path: String = cur_ver.get_value("InstallDir")?;
+	let install_dir =
+		PathBuf::from_str(&path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+	Ok(install_dir)
+}
+
 #[tokio::main]
 async fn main() {
 	initialize_logging();
 
+	let install_dir = match load_install_dir() {
+		Ok(p) => p,
+		Err(e) => {
+			error!("Unable to load install directory: {}", e);
+			return;
+		}
+	};
+
 	// Load config
-	if let Some(config) = load_config() {
+	let config_path = config_path(install_dir.clone());
+	if let Some(config) = load_config(&config_path) {
 		if let Err(_) = CONFIG.set(config.clone()) {
 			panic!("Unable to set config global.")
 		}
@@ -109,12 +165,12 @@ async fn main() {
 		.expect("Error setting Ctrl-C handler");
 
 		// Load database
-		let db = match Database::load(config.database_path.clone().into()) {
+		let db = match load_database(&config, install_dir) {
+			Ok(db) => db,
 			Err(e) => {
 				error!("Unable to load database: {}", e);
 				return;
 			}
-			Ok(d) => d,
 		};
 
 		// Load node

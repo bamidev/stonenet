@@ -14,7 +14,6 @@ use rocket::{
 	form::Form,
 	fs::NamedFile,
 	http::{ContentType, MediaType},
-	log::LogLevel,
 	response::{stream::ByteStream, Redirect},
 	Data, *,
 };

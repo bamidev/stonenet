@@ -20,4 +20,7 @@ Section "Stonenet"
   File /r ../static
   File /r ../templates
   File /oname=config.toml ../conf/default.toml
+
+  WriteRegStr HKLM Software\Microsoft\Windows\CurrentVersion\Run StonenetDaemon "$INSTDIR\stonenetd.exe"
+  WriteRegStr HKLM Software\Stonenet InstallDir "$INSTDIR"
 SectionEnd
