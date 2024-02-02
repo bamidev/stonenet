@@ -41,7 +41,7 @@ pub struct ActorNode {
 pub struct ActorInterface {
 	overlay_node: Arc<OverlayNode>,
 	db: Database,
-	actor_id: IdType,
+	actor_address: ActorAddress,
 	actor_info: ActorInfo,
 	is_lurker: bool,
 	pub(super) connection_manager: Arc<ConnectionManager>,
@@ -56,7 +56,7 @@ impl ActorInterface {
 	async fn find_block(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db.connect()?;
-			c.fetch_block(&self.actor_id, id)
+			c.fetch_block(id)
 		})?;
 		if let Some(data) = result {
 			let response = FindBlockResult { data };
@@ -77,7 +77,7 @@ impl ActorInterface {
 	async fn find_object(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db.connect()?;
-			c.fetch_object(&self.actor_id, id)
+			c.fetch_object(id)
 		})?;
 		Ok(result.map(|(object, _)| binserde::serialize(&FindObjectResult { object }).unwrap()))
 	}
@@ -85,7 +85,7 @@ impl ActorInterface {
 	async fn find_next_object(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
 			let mut c = self.db.connect()?;
-			c.fetch_next_object(&self.actor_id, id)
+			c.fetch_next_object(&self.actor_address, id)
 		})?;
 		Ok(result.map(|(hash, object, _)| {
 			binserde::serialize(&FindNextObjectResult { hash, object }).unwrap()
@@ -119,14 +119,14 @@ impl NodeInterface for ActorInterface {
 	fn prepare(&self, message_type: u8, buffer: &[u8]) -> Vec<u8> {
 		let mut new_buffer = Vec::with_capacity(1 + 32 + buffer.len());
 		new_buffer.push(message_type | 0x80);
-		new_buffer.extend(self.actor_id.as_bytes());
+		new_buffer.extend(self.actor_address.as_id().as_bytes());
 		new_buffer.extend(buffer);
 		new_buffer
 	}
 }
 
 impl ActorNode {
-	pub fn actor_id(&self) -> &IdType { &self.base.interface.actor_id }
+	pub fn actor_address(&self) -> &ActorAddress { &self.base.interface.actor_address }
 
 	pub async fn close(self: Arc<Self>) { self.base.close().await; }
 
@@ -384,7 +384,7 @@ impl ActorNode {
 	fn has_object_by_sequence(&self, sequence: u64) -> bool {
 		tokio::task::block_in_place(|| {
 			let c = self.db().connect().expect("unable to open database");
-			c.has_object_sequence(self.actor_id(), sequence)
+			c.has_object_sequence(self.actor_address(), sequence)
 				.expect("unable to read object from database")
 		})
 	}
@@ -413,7 +413,7 @@ impl ActorNode {
 	fn investigate_missing_blocks(&self) -> db::Result<Vec<IdType>> {
 		tokio::task::block_in_place(|| {
 			let c = self.db().connect()?;
-			c.fetch_missing_file_blocks(self.actor_id())
+			c.fetch_missing_file_blocks()
 		})
 	}
 
@@ -422,7 +422,7 @@ impl ActorNode {
 	fn investigate_missing_files(&self) -> db::Result<Vec<IdType>> {
 		tokio::task::block_in_place(|| {
 			let c = self.db().connect()?;
-			let (_, head, ..) = if let Some(h) = c.fetch_head(self.actor_id())? {
+			let (_, head, ..) = if let Some(h) = c.fetch_head(self.actor_address())? {
 				h
 			} else {
 				return Ok(Vec::new());
@@ -430,16 +430,18 @@ impl ActorNode {
 			let mut results = Vec::new();
 
 			for i in 0..head.sequence {
-				if let Some((_, object, ..)) = c.fetch_object_by_sequence(self.actor_id(), i)? {
+				if let Some((_, object, ..)) =
+					c.fetch_object_by_sequence(self.actor_address(), i)?
+				{
 					match object.payload {
 						ObjectPayload::Profile(payload) => {
 							if let Some(file_hash) = payload.avatar.as_ref() {
-								if !c.has_file(self.actor_id(), file_hash)? {
+								if !c.has_file(file_hash)? {
 									results.push(file_hash.clone());
 								}
 							}
 							if let Some(file_hash) = payload.wallpaper.as_ref() {
-								if !c.has_file(self.actor_id(), file_hash)? {
+								if !c.has_file(file_hash)? {
 									results.push(file_hash.clone());
 								}
 							}
@@ -447,7 +449,7 @@ impl ActorNode {
 						ObjectPayload::Post(payload) => match &payload.data {
 							PostObjectCryptedData::Plain(plain) =>
 								for file_hash in &plain.files {
-									if !c.has_file(self.actor_id(), file_hash)? {
+									if !c.has_file(file_hash)? {
 										results.push(file_hash.clone());
 									}
 								},
@@ -468,12 +470,12 @@ impl ActorNode {
 			match &object.payload {
 				ObjectPayload::Profile(payload) => {
 					if let Some(file_hash) = payload.avatar.as_ref() {
-						if !c.has_file(self.actor_id(), file_hash)? {
+						if !c.has_file(file_hash)? {
 							results.push(file_hash.clone());
 						}
 					}
 					if let Some(file_hash) = payload.wallpaper.as_ref() {
-						if !c.has_file(self.actor_id(), file_hash)? {
+						if !c.has_file(file_hash)? {
 							results.push(file_hash.clone());
 						}
 					}
@@ -481,7 +483,7 @@ impl ActorNode {
 				ObjectPayload::Post(payload) => match &payload.data {
 					PostObjectCryptedData::Plain(plain) =>
 						for file_hash in &plain.files {
-							if !c.has_file(self.actor_id(), &file_hash)? {
+							if !c.has_file(&file_hash)? {
 								results.push(file_hash.clone());
 							}
 						},
@@ -533,7 +535,7 @@ impl ActorNode {
 	fn load_public_key(&self) -> PublicKey {
 		let actor_info = tokio::task::block_in_place(|| {
 			let c = self.db().connect().expect("unable to connect to database");
-			c.fetch_identity(self.actor_id())
+			c.fetch_identity(self.actor_address())
 				.expect("unable to load identity for actor node")
 				.expect("no identity for actor node")
 		});
@@ -544,13 +546,13 @@ impl ActorNode {
 
 	pub fn new(
 		stop_flag: Arc<AtomicBool>, overlay_node: Arc<OverlayNode>, node_id: IdType,
-		socket: Arc<sstp::Server>, actor_id: IdType, actor_info: ActorInfo, db: Database,
-		bucket_size: usize, leak_first_request: bool, is_lurker: bool,
+		socket: Arc<sstp::Server>, actor_address: ActorAddress, actor_info: ActorInfo,
+		db: Database, bucket_size: usize, leak_first_request: bool, is_lurker: bool,
 	) -> Self {
 		let interface = ActorInterface {
 			overlay_node,
 			db,
-			actor_id,
+			actor_address,
 			actor_info,
 			is_lurker,
 			connection_manager: Arc::new(ConnectionManager::new(node_id.clone(), 1)),
@@ -560,37 +562,6 @@ impl ActorNode {
 			base: Arc::new(Node::new(
 				stop_flag,
 				node_id,
-				socket,
-				interface,
-				bucket_size,
-				leak_first_request,
-			)),
-			downloading_objects: Mutex::new(Vec::new()),
-		}
-	}
-
-	pub(super) fn new_lurker(
-		stop_flag: Arc<AtomicBool>, overlay_node: Arc<OverlayNode>, socket: Arc<sstp::Server>,
-		actor_id: IdType, actor_info: ActorInfo, db: Database, bucket_size: usize,
-		leak_first_request: bool,
-	) -> Self {
-		let keypair = PrivateKey::generate();
-		let public_key = keypair.public();
-		let address = public_key.generate_address();
-
-		let interface = ActorInterface {
-			overlay_node,
-			db,
-			actor_id,
-			actor_info,
-			is_lurker: true,
-			connection_manager: Arc::new(ConnectionManager::new(address.clone(), 0)),
-		};
-		Self {
-			is_synchonizing: Arc::new(AtomicBool::new(false)),
-			base: Arc::new(Node::new(
-				stop_flag,
-				address,
 				socket,
 				interface,
 				bucket_size,
@@ -634,14 +605,14 @@ impl ActorNode {
 
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db().connect()?;
-			c.fetch_profile_object(&self.base.interface.actor_id)
+			c.fetch_profile_object(&self.base.interface.actor_address)
 		});
 		let object = match result {
 			Ok(p) => p,
 			Err(e) => {
 				error!(
-					"Unable to fetch profile for actor {}: {}",
-					&self.base.interface.actor_id, e
+					"Unable to fetch profile for actor {:?}: {}",
+					&self.base.interface.actor_address, e
 				);
 				None
 			}
@@ -686,7 +657,7 @@ impl ActorNode {
 					return None;
 				}
 			};
-			match c.fetch_head(&self.base.interface.actor_id) {
+			match c.fetch_head(&self.base.interface.actor_address) {
 				Ok(h) => h,
 				Err(e) => {
 					error!("Unable to fetch head: {}", e);
@@ -698,8 +669,8 @@ impl ActorNode {
 		let response = match head_result {
 			None => {
 				error!(
-					"No objects found for actor {}",
-					&self.base.interface.actor_id
+					"No objects found for actor {:?}",
+					&self.base.interface.actor_address
 				);
 				return None;
 			}
@@ -725,7 +696,7 @@ impl ActorNode {
 		let needed = {
 			let mut downloading_objects = self.downloading_objects.lock().await;
 			let mut needed = !downloading_objects.contains(&request.id);
-			let actor_id = &self.actor_id();
+			let actor_id = &self.actor_address();
 			if needed {
 				needed = self.needs_object(actor_id, &request.id);
 				if needed {
@@ -754,7 +725,7 @@ impl ActorNode {
 		))
 	}
 
-	fn needs_object(&self, actor_id: &IdType, id: &IdType) -> bool {
+	fn needs_object(&self, actor_address: &ActorAddress, id: &IdType) -> bool {
 		tokio::task::block_in_place(|| {
 			let c = match self.db().connect() {
 				Ok(c) => c,
@@ -763,7 +734,7 @@ impl ActorNode {
 					return false;
 				}
 			};
-			let has_object = match c.has_object(actor_id, id) {
+			let has_object = match c.has_object(actor_address, id) {
 				Ok(b) => b,
 				Err(e) => {
 					error!("Unable to check object: {}", e);
@@ -783,7 +754,7 @@ impl ActorNode {
 					return false;
 				}
 			};
-			let has_object = match c.has_file(self.actor_id(), id) {
+			let has_object = match c.has_file(id) {
 				Ok(b) => b,
 				Err(e) => {
 					error!("Unable to check file: {}", e);
@@ -803,7 +774,7 @@ impl ActorNode {
 					return false;
 				}
 			};
-			let has_object = match c.has_block(self.actor_id(), id) {
+			let has_object = match c.has_block(id) {
 				Ok(b) => b,
 				Err(e) => {
 					error!("Unable to check block: {}", e);
@@ -892,10 +863,8 @@ impl ActorNode {
 		let signature_hash = object.signature.hash();
 		if &signature_hash != id {
 			warn!(
-				"Object {} is invalid: id is not a hash of the signature: {} != {}",
-				self.actor_id(),
-				signature_hash,
-				&id
+				"Object {} is invalid: id is not a hash of the signature: {}",
+				&id, signature_hash,
 			);
 			return false;
 		}
@@ -940,6 +909,7 @@ impl ActorNode {
 						e
 					);
 				}
+
 				// Keep the connection open so that the other side can continue to make
 				// requests to us, like downloading any data
 				self.base.socket.handle_connection(connection).await;
@@ -958,7 +928,7 @@ impl ActorNode {
 	) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db().connect()?;
-			c.fetch_head(self.actor_id())
+			c.fetch_head(self.actor_address())
 		})?;
 
 		// If we have at least one object already
@@ -1002,28 +972,18 @@ impl ActorNode {
 	}
 
 	fn store_block(&self, id: &IdType, data: &[u8]) -> db::Result<()> {
-		tokio::task::block_in_place(|| {
-			let mut c = self.db().connect()?;
-			c.store_block(self.actor_id(), id, data)
-		})?;
-		Ok(())
+		self.db().perform(|mut c| c.store_block(id, data))
 	}
 
 	fn store_file(&self, id: &IdType, file: &File) -> db::Result<()> {
-		tokio::task::block_in_place(|| {
-			let mut c = self.db().connect()?;
-			c.store_file(self.actor_id(), id, file)
-		})?;
-		Ok(())
+		self.db().perform(|mut c| c.store_file(id, file))
 	}
 
 	fn store_object(
 		&self, id: &IdType, object: &Object, verified_from_start: bool,
 	) -> db::Result<bool> {
-		tokio::task::block_in_place(|| {
-			let mut c = self.db().connect()?;
-			c.store_object(self.actor_id(), id, object, verified_from_start)
-		})
+		self.db()
+			.perform(|mut c| c.store_object(self.actor_address(), id, object, verified_from_start))
 	}
 
 	pub async fn synchronize(&self) -> db::Result<()> {
@@ -1096,7 +1056,7 @@ impl ActorNode {
 			if let Some(result) = self.find_block(&hash).await {
 				tokio::task::block_in_place(|| {
 					let mut c = self.db().connect()?;
-					c.store_block(self.actor_id(), &hash, &result.data)
+					c.store_block(&hash, &result.data)
 				})?;
 			}
 		}
@@ -1134,7 +1094,7 @@ impl ActorNode {
 			if let Some(result) = self.find_file(&hash).await {
 				tokio::task::block_in_place(|| {
 					let mut c = self.db().connect()?;
-					c.store_file(self.actor_id(), &hash, &result.file)
+					c.store_file(&hash, &result.file)
 				})?;
 			}
 		}
@@ -1156,7 +1116,7 @@ impl ActorNode {
 	async fn synchronize_objects(&self) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db().connect()?;
-			c.fetch_last_verified_object(self.actor_id())
+			c.fetch_last_verified_object(self.actor_address())
 		})?;
 		let (mut last_known_object_id, mut last_known_object_sequence) = match result {
 			Some((hash, object)) => (hash, object.sequence),
@@ -1215,7 +1175,7 @@ impl ActorNode {
 						let to_break: db::Result<bool> = tokio::task::block_in_place(|| {
 							let mut c = self.db().connect()?;
 							let result = c.fetch_object_by_sequence(
-								self.actor_id(),
+								self.actor_address(),
 								last_known_object_sequence + 1,
 							)?;
 
@@ -1228,13 +1188,13 @@ impl ActorNode {
 									|| (object.sequence == 0
 										&& object.previous_hash != IdType::default())
 								{
-									c.delete_object(self.actor_id(), &hash)?;
+									c.delete_object(self.actor_address(), &hash)?;
 									Ok(true)
 								} else {
 									last_known_object_sequence += 1;
 									last_known_object_id = hash.clone();
 									if !verified_from_start {
-										c.update_object_verified(self.actor_id(), &hash)?;
+										c.update_object_verified(self.actor_address(), &hash)?;
 									}
 
 									Ok(false)
@@ -1261,8 +1221,8 @@ impl ActorNode {
 				this.is_synchonizing.store(false, Ordering::Release);
 				if let Err(e) = result {
 					error!(
-						"Error occurred during synchronization for actor {}: {}",
-						this.actor_id(),
+						"Error occurred during synchronization for actor {:?}: {:?}",
+						this.actor_address(),
 						e
 					);
 				}

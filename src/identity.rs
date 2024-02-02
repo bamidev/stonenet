@@ -1,4 +1,5 @@
 use std::{
+	error::Error,
 	fmt,
 	ops::{Deref, DerefMut},
 };
@@ -115,6 +116,8 @@ impl ToSql for PrivateKey {
 		Ok(ToSqlOutput::Borrowed(ValueRef::Blob(self.as_bytes())))
 	}
 }
+
+impl Error for PublicKeyError {}
 
 impl fmt::Display for PublicKeyError {
 	fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {

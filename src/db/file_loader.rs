@@ -66,7 +66,7 @@ impl<'a> Iterator for FileLoader<'a> {
 			if let Some(row) = self.rows.next()? {
 				let sequence: u64 = row.get(0)?;
 				if sequence != next_sequence {
-					return Err(super::Error::FileMissingBlock(self.file_id, next_sequence));
+					Err(super::Error::FileMissingBlock(self.file_id, next_sequence))?;
 				}
 
 				let block_size = row.get(1)?;
@@ -75,14 +75,14 @@ impl<'a> Iterator for FileLoader<'a> {
 				if data.len() < block_size {
 					error!("Block sequence {} is missing data.", sequence);
 					// FIXME: Turn this into a block corrupt error...
-					return Err(super::Error::FileMissingBlock(self.file_id, next_sequence));
+					Err(super::Error::FileMissingBlock(self.file_id, next_sequence))?;
 				} else if data.len() > block_size {
 					data.resize(block_size, 0);
 				}
 
 				Ok(data)
 			} else {
-				Err(super::Error::FileMissingBlock(self.file_id, next_sequence))
+				Err(super::Error::FileMissingBlock(self.file_id, next_sequence))?
 			}
 		};
 

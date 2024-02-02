@@ -141,7 +141,7 @@ impl NodeInterface for OverlayInterface {
 		else {
 			let result = tokio::task::block_in_place(|| {
 				let db = self.db.connect()?;
-				db.fetch_identity(id)
+				db.fetch_identity_by_id(id)
 			})?;
 			if result.is_none() {
 				return Ok(None);
@@ -576,19 +576,23 @@ impl OverlayNode {
 	/// Tries to connect to the actor network of the given actor ID, but in
 	/// 'lurking' mode. Meaning, the nodes of the network won't consider you as
 	/// a part of it.
-	pub async fn find_actor_profile_info(self: &Arc<Self>, actor_id: &IdType) -> Option<Object> {
-		let mut iter = self.connect_actor_iter(actor_id).await;
+	pub async fn find_actor_profile_info(
+		self: &Arc<Self>, actor_address: &ActorAddress,
+	) -> Option<Object> {
+		let mut iter = self.connect_actor_iter(actor_address).await;
 		let (node, object) = loop {
 			if let Some((mut connection, actor_info)) = iter.next().await {
-				let node = Arc::new(ActorNode::new_lurker(
+				let node = Arc::new(ActorNode::new(
 					self.base.stop_flag.clone(),
 					self.clone(),
+					self.node_id().clone(),
 					self.base.socket.clone(),
-					actor_id.clone(),
+					actor_address.clone(),
 					actor_info.clone(),
 					self.db().clone(),
 					self.base.bucket_size,
 					self.base.leak_first_request,
+					true,
 				));
 
 				let (object_id, object) =
@@ -601,7 +605,11 @@ impl OverlayNode {
 				// We need to store the identity in order for the object to be able to be stored
 				let result = tokio::task::block_in_place(|| {
 					let mut db = self.db().connect()?;
-					db.store_identity(actor_id, &actor_info.public_key, &actor_info.first_object)
+					db.store_identity(
+						actor_address,
+						&actor_info.public_key,
+						&actor_info.first_object,
+					)
 				});
 				if let Err(e) = result {
 					error!("Unable to store identity: {}", e);
@@ -645,7 +653,7 @@ impl OverlayNode {
 	}
 
 	pub async fn find_actor(
-		self: &Arc<Self>, id: &IdType, hop_limit: usize, narrow_down: bool,
+		self: &Arc<Self>, id: &ActorAddress, hop_limit: usize, narrow_down: bool,
 	) -> Option<Box<(ActorInfo, Vec<NodeContactInfo>)>> {
 		let mut iter = self.find_actor_iter(id, hop_limit, narrow_down).await;
 		let result = iter.next().await;
@@ -654,7 +662,7 @@ impl OverlayNode {
 
 	/// Tries to find the
 	pub async fn find_actor_iter<'a>(
-		self: &'a Arc<Self>, id: &IdType, hop_limit: usize, narrow_down: bool,
+		self: &'a Arc<Self>, address: &ActorAddress, hop_limit: usize, narrow_down: bool,
 	) -> FindActorIter<'a> {
 		fn verify_pubkey(
 			id: &IdType, peer: &NodeContactInfo, data: &[u8],
@@ -665,11 +673,14 @@ impl OverlayNode {
 					None
 				}
 				Ok(result) => {
-					let actor_info_hash = result.actor_info.generate_id();
-					if &actor_info_hash != id {
-						warn!("Received invalid actor info from node: invalid hash");
-						return None;
+					match result.actor_info.generate_address() {
+						ActorAddress::V1(actor_address) =>
+							if &actor_address != id {
+								warn!("Received invalid actor info from node: invalid hash");
+								return None;
+							},
 					}
+
 					let mut peers: Vec<NodeContactInfo> = result.peers;
 
 					if result.i_am_available {
@@ -683,13 +694,14 @@ impl OverlayNode {
 			}
 		}
 
-		let fingers = self.base.find_nearest_fingers(id).await;
+		let id = address.as_id();
+		let fingers = self.base.find_nearest_fingers(&id).await;
 		let this = self.clone();
 		let iter = self
 			.base
 			.find_value_from_fingers_iter(
 				this,
-				id,
+				&id,
 				0,
 				true,
 				&fingers,
@@ -767,7 +779,7 @@ impl OverlayNode {
 	}
 
 	async fn connect_actor_iter<'a>(
-		self: &'a Arc<Self>, actor_id: &IdType,
+		self: &'a Arc<Self>, actor_id: &ActorAddress,
 	) -> ConnectActorIter<'a> {
 		ConnectActorIter {
 			base: self.find_actor_iter(actor_id, 100, true).await,
@@ -781,18 +793,18 @@ impl OverlayNode {
 	}
 
 	pub async fn join_actor_network(
-		self: &Arc<Self>, actor_id: &IdType, actor_info: &ActorInfo,
+		self: &Arc<Self>, actor_id: &ActorAddress, actor_info: &ActorInfo,
 	) -> Option<Arc<ActorNode>> {
 		debug_assert!(
-			&actor_info.generate_id() == actor_id,
-			"actor info and actor ID don't match ({})",
+			&actor_info.generate_address() == actor_id,
+			"actor info and actor address don't match ({:?})",
 			actor_id
 		);
 
 		// Insert a new - or load the existing node
 		let node = {
 			let mut actor_nodes = self.base.interface.actor_nodes.lock().await;
-			if let Some(node) = actor_nodes.get(&actor_id) {
+			if let Some(node) = actor_nodes.get(&actor_id.as_id()) {
 				node.clone()
 			} else {
 				// Start up a new node for the actor network
@@ -808,7 +820,7 @@ impl OverlayNode {
 					self.base.leak_first_request,
 					false,
 				));
-				actor_nodes.insert(actor_id.clone(), node.clone());
+				actor_nodes.insert(actor_id.as_id().into_owned(), node.clone());
 				node
 			}
 		};
@@ -833,14 +845,14 @@ impl OverlayNode {
 			.map(|f| f.clone())
 			.collect();
 		let stored = self
-			.store_actor_at_contacts(actor_id, 4, actor_info, &last_two_visited)
+			.store_actor_at_contacts(&actor_id.as_id(), 4, actor_info, &last_two_visited)
 			.await;
-		debug!("Stored actor {} at {} nodes.", actor_id, stored);
+		debug!("Stored actor {:?} at {} nodes.", actor_id, stored);
 
 		Some(node)
 	}
 
-	async fn join_actor_networks(self: &Arc<Self>, actors: Vec<(IdType, ActorInfo)>) {
+	async fn join_actor_networks(self: &Arc<Self>, actors: Vec<(ActorAddress, ActorInfo)>) {
 		// Join each network in parallel
 		let futs = actors.into_iter().map(|(actor_id, actor_info)| async move {
 			if !self
@@ -849,16 +861,16 @@ impl OverlayNode {
 				.actor_nodes
 				.lock()
 				.await
-				.contains_key(&actor_id)
+				.contains_key(&actor_id.as_id())
 			{
 				if self
 					.join_actor_network(&actor_id, &actor_info)
 					.await
 					.is_some()
 				{
-					info!("Joined actor network {}.", actor_id);
+					info!("Joined actor network {:?}.", actor_id);
 				} else {
-					info!("Only one in actor network {} at the moment.", actor_id);
+					info!("Only one in actor network {:?} at the moment.", actor_id);
 				}
 			}
 		});
@@ -997,7 +1009,7 @@ impl OverlayNode {
 		}
 	}
 
-	fn load_following_actor_nodes(&self, c: &db::Connection) -> Vec<(IdType, ActorInfo)> {
+	fn load_following_actor_nodes(&self, c: &db::Connection) -> Vec<(ActorAddress, ActorInfo)> {
 		match c.fetch_follow_list() {
 			Ok(r) => r,
 			Err(e) => {
@@ -1007,7 +1019,9 @@ impl OverlayNode {
 		}
 	}
 
-	fn load_my_actor_nodes(&self, c: &db::Connection) -> Vec<(IdType, IdType, String, PrivateKey)> {
+	fn load_my_actor_nodes(
+		&self, c: &db::Connection,
+	) -> Vec<(ActorAddress, IdType, String, PrivateKey)> {
 		let result = match c.fetch_my_identities() {
 			Ok(r) => r,
 			Err(e) => {
@@ -1426,7 +1440,7 @@ impl OverlayNode {
 		// If we have the public key in our own database, show that as well.
 		let actor_info_result = tokio::task::block_in_place(|| {
 			let c = self.db().connect()?;
-			c.fetch_identity(&request.node_id)
+			c.fetch_identity_by_id(&request.node_id)
 		});
 		match actor_info_result {
 			Err(e) => error!("Database error while looking for public key: {}", e),
@@ -1562,7 +1576,7 @@ impl OverlayNode {
 				&buffer,
 				addr,
 				node_info,
-				Some(actor_node.actor_id()),
+				Some(&actor_node.actor_address().as_id()),
 			)
 			.await;
 		if !processed {
@@ -1622,8 +1636,8 @@ impl OverlayNode {
 		};
 
 		// Check if actor_id is indeed the hash of the public key + first block hash.
-		let actor_id_test = request.actor_info.generate_id();
-		if actor_id_test != request.actor_id {
+		let actor_id_test = request.actor_info.generate_address();
+		if actor_id_test.as_id().as_ref() != &request.actor_id {
 			warn!("Actor store request invalid: public key doesn't match actor ID.");
 			return None;
 		}

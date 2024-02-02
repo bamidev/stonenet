@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 
 use self::common::*;
-use crate::{api::Api, common::*, db, model::*};
+use crate::{api::Api, common::*, model::*};
 
 
 pub struct Global {
@@ -35,27 +35,6 @@ pub struct GlobalContext {
 	pub is_local: bool,
 }
 
-
-fn render_db_error(error: db::Error, message: &str) -> Template {
-	error!("Database error: {}: {}", message, error);
-	Template::render(
-		"error",
-		context! {
-			title: "Database error",
-			message
-		},
-	)
-}
-
-fn render_error(title: &str, message: &str) -> Template {
-	Template::render(
-		"error",
-		context! {
-			title,
-			message
-		},
-	)
-}
 
 #[derive(Serialize)]
 struct IdentityData {
@@ -73,9 +52,10 @@ async fn index(page: Option<u64>, g: &State<Global>) -> Template {
 		.iter()
 		.map(|i| {
 			let (label, address, ..) = i;
+			let address2 = Address::Actor(address.clone());
 			IdentityData {
 				label: label.clone(),
-				address: address.to_string(),
+				address: address2.to_string(),
 			}
 		})
 		.collect();
@@ -118,7 +98,7 @@ async fn index_post(
 			)
 		})?;
 
-	let (message, attachments, identity) =
+	let (message, attachments, address_str) =
 		process_message_form(data, boundary).await.map_err(|e| {
 			error!("Unable to process form input: {}", e);
 			render_error("Input error", "Unable to process form input")
@@ -127,9 +107,9 @@ async fn index_post(
 	if message.len() == 0 {
 		return Ok(index(None, g).await);
 	}
+	let actor_address = parse_actor_address(&address_str)?;
 
-	let identity_address = IdType::from_base58(&identity).expect("unable to parse post identity");
-	let (_label, keypair) = match g.api.fetch_my_identity(&identity_address) {
+	let (_label, keypair) = match g.api.fetch_my_identity(&actor_address) {
 		Ok(k) => k.expect("my identity not found"),
 		Err(e) => return Err(render_db_error(e, "unable to fetch my identity")),
 	};
@@ -137,7 +117,7 @@ async fn index_post(
 	// TODO: Parse tags from post.
 	g.api
 		.publish_post(
-			&identity_address,
+			&actor_address,
 			&keypair,
 			&message,
 			Vec::new(),
@@ -193,23 +173,20 @@ pub async fn spawn(g: Global, port: u16, workers: Option<usize>) -> (Shutdown, J
 }
 
 #[get("/actor/<address_str>")]
-async fn actor(address_str: &str, g: &State<Global>) -> Template {
+async fn actor(address_str: &str, g: &State<Global>) -> Result<Template, Template> {
 	#[derive(rocket::serde::Serialize)]
 	struct Object {
 		body: String,
 	}
 
-	let address = match IdType::from_base58(address_str) {
-		Ok(a) => a,
-		Err(_) => return render_error("Error", &format!("This is not a valid address")),
-	};
-	let profile = match g.api.fetch_profile_info(&address).await {
+	let actor_address = parse_actor_address(address_str)?;
+	let profile = match g.api.fetch_profile_info(&actor_address).await {
 		Ok(p) => p,
-		Err(e) => return render_db_error(e, "Unable to fetch profile"),
+		Err(e) => return Err(render_db_error(e, "Unable to fetch profile")),
 	};
-	let is_following: bool = match g.api.is_following(&address) {
+	let is_following: bool = match g.api.is_following(&actor_address) {
 		Ok(f) => f,
-		Err(e) => return render_db_error(e, "Unable to fetch follow status"),
+		Err(e) => return Err(render_db_error(e, "Unable to fetch follow status")),
 	};
 	// TODO: Check if public key is available, if so, following is still possible.
 
@@ -223,14 +200,14 @@ async fn actor(address_str: &str, g: &State<Global>) -> Template {
 
 	}*/
 
-	Template::render(
+	Ok(Template::render(
 		"actor",
 		context! {
-			address: address.to_string(),
+			address: address_str.to_owned(),
 			profile,
 			is_following
 		},
-	)
+	))
 }
 
 #[get("/actor/<address_str>/file/<hash_str>")]
@@ -322,22 +299,20 @@ async fn actor_object(
 async fn actor_object_post(
 	g: &State<Global>, address_str: &str, hash_str: &str, form_data: Form<PostPostData>,
 ) -> Result<Redirect, Template> {
-	let address = IdType::from_base58(address_str)
-		.map_err(|_e| render_error("Input error", "Invalid actor address"))?;
+	let address = parse_actor_address(address_str)?;
 	let hash = IdType::from_base58(hash_str)
 		.map_err(|_e| render_error("Input error", "Invalid object hash"))?;
-	let identity_address = IdType::from_base58(&form_data.identity)
-		.map_err(|_e| render_error("Input error", "Invalid identity address"))?;
+	let actor_address = parse_actor_address(&form_data.identity)?;
 	let (_label, keypair) = g
 		.api
-		.fetch_my_identity(&identity_address)
+		.fetch_my_identity(&actor_address)
 		.map_err(|e| render_db_error(e, "unable to fetch my identity"))?
 		.expect("my identity not found");
 
 	// TODO: Parse tags from post.
 	g.api
 		.publish_post(
-			&identity_address,
+			&actor_address,
 			&keypair,
 			&form_data.message,
 			Vec::new(),
@@ -357,34 +332,32 @@ struct ActorActions {
 #[post("/actor/<address_str>", data = "<form_data>")]
 async fn actor_post(
 	address_str: &str, g: &State<Global>, form_data: Form<ActorActions>,
-) -> Template {
+) -> Result<Template, Template> {
 	match form_data.follow.as_ref() {
 		None => {}
 		Some(follow) => {
-			let address = match IdType::from_base58(address_str) {
-				Ok(a) => a,
-				Err(_) => return render_error("Error", &format!("This is not a valid address")),
-			};
+			let address = parse_actor_address(address_str)?;
 
 			// Follow
 			if follow == "1" {
 				match g.api.follow(&address, true).await {
 					Ok(success) =>
 						if !success {
-							return render_error(
+							return Err(render_error(
 								"Not found",
 								"Coulnd't find the public key from this public key for this \
 								 person. None of his/her followers, neither him-/herself were \
 								 online.",
-							);
+							));
 						},
-					Err(e) => return render_db_error(e, &format!("Unable to follow person")),
+					Err(e) => return Err(render_db_error(e, &format!("Unable to follow person"))),
 				}
 			// Unfollow
 			} else {
 				match g.api.unfollow(&address).await {
 					Ok(_) => {}
-					Err(e) => return render_db_error(e, &format!("Unable to unfollow person")),
+					Err(e) =>
+						return Err(render_db_error(e, &format!("Unable to unfollow person"))),
 				}
 			}
 		}

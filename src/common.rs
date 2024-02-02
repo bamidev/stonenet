@@ -112,6 +112,8 @@ impl IdType {
 		buffer.into()
 	}
 
+	pub fn into_bytes(self) -> [u8; 32] { self.0 }
+
 	pub fn new(bytes: [u8; 32]) -> Self { Self(bytes.into()) }
 }
 
@@ -174,12 +176,6 @@ impl Serialize for IdType {
 
 impl ToBase58 for IdType {
 	fn to_base58(&self) -> String { self.0.to_base58() }
-}
-
-impl ToSql for IdType {
-	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-		Ok(ToSqlOutput::Owned(Value::Text(self.to_string())))
-	}
 }
 
 impl From<FromBase58Error> for IdFromBase58Error {

@@ -17,8 +17,7 @@ mod trace;
 mod web;
 
 use std::{
-	env,
-	fmt,
+	env, fmt,
 	fs::File,
 	io::{self, prelude::*},
 	net::SocketAddr,

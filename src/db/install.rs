@@ -10,9 +10,9 @@ pub const QUERY: &'static str = r#"
 
 	CREATE TABLE boost_object (
 		object_id INTEGER NOT NULL,
-		actor_hash TEXT NOT NULL,
+		actor_address BLOB NOT NULL,
 		object_hash TEXT NOT NULL,
-		UNIQUE(actor_hash, object_hash),
+		UNIQUE(actor_address, object_hash),
 		FOREIGN KEY(object_id) REFERENCES object(rowid)
 	);
 
@@ -23,10 +23,12 @@ pub const QUERY: &'static str = r#"
 	);
 
 	CREATE TABLE identity (
-		address TEXT NOT NULL PRIMARY KEY,
+		address BLOB NOT NULL PRIMARY KEY,
 		public_key BLOB NOT NULL,
 		first_object TEXT NOT NULL,
-		type TEXT NOT NULL
+		type TEXT NOT NULL,
+		UNIQUE(address),
+		UNIQUE(public_key)
 	);
 
 	CREATE TABLE my_identity (
@@ -83,7 +85,7 @@ pub const QUERY: &'static str = r#"
 
 	CREATE TABLE post_object (
 		object_id INTEGER NOT NULL,
-		in_reply_to_actor_hash TEXT,
+		in_reply_to_actor_address BLOB,
 		in_reply_to_object_hash TEXT,
 		file_count INTEGER NOT NULL,
 		FOREIGN KEY(object_id) REFERENCES object(rowid)
@@ -106,10 +108,9 @@ pub const QUERY: &'static str = r#"
 
 	CREATE TABLE file (
 		hash TEXT PRIMARY KEY,
-		actor_id INTEGER NOT NULL,
 		mime_type TEXT NOT NULL,
 		block_count INTEGER NOT NULL,
-		UNIQUE(actor_id, hash)
+		UNIQUE(hash)
 	);
 
 	CREATE TABLE file_blocks (
@@ -122,10 +123,9 @@ pub const QUERY: &'static str = r#"
 
 	CREATE TABLE block (
 		hash TEXT PIMARY KEY,
-		actor_id INTEGER NOT NULL,
 		size INTEGER NOT NULL,
 		data BLOB NOT NULL,
-		UNIQUE(actor_id, hash)
+		UNIQUE(hash)
 	);
 
 	CREATE TABLE move_object (

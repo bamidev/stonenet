@@ -1,7 +1,15 @@
+use std::str::FromStr;
+
 use chrono::*;
+use log::*;
+use rocket_dyn_templates::{context, Template};
 use serde::Serialize;
 
-use crate::db::*;
+use super::{ActorAddress, Address};
+use crate::{
+	db::{self, ObjectInfo, ObjectPayloadInfo},
+	trace::Traced,
+};
 
 #[derive(Serialize)]
 pub struct ObjectDisplayInfo {
@@ -18,9 +26,9 @@ pub fn into_object_display_info(object: ObjectInfo) -> ObjectDisplayInfo {
 	let time_ago = human_readable_duration(&Utc::now().signed_duration_since(created));
 
 	ObjectDisplayInfo {
-		actor_id: object.actor_id.to_string(),
+		actor_id: object.actor_address.to_string(),
 		actor_name: match object.actor_name {
-			None => object.actor_id.to_string(),
+			None => object.actor_address.to_string(),
 			Some(name) => name.clone(),
 		},
 		actor_avatar: object.actor_avatar.map(|id| id.to_string()),
@@ -67,4 +75,41 @@ pub fn human_readable_duration(duration: &Duration) -> String {
 			seconds.to_string() + " seconds"
 		}
 	}
+}
+
+pub fn parse_actor_address(string: &str) -> Result<ActorAddress, Template> {
+	let address = match Address::from_str(string) {
+		Ok(a) => a,
+		Err(e) =>
+			return Err(render_error(
+				"Invalid data",
+				&format!("Malformed address: {}", e),
+			)),
+	};
+	let actor_address = match address {
+		Address::Actor(aa) => aa,
+		_ => return Err(render_error("Invalid data", "Not an actor address")),
+	};
+	Ok(actor_address)
+}
+
+pub fn render_db_error(error: Traced<db::Error>, message: &str) -> Template {
+	error!("Database error: {}: {}", message, error);
+	Template::render(
+		"error",
+		context! {
+			title: "Database error",
+			message
+		},
+	)
+}
+
+pub fn render_error(title: &str, message: &str) -> Template {
+	Template::render(
+		"error",
+		context! {
+			title,
+			message
+		},
+	)
 }

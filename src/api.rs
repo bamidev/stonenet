@@ -40,7 +40,7 @@ impl Api {
 	pub fn create_my_identity(
 		&self, label: &str, name: &str, avatar: Option<&FileData>, wallpaper: Option<&FileData>,
 		description: &str,
-	) -> db::Result<(IdType, ActorInfo)> {
+	) -> db::Result<(ActorAddress, ActorInfo)> {
 		let private_key = PrivateKey::generate();
 		let this = self.clone();
 
@@ -86,7 +86,7 @@ impl Api {
 			first_object: object_hash.clone(),
 			actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
 		});
-		let actor_id = actor_info.generate_id();
+		let actor_address = actor_info.generate_address();
 
 		// Create the identity on disk
 		tokio::task::block_in_place(|| {
@@ -111,7 +111,7 @@ impl Api {
 			)
 		})?;
 
-		Ok((actor_id, actor_info))
+		Ok((actor_address, actor_info))
 	}
 
 	pub async fn find_block(
@@ -119,7 +119,7 @@ impl Api {
 	) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db.connect()?;
-			c.fetch_block(actor_node.actor_id(), id)
+			c.fetch_block(id)
 		})?;
 
 		Ok(match result {
@@ -177,7 +177,7 @@ impl Api {
 	) -> db::Result<Option<FindObjectResult>> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db.connect()?;
-			c.fetch_object(actor_node.actor_id(), id)
+			c.fetch_object(id)
 		})?;
 
 		Ok(match result {
@@ -194,7 +194,9 @@ impl Api {
 		})
 	}
 
-	pub fn fetch_my_identity(&self, address: &IdType) -> db::Result<Option<(String, PrivateKey)>> {
+	pub fn fetch_my_identity(
+		&self, address: &ActorAddress,
+	) -> db::Result<Option<(String, PrivateKey)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -204,7 +206,7 @@ impl Api {
 
 	pub fn fetch_my_identity_by_label(
 		&self, label: &str,
-	) -> db::Result<Option<(IdType, PrivateKey)>> {
+	) -> db::Result<Option<(ActorAddress, PrivateKey)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -214,7 +216,7 @@ impl Api {
 
 	pub fn fetch_my_identities(
 		&self,
-	) -> db::Result<Vec<(String, IdType, IdType, String, PrivateKey)>> {
+	) -> db::Result<Vec<(String, ActorAddress, IdType, String, PrivateKey)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -296,7 +298,7 @@ impl Api {
 	}*/
 
 	pub async fn fetch_profile_info(
-		&self, actor_id: &IdType,
+		&self, actor_id: &ActorAddress,
 	) -> db::Result<Option<ProfileObjectInfo>> {
 		let profile = tokio::task::block_in_place(|| {
 			let c = self.db.connect()?;
@@ -317,14 +319,14 @@ impl Api {
 		Ok(None)
 	}
 
-	pub async fn follow(&self, actor_id: &IdType, join_network: bool) -> db::Result<bool> {
+	pub async fn follow(&self, address: &ActorAddress, join_network: bool) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db.connect()?;
-			c.fetch_identity(actor_id)
+			c.fetch_identity(address)
 		})?;
 		let actor_info = match result {
 			Some(pk) => pk,
-			None => match self.node.find_actor(actor_id, 100, false).await {
+			None => match self.node.find_actor(&address, 100, false).await {
 				Some(r) => r.0.clone(),
 				None => return Ok(false),
 			},
@@ -332,13 +334,13 @@ impl Api {
 
 		let _private_key = tokio::task::block_in_place(|| {
 			let mut c = self.db.connect()?;
-			c.follow(actor_id, &actor_info)
+			c.follow(address, &actor_info)
 		})?;
 
 		// Join network
 		if join_network {
 			let node = self.node.clone();
-			let actor_id2 = actor_id.clone();
+			let actor_id2 = address.clone();
 			tokio::spawn(async move {
 				node.join_actor_network(&actor_id2, &actor_info).await;
 			});
@@ -347,19 +349,19 @@ impl Api {
 		Ok(true)
 	}
 
-	pub async fn unfollow(&self, actor_id: &IdType) -> db::Result<bool> {
+	pub async fn unfollow(&self, actor_id: &ActorAddress) -> db::Result<bool> {
 		let success = tokio::task::block_in_place(|| {
 			let mut c = self.db.connect()?;
 			c.unfollow(actor_id)
 		})?;
 
 		if success {
-			self.node.drop_actor_network(actor_id).await;
+			self.node.drop_actor_network(&actor_id.as_id()).await;
 		}
 		Ok(success)
 	}
 
-	pub fn is_following(&self, actor_id: &IdType) -> db::Result<bool> {
+	pub fn is_following(&self, actor_id: &ActorAddress) -> db::Result<bool> {
 		tokio::task::block_in_place(|| {
 			let c = self.db.connect()?;
 			c.is_following(actor_id)
@@ -379,7 +381,7 @@ impl Api {
 			let mut c = match db.connect() {
 				Ok(c) => c,
 				Err(e) => {
-					if let Err(_) = tx.blocking_send(Err(db::Error::SqliteError(e))) {
+					if let Err(_) = tx.blocking_send(Err(e)) {
 						error!("Unable to send init error.");
 					}
 					return;
@@ -406,7 +408,7 @@ impl Api {
 								error!("Unable to send block.");
 							},
 						Err(e) => {
-							match e {
+							match &*e {
 								db::Error::FileMissingBlock(..) => {
 									// TODO: Try to find the block on the
 									// network, and send it back instead of the
@@ -442,27 +444,21 @@ impl Api {
 	}
 
 	pub async fn publish_post(
-		&self, identity: &IdType, private_key: &PrivateKey, message: &str, tags: Vec<String>,
-		attachments: &[FileData], in_reply_to: Option<(IdType, IdType)>,
+		&self, identity: &ActorAddress, private_key: &PrivateKey, message: &str, tags: Vec<String>,
+		attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> db::Result<IdType> {
-		let (hash, object) = tokio::task::block_in_place(|| {
-			let mut c = self.db.connect()?;
+		let (hash, object) = self.db.perform(|mut c| {
 			let tx = c.transaction()?;
 			let identity_id =
 				db::Connection::_find_identity(&tx, identity)?.expect("unknown identity");
 
 			// Store all files
 			let mut files = Vec::with_capacity(attachments.len() + 1);
-			let (_, file_hash, _) = db::Connection::_store_file_data(
-				&tx,
-				identity_id,
-				"text/markdown",
-				message.as_bytes(),
-			)?;
+			let (_, file_hash, _) =
+				db::Connection::_store_file_data(&tx, "text/markdown", message.as_bytes())?;
 			files.push(file_hash);
 			for FileData { mime_type, data } in attachments {
-				let (_, file_hash, _) =
-					db::Connection::_store_file_data(&tx, identity_id, mime_type, data)?;
+				let (_, file_hash, _) = db::Connection::_store_file_data(&tx, mime_type, data)?;
 				files.push(file_hash);
 			}
 
@@ -502,7 +498,7 @@ impl Api {
 			)?;
 			tx.commit()?;
 
-			Ok::<_, db::Error>((
+			Ok((
 				hash,
 				Object {
 					created,
@@ -514,7 +510,7 @@ impl Api {
 			))
 		})?;
 
-		if let Some(actor_node) = self.node.get_actor_node(identity).await {
+		if let Some(actor_node) = self.node.get_actor_node(&identity.as_id()).await {
 			actor_node.publish_object(&self.node, &hash, &object).await;
 		} else {
 			error!("Actor node not found.");

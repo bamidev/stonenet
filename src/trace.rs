@@ -5,13 +5,18 @@ use std::{
 	error::Error,
 	fmt::{Debug, Display},
 	ops::{Deref, DerefMut},
+	result::Result as StdResult,
 };
 
 
-pub type Result<T, E> = std::result::Result<T, Traced<E>>;
+pub type Result<T, E> = StdResult<T, Traced<E>>;
 
 pub trait Traceable<E> {
 	fn trace(self) -> Traced<E>;
+}
+
+pub trait TraceableResult<T, E> {
+	fn trace_result(self) -> self::Result<T, E>;
 }
 
 pub struct Traced<E> {
@@ -32,8 +37,12 @@ pub fn err<T, E>(inner: E) -> Result<T, E> {
 }
 
 
-impl<T> Traceable<T> for T {
-	fn trace(self) -> Traced<T> { Traced::new(self) }
+impl<E> Traceable<E> for E {
+	fn trace(self) -> Traced<E> { Traced::new(self) }
+}
+
+impl<T, E> TraceableResult<T, E> for StdResult<T, E> {
+	fn trace_result(self) -> self::Result<T, E> { self.map_err(|e| Traced::new(e)) }
 }
 
 impl<T> Traced<T> {

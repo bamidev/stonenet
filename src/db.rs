@@ -4,16 +4,34 @@
 pub mod file_loader;
 mod install;
 
-use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*};
+use std::{
+	cmp::min,
+	fmt,
+	net::SocketAddr,
+	ops::*,
+	path::*,
+	str::{self, FromStr},
+};
 
 use chrono::*;
 use fallible_iterator::FallibleIterator;
 use log::*;
-use rusqlite::{self, params, Rows, Transaction};
+use rusqlite::{
+	self, params,
+	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Value, ValueRef},
+	Rows, ToSql, Transaction,
+};
 use serde::Serialize;
+use thiserror::Error;
 
 pub use self::file_loader::FileLoader;
-use crate::{common::*, identity::*, model::*, net::binserde};
+use crate::{
+	common::*,
+	identity::*,
+	model::*,
+	net::{actor, binserde},
+	trace::{self, Traceable, TraceableResult, Traced},
+};
 
 const DATABASE_VERSION: (u8, u16, u16) = (0, 0, 0);
 pub(crate) const BLOCK_SIZE: usize = 0x100000; // 1 MiB
@@ -30,10 +48,11 @@ pub struct Connection(
 	rusqlite::Connection,
 );
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
 	/// Sqlite error
 	SqliteError(rusqlite::Error),
+	ActorAddress(FromBytesAddressError),
 	InvalidObjectType(u8),
 	/// An invalid hash has been found in the database
 	InvalidHash(IdFromBase58Error),
@@ -45,7 +64,7 @@ pub enum Error {
 	PostMissingFiles(i64),
 	FileMissingBlock(i64, u64),
 
-	MissingIdentity(IdType),
+	MissingIdentity(ActorAddress),
 }
 
 #[derive(Serialize)]
@@ -58,7 +77,7 @@ impl<T> DerefConnection for T where T: Deref<Target = rusqlite::Connection> {}
 
 #[derive(Serialize)]
 pub struct TargetedActorInfo {
-	pub id: IdType,
+	pub address: ActorAddress,
 	pub name: String,
 	pub avatar_id: Option<IdType>,
 	pub wallpaper_id: Option<IdType>,
@@ -73,7 +92,7 @@ pub enum PossiblyKnownFileHeader {
 
 #[derive(Debug, Serialize)]
 pub struct TargetedPostInfo {
-	pub actor_id: IdType,
+	pub actor_id: ActorAddress,
 	pub actor_name: Option<String>,
 	pub actor_avatar: Option<IdType>,
 	pub sequence: u64,
@@ -106,7 +125,7 @@ pub struct ObjectInfo {
 	pub hash: IdType,
 	pub created: u64,
 	pub found: u64,
-	pub actor_id: IdType,
+	pub actor_address: ActorAddress,
 	pub actor_name: Option<String>,
 	pub actor_avatar: Option<IdType>,
 	pub payload: ObjectPayloadInfo,
@@ -120,19 +139,76 @@ pub enum ObjectPayloadInfo {
 	Move(MoveObjectInfo),
 }
 
-pub type Result<T> = std::result::Result<T, self::Error>;
+pub type Result<T> = trace::Result<T, self::Error>;
+
+
+impl FromSql for ActorAddress {
+	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+		match value {
+			ValueRef::Blob(blob) =>
+				if blob.len() != 33 {
+					Err(FromSqlError::InvalidBlobSize {
+						expected_size: 33,
+						blob_size: blob.len(),
+					})
+				} else {
+					Ok(Self::from_bytes(blob).map_err(|e| FromSqlError::Other(Box::new(e)))?)
+				},
+			_ => Err(FromSqlError::InvalidType),
+		}
+	}
+}
+
+impl ToSql for ActorAddress {
+	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+		Ok(ToSqlOutput::Owned(Value::Blob(self.to_bytes())))
+	}
+}
+
+impl ToSql for IdType {
+	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+		Ok(ToSqlOutput::Owned(Value::Text(self.to_string())))
+	}
+}
+
+impl FromSql for PublicKey {
+	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+		match value {
+			ValueRef::Blob(blob) =>
+				if blob.len() != 32 {
+					Err(FromSqlError::InvalidBlobSize {
+						expected_size: 32,
+						blob_size: blob.len(),
+					})
+				} else {
+					Ok(Self::from_bytes(*array_ref![blob, 0, 32])
+						.map_err(|e| FromSqlError::Other(Box::new(e)))?)
+				},
+			_ => Err(FromSqlError::InvalidType),
+		}
+	}
+}
 
 impl Database {
-	pub fn connect(&self) -> rusqlite::Result<Connection> { Ok(Connection::open(&self.path)?) }
+	pub fn connect(&self) -> self::Result<Connection> { Ok(Connection::open(&self.path)?) }
 
-	fn install(conn: &Connection) -> rusqlite::Result<()> { conn.execute_batch(install::QUERY) }
+	/// Runs the given closure, which pauzes the task that runs it, but doesn't
+	/// block the runtime.
+	pub fn perform<T>(&self, task: impl FnOnce(Connection) -> Result<T>) -> Result<T> {
+		tokio::task::block_in_place(move || {
+			let connection = self.connect()?;
+			task(connection)
+		})
+	}
+
+	fn install(conn: &Connection) -> Result<()> { Ok(conn.execute_batch(install::QUERY)?) }
 
 	fn is_outdated(major: u8, minor: u16, patch: u16) -> bool {
 		major < DATABASE_VERSION.0 || minor < DATABASE_VERSION.1 || patch < DATABASE_VERSION.2
 	}
 
-	pub fn load(path: PathBuf) -> rusqlite::Result<Self> {
-		let connection = Connection::open(&path)?;
+	pub fn load(path: PathBuf) -> Result<Self> {
+		let connection = Connection::open(&path).map_err(|e| Error::SqliteError(e))?;
 
 		match connection.prepare("SELECT major, minor, patch FROM version") {
 			Ok(mut stat) => {
@@ -152,11 +228,11 @@ impl Database {
 						if error_message == "no such table: version" {
 							Self::install(&connection)?;
 						} else {
-							return Err(e);
+							Err(e)?;
 						},
-					None => return Err(e),
+					None => Err(e)?,
 				},
-				_ => return Err(e),
+				_ => Err(e)?,
 			},
 		}
 
@@ -185,22 +261,13 @@ impl Connection {
 		)?;
 		let mut rows = stat.query([identity_id])?;
 		if let Some(row) = rows.next()? {
-			let id_hash: String = row.get(0)?;
-			let id = IdType::from_base58(&id_hash)?;
+			let address: ActorAddress = row.get(0)?;
 			let name = row.get(1)?;
-			let avatar_hash: Option<String> = row.get(2)?;
-			let avatar_id = match avatar_hash.as_ref() {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(hash)?),
-			};
-			let wallpaper_hash: Option<String> = row.get(3)?;
-			let wallpaper_id = match wallpaper_hash.as_ref() {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(hash)?),
-			};
+			let avatar_id: Option<IdType> = row.get(2)?;
+			let wallpaper_id: Option<IdType> = row.get(3)?;
 
 			Ok(Some(TargetedActorInfo {
-				id,
+				address,
 				name,
 				avatar_id,
 				wallpaper_id,
@@ -226,7 +293,7 @@ impl Connection {
 			let data: Vec<u8> = row.get(2)?;
 
 			if data.len() < size {
-				Err(Error::BlockDataCorrupt(rowid))
+				Err(Error::BlockDataCorrupt(rowid))?
 			} else if data.len() > size {
 				warn!(
 					"Block {} data blob is is larger than its size: {} > {}",
@@ -294,20 +361,20 @@ impl Connection {
 			let _block_hash: String = row.get(0)?;
 			let sequence: u64 = row.get(1)?;
 			if sequence != i {
-				return Err(Error::FileMissingBlock(file_id, sequence));
+				Err(Error::FileMissingBlock(file_id, sequence))?;
 			}
 			let block_id: Option<i64> = row.get(2)?;
 			let size2: Option<usize> = row.get(3)?;
 			let data2: Option<Vec<u8>> = row.get(4)?;
 
 			if block_id.is_none() {
-				return Err(Error::FileMissingBlock(file_id, sequence));
+				Err(Error::FileMissingBlock(file_id, sequence))?;
 			}
 			let size = size2.unwrap();
 			let data = data2.unwrap();
 
 			if data.len() < size {
-				return Err(Error::BlockDataCorrupt(block_id.unwrap()));
+				Err(Error::BlockDataCorrupt(block_id.unwrap()))?;
 			} else if data.len() > size {
 				warn!(
 					"Block {} has more data than its size: {} > {}",
@@ -324,9 +391,7 @@ impl Connection {
 		Ok(buffer)
 	}
 
-	fn _fetch_object<C>(
-		this: &C, actor_id: &IdType, hash: &IdType,
-	) -> Result<Option<(IdType, Object, bool)>>
+	fn _fetch_object<C>(this: &C, hash: &IdType) -> Result<Option<(IdType, Object, bool)>>
 	where
 		C: DerefConnection,
 	{
@@ -334,16 +399,15 @@ impl Connection {
 			r#"
 			SELECT o.rowid, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
 			FROM object AS o
-			INNER JOIN identity AS i ON o.actor_id = i.rowid
-			WHERE i.address = ? AND o.hash = ?
+			WHERE o.hash = ?
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id.to_string(), hash.to_string()])?;
+		let mut rows = stat.query(params![hash.to_string()])?;
 		Self::_parse_object(this, &mut rows)
 	}
 
 	fn _fetch_object_by_sequence<C>(
-		this: &C, actor_id: &IdType, sequence: u64,
+		this: &C, actor_id: &ActorAddress, sequence: u64,
 	) -> Result<Option<(IdType, Object, bool)>>
 	where
 		C: DerefConnection,
@@ -356,24 +420,24 @@ impl Connection {
 			WHERE i.address = ? AND o.sequence = ?
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id.to_string(), sequence])?;
+		let mut rows = stat.query(params![actor_id, sequence])?;
 		Self::_parse_object(this, &mut rows)
 	}
 
 	pub fn _fetch_object_hash_by_sequence<C>(
-		this: &C, _actor: &IdType, sequence: u64,
+		this: &C, actor_address: &ActorAddress, sequence: u64,
 	) -> Result<IdType>
 	where
 		C: DerefConnection,
 	{
-		let string: String = this.query_row(
+		let id: IdType = this.query_row(
 			r#"
-			SELECT hash FROM object WHERE sequence = ?
+			SELECT o.hash FROM object AS o LEFT JOIN identity AS i ON o.actor_id = i.rowid
+			WHERE i.address = ? AND o.sequence = ?
 		"#,
-			[sequence],
+			params![actor_address, sequence],
 			|r| r.get(0),
 		)?;
-		let id = IdType::from_base58(&string)?;
 		Ok(id)
 	}
 
@@ -398,7 +462,7 @@ impl Connection {
 		}
 	}
 
-	fn _fetch_head<C>(tx: &C, actor_id: &IdType) -> Result<Option<(IdType, Object, bool)>>
+	fn _fetch_head<C>(tx: &C, actor_id: &ActorAddress) -> Result<Option<(IdType, Object, bool)>>
 	where
 		C: DerefConnection,
 	{
@@ -411,12 +475,12 @@ impl Connection {
 			ORDER BY sequence DESC LIMIT 1
 		"#,
 		)?;
-		let mut rows = stat.query([actor_id.to_string()])?;
+		let mut rows = stat.query(params![actor_id])?;
 		Self::_parse_object(tx, &mut rows)
 	}
 
 	fn _fetch_last_verified_object<C>(
-		tx: &C, actor_id: &IdType,
+		tx: &C, actor_address: &ActorAddress,
 	) -> Result<Option<(IdType, Object, bool)>>
 	where
 		C: DerefConnection,
@@ -430,7 +494,7 @@ impl Connection {
 			ORDER BY sequence DESC LIMIT 1
 		"#,
 		)?;
-		let mut rows = stat.query([actor_id.to_string()])?;
+		let mut rows = stat.query(params![actor_address])?;
 		Self::_parse_object(tx, &mut rows)
 	}
 
@@ -467,12 +531,11 @@ impl Connection {
 		)?;
 		let mut rows = stat.query([object_id])?;
 		if let Some(row) = rows.next()? {
-			let post_actor_address: String = row.get(0)?;
+			let post_actor_address: ActorAddress = row.get(0)?;
 			let object_sequence = row.get(1)?;
-			let post_actor_id = IdType::from_base58(&post_actor_address)?;
 
 			Ok(Some(BoostObject {
-				post_actor_id,
+				post_actor_address,
 				object_sequence,
 			}))
 		} else {
@@ -488,11 +551,11 @@ impl Connection {
 	{
 		let mut stat = this.prepare(
 			r#"
-			SELECT o.rowid, o.sequence, bo.actor_hash, p.name, f.hash
+			SELECT o.rowid, o.sequence, bo.actor_address, p.name, f.hash
 			FROM boost_object AS bo
 			LEFT JOIN object AS o ON bo.object_id = o.rowid
 			LEFT JOIN identity AS i ON o.actor_id = i.rowid
-			LEFT JOIN profile AS p ON bo.actor_hash = identity.address
+			LEFT JOIN profile AS p ON bo.actor_address = identity.address
 			LEFT JOIN file AS f ON profile.avatar_file_id = af.rowid
 			WHERE o.actor_id ? AND o.sequence = ?
 		"#,
@@ -501,14 +564,9 @@ impl Connection {
 		if let Some(row) = rows.next()? {
 			let object_id = row.get(0)?;
 			let sequence = row.get(1)?;
-			let actor_address: String = row.get(2)?;
-			let post_actor_id = IdType::from_base58(&actor_address)?;
+			let post_actor_id: ActorAddress = row.get(2)?;
 			let post_actor_name: Option<String> = row.get(3)?;
-			let post_actor_avatar_hash: Option<String> = row.get(4)?;
-			let post_actor_avatar_id = match post_actor_avatar_hash.as_ref() {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(hash)?),
-			};
+			let post_actor_avatar_id: Option<IdType> = row.get(4)?;
 
 			let (message, attachments) = Self::_fetch_post_object_info_files(this, object_id)?;
 			Ok(Some(BoostObjectInfo {
@@ -540,8 +598,7 @@ impl Connection {
 		)?;
 		let mut rows = stat.query([object_id])?;
 		if let Some(row) = rows.next()? {
-			let actor_address: String = row.get(0)?;
-			let actor_id = IdType::from_base58(&actor_address)?;
+			let actor_id: IdType = row.get(0)?;
 
 			Ok(Some(MoveObject {
 				new_actor_id: actor_id,
@@ -579,9 +636,9 @@ impl Connection {
 		)?;
 		let mut rows = stat.query([post_id])?;
 		while let Some(row) = rows.next()? {
-			let hash: String = row.get(0)?;
+			let hash: IdType = row.get(0)?;
 
-			files.push(IdType::from_base58(&hash)?);
+			files.push(hash);
 		}
 
 		Ok(files)
@@ -625,11 +682,11 @@ impl Connection {
 							String::from_utf8_lossy(&message_data).to_string(),
 							mime_type,
 						)),
-						Err(e) => match e {
+						Err(e) => match &*e {
 							// If a block is still missing from the message data file, don't
 							// actually raise an error, just leave the message data unset.
 							Error::FileMissingBlock(..) => None,
-							other => return Err(other),
+							_ => return Err(e),
 						},
 					}
 				} else {
@@ -652,8 +709,7 @@ impl Connection {
 			)?;
 			let mut rows = stat.query([post_id])?;
 			while let Some(row) = rows.next()? {
-				let hash_str: String = row.get(0)?;
-				let hash = IdType::from_base58(&hash_str)?;
+				let hash: IdType = row.get(0)?;
 				let mime_type_opt: Option<String> = row.get(1)?;
 				let block_count_opt: Option<u32> = row.get(2)?;
 				let attachment = if let Some(mime_type) = mime_type_opt {
@@ -684,7 +740,7 @@ impl Connection {
 			FROM post_object AS po
 			INNER JOIN object AS o ON po.object_id = o.rowid
 			LEFT JOIN identity AS i ON o.actor_id = i.rowid
-			LEFT JOIN identity AS ti ON po.in_reply_to_actor_hash = ti.address
+			LEFT JOIN identity AS ti ON po.in_reply_to_actor_address = ti.address
 			LEFT JOIN object AS to_ ON to_.actor_id = ti.rowid
 			                       AND to_.hash = po.in_reply_to_object_hash
 			WHERE o.actor_id = ? AND o.sequence = ?
@@ -694,23 +750,22 @@ impl Connection {
 		if let Some(row) = rows.next()? {
 			let post_id = row.get(0)?;
 			let sequence = row.get(1)?;
-			let irt_actor_id: Option<i64> = row.get(2)?;
-			let irt_actor_address: Option<String> = row.get(3)?;
+			let irt_actor_rowid: Option<i64> = row.get(2)?;
+			let irt_actor_address_opt: Option<ActorAddress> = row.get(3)?;
 			let irt_object_id: Option<i64> = row.get(4)?;
 			let irt_sequence: Option<u64> = row.get(5)?;
 
 			let in_reply_to = match irt_object_id {
 				None => None,
 				Some(irt_post_id) => {
-					let (irt_actor_name, irt_actor_avatar_id) = match irt_actor_id {
+					let (irt_actor_name, irt_actor_avatar_id) = match irt_actor_rowid {
 						None => (None, None),
 						Some(id) => Self::_find_profile_limited(this, id)?,
 					};
-					let irt_actor_id = IdType::from_base58(&irt_actor_address.unwrap())?;
 					let (irt_message_opt, irt_attachments) =
 						Self::_fetch_post_object_info_files(this, irt_post_id)?;
 					Some(TargetedPostInfo {
-						actor_id: irt_actor_id,
+						actor_id: irt_actor_address_opt.unwrap(),
 						actor_name: irt_actor_name,
 						actor_avatar: irt_actor_avatar_id,
 						sequence: irt_sequence.unwrap(),
@@ -737,7 +792,7 @@ impl Connection {
 	) -> Result<Option<PostObject>> {
 		let mut stat = this.prepare(
 			r#"
-			SELECT rowid, in_reply_to_actor_hash, in_reply_to_object_hash
+			SELECT rowid, in_reply_to_actor_address, in_reply_to_object_hash
 			FROM post_object
 			WHERE object_id = ?
 		"#,
@@ -745,22 +800,14 @@ impl Connection {
 		let mut rows = stat.query([object_id])?;
 		if let Some(row) = rows.next()? {
 			let post_id: i64 = row.get(0)?;
-			let irt_actor_address: Option<String> = row.get(1)?;
-			let irt_object_hash: Option<String> = row.get(2)?;
-			let irt_actor_id = match irt_actor_address {
-				None => None,
-				Some(string) => Some(IdType::from_base58(&string)?),
-			};
-			let irt_object_id = match irt_object_hash {
-				None => None,
-				Some(string) => Some(IdType::from_base58(&string)?),
-			};
+			let irt_actor_address: Option<ActorAddress> = row.get(1)?;
+			let irt_object_id: Option<IdType> = row.get(2)?;
 			let tags = Self::_fetch_post_tags(this, post_id)?;
 			let files = Self::_fetch_post_files(this, post_id)?;
 
 			Ok(Some(PostObject {
-				in_reply_to: if irt_actor_id.is_some() && irt_object_id.is_some() {
-					Some((irt_actor_id.unwrap(), irt_object_id.unwrap()))
+				in_reply_to: if irt_actor_address.is_some() && irt_object_id.is_some() {
+					Some((irt_actor_address.unwrap(), irt_object_id.unwrap()))
 				} else {
 					None
 				},
@@ -789,21 +836,9 @@ impl Connection {
 			if name.is_none() {
 				return Ok(None);
 			}
-			let avatar_hash: Option<String> = row.get(1)?;
-			let avatar_id = match avatar_hash.as_ref() {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(hash)?),
-			};
-			let wallpaper_hash: Option<String> = row.get(2)?;
-			let wallpaper_id = match wallpaper_hash.as_ref() {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(hash)?),
-			};
-			let description_block_hash: Option<String> = row.get(3)?;
-			let description_block_id = match description_block_hash.as_ref() {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(hash)?),
-			};
+			let avatar_id: Option<IdType> = row.get(1)?;
+			let wallpaper_id: Option<IdType> = row.get(2)?;
+			let description_block_id: Option<IdType> = row.get(3)?;
 			Ok(Some(ProfileObject {
 				name: name.unwrap(),
 				avatar: avatar_id,
@@ -832,19 +867,10 @@ impl Connection {
 		)?;
 		let mut rows = stat.query(params![actor_id, sequence])?;
 		if let Some(row) = rows.next()? {
-			let actor_hash: String = row.get(0)?;
-			let actor_id = IdType::from_base58(&actor_hash)?;
+			let actor_address: ActorAddress = row.get(0)?;
 			let actor_name: String = row.get(1)?;
-			let avatar_hash: Option<String> = row.get(2)?;
-			let avatar_id = match avatar_hash {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(&hash)?),
-			};
-			let wallpaper_hash: Option<String> = row.get(3)?;
-			let wallpaper_id = match wallpaper_hash {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(&hash)?),
-			};
+			let avatar_id: Option<IdType> = row.get(2)?;
+			let wallpaper_id: Option<IdType> = row.get(3)?;
 			let description_data: Option<Vec<u8>> = row.get(4)?;
 			let description = match description_data {
 				None => None,
@@ -853,7 +879,7 @@ impl Connection {
 
 			Ok(Some(ProfileObjectInfo {
 				actor: TargetedActorInfo {
-					id: actor_id,
+					address: actor_address,
 					name: actor_name,
 					avatar_id,
 					wallpaper_id,
@@ -903,7 +929,7 @@ impl Connection {
 		})
 	}*/
 
-	pub(crate) fn _find_identity<C>(tx: &C, address: &IdType) -> rusqlite::Result<Option<i64>>
+	pub(crate) fn _find_identity<C>(tx: &C, address: &ActorAddress) -> rusqlite::Result<Option<i64>>
 	where
 		C: DerefConnection,
 	{
@@ -912,7 +938,7 @@ impl Connection {
 			SELECT rowid FROM identity WHERE address = ?
 		"#,
 		)?;
-		let mut rows = stat.query([address.to_string()])?;
+		let mut rows = stat.query([address])?;
 		match rows.next()? {
 			None => Ok(None),
 			Some(row) => Ok(Some(row.get(0)?)),
@@ -935,12 +961,7 @@ impl Connection {
 		let mut rows = stat.query([actor_id])?;
 		Ok(if let Some(row) = rows.next()? {
 			let name: String = row.get(0)?;
-			let avatar_hash: Option<String> = row.get(1)?;
-			let avatar_id = match avatar_hash {
-				None => None,
-				Some(h) => Some(IdType::from_base58(&h)?),
-			};
-
+			let avatar_id: Option<IdType> = row.get(1)?;
 			(Some(name), avatar_id)
 		} else {
 			(None, None)
@@ -1016,16 +1037,11 @@ impl Connection {
 			let sequence = row.get(1)?;
 			let created = row.get(2)?;
 			let raw_signature: Vec<u8> = row.get(3)?;
-			let hash_string: String = row.get(4)?;
+			let hash: IdType = row.get(4)?;
 			let object_type = row.get(5)?;
-			let previous_hash_string: Option<String> = row.get(6)?;
+			let previous_hash: Option<IdType> = row.get(6)?;
 			let verified_from_start: bool = row.get(7)?;
 			let signature = Signature::from_bytes(raw_signature.as_slice().try_into().unwrap());
-			let hash = IdType::from_base58(&hash_string)?;
-			let previous_hash = match previous_hash_string {
-				None => IdType::default(),
-				Some(string) => IdType::from_base58(&string)?,
-			};
 
 			let payload = match object_type {
 				0 => Self::_fetch_post_object(tx, object_id)
@@ -1034,7 +1050,7 @@ impl Connection {
 					.map(|o| o.map(|b| ObjectPayload::Boost(b))),
 				2 => Self::_fetch_profile_object(tx, object_id)
 					.map(|o| o.map(|p| ObjectPayload::Profile(p))),
-				other => return Err(Error::InvalidObjectType(other)),
+				other => Err(Error::InvalidObjectType(other))?,
 			};
 			payload.map(|o| {
 				o.map(|p| {
@@ -1042,7 +1058,7 @@ impl Connection {
 						hash,
 						Object {
 							sequence,
-							previous_hash,
+							previous_hash: previous_hash.unwrap_or_default(),
 							created,
 							signature,
 							payload: p,
@@ -1061,14 +1077,12 @@ impl Connection {
 	) -> Result<Option<ObjectInfo>> {
 		if let Some(row) = rows.next()? {
 			let actor_id = row.get(0)?;
-			let hash_string: String = row.get(1)?;
-			let hash = IdType::from_base58(&hash_string)?;
+			let hash: IdType = row.get(1)?;
 			let sequence = row.get(2)?;
 			let created = row.get(3)?;
 			let found = row.get(4)?;
 			let object_type = row.get(5)?;
-			let actor_address_hash: String = row.get(6)?;
-			let actor_address = IdType::from_base58(&actor_address_hash)?;
+			let actor_address: ActorAddress = row.get(6)?;
 
 			let (actor_name, actor_avatar_id) = Self::_find_profile_limited(tx, actor_id)?;
 			let payload_result = match object_type {
@@ -1080,7 +1094,7 @@ impl Connection {
 					.map(|o| o.map(|p| ObjectPayloadInfo::Profile(p))),
 				3 => Self::_fetch_move_object_info(tx, actor_id, sequence)
 					.map(|o| o.map(|m| ObjectPayloadInfo::Move(m))),
-				other => return Err(Error::InvalidObjectType(other)),
+				other => Err(Error::InvalidObjectType(other))?,
 			};
 			let payload = if let Some(p) = payload_result? {
 				p
@@ -1091,7 +1105,7 @@ impl Connection {
 				hash,
 				created,
 				found,
-				actor_id: actor_address,
+				actor_address,
 				actor_name,
 				actor_avatar: actor_avatar_id,
 				payload,
@@ -1101,20 +1115,19 @@ impl Connection {
 		}
 	}
 
-	pub fn _store_block(
-		tx: &impl DerefConnection, actor_id: i64, hash: &IdType, data: &[u8],
-	) -> rusqlite::Result<i64> {
+	pub fn _store_block(tx: &impl DerefConnection, hash: &IdType, data: &[u8]) -> Result<i64> {
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO block (hash, actor_id, size, data) VALUES (?,?,?,?)
+			INSERT INTO block (hash, size, data) VALUES (?,?,?)
 		"#,
 		)?;
-		stat.insert(params![hash.to_string(), actor_id, data.len(), data])
+		let rowid = stat.insert(params![hash.to_string(), data.len(), data])?;
+		Ok(rowid)
 	}
 
 	pub(crate) fn _store_file_data(
-		tx: &Transaction, actor_id: i64, mime_type: &str, data: &[u8],
-	) -> rusqlite::Result<(i64, IdType, Vec<IdType>)> {
+		tx: &Transaction, mime_type: &str, data: &[u8],
+	) -> Result<(i64, IdType, Vec<IdType>)> {
 		debug_assert!(data.len() <= u64::MAX as usize, "data too large");
 		debug_assert!(data.len() > 0, "data can not be empty");
 		let block_count = data.len() / BLOCK_SIZE + ((data.len() % BLOCK_SIZE) > 0) as usize;
@@ -1154,23 +1167,18 @@ impl Connection {
 		// Create the file record
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO file (actor_id, hash, mime_type, block_count)
-			VALUES (?,?,?,?)
+			INSERT INTO file (hash, mime_type, block_count)
+			VALUES (?,?,?)
 		"#,
 		)?;
-		let file_id = stat.insert(params![
-			actor_id,
-			file_hash.to_string(),
-			mime_type,
-			block_count
-		])?;
+		let file_id = stat.insert(params![file_hash.to_string(), mime_type, block_count])?;
 
 		// Create block records
 		for i in 0..block_count {
 			let block_data = blocks[i];
 			let block_hash = &block_hashes[i];
 
-			Self::_store_file_block(tx, actor_id, file_id, i as _, block_hash, block_data)?;
+			Self::_store_file_block(tx, file_id, i as _, block_hash, block_data)?;
 		}
 		Ok((file_id as _, file_hash, block_hashes))
 	}
@@ -1184,7 +1192,7 @@ impl Connection {
 	}*/
 
 	pub(crate) fn _store_file(
-		tx: &impl DerefConnection, actor_id: i64, id: &IdType, mime_type: &str, blocks: &[IdType],
+		tx: &impl DerefConnection, id: &IdType, mime_type: &str, blocks: &[IdType],
 	) -> rusqlite::Result<i64> {
 		debug_assert!(blocks.len() <= u32::MAX as usize, "too many blocks");
 		debug_assert!(blocks.len() > 0, "file must have at least one block");
@@ -1192,11 +1200,11 @@ impl Connection {
 		// Create the file record
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO file (actor_id, hash, mime_type, block_count)
-			VALUES (?,?,?,?)
+			INSERT INTO file (hash, mime_type, block_count)
+			VALUES (?,?,?)
 		"#,
 		)?;
-		let file_id = stat.insert(params![actor_id, id.to_string(), mime_type, blocks.len()])?;
+		let file_id = stat.insert(params![id.to_string(), mime_type, blocks.len()])?;
 
 		// Create block records
 		for i in 0..blocks.len() {
@@ -1214,20 +1222,15 @@ impl Connection {
 	}
 
 	fn _store_file_block(
-		tx: &Transaction, actor_id: i64, file_id: i64, sequence: u64, hash: &IdType, data: &[u8],
+		tx: &Transaction, file_id: i64, sequence: u64, hash: &IdType, data: &[u8],
 	) -> rusqlite::Result<()> {
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO block (actor_id, hash, size, data)
-			VALUES (?,?,?,?)
+			INSERT INTO block (hash, size, data)
+			VALUES (?,?,?)
 		"#,
 		)?;
-		let _block_id = stat.insert(rusqlite::params![
-			actor_id,
-			hash.to_string(),
-			data.len(),
-			data
-		])?;
+		let _block_id = stat.insert(rusqlite::params![hash.to_string(), data.len(), data])?;
 
 		tx.execute(
 			r#"
@@ -1239,30 +1242,33 @@ impl Connection {
 	}
 
 	fn _store_identity(
-		tx: &impl DerefConnection, address: &IdType, public_key: &PublicKey, first_object: &IdType,
-	) -> rusqlite::Result<i64> {
+		tx: &impl DerefConnection, address: &ActorAddress, public_key: &PublicKey,
+		first_object: &IdType,
+	) -> Result<i64> {
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO identity (address, public_key, first_object, type) VALUES (?,?,?, 'feed')
+			INSERT INTO identity (address, public_key, first_object, type) VALUES (?,?,?,?)
 		"#,
 		)?;
-		stat.insert(params![
-			address.to_string(),
+		let rowid = stat.insert(params![
+			address,
 			public_key.as_bytes(),
-			first_object.to_string()
-		])
+			first_object.to_string(),
+			ACTOR_TYPE_BLOGCHAIN
+		])?;
+		Ok(rowid)
 	}
 
 	fn _store_my_identity(
 		tx: &impl DerefConnection, label: &str, private_key: &PrivateKey, first_object: &IdType,
 		actor_type: String,
-	) -> rusqlite::Result<i64> {
+	) -> Result<i64> {
 		let actor_info = ActorInfoV1 {
 			public_key: private_key.public(),
 			first_object: first_object.clone(),
 			actor_type,
 		};
-		let address = actor_info.generate_id();
+		let address = ActorAddress::V1(actor_info.generate_id());
 		let identity_id =
 			Self::_store_identity(tx, &address, &actor_info.public_key, first_object)?;
 
@@ -1276,7 +1282,7 @@ impl Connection {
 	}
 
 	pub fn _store_object(
-		tx: &impl DerefConnection, actor_hash: &IdType, id: &IdType, object: &Object,
+		tx: &impl DerefConnection, actor_address: &ActorAddress, id: &IdType, object: &Object,
 		verified_from_start: bool,
 	) -> Result<i64> {
 		let mut stat = tx.prepare(
@@ -1284,7 +1290,7 @@ impl Connection {
 			SELECT rowid FROM identity WHERE address = ?
 		"#,
 		)?;
-		let mut rows = stat.query([actor_hash.to_string()])?;
+		let mut rows = stat.query(params![actor_address])?;
 		if let Some(row) = rows.next()? {
 			let actor_rowid: i64 = row.get(0)?;
 
@@ -1310,14 +1316,14 @@ impl Connection {
 			Self::_store_object_payload(tx, actor_rowid, object_id, &object.payload)?;
 			Ok(object_id)
 		} else {
-			Err(Error::MissingIdentity(actor_hash.clone()))
+			Err(Error::MissingIdentity(actor_address.clone()))?
 		}
 	}
 
 	pub fn _store_post(
 		tx: &impl DerefConnection, actor_id: i64, created: u64, previous_hash: &IdType,
 		tags: &[String], files: &[IdType], hash: &IdType, signature: &Signature,
-		in_reply_to: Option<(IdType, IdType)>,
+		in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> Result<()> {
 		// Create post object
 		let next_sequence = Self::_next_object_sequence(tx, actor_id)?;
@@ -1342,12 +1348,12 @@ impl Connection {
 		])?;
 		stat = tx.prepare(
 			r#"
-			INSERT INTO post_object (object_id, file_count, in_reply_to_actor_hash, in_reply_to_object_hash) VALUES (?,?,?,?)
+			INSERT INTO post_object (object_id, file_count, in_reply_to_actor_address, in_reply_to_object_hash) VALUES (?,?,?,?)
 		"#,
 		)?;
 		let (a, o) = match in_reply_to {
 			None => (None, None),
-			Some((actor, object)) => (Some(actor.to_string()), Some(object.to_string())),
+			Some((actor, object)) => (Some(actor), Some(object)),
 		};
 		let post_id = stat.insert(params![object_id, files.len(), a, o])?;
 
@@ -1379,7 +1385,7 @@ impl Connection {
 	) -> rusqlite::Result<()> {
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO post_object (object_id, file_count, in_reply_to_actor_hash, in_reply_to_object_hash)
+			INSERT INTO post_object (object_id, file_count, in_reply_to_actor_address, in_reply_to_object_hash)
 			VALUES (?,?,?,?)
 		"#,
 		)?;
@@ -1488,14 +1494,13 @@ impl Connection {
 		description: Option<(IdType, &str)>,
 	) -> Result<()> {
 		fn store_file<'a>(
-			tx: &impl DerefConnection, identity_id: i64,
-			file_data: Option<(&'a IdType, &str, &[(IdType, Vec<u8>)])>,
+			tx: &impl DerefConnection, file_data: Option<(&'a IdType, &str, &[(IdType, Vec<u8>)])>,
 		) -> Result<Option<&'a IdType>> {
 			if let Some((hash, mime_type, blocks)) = file_data {
 				let block_ids: Vec<IdType> = blocks.iter().map(|(hash, _)| hash.clone()).collect();
-				Connection::_store_file(tx, identity_id, &hash, &mime_type, &block_ids)?;
+				Connection::_store_file(tx, &hash, &mime_type, &block_ids)?;
 				for (block_id, block_data) in blocks {
-					Connection::_store_block(tx, identity_id, block_id, block_data)?;
+					Connection::_store_block(tx, block_id, block_data)?;
 				}
 				Ok(Some(hash))
 			} else {
@@ -1512,10 +1517,10 @@ impl Connection {
 			&first_object_hash,
 			ACTOR_TYPE_BLOGCHAIN.to_string(),
 		)?;
-		let avatar_file_id = store_file(&tx, identity_id, avatar)?;
-		let wallpaper_file_id = store_file(&tx, identity_id, wallpaper)?;
+		let avatar_file_id = store_file(&tx, avatar)?;
+		let wallpaper_file_id = store_file(&tx, wallpaper)?;
 		let description_block_id = if let Some((hash, description_str)) = &description {
-			Self::_store_block(&tx, identity_id, hash, description_str.as_bytes())?;
+			Self::_store_block(&tx, hash, description_str.as_bytes())?;
 			Some(hash)
 		} else {
 			None
@@ -1536,14 +1541,14 @@ impl Connection {
 		Ok(())
 	}
 
-	pub fn delete_object(&self, actor_id: &IdType, hash: &IdType) -> Result<bool> {
+	pub fn delete_object(&self, actor_address: &ActorAddress, hash: &IdType) -> Result<bool> {
 		let affected = self.0.execute(
 			r#"
 			DELETE FROM object WHERE hash = ? AND actor_id = (
 				SELECT rowid FROM identity WHERE address = ?
 			)
 		"#,
-			[hash.to_string(), actor_id.to_string()],
+			params![hash.to_string(), actor_address],
 		)?;
 		Ok(affected > 0)
 	}
@@ -1576,45 +1581,42 @@ impl Connection {
 
 	/// Returns a list of hashes of blocks we're still missing but also in need
 	/// of
-	pub fn fetch_missing_file_blocks(&self, actor_id: &IdType) -> Result<Vec<IdType>> {
+	pub fn fetch_missing_file_blocks(&self) -> Result<Vec<IdType>> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT fb.block_hash
-			FROM file AS f
-			LEFT JOIN identity AS i ON f.actor_id = i.rowid
-			LEFT JOIN file_blocks AS fb ON fb.file_id = f.rowid
-			WHERE i.address = ? AND fb.block_hash NOT IN (
-				SELECT hash FROM block WHERE actor_id = i.rowid
+			FROM file_blocks AS fb
+			INNER JOIN file AS f ON f.rowid = fb.file_id
+			WHERE fb.block_hash NOT IN (
+				SELECT hash FROM block
 			)
 		"#,
 		)?;
 
-		let mut rows = stat.query([actor_id.to_string()])?;
+		let mut rows = stat.query([])?;
 		let mut results = Vec::new();
 		while let Some(row) = rows.next()? {
-			let hash: String = row.get(0)?;
-			let id = IdType::from_base58(&hash)?;
-			results.push(id);
+			let hash: IdType = row.get(0)?;
+			results.push(hash);
 		}
 		Ok(results)
 	}
 
-	pub fn fetch_block(&self, actor_id: &IdType, id: &IdType) -> Result<Option<Vec<u8>>> {
+	pub fn fetch_block(&self, id: &IdType) -> Result<Option<Vec<u8>>> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT b.rowid, b.size, b.data
-			FROM block AS b 
-			LEFT JOIN identity AS i ON b.actor_id = i.rowid
-			WHERE i.address = ? AND b.hash = ?
+			FROM block AS b
+			WHERE b.hash = ?
 		"#,
 		)?;
-		let mut rows = stat.query([actor_id.to_string(), id.to_string()])?;
+		let mut rows = stat.query([id.to_string()])?;
 		if let Some(row) = rows.next()? {
 			let block_id = row.get(0)?;
 			let size: usize = row.get(1)?;
 			let data: Vec<u8> = row.get(2)?;
 			if data.len() != size {
-				return Err(Error::BlockDataCorrupt(block_id));
+				Err(Error::BlockDataCorrupt(block_id))?;
 			}
 			Ok(Some(data))
 		} else {
@@ -1655,12 +1657,11 @@ impl Connection {
 			while let Some(row) = rows.next()? {
 				let sequence: u64 = row.get(0)?;
 				if sequence != i {
-					return Err(Error::FileMissingBlock(file_id, i));
+					Err(Error::FileMissingBlock(file_id, i))?;
 				}
-				let block_hash: String = row.get(1)?;
-				let block_id = IdType::from_base58(&block_hash)?;
+				let block_hash: IdType = row.get(1)?;
 
-				blocks.push(block_id);
+				blocks.push(block_hash);
 				if blocks.len() == blocks.capacity() {
 					break;
 				}
@@ -1673,7 +1674,7 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_follow_list(&self) -> Result<Vec<(IdType, ActorInfo)>> {
+	pub fn fetch_follow_list(&self) -> Result<Vec<(ActorAddress, ActorInfo)>> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT i.address, i.public_key, i.first_object, i.type
@@ -1685,17 +1686,10 @@ impl Connection {
 
 		let mut list = Vec::new();
 		while let Some(row) = rows.next()? {
-			let address_string: String = row.get(0)?;
-			let raw_public_key: Vec<u8> = row.get(1)?;
-			let first_object_string: String = row.get(2)?;
+			let address: ActorAddress = row.get(0)?;
+			let public_key: PublicKey = row.get(1)?;
+			let first_object: IdType = row.get(2)?;
 			let actor_type: String = row.get(3)?;
-			let address = IdType::from_base58(&address_string)?;
-			let public_key = PublicKey::from_bytes(
-				raw_public_key
-					.try_into()
-					.map_err(|_| Error::InvalidPublicKey(None))?,
-			)?;
-			let first_object = IdType::from_base58(&first_object_string)?;
 			let actor_info = ActorInfo::V1(ActorInfoV1 {
 				public_key,
 				first_object,
@@ -1747,10 +1741,8 @@ impl Connection {
 		Ok(objects)
 	}
 
-	pub fn fetch_object(
-		&self, actor_id: &IdType, object_hash: &IdType,
-	) -> Result<Option<(Object, bool)>> {
-		if let Some((_, object, verified)) = Self::_fetch_object(self, actor_id, object_hash)? {
+	pub fn fetch_object(&self, object_hash: &IdType) -> Result<Option<(Object, bool)>> {
+		if let Some((_, object, verified)) = Self::_fetch_object(self, object_hash)? {
 			Ok(Some((object, verified)))
 		} else {
 			Ok(None)
@@ -1758,13 +1750,13 @@ impl Connection {
 	}
 
 	pub fn fetch_object_by_sequence(
-		&self, actor_id: &IdType, sequence: u64,
+		&self, actor_id: &ActorAddress, sequence: u64,
 	) -> Result<Option<(IdType, Object, bool)>> {
 		Self::_fetch_object_by_sequence(self, actor_id, sequence)
 	}
 
 	pub fn fetch_previous_object(
-		&mut self, actor_id: &IdType, hash: &IdType,
+		&mut self, actor_id: &ActorAddress, hash: &IdType,
 	) -> Result<Option<(IdType, Object, bool)>> {
 		let tx = self.0.transaction()?;
 
@@ -1773,10 +1765,10 @@ impl Connection {
 			SELECT o.sequence
 			FROM object AS o
 			INNER JOIN identity AS i ON o.actor_id = i.rowid
-			WHERE i.address = ? AND o.hash = ?
+			WHERE i.address = ? AND i.actor_version = ? AND o.hash = ?
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id.to_string(), hash.to_string()])?;
+		let mut rows = stat.query(params![actor_id, hash.to_string()])?;
 		if let Some(row) = rows.next()? {
 			let sequence: u64 = row.get(0)?;
 			if sequence > 0 {
@@ -1790,7 +1782,7 @@ impl Connection {
 	}
 
 	pub fn fetch_next_object(
-		&mut self, actor_id: &IdType, hash: &IdType,
+		&mut self, actor_address: &ActorAddress, hash: &IdType,
 	) -> Result<Option<(IdType, Object, bool)>> {
 		let tx = self.0.transaction()?;
 
@@ -1802,12 +1794,12 @@ impl Connection {
 			WHERE i.address = ? AND o.hash = ?
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id.to_string(), hash.to_string()])?;
+		let mut rows = stat.query(params![actor_address, hash])?;
 		if let Some(row) = rows.next()? {
 			let sequence: u64 = row.get(0)?;
 			if sequence < u64::MAX {
 				if let Some((hash, object, verified_from_start)) =
-					Self::_fetch_object_by_sequence(&tx, actor_id, sequence + 1)?
+					Self::_fetch_object_by_sequence(&tx, actor_address, sequence + 1)?
 				{
 					Ok(Some((hash, object, verified_from_start)))
 				} else {
@@ -1821,12 +1813,12 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_head(&self, actor_id: &IdType) -> Result<Option<(IdType, Object, bool)>> {
+	pub fn fetch_head(&self, actor_id: &ActorAddress) -> Result<Option<(IdType, Object, bool)>> {
 		Self::_fetch_head(self, actor_id)
 	}
 
 	pub fn fetch_last_verified_object(
-		&self, actor_id: &IdType,
+		&self, actor_id: &ActorAddress,
 	) -> Result<Option<(IdType, Object)>> {
 		if let Some((hash, object, _)) = Self::_fetch_last_verified_object(self, actor_id)? {
 			Ok(Some((hash, object)))
@@ -1835,22 +1827,17 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_identity(&self, address: &IdType) -> Result<Option<ActorInfo>> {
+	pub fn fetch_identity(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT public_key, first_object, type FROM identity WHERE address = ?
 		"#,
 		)?;
-		let mut rows = stat.query([address.to_string()])?;
+		let mut rows = stat.query(params![address])?;
 		if let Some(row) = rows.next()? {
-			let bytes: Vec<u8> = row.get(0)?;
-			let hash: String = row.get(1)?;
+			let public_key: PublicKey = row.get(0)?;
+			let first_object: IdType = row.get(1)?;
 			let actor_type: String = row.get(2)?;
-			if bytes.len() != 32 {
-				return Err(Error::InvalidPublicKey(None));
-			}
-			let public_key = PublicKey::from_bytes(bytes.try_into().unwrap())?;
-			let first_object = IdType::from_base58(&hash)?;
 			Ok(Some(ActorInfo::V1(ActorInfoV1 {
 				public_key,
 				first_object,
@@ -1861,14 +1848,37 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_my_identity(&self, address: &IdType) -> Result<Option<(String, PrivateKey)>> {
+	pub fn fetch_identity_by_id(&self, id: &IdType) -> Result<Option<ActorInfo>> {
+		let mut stat = self.prepare(
+			r#"
+			SELECT public_key, first_object, type FROM identity WHERE address = ?
+		"#,
+		)?;
+		let mut rows = stat.query([id])?;
+		if let Some(row) = rows.next()? {
+			let public_key: PublicKey = row.get(0)?;
+			let first_object: IdType = row.get(1)?;
+			let actor_type: String = row.get(2)?;
+			Ok(Some(ActorInfo::V1(ActorInfoV1 {
+				public_key,
+				first_object,
+				actor_type,
+			})))
+		} else {
+			Ok(None)
+		}
+	}
+
+	pub fn fetch_my_identity(
+		&self, address: &ActorAddress,
+	) -> Result<Option<(String, PrivateKey)>> {
 		let mut stat = self.0.prepare(
 			r#"
 			SELECT label, private_key FROM my_identity AS mi LEFT JOIN identity AS i
 			WHERE i.address = ?
 		"#,
 		)?;
-		let mut rows = stat.query([address.to_string()])?;
+		let mut rows = stat.query(params![address])?;
 		match rows.next()? {
 			None => Ok(None),
 			Some(row) => {
@@ -1879,7 +1889,9 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_my_identity_by_label(&self, label: &str) -> Result<Option<(IdType, PrivateKey)>> {
+	pub fn fetch_my_identity_by_label(
+		&self, label: &str,
+	) -> Result<Option<(ActorAddress, PrivateKey)>> {
 		let mut stat = self.0.prepare(
 			r#"
 			SELECT i.address, mi.private_key
@@ -1891,15 +1903,16 @@ impl Connection {
 		match rows.next()? {
 			None => Ok(None),
 			Some(row) => {
-				let address_str: String = row.get(0)?;
-				let address = IdType::from_base58(&address_str)?;
+				let address: ActorAddress = row.get(0)?;
 				let private_key: PrivateKey = row.get(1)?;
 				Ok(Some((address, private_key)))
 			}
 		}
 	}
 
-	pub fn fetch_my_identities(&self) -> Result<Vec<(String, IdType, IdType, String, PrivateKey)>> {
+	pub fn fetch_my_identities(
+		&self,
+	) -> Result<Vec<(String, ActorAddress, IdType, String, PrivateKey)>> {
 		let mut stat = self.0.prepare(
 			r#"
 			SELECT label, i.address, i.first_object, i.type, mi.private_key
@@ -1911,10 +1924,8 @@ impl Connection {
 
 		let mut ids = Vec::new();
 		while let Some(row) = rows.next()? {
-			let address_string: String = row.get(1)?;
-			let fo_string: String = row.get(2)?;
-			let address = IdType::from_base58(&address_string)?;
-			let first_object = IdType::from_base58(&fo_string)?;
+			let address: ActorAddress = row.get(1)?;
+			let first_object: IdType = row.get(2)?;
 			let actor_type: String = row.get(3)?;
 			let private_key: PrivateKey = row.get(4)?;
 			ids.push((row.get(0)?, address, first_object, actor_type, private_key));
@@ -1954,7 +1965,9 @@ impl Connection {
 		Ok(result)
 	}
 
-	pub fn fetch_profile_object(&self, actor_id: &IdType) -> Result<Option<(IdType, Object)>> {
+	pub fn fetch_profile_object(
+		&self, actor_id: &ActorAddress,
+	) -> Result<Option<(IdType, Object)>> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT o.rowid, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
@@ -1965,7 +1978,7 @@ impl Connection {
 			ORDER BY o.rowid DESC LIMIT 1
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id.to_string()])?;
+		let mut rows = stat.query(params![actor_id])?;
 		if let Some((hash, object, _)) = Self::_parse_object(self, &mut rows)? {
 			Ok(Some((hash, object)))
 		} else {
@@ -1973,7 +1986,7 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_profile_info(&self, actor_id: &IdType) -> Result<Option<ProfileObjectInfo>> {
+	pub fn fetch_profile_info(&self, actor_id: &ActorAddress) -> Result<Option<ProfileObjectInfo>> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, db.data
@@ -1985,21 +1998,12 @@ impl Connection {
 			ORDER BY o.sequence DESC LIMIT 1
 		"#,
 		)?;
-		let mut rows = stat.query([actor_id.to_string()])?;
+		let mut rows = stat.query(params![actor_id])?;
 		if let Some(row) = rows.next()? {
-			let actor_hash: String = row.get(0)?;
-			let actor_id = IdType::from_base58(&actor_hash)?;
+			let address: ActorAddress = row.get(0)?;
 			let actor_name: String = row.get(1)?;
-			let avatar_hash: Option<String> = row.get(2)?;
-			let avatar_id = match avatar_hash {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(&hash)?),
-			};
-			let wallpaper_hash: Option<String> = row.get(3)?;
-			let wallpaper_id = match wallpaper_hash {
-				None => None,
-				Some(hash) => Some(IdType::from_base58(&hash)?),
-			};
+			let avatar_id: Option<IdType> = row.get(2)?;
+			let wallpaper_id: Option<IdType> = row.get(3)?;
 			let description_data: Option<Vec<u8>> = row.get(4)?;
 			let description = match description_data {
 				None => None,
@@ -2008,7 +2012,7 @@ impl Connection {
 
 			Ok(Some(ProfileObjectInfo {
 				actor: TargetedActorInfo {
-					id: actor_id,
+					address,
 					name: actor_name,
 					avatar_id,
 					wallpaper_id,
@@ -2035,7 +2039,7 @@ impl Connection {
 		Ok(result)
 	}
 
-	pub fn follow(&mut self, actor_id: &IdType, actor_info: &ActorInfo) -> Result<()> {
+	pub fn follow(&mut self, actor_id: &ActorAddress, actor_info: &ActorInfo) -> Result<()> {
 		let tx = self.0.transaction()?;
 
 		let identity_id = {
@@ -2044,18 +2048,18 @@ impl Connection {
 				SELECT rowid FROM identity WHERE address = ?
 			"#,
 			)?;
-			let mut rows = stat.query([actor_id.to_string()])?;
+			let mut rows = stat.query(params![actor_id])?;
 			let identity_id = if let Some(row) = rows.next()? {
 				row.get(0)?
 			} else {
 				drop(rows);
 				let mut stat = tx.prepare(
 					r#"
-					INSERT INTO identity (address, public_key, first_object, type) VALUES (?,?,?,?)
+					INSERT INTO identity (address, public_key, first_object, type) VALUES (?,?,?,?,?)
 				"#,
 				)?;
 				stat.insert(params![
-					actor_id.to_string(),
+					actor_id,
 					actor_info.public_key.to_bytes(),
 					actor_info.first_object.as_bytes(),
 					ACTOR_TYPE_BLOGCHAIN
@@ -2075,33 +2079,31 @@ impl Connection {
 		Ok(())
 	}
 
-	pub fn has_block(&self, actor_id: &IdType, hash: &IdType) -> rusqlite::Result<bool> {
+	pub fn has_block(&self, hash: &IdType) -> rusqlite::Result<bool> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT b.rowid
 			FROM block AS b
-			LEFT JOIN identity AS i ON b.actor_id = i.rowid
-			WHERE i.address = ? AND b.hash = ?
+			WHERE b.hash = ?
 		"#,
 		)?;
-		let mut rows = stat.query([actor_id.to_string(), hash.to_string()])?;
+		let mut rows = stat.query([hash.to_string()])?;
 		Ok(rows.next()?.is_some())
 	}
 
-	pub fn has_file(&self, actor_id: &IdType, hash: &IdType) -> rusqlite::Result<bool> {
+	pub fn has_file(&self, hash: &IdType) -> rusqlite::Result<bool> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT f.rowid
 			FROM file AS f
-			LEFT JOIN identity AS i ON f.actor_id = i.rowid
-			WHERE i.address = ? AND f.hash = ?
+			WHERE f.hash = ?
 		"#,
 		)?;
-		let mut rows = stat.query([actor_id.to_string(), hash.to_string()])?;
+		let mut rows = stat.query([hash])?;
 		Ok(rows.next()?.is_some())
 	}
 
-	pub fn has_object(&self, actor_id: &IdType, id: &IdType) -> rusqlite::Result<bool> {
+	pub fn has_object(&self, actor_address: &ActorAddress, id: &IdType) -> rusqlite::Result<bool> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT o.rowid
@@ -2110,11 +2112,13 @@ impl Connection {
 			WHERE i.address = ? AND o.hash = ?
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id.to_string(), id.to_string()])?;
+		let mut rows = stat.query(params![actor_address, id.to_string()])?;
 		Ok(rows.next()?.is_some())
 	}
 
-	pub fn has_object_sequence(&self, actor_id: &IdType, sequence: u64) -> rusqlite::Result<bool> {
+	pub fn has_object_sequence(
+		&self, actor_id: &ActorAddress, sequence: u64,
+	) -> rusqlite::Result<bool> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT o.rowid
@@ -2123,11 +2127,11 @@ impl Connection {
 			WHERE i.address = ? AND o.sequence = ?
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id.to_string(), sequence])?;
+		let mut rows = stat.query(params![actor_id, sequence])?;
 		Ok(rows.next()?.is_some())
 	}
 
-	pub fn is_identity_available(&self, address: &IdType) -> rusqlite::Result<bool> {
+	pub fn is_identity_available(&self, address: &ActorAddress) -> rusqlite::Result<bool> {
 		let mut stat = self.0.prepare(
 			r#"
 			SELECT address FROM identity AS i
@@ -2138,11 +2142,11 @@ impl Connection {
 			)
 		"#,
 		)?;
-		let mut rows = stat.query([address.to_string()])?;
+		let mut rows = stat.query(params![address])?;
 		Ok(rows.next()?.is_some())
 	}
 
-	pub fn is_following(&self, actor_id: &IdType) -> Result<bool> {
+	pub fn is_following(&self, actor_id: &ActorAddress) -> Result<bool> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT 1
@@ -2151,7 +2155,7 @@ impl Connection {
 			WHERE i.address = ?
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id.to_string()])?;
+		let mut rows = stat.query(params![actor_id])?;
 		Ok(rows.next()?.is_some())
 	}
 
@@ -2215,49 +2219,33 @@ impl Connection {
 		Ok(Self(rusqlite::Connection::open(&path)?))
 	}
 
-	pub fn store_block(
-		&mut self, actor: &IdType, hash: &IdType, data: &[u8],
-	) -> rusqlite::Result<()> {
-		let tx = self.0.transaction()?;
-		if let Some(actor_id) = Self::_find_identity(&tx, actor)? {
-			Self::_store_block(&tx, actor_id, hash, data)?;
-			tx.commit()?;
-		}
-		// FIXME: return an error when identity didn't exist...
+	pub fn store_block(&mut self, hash: &IdType, data: &[u8]) -> Result<()> {
+		Self::_store_block(self, hash, data)?;
 		Ok(())
 	}
 
-	pub fn store_file(
-		&mut self, actor_id: &IdType, id: &IdType, file: &File,
-	) -> rusqlite::Result<bool> {
-		self.store_file2(actor_id, id, &file.mime_type, &file.blocks)
+	pub fn store_file(&mut self, id: &IdType, file: &File) -> Result<()> {
+		self.store_file2(id, &file.mime_type, &file.blocks)
 	}
 
-	pub fn store_file2(
-		&mut self, actor_id: &IdType, id: &IdType, mime_type: &str, blocks: &[IdType],
-	) -> rusqlite::Result<bool> {
-		let tx = self.0.transaction()?;
-		if let Some(actor_row_id) = Self::_find_identity(&tx, actor_id)? {
-			Self::_store_file(&tx, actor_row_id, id, mime_type, blocks)?;
-			tx.commit()?;
-			Ok(true)
-		} else {
-			Ok(false)
-		}
+	pub fn store_file2(&mut self, id: &IdType, mime_type: &str, blocks: &[IdType]) -> Result<()> {
+		Self::_store_file(self, id, mime_type, blocks)?;
+		Ok(())
 	}
 
 	pub fn store_identity(
-		&mut self, address: &IdType, public_key: &PublicKey, first_object: &IdType,
+		&mut self, address: &ActorAddress, public_key: &PublicKey, first_object: &IdType,
 	) -> Result<()> {
 		let mut stat = self.prepare(
 			r#"
-			INSERT INTO identity (address, public_key, first_object, type) VALUES(?,?,?,'blogchain')
+			INSERT INTO identity (address, public_key, first_object, type) VALUES(?,?,?,?)
 		"#,
 		)?;
 		stat.insert(rusqlite::params![
 			address,
 			public_key.as_bytes(),
-			first_object
+			first_object,
+			ACTOR_TYPE_BLOGCHAIN
 		])?;
 		Ok(())
 	}
@@ -2302,13 +2290,13 @@ impl Connection {
 	}
 
 	pub fn store_object(
-		&mut self, actor_id: &IdType, id: &IdType, object: &Object, verified_from_start: bool,
+		&mut self, actor_id: &ActorAddress, id: &IdType, object: &Object, verified_from_start: bool,
 	) -> self::Result<bool> {
 		let tx = self.0.transaction()?;
 		let _object_id = match Self::_store_object(&tx, actor_id, id, object, verified_from_start) {
 			Ok(id) => id,
 			// Just return false if the object already existed
-			Err(e) => match &e {
+			Err(e) => match &*e {
 				Error::SqliteError(e2) => match e2 {
 					rusqlite::Error::SqliteFailure(e3, _) => {
 						if e3.code == libsqlite3_sys::ErrorCode::ConstraintViolation {
@@ -2384,19 +2372,21 @@ impl Connection {
 		Ok(())
 	}
 
-	pub fn unfollow(&mut self, actor_id: &IdType) -> Result<bool> {
+	pub fn unfollow(&mut self, actor_id: &ActorAddress) -> Result<bool> {
 		let affected = self.0.execute(
 			r#"
 			DELETE FROM following WHERE identity_id = (
 				SELECT rowid FROM identity WHERE address = ?
 			)
 		"#,
-			[actor_id.to_string()],
+			params![actor_id],
 		)?;
 		Ok(affected > 0)
 	}
 
-	pub fn update_object_verified(&mut self, actor_id: &IdType, object_id: &IdType) -> Result<()> {
+	pub fn update_object_verified(
+		&mut self, actor_address: &ActorAddress, object_id: &IdType,
+	) -> Result<()> {
 		self.0.execute(
 			r#"
 			UPDATE object SET verified_from_start = 1
@@ -2404,7 +2394,7 @@ impl Connection {
 				SELECT rowid FROM identity WHERE address = ?
 			)
 		"#,
-			[object_id.to_string(), actor_id.to_string()],
+			params![object_id.to_string(), actor_address],
 		)?;
 		Ok(())
 	}
@@ -2424,6 +2414,7 @@ impl fmt::Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
 			Self::SqliteError(e) => write!(f, "{}", e),
+			Self::ActorAddress(e) => write!(f, "invalid actor address format: {}", e),
 			Self::InvalidHash(e) => {
 				write!(f, "hash not a valid base58-encoded 32-byte address {}", e)
 			}
@@ -2441,13 +2432,25 @@ impl fmt::Display for Error {
 				Some(e) => write!(f, "invalid public key: {}", e),
 				None => write!(f, "invalid public key size"),
 			},
-			Self::MissingIdentity(hash) => write!(f, "identity {} is missing", &hash),
+			Self::MissingIdentity(hash) => write!(f, "identity {:?} is missing", &hash),
 		}
 	}
 }
 
+impl From<FromBytesAddressError> for Error {
+	fn from(other: FromBytesAddressError) -> Self { Self::ActorAddress(other) }
+}
+
+impl From<FromBytesAddressError> for Traced<Error> {
+	fn from(other: FromBytesAddressError) -> Self { Error::ActorAddress(other).trace() }
+}
+
 impl From<rusqlite::Error> for Error {
 	fn from(other: rusqlite::Error) -> Self { Self::SqliteError(other) }
+}
+
+impl From<rusqlite::Error> for Traced<Error> {
+	fn from(other: rusqlite::Error) -> Self { Error::SqliteError(other).trace() }
 }
 
 impl From<SignatureError> for Error {
@@ -2481,8 +2484,13 @@ mod tests {
 	#[ctor::ctor]
 	fn initialize() {
 		let path: PathBuf = "/tmp/db777.sqlite".into();
-		let _ = std::fs::remove_file(&path);
 		*DB.lock().unwrap() = Some(Database::load(path).expect("unable to load database"));
+	}
+
+	#[ctor::dtor]
+	fn uninitialize() {
+		let path: PathBuf = "/tmp/db777.sqlite".into();
+		let _ = std::fs::remove_file(&path);
 	}
 
 	#[test]
@@ -2537,13 +2545,13 @@ mod tests {
 			first_object: first_object_id,
 			actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
 		});
-		let actor_id = actor_info.generate_id();
+		let actor_address = actor_info.generate_address();
 
 		let (fetched_address, fetched_private_key) = c
 			.fetch_my_identity_by_label("test")
 			.expect("unable to load personal identities")
 			.expect("personal identity not found");
-		assert_eq!(fetched_address, actor_id);
+		assert_eq!(fetched_address, actor_address);
 		assert_eq!(fetched_private_key.as_bytes(), private_key.as_bytes());
 	}
 }
