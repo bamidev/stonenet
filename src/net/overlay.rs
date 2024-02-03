@@ -81,7 +81,6 @@ pub(super) struct OverlayInterface {
 	node: OnceLock<Option<Arc<OverlayNode>>>,
 	db: Database,
 	pub(super) actor_nodes: Mutex<HashMap<IdType, Arc<ActorNode>>>,
-	max_idle_time: usize,
 	last_message_time: StdMutex<SystemTime>,
 }
 
@@ -361,14 +360,13 @@ impl OverlayNode {
 
 		let this = Arc::new(Self {
 			base: Arc::new(Node::new(
-				stop_flag,
+				stop_flag.clone(),
 				node_id,
 				socket.clone(),
 				OverlayInterface {
 					node: OnceLock::new(),
 					db,
 					last_message_time: StdMutex::new(SystemTime::now()),
-					max_idle_time: config.udp_max_idle_time,
 					actor_nodes: Mutex::new(HashMap::new()),
 				},
 				config.bucket_size.unwrap_or(4),
@@ -398,6 +396,13 @@ impl OverlayNode {
 			},
 		);
 		socket.spawn();
+
+		if let Some(idle_time) = config.udp_max_idle_time {
+			let this4 = this.clone();
+			spawn(async move {
+				this4.keep_hole_open(stop_flag, Duration::from_secs(idle_time));
+			});
+		}
 
 		Ok(this)
 	}
@@ -948,49 +953,26 @@ impl OverlayNode {
 		false
 	}
 
-	/*async fn handle_connection_boxed(self: &Arc<Self>, connection: Box<Connection>) -> BoxFuture<'static, ()> {
-		async move {
-			self.handle_connection(connection).await;
-		}.boxed()
-	}*/
-
-	async fn keep_hole_open(self: Arc<Self>, stop_flag: Arc<AtomicBool>) {
+	/// Runs a loop that pings one finger every so often.
+	async fn keep_hole_open(self: Arc<Self>, stop_flag: Arc<AtomicBool>, sleep_duration: Duration) {
 		while !stop_flag.load(Ordering::Relaxed) {
-			sleep(Duration::from_secs(1)).await;
+			let mut iter = self.base.iter_all_fingers().await;
 
-			let is_inactive = {
-				let mut last_message_time = self.base.interface.last_message_time.lock().unwrap();
-				let is_inactive =
-					SystemTime::now()
-						.duration_since(*last_message_time)
-						.unwrap() > Duration::from_secs(self.base.interface.max_idle_time as _);
-				if is_inactive {
-					*last_message_time = SystemTime::now();
+			let mut tried = 0usize;
+			while let Some(peer) = iter.next().await {
+				if let Some(p) = self.base.ping(&peer).await {
+					debug!("Pinged {}, took {} ms.", &peer.contact_info, p);
 				}
-				is_inactive
-			};
-			if is_inactive {
-				// Ping a peer, one successful ping will be enough
-				let mut peer_iter = self.base.iter_all_fingers().await;
-				while !stop_flag.load(Ordering::Relaxed) {
-					match peer_iter.next().await {
-						Some(peer) =>
-							if let Some(x) = self.base.ping(&peer).await {
-								debug!("Pinged {} for {} ms.", &peer.contact_info, x);
-								break;
-							},
-						// If not a single peer was available, reconnect to the
-						// network again.
-						None => {
-							warn!("Lost connection to all nodes, rejoining the network...");
-							if !self.join_network(stop_flag.clone()).await {
-								error!("Attempt at rejoining the network failed.")
-							} else {
-								info!("Rejoined the network");
-							}
-							break;
-						}
-					}
+				tried += 1;
+				sleep(sleep_duration).await;
+			}
+
+			if tried == 0 {
+				warn!("Lost connection to all nodes, rejoining the network...");
+				if !self.join_network(stop_flag.clone()).await {
+					error!("Attempt at rejoining the network failed.")
+				} else {
+					info!("Rejoined the network");
 				}
 			}
 		}
@@ -1275,7 +1257,6 @@ impl OverlayNode {
 		&self, relay_connection: &mut Connection, target: &IdType, their_contact: &ContactOption,
 		our_contact: &ContactOption, reversed: bool, first_request: Option<&[u8]>,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
-		error!("initiate_indirect_connection");
 		// TODO: Only send a punch hole packet whenever our node is punchable for the
 		// selected contact option.
 		if reversed {
@@ -1299,7 +1280,6 @@ impl OverlayNode {
 
 		let (tx_in, rx_in) = oneshot::channel();
 		let connection_result = if reversed {
-			error!("initiate_indirect_connection reversed");
 			{
 				let mut expected_connections = self.expected_connections.lock().await;
 				// If a connection from the same target is already expected, we can't touch it.
@@ -1342,7 +1322,6 @@ impl OverlayNode {
 
 			result
 		} else {
-			error!("initiate_indirect_connection !reversed");
 			let stop_flag = Arc::new(AtomicBool::new(false));
 			self.base
 				.connect_with_timeout(
