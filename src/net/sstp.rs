@@ -66,7 +66,7 @@ use crate::{
 const TCP_CONNECTION_TIMEOUT: u64 = 120;
 const MAX_PACKET_FILL_BLOCK_SIZE: usize = 10000;
 
-pub(super) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 /// The minimum timeout time that will be waited on a crucial packet before
 /// retrying.
 pub const MAXIMUM_RETRY_TIMEOUT: Duration = Duration::from_millis(500);
@@ -138,7 +138,7 @@ pub trait MessageWorkToDo: Send + Sync {
 }
 
 pub type OnPacket =
-	Arc<dyn Fn(Arc<dyn LinkSocketSender>, &SocketAddr, &[u8]) + Send + Sync + 'static>;
+	Arc<dyn Fn(Arc<dyn LinkSocketSender>, &ContactOption, &[u8]) + Send + Sync + 'static>;
 
 pub type Result<T> = trace::Result<T, Error>;
 
@@ -232,12 +232,16 @@ impl Connection {
 
 	pub async fn close(&mut self) -> Result<()> { self.transporter.close().await.unwrap_or(Ok(())) }
 
+	pub fn close_async(self) { self.transporter.close_async(); }
+
 	pub fn contact_option(&self) -> ContactOption {
 		ContactOption {
 			target: self.peer_address.clone(),
 			use_tcp: self.transporter.is_connection_based(),
 		}
 	}
+
+	pub fn is_alive(&self) -> bool { self.transporter.alive_flag.load(Ordering::Relaxed) }
 
 	//pub fn network_level(&self) -> NetworkLevel {
 	// NetworkLevel::from_ip(&self.peer_address.ip()) }

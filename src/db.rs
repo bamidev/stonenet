@@ -10,7 +10,7 @@ use std::{
 	net::SocketAddr,
 	ops::*,
 	path::*,
-	str::{self, FromStr},
+	str::{self},
 };
 
 use chrono::*;
@@ -29,8 +29,8 @@ use crate::{
 	common::*,
 	identity::*,
 	model::*,
-	net::{actor, binserde},
-	trace::{self, Traceable, TraceableResult, Traced},
+	net::{binserde},
+	trace::{self, Traceable, Traced},
 };
 
 const DATABASE_VERSION: (u8, u16, u16) = (0, 0, 0);

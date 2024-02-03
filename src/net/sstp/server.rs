@@ -29,7 +29,7 @@ const PACKET_TYPE_RELAYED_HELLO_ACK_ACK: u8 = 10;
 
 pub type MessageProcessor = dyn Fn(
 		Vec<u8>,
-		SocketAddr,
+		ContactOption,
 		NodeContactInfo,
 	) -> Pin<Box<dyn Future<Output = MessageProcessorResult> + Send>>
 	+ Send
@@ -556,7 +556,7 @@ impl Server {
 		&self,
 		message_processor: impl Fn(
 			Vec<u8>,
-			SocketAddr,
+			ContactOption,
 			NodeContactInfo,
 		) -> Pin<Box<dyn Future<Output = MessageProcessorResult> + Send>>
 		+ Send
@@ -954,7 +954,7 @@ impl Server {
 	}
 
 	async fn process_relayed_hello_packet(
-		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, addr: &SocketAddr, buffer: &[u8],
+		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, contact: &ContactOption, buffer: &[u8],
 	) -> Result<()> {
 		let packet: RelayedHelloPacket = binserde::deserialize(buffer)?;
 		Self::verify_hello_packet(
@@ -965,7 +965,7 @@ impl Server {
 
 		self._process_hello_packet(
 			sender,
-			addr,
+			contact,
 			packet.header.relayer_session_id,
 			packet.body.session_id,
 			packet.header.base.node_public_key,
@@ -1056,14 +1056,15 @@ impl Server {
 	}
 
 	async fn process_first_request(
-		&self, buffer: Vec<u8>, addr: SocketAddr, node_id: &IdType, contact_info: &ContactInfo,
+		&self, buffer: Vec<u8>, contact: ContactOption, node_id: &IdType,
+		contact_info: &ContactInfo,
 	) -> Option<(Vec<u8>, Option<Box<dyn MessageWorkToDo>>)> {
 		let node_info = NodeContactInfo {
 			node_id: node_id.clone(),
 			contact_info: contact_info.clone(),
 		};
 		if let Some((processor, _)) = self.message_processors.get() {
-			processor(buffer, addr, node_info).await
+			processor(buffer, contact, node_info).await
 		} else {
 			warn!("Tried to process message while message processor is not yet set.");
 			None
@@ -1116,7 +1117,7 @@ impl Server {
 	}
 
 	async fn _process_hello_packet(
-		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, addr: &SocketAddr,
+		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, contact: &ContactOption,
 		dest_session_id: u16, encrypt_session_id: u16, public_key: PublicKey,
 		dh_public_key: x25519::PublicKey, contact_info: ContactInfo, opt_request: Option<&[u8]>,
 		new_packet: impl FnOnce(
@@ -1149,7 +1150,7 @@ impl Server {
 			if let Some((mut response, todo)) = self
 				.process_first_request(
 					first_request.to_vec(),
-					addr.clone(),
+					contact.clone(),
 					&their_node_id,
 					&contact_info,
 				)
@@ -1182,7 +1183,7 @@ impl Server {
 			encrypt_session_id,
 			our_session_id,
 			dest_session_id,
-			addr,
+			&contact.target,
 			opt_response.as_ref().map(|b| &**b),
 		);
 
@@ -1238,7 +1239,7 @@ impl Server {
 			transporter: transporter_handle,
 			server: self.clone(),
 			keep_alive_timeout: self.default_timeout,
-			peer_address: addr.clone(),
+			peer_address: contact.target.clone(),
 			peer_node_info: peer_node_info.clone(),
 			dest_session_id,
 			encrypt_session_id,
@@ -1276,12 +1277,12 @@ impl Server {
 	}
 
 	async fn process_hello_packet(
-		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, addr: &SocketAddr, buffer: &[u8],
+		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, addr: &ContactOption, buffer: &[u8],
 	) -> Result<()> {
 		let (hello, first_request_opt) = Self::parse_hello_packet(buffer)?;
 
 		let mut their_contact_info = hello.body.contact_info.clone();
-		their_contact_info.update(addr, sender.is_connection_based());
+		their_contact_info.update(&addr.target, addr.use_tcp);
 
 		self._process_hello_packet(
 			sender,
@@ -1392,31 +1393,38 @@ impl Server {
 	}
 
 	async fn process_packet(
-		self: &Arc<Self>, link_socket: Arc<dyn LinkSocketSender>, sender: &SocketAddr,
+		self: &Arc<Self>, link_socket: Arc<dyn LinkSocketSender>, contact: &ContactOption,
 		packet: &[u8],
 	) -> Result<()> {
 		let message_type = packet[0];
 		let buffer = &packet[1..];
 		match message_type {
-			PACKET_TYPE_HELLO => self.process_hello_packet(link_socket, sender, buffer).await,
-			PACKET_TYPE_HELLO_ACK =>
-				self.process_hello_ack_packet(sender, link_socket.is_connection_based(), buffer)
+			PACKET_TYPE_HELLO =>
+				self.process_hello_packet(link_socket, contact, buffer)
 					.await,
+			PACKET_TYPE_HELLO_ACK =>
+				self.process_hello_ack_packet(
+					&contact.target,
+					link_socket.is_connection_based(),
+					buffer,
+				)
+				.await,
 			PACKET_TYPE_HELLO_ACK_ACK => Ok(()),
 			PACKET_TYPE_CRYPTED => {
-				self.process_crypted_packet(buffer, sender).await;
+				self.process_crypted_packet(buffer, &contact.target).await;
 				Ok(())
 			}
 			PACKET_TYPE_RELAY_HELLO =>
-				self.process_relay_hello_packet(link_socket, sender, buffer)
+				self.process_relay_hello_packet(link_socket, &contact.target, buffer)
 					.await,
 			PACKET_TYPE_RELAY_HELLO_ACK => self.process_relay_hello_ack_packet(buffer).await,
 			PACKET_TYPE_RELAY_HELLO_ACK_ACK => Ok(()),
 			PACKET_TYPE_RELAYED_HELLO =>
-				self.process_relayed_hello_packet(link_socket, sender, buffer)
+				self.process_relayed_hello_packet(link_socket, contact, buffer)
 					.await,
 			PACKET_TYPE_RELAYED_HELLO_ACK =>
-				self.process_relayed_hello_ack_packet(buffer, sender).await,
+				self.process_relayed_hello_ack_packet(buffer, &contact.target)
+					.await,
 			PACKET_TYPE_RELAYED_HELLO_ACK_ACK => Ok(()),
 			// Hole punching packets don't need to be responded to. They don't have any data other
 			// than the message type anyway.
@@ -1604,7 +1612,7 @@ impl Server {
 					}
 					return;
 				}
-				Ok(packet) => on_packet(sender.clone(), &addr, &packet),
+				Ok(packet) => on_packet(sender.clone(), &ContactOption::new(addr, true), &packet),
 			}
 		}
 	}
@@ -1621,13 +1629,13 @@ impl Server {
 
 		let this = self.clone();
 		self.sockets
-			.spawn_servers(self.stop_flag.clone(), move |sender, address, packet| {
+			.spawn_servers(self.stop_flag.clone(), move |sender, contact, packet| {
 				let this2 = this.clone();
 				let sender2 = sender.clone();
-				let address2 = address.clone();
+				let contact2 = contact.clone();
 				let packet2 = packet.to_vec();
 				spawn(async move {
-					match this2.process_packet(sender2, &address2, &packet2).await {
+					match this2.process_packet(sender2, &contact2, &packet2).await {
 						Ok(()) => {}
 						Err(e) => match *e {
 							// A connection is opened without sending anything all the time
@@ -1846,7 +1854,7 @@ impl SocketCollection {
 	/// connections.
 	fn spawn_servers(
 		&self, stop_flag: Arc<AtomicBool>,
-		on_packet: impl Fn(Arc<dyn LinkSocketSender>, &SocketAddr, &[u8]) + Send + Sync + 'static,
+		on_packet: impl Fn(Arc<dyn LinkSocketSender>, &ContactOption, &[u8]) + Send + Sync + 'static,
 	) {
 		let on_packet2 = Arc::new(on_packet);
 		match &self.ipv4 {
@@ -2273,12 +2281,13 @@ where
 					},
 					Ok((packet, addr)) => {
 						let addr2: SocketAddr = addr.clone().into();
+						let contact = ContactOption::new(addr2, false);
 						let (sender, _) = this
 							.inner
 							.connect(addr.try_into().unwrap())
 							.expect("no error expected")
 							.split();
-						on_packet(Arc::new(sender), &addr2, &packet);
+						on_packet(Arc::new(sender), &contact, &packet);
 					}
 				}
 			}
@@ -2413,7 +2422,7 @@ async fn handle_connection_loop(server: Arc<Server>, connection_original: Box<Co
 				};
 				if let Some((response, opt_todo)) = processor(
 					message,
-					connection.peer_address().clone(),
+					connection.contact_option(),
 					connection.their_node_info().clone(),
 				)
 				.await

@@ -9,7 +9,7 @@ use futures::future::join_all;
 use log::*;
 use num::BigUint;
 use serde::de::DeserializeOwned;
-use tokio::sync::Mutex;
+use tokio::{spawn, sync::Mutex, time::sleep};
 
 use super::{
 	bucket::Bucket,
@@ -50,8 +50,11 @@ pub struct ContactStrategy {
 pub enum ContactStrategyMethod {
 	/// Contact the node directly
 	Direct,
-	/// Request the other node to contact us
-	HolePunch,
+	/// Request the other node to punch a hole in their firewall, for our
+	/// connection to come through
+	PunchHole,
+	/// Request the other node to open a connection to use
+	Reversed,
 	/// Relay the value through another node
 	Relay,
 }
@@ -60,7 +63,7 @@ pub struct FindValueIter<'a, I>
 where
 	I: NodeInterface + Send + Sync,
 {
-	pub(super) node: &'a Node<I>,
+	pub(super) node: &'a Arc<Node<I>>,
 	pub(super) overlay_node: Arc<OverlayNode>,
 	expect_fingers_in_response: bool,
 
@@ -73,7 +76,7 @@ where
 
 	visited: Vec<(IdType, ContactOption)>,
 	candidates: VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
-	connection_for_reverse_connection_requests: Option<(IdType, Box<Connection>)>,
+	open_assistant_connection: Option<(IdType, Arc<Mutex<Option<Box<Connection>>>>)>,
 }
 
 pub struct Node<I>
@@ -138,7 +141,7 @@ impl ContactStrategy {
 			contact,
 			method: match openness {
 				Openness::Bidirectional => ContactStrategyMethod::Direct,
-				Openness::Punchable => ContactStrategyMethod::HolePunch,
+				Openness::Punchable => ContactStrategyMethod::PunchHole,
 				Openness::Unidirectional => ContactStrategyMethod::Relay,
 			},
 		})
@@ -155,8 +158,9 @@ impl ContactStrategyMethod {
 	pub fn to_byte(&self) -> u8 {
 		match self {
 			Self::Direct => 0,
-			Self::HolePunch => 1,
-			Self::Relay => 2,
+			Self::PunchHole => 1,
+			Self::Reversed => 2,
+			Self::Relay => 3,
 		}
 	}
 }
@@ -173,7 +177,8 @@ impl fmt::Display for ContactStrategyMethod {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Self::Direct => write!(f, "direct"),
-			Self::HolePunch => write!(f, "hole punch"),
+			Self::PunchHole => write!(f, "hole punch"),
+			Self::Reversed => write!(f, "reversed"),
 			Self::Relay => write!(f, "relay"),
 		}
 	}
@@ -238,93 +243,32 @@ where
 
 	pub async fn connect_by_strategy(
 		&self, node_info: &NodeContactInfo, strategy: &ContactStrategy,
-		last_open_connection: Option<&mut Connection>, overlay_node: &Arc<OverlayNode>,
-		request: Option<&[u8]>,
+		already_open_connection: Option<&mut Connection>, request: Option<&[u8]>,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
 		match &strategy.method {
 			ContactStrategyMethod::Direct =>
 				self.connect(&strategy.contact, Some(&node_info.node_id), request)
 					.await,
-			ContactStrategyMethod::HolePunch => {
-				if let Some(mut relay_connection) = last_open_connection {
-					// FIXME: The contact option needs to be carefully picked
-					let my_contact_info = self.contact_info();
-					let contact_me_option = ContactOption::new(
-						SocketAddrV4::new(
-							my_contact_info.ipv4.as_ref().unwrap().addr.clone().into(),
-							my_contact_info.ipv4.unwrap().availability.udp.unwrap().port,
-						)
-						.into(),
-						false,
-					);
-					if let Some(target_connection) = overlay_node
-						.request_reversed_connection(
-							&mut relay_connection,
-							&node_info.node_id,
-							&strategy.contact,
-							&contact_me_option,
-							true,
-						)
-						.await
-					{
-						Some((target_connection, None))
-					} else {
-						None
-					}
-				// If no connection to obtain reversed connection
-				// with is provided, try to obtain one from the overlay network
-				} else {
-					// If we already have a connection with this node, don't use that one because it
-					// using it will block any hole punch requests that might come in during usage.
-					// Open a new connection to the node, because the existing connection has
-					// already 'opened the hole'.
-					if let Some(existing_connection) =
-						self.find_connection_in_buckets(&node_info.node_id).await
-					{
-						// FIXME: contact option should be obtainable without having to lock the
-						// existing connection.
-						let contact_option = {
-							let c = existing_connection.lock().await;
-							c.contact_option()
-						};
-						return self
-							.connect(&contact_option, Some(&node_info.node_id), request)
-							.await;
-					}
-
-					if let Some(mut relay_connection) = overlay_node
-						.find_connection_for_node(&node_info.node_id)
-						.await
-					{
-						let my_contact_info = self.contact_info();
-						let contact_me_option = ContactOption::new(
-							SocketAddrV4::new(
-								my_contact_info.ipv4.as_ref().unwrap().addr.clone().into(),
-								my_contact_info.ipv4.unwrap().availability.udp.unwrap().port,
-							)
-							.into(),
-							false,
-						);
-						let tc = if let Some(target_connection) = overlay_node
-							.request_reversed_connection(
-								&mut relay_connection,
-								&node_info.node_id,
-								&strategy.contact,
-								&contact_me_option,
-								true,
-							)
-							.await
-						{
-							Some((target_connection, None))
-						} else {
-							None
-						};
-						tc
-					} else {
-						None
-					}
-				}
-			}
+			ContactStrategyMethod::PunchHole => Some((
+				self.initiate_hole_punched_connection(
+					already_open_connection,
+					node_info,
+					strategy,
+					false,
+				)
+				.await?,
+				None,
+			)),
+			ContactStrategyMethod::Reversed => Some((
+				self.initiate_hole_punched_connection(
+					already_open_connection,
+					node_info,
+					strategy,
+					true,
+				)
+				.await?,
+				None,
+			)),
 			ContactStrategyMethod::Relay => self
 				.overlay_node()
 				.open_relay(node_info)
@@ -776,7 +720,7 @@ where
 	}
 
 	pub async fn find_value_from_fingers<'a>(
-		&'a self, overlay_node: Arc<OverlayNode>, id: &IdType, value_type_id: u8,
+		self: &'a Arc<Self>, overlay_node: Arc<OverlayNode>, id: &IdType, value_type_id: u8,
 		expect_fingers_in_response: bool, fingers: &[NodeContactInfo], visit_limit: usize,
 		narrow_down: bool, use_relays: bool,
 		do_verify: impl Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a,
@@ -798,7 +742,7 @@ where
 	}
 
 	pub async fn find_value_from_fingers_iter<'a>(
-		&'a self, overlay_node: Arc<OverlayNode>, id: &IdType, value_type_id: u8,
+		self: &'a Arc<Self>, overlay_node: Arc<OverlayNode>, id: &IdType, value_type_id: u8,
 		expect_fingers_in_response: bool, fingers: &[NodeContactInfo], visit_limit: usize,
 		narrow_down: bool, use_relays: bool,
 		do_verify: impl Fn(&IdType, &NodeContactInfo, &[u8]) -> Option<AtomicPtr<()>> + Send + Sync + 'a,
@@ -825,7 +769,7 @@ where
 			use_relays,
 			visited: Vec::with_capacity(visit_limit),
 			candidates,
-			connection_for_reverse_connection_requests: None,
+			open_assistant_connection: None,
 		}
 	}
 
@@ -882,6 +826,85 @@ where
 	}
 
 	pub fn has_stopped(&self) -> bool { self.stop_flag.load(Ordering::Relaxed) }
+
+	async fn initiate_hole_punched_connection(
+		&self, already_open_relay_connection: Option<&mut Connection>, node_info: &NodeContactInfo,
+		strategy: &ContactStrategy, reversed: bool,
+	) -> Option<Box<Connection>> {
+		let overlay_node = self.overlay_node();
+		if let Some(relay_connection) = already_open_relay_connection {
+			// FIXME: The contact option needs to be carefully picked
+			let my_contact_info = self.contact_info();
+			let contact_me_option = ContactOption::new(
+				SocketAddrV4::new(
+					my_contact_info.ipv4.as_ref().unwrap().addr.clone().into(),
+					my_contact_info.ipv4.unwrap().availability.udp.unwrap().port,
+				)
+				.into(),
+				false,
+			);
+			overlay_node
+				.initiate_indirect_connection(
+					relay_connection,
+					&node_info.node_id,
+					&strategy.contact,
+					&contact_me_option,
+					reversed,
+					None,
+				)
+				.await
+				.map(|r| r.0)
+		// If no connection to obtain reversed connection
+		// with is provided, try to obtain one from the overlay network
+		} else {
+			// If we already have a connection with this node, don't use that one because it
+			// using it will block any hole punch requests that might come in during usage.
+			// Open a new connection to the node, because the existing connection has
+			// already 'opened the hole'.
+			if let Some(existing_connection) =
+				self.find_connection_in_buckets(&node_info.node_id).await
+			{
+				// FIXME: contact option should be obtainable without having to lock the
+				// existing connection.
+				let contact_option = {
+					let c = existing_connection.lock().await;
+					c.contact_option()
+				};
+				return self
+					.connect(&contact_option, Some(&node_info.node_id), None)
+					.await
+					.map(|r| r.0);
+			}
+
+			if let Some(mut relay_connection) = overlay_node
+				.find_connection_for_node(&node_info.node_id)
+				.await
+			{
+				let my_contact_info = self.contact_info();
+				let contact_me_option = ContactOption::new(
+					SocketAddrV4::new(
+						my_contact_info.ipv4.as_ref().unwrap().addr.clone().into(),
+						my_contact_info.ipv4.unwrap().availability.udp.unwrap().port,
+					)
+					.into(),
+					false,
+				);
+				overlay_node
+					.initiate_indirect_connection(
+						&mut relay_connection,
+						&node_info.node_id,
+						&strategy.contact,
+						&contact_me_option,
+						reversed,
+						None,
+					)
+					.await
+					.map(|r| r.0)
+			} else {
+				None
+			}
+		}
+	}
 
 	fn insert_candidate(
 		id: &IdType, candidates: &mut VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
@@ -949,6 +972,26 @@ where
 		}
 	}
 
+	/// Keeps pinging on the connection every second to keep it alive.
+	async fn keep_pinging(self: &Arc<Self>, connection_mutex: Arc<Mutex<Option<Box<Connection>>>>) {
+		loop {
+			sleep(Duration::from_secs(1)).await;
+
+			if let Some(c) = &mut *connection_mutex.lock().await {
+				if !c.is_alive() {
+					break;
+				}
+
+				if self.exchange_ping_on_connection(c).await.is_none() {
+					break;
+				}
+			} else {
+				break;
+			}
+		}
+		trace!("Stopped pinging on connection.");
+	}
+
 	/// Use this if a node is giving a timeout.
 	pub(super) async fn mark_node_problematic(&self, node_id: &IdType) {
 		if let Some(bucket_index) = self.differs_at_bit(node_id) {
@@ -1007,15 +1050,11 @@ where
 		let (option, openness) = self.pick_contact_option(target)?;
 		let method = match openness {
 			Openness::Bidirectional => ContactStrategyMethod::Direct,
-			Openness::Punchable => ContactStrategyMethod::HolePunch,
+			Openness::Punchable => ContactStrategyMethod::PunchHole,
 			Openness::Unidirectional => {
 				let own_openness = self.contact_info().openness_at_option(&option)?;
 				if own_openness != Openness::Unidirectional {
-					if self.node_id.to_string() != "gGCoKktsmezqAaYwkZmN4k3pUC8c5m5AWPZZgB9bFB8" {
-						//panic!("hole punch?! own={} {}", own_openness,
-						// self.contact_info());
-					}
-					ContactStrategyMethod::HolePunch
+					ContactStrategyMethod::Reversed
 				} else {
 					ContactStrategyMethod::Relay
 				}
@@ -1230,7 +1269,7 @@ where
 		&self, node_info: &NodeContactInfo, request: Option<&[u8]>,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
 		if let Some(strategy) = self.pick_contact_strategy(&node_info.contact_info) {
-			self.connect_by_strategy(&node_info, &strategy, None, &self.overlay_node(), request)
+			self.connect_by_strategy(&node_info, &strategy, None, request)
 				.await
 		} else {
 			None
@@ -1331,45 +1370,30 @@ where
 			if strategy.method == ContactStrategyMethod::Relay && !self.use_relays {
 				continue;
 			}
-			let mut special_connection: Option<Box<Connection>> = None;
-			let mut reversed_connection = if strategy.method == ContactStrategyMethod::HolePunch
-				&& self
-					.node
-					.contact_info()
-					.is_open_to_reversed_connections(&candidate_contact.contact_info)
-			{
-				if let Some((node_id, connection)) =
-					&mut self.connection_for_reverse_connection_requests
+
+			let _assistant_connection: Option<Arc<Mutex<Option<Box<Connection>>>>> =
+				if strategy.method == ContactStrategyMethod::PunchHole
+					|| strategy.method == ContactStrategyMethod::Reversed
 				{
-					if node_id == &candidate_contact.node_id {
-						Some(connection)
+					if let Some((_node_id, _connection)) = &mut self.open_assistant_connection {
+						// TODO: Check if the node of the assistant connection is the same node that
+						// gave us the current contact. If so, return `connection`.
+						None
 					} else {
 						None
 					}
 				} else {
 					None
-				}
-			} else {
-				None
-			};
+				};
 			match self
 				.node
-				.connect_by_strategy(
-					&candidate_contact,
-					&strategy,
-					reversed_connection.as_deref_mut().map(|c| c.as_mut()),
-					&self.overlay_node,
-					None,
-				)
+				.connect_by_strategy(&candidate_contact, &strategy, None, None)
 				.await
 			{
 				None => {
-					special_connection.take();
-					info!("Disregarding finger {}", &candidate_contact)
+					trace!("Disregarding finger {}", &candidate_contact)
 				}
 				Some((mut connection, _)) => {
-					special_connection.take();
-
 					match self
 						.node
 						.exchange_find_value_on_connection(
@@ -1414,13 +1438,27 @@ where
 								}
 
 								if let Some(connected_contact) = find_node_response.connected {
-									if let Some((_, previous_connection)) =
-										self.connection_for_reverse_connection_requests.as_mut()
-									{
-										previous_connection.close().await;
+									// Keep the connection alive by pinging on it so that we may
+									// still use it if we end up needing it much later.
+									let mutex = Arc::new(Mutex::new(Some(connection)));
+									let mutex2 = mutex.clone();
+									let node2 = self.node.clone();
+									if let Some((_, c)) = self.open_assistant_connection.take() {
+										spawn(async move {
+											// The connection needs to be closed manually because
+											// its being kept alive because of an instance of the
+											// arc still exists on the `keep_pinging` task.
+											c.lock().await.take().map(|c| c.close_async());
+											node2.keep_pinging(mutex2).await;
+										});
+									} else {
+										spawn(async move {
+											node2.keep_pinging(mutex2).await;
+										});
 									}
-									self.connection_for_reverse_connection_requests =
-										Some((connected_contact.node_id, connection));
+
+									self.open_assistant_connection =
+										Some((connected_contact.node_id, mutex));
 								}
 							}
 
@@ -1443,216 +1481,3 @@ where
 		None
 	}
 }
-
-// Runs a loop that continiously accepts requests, processes them (which
-// returns a response). It stops if the connection is closed, or if some sort
-// of network error (like a timeout) occurred. So a node receiving a connection
-// will keep listening on the same connection until the sending node is done
-// with it.
-/*pub(super) async fn handle_connection(overlay_node: Arc<OverlayNode>, c: Box<Connection>) {
-	// Otherwise, just process the incomming requests
-	let mut is_first_message = true;
-	let mut connection = Some(c);
-	while let Some(mut c) = connection {
-		if !overlay_node.base.stop_flag.load(Ordering::Relaxed) {
-			return;
-		}
-
-		let message = {
-			match c.wait_for(Duration::from_secs(30)).await {
-				Ok(m) => m,
-				Err(e) => {
-					match &*e {
-						sstp::Error::Timeout(_) => {
-							if is_first_message {
-								debug!(
-									"Node {} timed out before request was received.",
-									c.peer_address(),
-								);
-								print!(
-									"Node {} timed out before request was received.",
-									c.peer_address(),
-								);
-							} else {
-								debug!(
-									"Node {} timeoued out before additional request was received.",
-									c.peer_address()
-								);
-							}
-							break;
-						}
-						// Opening and immediately closing connections is done to test presence, so
-						// ignore these two errors for now:
-						sstp::Error::ConnectionClosed => {
-							break;
-						}
-						other => {
-							// For the other errors the connection may have not been closed already.
-							error!(
-								"Unable to properly receive full request from {}: {}",
-								c.peer_address(),
-								other
-							);
-							break;
-						}
-					}
-				}
-			}
-		};
-		is_first_message = false;
-		connection = process_request_message(overlay_node.clone(), c, &message).await;
-	}
-}*/
-
-/*pub(super) async fn handle_find_value_connection(
-	overlay_node: &Arc<OverlayNode>, connection: &mut Connection,
-) {
-	let mut is_first_message = true;
-	while !overlay_node.base.stop_flag.load(Ordering::Relaxed) {
-		let message = {
-			match connection.receive().await {
-				Ok(m) => m,
-				Err(e) => {
-					match &*e {
-						sstp::Error::Timeout(_) => {
-							if is_first_message {
-								debug!(
-									"Node {} timed out before find value request was received",
-									connection.peer_address(),
-								);
-								print!(
-									"Node {} timed out before find value request was received",
-									connection.peer_address(),
-								);
-							}
-							let _ = connection.close().await;
-							break;
-						}
-						// Opening and immediately closing connections is done to test presence, so
-						// ignore these two errors for now:
-						sstp::Error::ConnectionClosed => {
-							break;
-						}
-						other => {
-							// For the other errors the connection may have not been closed already.
-							let _ = connection.close().await;
-							error!(
-								"Unable to properly receive full request from {}: {}",
-								connection.peer_address(),
-								other
-							);
-							break;
-						}
-					}
-				}
-			}
-		};
-		is_first_message = false;
-
-		if (message[0] & 0x7F) != NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST {
-			warn!("Something other than a find value request has been received");
-			return;
-		}
-		process_find_value_request_message(overlay_node.clone(), connection, &message).await;
-	}
-}*/
-
-/*pub(super) async fn keep_alive_connection(overlay_node: Arc<OverlayNode>, mut c2: Box<Connection>) {
-	let timeout = Duration::from_secs(120);
-	c2.set_keep_alive_timeout(timeout).await;
-	let mut c = Some(c2);
-	while let Some(mut connection) = c {
-		if overlay_node.base.has_stopped() {
-			return;
-		}
-
-		let message = {
-			match connection.wait_for(timeout).await {
-				Ok(m) => m,
-				Err(e) => {
-					match &*e {
-						// If the node hasn't send any pings for 120 seconds, we're done
-						sstp::Error::Timeout(_) => {
-							debug!(
-								"Kept alive connection has timed out. [{} -> {}]",
-								connection.our_session_id(),
-								connection.their_session_id()
-							);
-							break;
-						}
-						// The other end closed the connection, so stop
-						sstp::Error::ConnectionClosed => {
-							break;
-						}
-						other => {
-							// For the other errors the connection may have not been closed already.
-							let _ = connection.close().await;
-							error!(
-								"Unable to properly receive full request from {}: {}",
-								connection.peer_address(),
-								other
-							);
-							break;
-						}
-					}
-				}
-			}
-		};
-
-		c = process_request_message(overlay_node.clone(), connection, &message).await;
-	}
-}*/
-
-/*async fn process_find_value_request_message(
-	overlay_node: Arc<OverlayNode>, connection: &mut Connection, buffer: &[u8],
-) {
-	let mut message_type_id = buffer[0];
-	if message_type_id >= 0x80 {
-		message_type_id ^= 0x80;
-		if message_type_id != NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST {
-			return;
-		}
-
-		let actor_id: IdType = binserde::deserialize(&buffer[1..33]).unwrap();
-		let actor_nodes = overlay_node.base.interface.actor_nodes.lock().await;
-		let actor_node = match actor_nodes.get(&actor_id) {
-			None => return, /* Don't respond to requests for networks we are not connected */
-			// to.
-			Some(n) => n.clone(),
-		};
-		drop(actor_nodes);
-
-		let r = actor_node
-			.base
-			.process_find_value_request(&buffer[33..], overlay_node.clone(), Some(&actor_id))
-			.await;
-
-		match r {
-			None => {}
-			Some(response) => {
-				debug_assert!(
-					response.len() > 0,
-					"actor response must be more than 0 bytes ({})",
-					message_type_id,
-				);
-				if let Err(e) = actor_node
-					.base
-					.interface
-					.respond(connection, message_type_id + 1, &response)
-					.await
-				{
-					warn!("Unable to respond to actor request: {}", e);
-					actor_node
-						.base
-						.mark_node_problematic(connection.their_node_id())
-						.await;
-				} else {
-					actor_node
-						.base
-						.mark_node_helpful(connection.their_node_info())
-						.await;
-				}
-			}
-		}
-	}
-}*/

@@ -25,6 +25,14 @@ pub struct PingRequest {}
 pub struct PingResponse {}
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ReverseConnectionRequest {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReverseConnectionResponse {
+	pub ok: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TunnelFindValueRequest {
 	pub target_node_info: NodeContactInfo,
 	pub source_contact_info: ContactInfo,
@@ -183,25 +191,27 @@ pub struct GetProfileResponse {
 pub struct InitiateConnectionMessage {}
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct InitiateConnectionRequest {
+pub struct PunchHoleRequest {
 	pub source_node_id: IdType,
 	pub source_contact_option: ContactOption,
+	pub request_connection: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct InitiateConnectionResponse {
+pub struct PunchHoleResponse {
 	pub ok: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RelayInitiateConnectionRequest {
+pub struct RelayPunchHoleRequest {
 	pub target: IdType,
 	pub contact_option: ContactOption,
+	pub request_connection: bool,
 }
 
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RelayInitiateConnectionResponse {
+pub struct RelayPunchHoleResponse {
 	pub ok: bool,
 }
 

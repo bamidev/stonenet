@@ -37,12 +37,14 @@ pub const OVERLAY_MESSAGE_TYPE_FIND_ACTOR_REQUEST: u8 = 64;
 pub const OVERLAY_MESSAGE_TYPE_FIND_ACTOR_RESPONSE: u8 = 65;
 pub const OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST: u8 = 66;
 pub const OVERLAY_MESSAGE_TYPE_STORE_ACTOR_RESPONSE: u8 = 67;
-pub const OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST: u8 = 68;
-pub const OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_RESPONSE: u8 = 69;
-pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST: u8 = 70;
-pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_RESPONSE: u8 = 71;
-pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST: u8 = 74;
-pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE: u8 = 75;
+pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST: u8 = 68;
+pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE: u8 = 69;
+pub const OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST: u8 = 70;
+pub const OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_RESPONSE: u8 = 71;
+pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST: u8 = 72;
+pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_RESPONSE: u8 = 73;
+pub const OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_REQUEST: u8 = 74;
+pub const OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_RESPONSE: u8 = 75;
 
 
 pub struct ConnectActorIter<'a> {
@@ -51,7 +53,7 @@ pub struct ConnectActorIter<'a> {
 	state: u8,
 	pi: usize,
 	ri: usize,
-	punchable_nodes: Vec<(NodeContactInfo, ContactOption)>,
+	punchable_nodes: Vec<(NodeContactInfo, ContactOption, bool)>,
 	relayable_nodes: Vec<NodeContactInfo>,
 }
 pub struct FindActorIter<'a>(FindValueIter<'a, OverlayInterface>);
@@ -81,6 +83,10 @@ pub(super) struct OverlayInterface {
 	pub(super) actor_nodes: Mutex<HashMap<IdType, Arc<ActorNode>>>,
 	max_idle_time: usize,
 	last_message_time: StdMutex<SystemTime>,
+}
+
+struct ReverseConnectionToDo {
+	sender: Option<oneshot::Sender<Box<Connection>>>,
 }
 
 
@@ -223,8 +229,13 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 							ContactStrategyMethod::Relay => {
 								self.relayable_nodes.push(node);
 							}
-							ContactStrategyMethod::HolePunch => {
-								self.punchable_nodes.push((node.clone(), strategy.contact));
+							ContactStrategyMethod::PunchHole => {
+								self.punchable_nodes
+									.push((node.clone(), strategy.contact, false));
+							}
+							ContactStrategyMethod::Reversed => {
+								self.punchable_nodes
+									.push((node.clone(), strategy.contact, true));
 							}
 							ContactStrategyMethod::Direct => {
 								if let Some((connection, _)) = self
@@ -247,9 +258,13 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 		// Then, try all the punchable nodes we've encountered
 		if self.state == 1 {
 			for i in self.pi..self.punchable_nodes.len() {
-				let (node_info, contact_option) = &self.punchable_nodes[i];
+				let (node_info, contact_option, reversed) = &self.punchable_nodes[i];
 				let strategy = ContactStrategy {
-					method: ContactStrategyMethod::HolePunch,
+					method: if *reversed {
+						ContactStrategyMethod::Reversed
+					} else {
+						ContactStrategyMethod::PunchHole
+					},
 					contact: contact_option.clone(),
 				};
 				// FIXME: There needs to be a "self.base.connect_through_hole_punching"
@@ -258,13 +273,7 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 					.base
 					.0
 					.node
-					.connect_by_strategy(
-						&node_info,
-						&strategy,
-						None,
-						&self.base.0.overlay_node,
-						None,
-					)
+					.connect_by_strategy(&node_info, &strategy, None, None)
 					.await
 				{
 					self.pi = i + 1;
@@ -436,11 +445,12 @@ impl OverlayNode {
 
 	pub(super) async fn exchange_punch_hole_on_connection(
 		&self, connection: &mut Connection, source_node_id: IdType,
-		source_contact_option: ContactOption,
+		source_contact_option: ContactOption, request_connection: bool,
 	) -> Option<bool> {
-		let request = InitiateConnectionRequest {
+		let request = PunchHoleRequest {
 			source_node_id,
 			source_contact_option,
+			request_connection,
 		};
 		let raw_response = self
 			.base
@@ -451,7 +461,7 @@ impl OverlayNode {
 			)
 			.await?;
 		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
-		let response: InitiateConnectionResponse = self
+		let response: PunchHoleResponse = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
@@ -462,10 +472,12 @@ impl OverlayNode {
 	/// target for you.
 	async fn exchange_relay_punch_hole_request(
 		&self, relay_connection: &mut Connection, target: IdType, contact_option: ContactOption,
+		request_connection: bool,
 	) -> Option<bool> {
-		let message = RelayInitiateConnectionRequest {
+		let message = RelayPunchHoleRequest {
 			target,
 			contact_option,
+			request_connection,
 		};
 		let raw_response = self
 			.base
@@ -476,9 +488,29 @@ impl OverlayNode {
 			)
 			.await;
 		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response?);
-		let response: RelayInitiateConnectionResponse = self
+		let response: RelayPunchHoleResponse = self
 			.base
 			.handle_connection_issue(result, &relay_connection.their_node_info())
+			.await?;
+		Some(response.ok)
+	}
+
+	async fn exchange_reverse_connection_on_connection(
+		&self, connection: &mut Connection,
+	) -> Option<bool> {
+		let request = ReverseConnectionRequest {};
+		let raw_response = self
+			.base
+			.exchange_on_connection(
+				connection,
+				OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_REQUEST,
+				&binserde::serialize(&request).unwrap(),
+			)
+			.await;
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response?);
+		let response: ReverseConnectionResponse = self
+			.base
+			.handle_connection_issue(result, &connection.their_node_info())
 			.await?;
 		Some(response.ok)
 	}
@@ -1008,7 +1040,7 @@ impl OverlayNode {
 
 			// After the connection has closed, try to find a new one.
 			if !this.base.stop_flag.load(Ordering::Relaxed) {
-				this.start_reverse_connection();
+				this.start_obtaining_keep_alive_connection();
 			}
 		});
 	}
@@ -1239,14 +1271,17 @@ impl OverlayNode {
 		Some(binserde::serialize(&OpenRelayResponse { ok: false }).unwrap())
 	}*/
 
-	pub(super) async fn request_reversed_connection(
+	pub(super) async fn initiate_indirect_connection(
 		&self, relay_connection: &mut Connection, target: &IdType, their_contact: &ContactOption,
-		our_contact: &ContactOption, attempt_outgoing: bool,
-	) -> Option<Box<Connection>> {
-		// Generally not really needed, but might help in case the target node's
-		// connection comes in sooner than the relay node's reply.
-		if !self.punch_hole(their_contact).await {
-			return None;
+		our_contact: &ContactOption, reversed: bool, first_request: Option<&[u8]>,
+	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
+		error!("initiate_indirect_connection");
+		// TODO: Only send a punch hole packet whenever our node is punchable for the
+		// selected contact option.
+		if reversed {
+			if !self.punch_hole(their_contact).await {
+				return None;
+			}
 		}
 
 		// Contact the relay node
@@ -1255,6 +1290,7 @@ impl OverlayNode {
 				relay_connection,
 				target.clone(),
 				our_contact.clone(),
+				reversed,
 			)
 			.await?;
 		if !knows_target {
@@ -1262,91 +1298,67 @@ impl OverlayNode {
 		}
 
 		let (tx_in, rx_in) = oneshot::channel();
-		{
-			let mut expected_connections = self.expected_connections.lock().await;
-			// If a connection from the same target is already expected, we can't touch it.
-			// It would leave the other task that's still waiting on the previous connection
-			// hanging.
-			if expected_connections.contains_key(their_contact) {
-				error!(
-					"Attempted to request reversed connection from same node more than once: {} {}",
-					target, their_contact
-				);
-				return None;
-			}
-			expected_connections.insert(their_contact.clone(), tx_in);
-		}
-
-		// TODO: Keep the connection with the relay node open until contact is made,
-		// because the relay node may be able to send us a status message explaining
-		// whether things went ok or not.
-
-		// Spawn the connection attempt on another task, because we should only interupt
-		// it with the stop flag.
-		let (tx_out, rx_out) = oneshot::channel();
-		let stop_flag = Arc::new(AtomicBool::new(false));
-		if attempt_outgoing {
-			let stop_flag2 = stop_flag.clone();
-			let their_contact2 = their_contact.clone();
-			let target2 = target.clone();
-			let base = self.base.clone();
-			spawn(async move {
-				let result = base
-					.connect_with_timeout(
-						stop_flag2.clone(),
-						&their_contact2,
-						Some(&target2),
-						None,
-						sstp::DEFAULT_TIMEOUT * 3,
-					)
-					.await;
-				// If an incomming connection was already received by this point, close the
-				// outgoing connection if it was already established.
-				if !stop_flag2.load(Ordering::Relaxed) {
-					if let Err(_) = tx_out.send(result) {
-						error!("Unable to send back incomming connection.");
-					}
+		let connection_result = if reversed {
+			error!("initiate_indirect_connection reversed");
+			{
+				let mut expected_connections = self.expected_connections.lock().await;
+				// If a connection from the same target is already expected, we can't touch it.
+				// It would leave the other task that's still waiting on the previous connection
+				// hanging.
+				if expected_connections.contains_key(their_contact) {
+					error!(
+						"Attempted to request reversed connection from same node more than once: \
+						 {} {}",
+						target, their_contact
+					);
+					return None;
 				}
-			});
-		}
-
-		// Wait until a connection is received, and return that.
-		let result = if attempt_outgoing {
-			select! {
-				result = rx_in => {
-					stop_flag.store(true, Ordering::Relaxed);
-					Some(result.expect("sender of expected connection has closed unexpectantly"))
-				},
-				result = rx_out => {
-					result.expect("unable to retrieve result from oneshot").map(|r| r.0)
-				},
+				expected_connections.insert(their_contact.clone(), tx_in);
 			}
-		} else {
-			select! {
+
+			let result = select! {
 				result = rx_in => {
-					Some(result.expect("sender of expected connection has closed unexpectantly"))
+					Some((result.expect("sender of expected connection has closed unexpectantly"), None))
 				},
-				() = sleep(sstp::DEFAULT_TIMEOUT * 3) => {
+				() = sleep(sstp::DEFAULT_TIMEOUT * 5) => {
 					None
 				}
+			};
+
+			let mut expected_connections = self.expected_connections.lock().await;
+			let removed = expected_connections.remove(their_contact).is_some();
+
+			// It could happen that the connection sender has already been taken from the
+			// expected_connections map, but the sender hasn't been used yet. It is unlikely
+			// but possible. However, the ownership of the connection sender has already
+			// been taken, so there is not much else we can do about it, other than logging
+			// it...
+			if result.is_none() && !removed {
+				debug!(
+					"Reversed connection seems to have received, but the connection sender has \
+					 not been used yet."
+				);
 			}
+
+			result
+		} else {
+			error!("initiate_indirect_connection !reversed");
+			let stop_flag = Arc::new(AtomicBool::new(false));
+			self.base
+				.connect_with_timeout(
+					stop_flag,
+					&their_contact,
+					Some(&target),
+					first_request,
+					sstp::DEFAULT_TIMEOUT * 5,
+				)
+				.await
 		};
 
-		let mut expected_connections = self.expected_connections.lock().await;
-		let removed = expected_connections.remove(their_contact).is_some();
-		debug_assert!(
-			result.is_some() || !removed,
-			"expected connection is gone for {}",
-			their_contact
-		);
-
-		if result.is_none() {
-			debug!("Unable to receive reversed connection: timeout elapsed");
-		}
-		result
+		connection_result
 	}
 
-	fn start_reverse_connection(self: &Arc<Self>) {
+	fn start_obtaining_keep_alive_connection(self: &Arc<Self>) {
 		let this = self.clone();
 		spawn(async move {
 			this.obtain_keep_alive_connection().await;
@@ -1438,14 +1450,14 @@ impl OverlayNode {
 	async fn process_relay_punch_hole_request(
 		self: &Arc<Self>, buffer: &[u8], node_info: &NodeContactInfo,
 	) -> MessageProcessorResult {
-		let request: RelayInitiateConnectionRequest = match binserde::deserialize(buffer) {
+		let request: RelayPunchHoleRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				warn!("Malformed relay initiate connection request: {}", e);
 				return None;
 			}
 			Ok(r) => r,
 		};
-		let mut response = RelayInitiateConnectionResponse { ok: true };
+		let mut response = RelayPunchHoleResponse { ok: true };
 
 		// If the requested target node happens to be one of our known bootstrap nodes,
 		// we always allow it
@@ -1465,6 +1477,7 @@ impl OverlayNode {
 						&mut connection,
 						node_id2,
 						request.contact_option,
+						request.request_connection,
 					)
 					.await;
 				}
@@ -1482,6 +1495,7 @@ impl OverlayNode {
 					&mut connection,
 					node_id2,
 					request.contact_option,
+					request.request_connection,
 				)
 				.await
 			});
@@ -1494,7 +1508,7 @@ impl OverlayNode {
 	}
 
 	pub(super) async fn process_request(
-		self: &Arc<Self>, message_type: u8, buffer: &[u8], addr: &SocketAddr,
+		self: &Arc<Self>, message_type: u8, buffer: &[u8], contact: &ContactOption,
 		node_info: &NodeContactInfo,
 	) -> MessageProcessorResult {
 		match message_type {
@@ -1502,17 +1516,20 @@ impl OverlayNode {
 				self.process_find_actor_request(buffer).await,
 			OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST =>
 				self.process_store_actor_request(buffer, node_info).await,
+			OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST =>
+				return self.process_keep_alive_request(buffer, node_info).await,
 			OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST =>
 				self.process_punch_hole_request(buffer).await,
 			OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST =>
 				self.process_relay_punch_hole_request(buffer, node_info)
 					.await,
-			OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST =>
-				return self.process_keep_alive_request(buffer, node_info).await,
+			OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_REQUEST =>
+				self.process_reverse_connection_request(buffer, contact)
+					.await,
 			other_id => {
 				warn!(
 					"Unknown overlay message type ID received from {}: {}",
-					addr, other_id
+					contact, other_id
 				);
 				return None;
 			}
@@ -1563,20 +1580,34 @@ impl OverlayNode {
 		}
 	}
 
-	async fn process_start_relay_request(
-		&self, connection: &mut Connection, buffer: &[u8],
-	) -> Option<Vec<u8>> {
-		let request: StartRelayRequest = match binserde::deserialize(buffer) {
-			Err(e) => {
-				error!("Malformed start relay request: {}", e);
-				return None;
-			}
-			Ok(r) => r,
-		};
-		connection.update_their_node_info(request.origin);
+	async fn process_reverse_connection_request(
+		&self, buffer: &[u8], contact_option: &ContactOption,
+	) -> MessageProcessorResult {
+		if buffer.len() > 0 {
+			warn!("Malformed reverse connection request.");
+			return None;
+		}
 
-		// Always accept
-		Some(binserde::serialize(&StartRelayResponse { ok: true }).unwrap())
+		let result = self
+			.expected_connections
+			.lock()
+			.await
+			.remove(contact_option);
+		let response = ReverseConnectionResponse {
+			ok: result.is_some(),
+		};
+		let raw_response = self
+			.base
+			.simple_response(OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_RESPONSE, &response);
+
+		if let Some(tx) = result {
+			Some((
+				raw_response,
+				Some(Box::new(ReverseConnectionToDo { sender: Some(tx) })),
+			))
+		} else {
+			Some((raw_response, None))
+		}
 	}
 
 	async fn process_store_actor_request(
@@ -1617,7 +1648,7 @@ impl OverlayNode {
 	}
 
 	async fn process_punch_hole_request(self: &Arc<Self>, buffer: &[u8]) -> MessageProcessorResult {
-		let request: InitiateConnectionRequest = match binserde::deserialize(buffer) {
+		let request: PunchHoleRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				warn!("Malformed initiate connection request: {}", e);
 				return None;
@@ -1625,22 +1656,50 @@ impl OverlayNode {
 			Ok(r) => r,
 		};
 
-		let success = if let Err(e) = self
-			.base
-			.socket
-			.send_punch_hole_packet(&request.source_contact_option)
-			.await
-		{
-			error!(
-				"Unable to send hole punch packet to {}: {:?}",
-				&request.source_contact_option, e
-			);
-			false
+		// If a connection was not requested, simply send a packet to open a hole for a
+		// connection to come in
+		let success = if !request.request_connection {
+			if let Err(e) = self
+				.base
+				.socket
+				.send_punch_hole_packet(&request.source_contact_option)
+				.await
+			{
+				error!(
+					"Unable to send hole punch packet to {}: {:?}",
+					&request.source_contact_option, e
+				);
+				false
+			} else {
+				true
+			}
+
+		// If a connection was requested, open one and reverse the direction
+		// immediately
 		} else {
+			let this = self.clone();
+			spawn(async move {
+				if let Some((mut connection, _)) = this
+					.base
+					.connect(
+						&request.source_contact_option,
+						Some(&request.source_node_id),
+						None,
+					)
+					.await
+				{
+					if this
+						.exchange_reverse_connection_on_connection(&mut connection)
+						.await == Some(true)
+					{
+						this.base.socket.spawn_connection(connection);
+					}
+				}
+			});
 			true
 		};
 
-		let response = InitiateConnectionResponse { ok: success };
+		let response = PunchHoleResponse { ok: success };
 		self.base
 			.simple_result(OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_RESPONSE, &response)
 	}
@@ -1819,12 +1878,13 @@ impl OverlayNode {
 			// If we know the bootstrap node's ID, we can test if we are a bidirectional
 			// node.
 			if let Some(_rc) = self
-				.request_reversed_connection(
+				.initiate_indirect_connection(
 					&mut bnode1_connection,
 					&bnode2_id,
 					&bnode2_contact,
 					&our_contact,
-					false,
+					true,
+					None,
 				)
 				.await
 			{
@@ -1847,12 +1907,13 @@ impl OverlayNode {
 
 		// If the node is not bidirectional, try to test if it is punchable
 		if let Some(_rc) = self
-			.request_reversed_connection(
+			.initiate_indirect_connection(
 				&mut bnode1_connection,
 				&bnode2_id,
 				&bnode2_contact,
 				&our_contact,
-				false,
+				true,
+				None,
 			)
 			.await
 		{
@@ -1863,8 +1924,22 @@ impl OverlayNode {
 	}
 }
 
+#[async_trait]
+impl MessageWorkToDo for ReverseConnectionToDo {
+	async fn run(&mut self, connection: Box<Connection>) -> Result<Option<Box<Connection>>> {
+		// The ReverseConnectionToDo will only give away the connection to start
+		// listening on it.
+		if let Err(_) = self.sender.take().unwrap().send(connection) {
+			error!("Unable to send expected connection to channel.");
+		}
+		Ok(None)
+	}
+}
+
+
 pub(super) async fn process_request_message(
-	overlay_node: Arc<OverlayNode>, buffer: Vec<u8>, addr: SocketAddr, node_info: NodeContactInfo,
+	overlay_node: Arc<OverlayNode>, buffer: Vec<u8>, contact: ContactOption,
+	node_info: NodeContactInfo,
 ) -> Option<(Vec<u8>, Option<Box<dyn MessageWorkToDo>>)> {
 	let mut message_type_id = buffer[0];
 	if message_type_id >= 0x80 {
@@ -1886,7 +1961,7 @@ pub(super) async fn process_request_message(
 				&actor_node,
 				message_type_id,
 				&buffer[33..],
-				&addr,
+				&contact.target,
 				&node_info,
 			)
 			.await
@@ -1897,14 +1972,14 @@ pub(super) async fn process_request_message(
 				overlay_node.clone(),
 				message_type_id,
 				&buffer[1..],
-				&addr,
+				&contact.target,
 				&node_info,
 				None,
 			)
 			.await;
 		if !processed {
 			overlay_node
-				.process_request(message_type_id, &buffer[1..], &addr, &node_info)
+				.process_request(message_type_id, &buffer[1..], &contact, &node_info)
 				.await
 		} else {
 			connection2

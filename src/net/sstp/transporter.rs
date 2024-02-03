@@ -111,6 +111,7 @@ enum TransporterTask {
 	Send(Vec<u8>, oneshot::Sender<Result<()>>),
 	SendAsync(Vec<u8>),
 	Close(oneshot::Sender<Result<()>>),
+	CloseAsync,
 }
 
 struct WindowInfo {
@@ -384,6 +385,7 @@ impl Transporter {
 							TransporterTask::Send(message, result_sender) => self.send(message, Some(result_sender)).await,
 							TransporterTask::SendAsync(message) => self.send(message, None).await,
 							TransporterTask::Close(tx) => { close_sender = Some(tx); break; }
+							TransporterTask::CloseAsync => break,
 						};
 						// If there was an error that caused the task to be stopped prematurely, stop everything without trying to close it cleanly.
 						if !success {
@@ -402,7 +404,7 @@ impl Transporter {
 							warn!("Error while processing stray packet: {}", e);
 						}
 					} else {
-						error!("Packet channel with transporter has been disconnected.");
+						error!("Packet channel with transporter has been disconnected. {} {}", self.inner.local_session_id, self.inner.dest_session_id);
 						return;
 					}
 				}
@@ -1783,6 +1785,12 @@ impl TransporterHandle {
 		rx.await.ok()
 	}
 
+	pub fn close_async(self) -> bool {
+		self.sender
+			.send(TransporterTask::CloseAsync.trace())
+			.is_ok()
+	}
+
 	#[cfg(test)]
 	pub(super) fn dummy() -> Self {
 		let (tx, _) = unbounded_channel();
@@ -1854,6 +1862,7 @@ impl fmt::Display for TransporterTask {
 			Self::Send(..) => write!(f, "send"),
 			Self::SendAsync(_) => write!(f, "send async"),
 			Self::Close(_) => write!(f, "close"),
+			Self::CloseAsync => write!(f, "close async"),
 		}
 	}
 }
