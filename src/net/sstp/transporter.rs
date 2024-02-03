@@ -347,6 +347,7 @@ impl Transporter {
 			if !self.inner.window_error_free {
 				self.inner.receive_window.starting = false;
 			}
+			self.inner.reset_receive_window_state();
 
 			debug_assert!(self.inner.message_bytes_received <= self.inner.message_size);
 			if self.inner.message_bytes_received == self.inner.message_size {
@@ -493,6 +494,7 @@ impl Transporter {
 			if !self.inner.window_error_free {
 				self.inner.send_window.starting = false;
 			}
+			self.inner.reset_send_window_state();
 
 			debug_assert!(
 				sent <= buffer.len(),
@@ -773,6 +775,7 @@ impl TransporterInner {
 		} else {
 			self.max_packets_expected
 		};
+
 		let mask_bits = (max_packets_expected - completed) as usize;
 		let mask_size = min(
 			mask_bits as usize / 8 + ((mask_bits % 8) > 0) as usize,
@@ -791,7 +794,6 @@ impl TransporterInner {
 				mask[byte_index] ^= 1 << bit_index;
 			}
 		}
-
 		mask
 	}
 
@@ -820,6 +822,7 @@ impl TransporterInner {
 
 	async fn process_current_ack_wait_packet(&self, ks: &KeyState, packet: Vec<u8>) -> Result<()> {
 		if self.verify_peer_node_id(&packet) {
+			// Send either a success or missing ack packet depending on the state
 			self.send_missing_ack_packet(ks).await?;
 		}
 		Ok(())
@@ -1060,6 +1063,7 @@ impl TransporterInner {
 		ks.advance_key(&packet);
 
 		self.next_sequence += 1;
+		debug_assert!(self.next_sequence <= (ks.keychain.len() - 1) as u16);
 		let packet_len = packet.len() as u32;
 		if sender.send(Ok(packet)).is_err() {
 			error!("Channel to send received data on has closed.");
@@ -1211,6 +1215,8 @@ impl TransporterInner {
 		None
 	}
 
+	/// Process any packet that is received for the current key-state, before we
+	/// know what the next task is going to be.
 	async fn process_stray_packet_for_ks_current(
 		&mut self, ks: &KeyState, seq: u16, mut data: Vec<u8>, is_receiving: bool, is_sending: bool,
 	) -> Result<()> {
@@ -1227,10 +1233,13 @@ impl TransporterInner {
 
 		let packet_type = data.drain(0..3).last().unwrap();
 		match packet_type {
-			CRYPTED_PACKET_TYPE_DATA =>
-				if seq == 0 {
-					self.current_ks_unprocessed_first_packet = Some(data);
-				},
+			CRYPTED_PACKET_TYPE_DATA => {
+				debug_assert!(
+					seq == 0,
+					"higher sequences should have already been cached."
+				);
+				self.current_ks_unprocessed_first_packet = Some(data);
+			}
 			// Stray ack packets can happen if our side has send out an ack-wait packet just before
 			// receiving the successful ack packet, then the other side will still respond to our
 			// ack-wait packet but we've already ended the sending task.
@@ -1244,8 +1253,18 @@ impl TransporterInner {
 			CRYPTED_PACKET_TYPE_ACK_WAIT =>
 				if is_sending {
 					return trace::err(Error::BothSending);
+				// At this state, we don't know what task is going to be served
+				// to the transporter yet, so we can't really give an
+				// intelligent response at this point.
 				} else {
-					return self.process_current_ack_wait_packet(ks, data).await;
+					if self.current_ks_unprocessed_first_packet.is_none() {
+						return self.process_current_ack_wait_packet(ks, data).await;
+					} else {
+						trace!(
+							"Dropping stray ack-wait packet because we don't have a task for the \
+							 current stray packets yet."
+						);
+					}
 				},
 			_ => self.process_unexpected_packet(ks.sequence, seq, packet_type),
 		}
@@ -1373,13 +1392,6 @@ impl TransporterInner {
 			return false;
 		}
 
-		// Reset state each window
-		self.next_sequence = 0;
-		self.max_packets_expected = 0;
-		self.requested_window_size = 0;
-		self.window_bytes_received = 0;
-		self.window_error_free = true;
-
 		// Process any packets which may have already been collected but not yet
 		// processed.
 		let mut already_done = false;
@@ -1496,6 +1508,21 @@ impl TransporterInner {
 		}
 
 		true
+	}
+
+	/// Reset state after each window
+	fn reset_receive_window_state(&mut self) {
+		self.next_sequence = 0;
+		self.max_packets_expected = 0;
+		self.requested_window_size = 0;
+		self.window_bytes_received = 0;
+		self.window_error_free = true;
+	}
+
+	/// Reset state after each window
+	fn reset_send_window_state(&mut self) {
+		self.next_sequence = 0;
+		self.window_error_free = true;
 	}
 
 	async fn send_ack_packet(
@@ -1633,8 +1660,10 @@ impl TransporterInner {
 		}
 		debug_assert!(
 			missing_mask.len() == 0 || errors > 0,
-			"no packets sent for missing-mask: {:?}",
-			&missing_mask
+			"no packets sent for missing-mask: {:?}, start_seq={}, errors={}",
+			&missing_mask,
+			start_seq,
+			errors,
 		);
 		Ok(())
 	}
@@ -1660,8 +1689,6 @@ impl TransporterInner {
 			debug_assert!(buffer.len() > 0);
 		}
 		debug_assert!(buffer.len() > 0);
-		self.next_sequence = 0;
-		self.window_error_free = true;
 
 		// Calculate number of data bytes in the first packet, and the number of packets
 		// for this window
@@ -1712,6 +1739,7 @@ impl TransporterInner {
 			self.send_data_packet(ks.current, self.next_sequence, packet)
 				.await?;
 			self.next_sequence += 1;
+			debug_assert!(self.next_sequence <= (ks.current.keychain.len() - 1) as u16);
 			sent += packet.len();
 			packets.push(packet);
 		}
