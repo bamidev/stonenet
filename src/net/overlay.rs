@@ -41,12 +41,8 @@ pub const OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST: u8 = 68;
 pub const OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_RESPONSE: u8 = 69;
 pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST: u8 = 70;
 pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_RESPONSE: u8 = 71;
-pub const OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST: u8 = 72;
-pub const OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE: u8 = 73;
 pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST: u8 = 74;
 pub const OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE: u8 = 75;
-pub const OVERLAY_MESSAGE_TYPE_START_RELAY_REQUEST: u8 = 76;
-pub const OVERLAY_MESSAGE_TYPE_START_RELAY_RESPONSE: u8 = 77;
 
 
 pub struct ConnectActorIter<'a> {
@@ -294,7 +290,7 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 #[async_trait]
 impl MessageWorkToDo for KeepAliveToDo {
 	async fn run(&mut self, mut connection: Box<Connection>) -> Result<Option<Box<Connection>>> {
-		let response = KeepAliveResponse { ok: false };
+		let mut response = KeepAliveResponse { ok: false };
 
 		if let Some(bucket_index) = self.node.base.differs_at_bit(&self.node_id) {
 			let mut bucket = self.node.base.buckets[bucket_index as usize].lock().await;
@@ -308,15 +304,16 @@ impl MessageWorkToDo for KeepAliveToDo {
 
 			if bucket.connection.is_none() {
 				connection.set_keep_alive_timeout(KEEP_ALIVE_TIMEOUT).await;
+				response.ok = true;
 				info!(
 					"Keeping connection with {} alive.",
 					connection.peer_address()
 				);
-				let response = self
+				let raw_response = self
 					.node
 					.base
 					.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
-				connection.send_async(response)?;
+				connection.send_async(raw_response)?;
 
 				bucket.connection = Some((
 					connection.their_node_info().clone(),
@@ -437,28 +434,6 @@ impl OverlayNode {
 		Some(response.ok)
 	}
 
-	pub async fn exchange_open_relay_on_connection(
-		&self, connection: &mut Connection, target: NodeContactInfo,
-	) -> Option<bool> {
-		let request = OpenRelayRequest { target };
-		// FIXME: This should have about 4 times the default timeout because the relay
-		// node needs to reach the other node before responding
-		let raw_response = self
-			.base
-			.exchange_on_connection(
-				connection,
-				OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST,
-				&binserde::serialize(&request).unwrap(),
-			)
-			.await?;
-		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
-		let response: OpenRelayResponse = self
-			.base
-			.handle_connection_issue(result, connection.their_node_info())
-			.await?;
-		Some(response.ok)
-	}
-
 	pub(super) async fn exchange_punch_hole_on_connection(
 		&self, connection: &mut Connection, source_node_id: IdType,
 		source_contact_option: ContactOption,
@@ -504,26 +479,6 @@ impl OverlayNode {
 		let response: RelayInitiateConnectionResponse = self
 			.base
 			.handle_connection_issue(result, &relay_connection.their_node_info())
-			.await?;
-		Some(response.ok)
-	}
-
-	async fn exchange_start_relay_on_connection(
-		&self, connection: &mut Connection, origin: NodeContactInfo,
-	) -> Option<bool> {
-		let request = StartRelayRequest { origin };
-		let raw_response = self
-			.base
-			.exchange_on_connection(
-				connection,
-				OVERLAY_MESSAGE_TYPE_START_RELAY_REQUEST,
-				&binserde::serialize(&request).unwrap(),
-			)
-			.await?;
-		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
-		let response: StartRelayResponse = self
-			.base
-			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
 		Some(response.ok)
 	}

@@ -108,7 +108,7 @@ enum TransporterTask {
 		UnboundedSender<Result<Vec<u8>>>,
 		Option<Duration>,
 	),
-	Send(Vec<u8>, oneshot::Sender<Result<u32>>),
+	Send(Vec<u8>, oneshot::Sender<Result<()>>),
 	SendAsync(Vec<u8>),
 	Close(oneshot::Sender<Result<()>>),
 }
@@ -378,7 +378,7 @@ impl Transporter {
 					if let Some(traced_task) = result {
 						let task;
 						(task, self.inner.current_backtrace) = traced_task.unwrap();
-						trace!("Running task {} for {}", &task, self.inner.node_id);
+						trace!("Running task {} for {} (session [{} -> {}])", &task, self.inner.node_id, self.inner.local_session_id, self.inner.dest_session_id);
 						let success = match task {
 							TransporterTask::Receive(size_sender, packet_sender, wait_time) => self.receive(size_sender, packet_sender, wait_time.unwrap_or(self.inner.timeout)).await,
 							TransporterTask::Send(message, result_sender) => self.send(message, Some(result_sender)).await,
@@ -439,11 +439,12 @@ impl Transporter {
 	}
 
 	async fn send(
-		&mut self, message: Vec<u8>, result_sender: Option<oneshot::Sender<Result<u32>>>,
+		&mut self, message: Vec<u8>, result_sender: Option<oneshot::Sender<Result<()>>>,
 	) -> bool {
 		debug_assert!(message.len() > 0, "empty message");
+		let message_len = message.len();
 		let mut buffer = Vec::with_capacity(MESSAGE_HEADER_SIZE + message.len());
-		buffer.extend((message.len() as u32).to_le_bytes()); // The message header
+		buffer.extend((message_len as u32).to_le_bytes()); // The message header
 		buffer.extend(message);
 		self.inner.first_window = true;
 
@@ -524,7 +525,8 @@ impl Transporter {
 			let r = if let Some(e) = error {
 				tx.send(Err(e))
 			} else {
-				tx.send(Ok((sent - MESSAGE_HEADER_SIZE) as u32))
+				debug_assert!(sent - MESSAGE_HEADER_SIZE == message_len);
+				tx.send(Ok(()))
 			};
 			if let Err(_) = r {
 				warn!("Transporter send result oneshot disconnected.");
@@ -1262,7 +1264,8 @@ impl TransporterInner {
 					} else {
 						trace!(
 							"Dropping stray ack-wait packet because we don't have a task for the \
-							 current stray packets yet."
+							 current stray packets yet. ({})",
+							ks.sequence
 						);
 					}
 				},
@@ -1828,8 +1831,8 @@ impl TransporterHandle {
 		self.sender
 			.send(TransporterTask::Send(message, tx).trace())
 			.ok()?;
-		let _ = rx.await.ok()?;
-		Some(Ok(()))
+		let result = rx.await.ok()?;
+		Some(result)
 	}
 
 	pub fn send_async(&self, message: Vec<u8>) -> Option<()> {
