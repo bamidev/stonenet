@@ -599,7 +599,7 @@ mod tests {
 		// Receive relayed message
 		let mut connection = node1
 			.relay(
-				&ContactOption::use_udp(relay_addr),
+				&ContactOption::new_udp(relay_addr),
 				relay_node_id.clone(),
 				&node2_addr,
 				&node2_node_id,
