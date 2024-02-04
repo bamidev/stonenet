@@ -16,11 +16,12 @@ ShowInstDetails show
 
 Section "Stonenet"
   SetOutPath - 
+  WriteRegStr HKLM Software\Stonenet InstallDir "$INSTDIR"
+  
   File "../target/x86_64-pc-windows-gnu/release/stonenetd.exe"
   File /r ../static
   File /r ../templates
   File /oname=config.toml ../conf/default.toml
 
   WriteRegStr HKLM Software\Microsoft\Windows\CurrentVersion\Run StonenetDaemon "$INSTDIR\stonenetd.exe"
-  WriteRegStr HKLM Software\Stonenet InstallDir "$INSTDIR"
 SectionEnd

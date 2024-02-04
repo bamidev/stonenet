@@ -32,6 +32,7 @@ lazy_static = "1"
 libsqlite3-sys = "^0.27"
 log = ">=0.4"
 multipart = "0"
+native-tls = "*"
 num = "0"
 once_cell = "1"
 rand = { version = "0.8", features = ["getrandom"] }
@@ -58,7 +59,7 @@ zeroize = ">=1.3, <2"
 ctor = "*"
 
 [features]
-bundled = ["rusqlite/bundled"]
+bundled = ["rusqlite/bundled", "native-tls/vendored"]
 
 [target.'cfg(target_family = "windows")'.dependencies]
 rusqlite = { version = "^0.30", features = ["bundled"] }
@@ -83,7 +84,7 @@ assets = [
 	["templates/**/*", "usr/share/stonenet/templates", "644"],
 	["assets/generic/xdg/stonenet.desktop", "usr/share/applications/", "644"],
 ]
-depends = ["libsqlite3-0", "$auto"]
+depends = ["$auto", "libssl3", "libsqlite3-0"]
 maintainer-scripts = "assets/debian"
 systemd-units = { unit-scripts = "assets/debian/systemd" }
 

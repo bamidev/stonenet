@@ -181,7 +181,7 @@ fn load_install_dir() -> io::Result<PathBuf> {
 
 #[cfg(target_family = "windows")]
 fn version_message(version_str: &str) -> String {
-	format!("<a href=\"https://get.stonenet.org/windows/stonenet-installer-{}.exe\">download it here</a>", version_str)
+	format!("<a href=\"http://get.stonenet.org/windows/stonenet-installer-{}.exe\">download it here</a>", version_str)
 }
 
 #[cfg(not(target_family = "windows"))]
