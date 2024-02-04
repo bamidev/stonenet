@@ -1133,18 +1133,6 @@ impl TransporterInner {
 		Ok(None)
 	}
 
-	fn packet_header_size(&self) -> usize {
-		if self.next_sequence == 0 {
-			if self.first_window {
-				FIRST_WINDOW_HEADER_SIZE
-			} else {
-				WINDOW_HEADER_SIZE
-			}
-		} else {
-			0
-		}
-	}
-
 	/// If something is returned, the current task should be stopped.
 	/// The bool indicates whether it ended succesfully.
 	async fn process_next_sequence_in_line_while_receiving(

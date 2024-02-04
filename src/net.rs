@@ -46,6 +46,7 @@ pub struct BindInfo {
 	pub ipv6: IpBindInfo,
 }
 
+#[allow(dead_code)]
 #[derive(Default)]
 pub struct IpBindInfo {
 	udp_port: Option<u16>,
@@ -106,12 +107,7 @@ pub struct NodeContactInfo {
 	pub contact_info: ContactInfo,
 }
 
-/*#[derive(Clone)]
-pub struct NodeContactMethod {
-	pub node_id: IdType,
-	pub method: ContactMethod
-}*/
-
+#[allow(dead_code)]
 pub enum NetworkLevel {
 	Global,
 	Local(String),
@@ -229,40 +225,6 @@ impl ContactInfo {
 		}
 
 		contact_info
-	}
-
-	pub fn is_open_to_reversed_connections(&self, other: &ContactInfo) -> bool {
-		if let Some(entry_a) = &self.ipv4 {
-			if let Some(entry_b) = &other.ipv4 {
-				if let Some(a) = &entry_a.availability.udp {
-					if entry_b.availability.udp.is_some() && a.openness == Openness::Bidirectional {
-						return true;
-					}
-				}
-				if let Some(a) = &entry_a.availability.tcp {
-					if entry_b.availability.tcp.is_some() && a.openness == Openness::Bidirectional {
-						return true;
-					}
-				}
-			}
-		}
-
-		if let Some(entry_a) = &self.ipv6 {
-			if let Some(entry_b) = &other.ipv6 {
-				if let Some(a) = &entry_a.availability.udp {
-					if entry_b.availability.udp.is_some() && a.openness == Openness::Bidirectional {
-						return true;
-					}
-				}
-				if let Some(a) = &entry_a.availability.tcp {
-					if entry_b.availability.tcp.is_some() && a.openness == Openness::Bidirectional {
-						return true;
-					}
-				}
-			}
-		}
-
-		false
 	}
 
 	pub fn merge(&mut self, other: &Self) {
@@ -514,7 +476,8 @@ impl From<&SocketAddr> for ContactInfo {
 impl ContactOption {
 	pub fn new(target: SocketAddr, use_tcp: bool) -> Self { Self { target, use_tcp } }
 
-	pub fn use_udp(target: SocketAddr) -> Self { Self::new(target, false) }
+	#[allow(dead_code)]
+	pub fn new_udp(target: SocketAddr) -> Self { Self::new(target, false) }
 }
 
 impl fmt::Display for ContactOption {
@@ -527,7 +490,7 @@ impl fmt::Display for ContactOption {
 	}
 }
 
-
+#[allow(dead_code)]
 impl NetworkLevel {
 	pub fn from_ip(ip: &IpAddr) -> NetworkLevel {
 		if ip.is_global() {

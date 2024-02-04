@@ -400,7 +400,9 @@ impl OverlayNode {
 		if let Some(idle_time) = config.udp_max_idle_time {
 			let this4 = this.clone();
 			spawn(async move {
-				this4.keep_hole_open(stop_flag, Duration::from_secs(idle_time)).await;
+				this4
+					.keep_hole_open(stop_flag, Duration::from_secs(idle_time))
+					.await;
 			});
 		}
 

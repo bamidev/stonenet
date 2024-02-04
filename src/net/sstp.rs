@@ -95,27 +95,22 @@ pub enum Error {
 
 	BothSending,
 	BothReceiving,
-	DummyError,
 	/// The connection has already been closed. Either by the Connection or
 	/// Server.
 	ConnectionClosed,
 	/// Ack mask has been left empty. Should contain at least one packet.
 	EmptyAckMask,
-	/// The node ID did not match in the hello response. Could be an attempt
-	/// at a MitM-attack.
-	InsecureConnection,
 	/// The public key in the hello exchange didn't match the node ID.
 	InvalidPublicKey,
 	/// A packet had an invalid message type on it.
 	InvalidMessageType(u8),
-	/// A different node ID has been responded with than was expected.
+	/// A different node ID has been responded with than was expected. This
+	/// could indicate a MitM attack.
 	InvalidNodeId,
 	InvalidResponseMessageType((u8, u8)),
 	InvalidSessionId(u16),
 	/// A packet had an invalid signature on it.
 	InvalidSignature,
-	/// The data inside the packet was invalid.
-	MalformedPacket,
 	// The message itself was not understood
 	MalformedMessage(Option<Arc<binserde::Error>>),
 	/// Unable to connect because there were no matching options
@@ -172,9 +167,7 @@ impl fmt::Display for Error {
 		match self {
 			Self::IoError(e) => write!(f, "I/O error: {}", e),
 			Self::ConnectionClosed => write!(f, "connection has already been closed"),
-			Self::DummyError => write!(f, "dummy error"),
 			Self::EmptyAckMask => write!(f, "ack mask did not contain any missing packet bits"),
-			Self::InsecureConnection => write!(f, "connection not secure"),
 			Self::InvalidPublicKey => write!(f, "invalid public key"),
 			Self::InvalidMessageType(mt) => write!(f, "invalid message type: {}", mt),
 			Self::InvalidNodeId => write!(f, "invalid node ID"),
@@ -186,7 +179,6 @@ impl fmt::Display for Error {
 			Self::InvalidSessionId(id) =>
 				write!(f, "invalid session ID for incomming packet: {}", id),
 			Self::InvalidSignature => write!(f, "invalid signature"),
-			Self::MalformedPacket => write!(f, "malformed packet"),
 			Self::MalformedMessage(oe) => match oe {
 				Some(e) => write!(f, "malformed message: {}", e),
 				None => write!(f, "malformed message"),
@@ -228,6 +220,7 @@ impl Into<io::Error> for Error {
 }
 
 impl Connection {
+	#[allow(dead_code)]
 	pub fn alive_flag(&self) -> Arc<AtomicBool> { self.transporter.alive_flag.clone() }
 
 	pub async fn close(&mut self) -> Result<()> { self.transporter.close().await.unwrap_or(Ok(())) }
@@ -246,7 +239,8 @@ impl Connection {
 	//pub fn network_level(&self) -> NetworkLevel {
 	// NetworkLevel::from_ip(&self.peer_address.ip()) }
 
-	pub fn our_session_id(&self) -> u16 { self.local_session_id }
+	#[allow(dead_code)]
+	pub fn local_session_id(&self) -> u16 { self.local_session_id }
 
 	pub fn peer_address(&self) -> &SocketAddr { &self.peer_address }
 
@@ -321,11 +315,8 @@ impl Connection {
 
 	pub fn their_node_id(&self) -> &IdType { &self.peer_node_info.node_id }
 
-	pub fn their_session_id(&self) -> u16 { self.dest_session_id }
-
-	pub fn update_their_node_info(&mut self, node_info: NodeContactInfo) {
-		self.peer_node_info = node_info;
-	}
+	#[allow(dead_code)]
+	pub fn dest_session_id(&self) -> u16 { self.dest_session_id }
 }
 
 impl From<PublicKeyError> for Error {

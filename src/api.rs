@@ -402,8 +402,18 @@ impl Api {
 									// Find the block on the network, and store it if we have found
 									// it
 									if let Some(r) = n.find_block(&block_hash).await {
-										db.perform(|mut c| c.store_block(&block_hash, &r.data));
-										tx.send(Ok(r.data)).await;
+										if let Err(e) =
+											db.perform(|mut c| c.store_block(&block_hash, &r.data))
+										{
+											if let Err(_) = tx.send(Err(e)).await {
+												error!(
+													"Unable to send error on stream-file channel."
+												);
+											}
+										}
+										if let Err(_) = tx.send(Ok(r.data)).await {
+											error!("Unable to send block on stream-file channel.");
+										}
 										continue;
 									}
 								}
