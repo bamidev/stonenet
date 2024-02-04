@@ -969,7 +969,7 @@ impl OverlayNode {
 	async fn keep_hole_open(self: Arc<Self>, stop_flag: Arc<AtomicBool>, sleep_duration: Duration) {
 		// FIXME: Wait until the network is actually joined.
 		sleep(Duration::from_secs(120)).await;
-		
+
 		while !stop_flag.load(Ordering::Relaxed) {
 			let mut iter = self.base.iter_all_fingers().await;
 
@@ -983,7 +983,9 @@ impl OverlayNode {
 			}
 
 			if tried == 0 {
-				warn!("Lost connection to all nodes, rejoining the network...");
+				warn!("Lost connection to all nodes, rejoining the network in {:?}...", sleep_duration);
+				sleep(sleep_duration).await;
+				
 				if !self.join_network(stop_flag.clone()).await {
 					error!("Attempt at rejoining the network failed.")
 				} else {

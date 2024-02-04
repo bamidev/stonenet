@@ -177,13 +177,15 @@ fn load_install_dir() -> io::Result<PathBuf> {
 	let install_dir =
 		PathBuf::from_str(&path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
+	env::set_current_dir(&install_dir).unwrap();
+
 	Ok(install_dir)
 }
 
 #[cfg(target_family = "windows")]
 fn version_message(version_str: &str) -> String {
 	format!(
-		"<a href=\"https://get.stonenet.org/windows/stonenet-installer-{}.exe\">download it \
+		"<a target=\"_blank\" href=\"https://get.stonenet.org/windows/stonenet-installer-{}.exe\">download the update \
 		 here</a>",
 		version_str
 	)

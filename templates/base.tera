@@ -22,7 +22,7 @@
 		{% if global.update_message %}
 			<div class="alert alert-warning" role="alert">
 				A new update is available! Using an outdated client may prevent you from
-				participating in the network. Please {{ global.update_message }}.
+				participating in the network. Please {{ global.update_message | safe }}.
 			</div>
 		{% endif %}
 		<nav class="navbar navbar-expand-lg navbar-dark">
