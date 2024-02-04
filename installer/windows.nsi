@@ -18,8 +18,12 @@ ShowInstDetails show
 InstallDir "$PROGRAMFILES\Stonenet"
 InstallDirRegKey HKLM Software\Stonenet InstallDir
 
+
 Section "Stonenet"
   SetOutPath - 
+
+  ExecWait 'taskkill /f /t /im stonenetd.exe'
+
   WriteRegStr HKLM Software\Stonenet InstallDir "$INSTDIR"
 
   File "../target/x86_64-pc-windows-gnu/release/stonenetd.exe"
