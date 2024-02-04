@@ -31,9 +31,10 @@ pub struct Global {
 	pub api: Api,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct GlobalContext {
 	pub is_local: bool,
+	pub update_message: Option<String>,
 }
 
 
@@ -71,10 +72,10 @@ async fn index(page: Option<u64>, g: &State<Global>) -> Template {
 	Template::render(
 		"home",
 		context! {
-			global: g.context,
+			global: g.context.clone(),
 			identities: identities_data,
 			objects,
-			page: p
+			page: p,
 		},
 	)
 }

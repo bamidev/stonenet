@@ -9,6 +9,22 @@
 		{% block head %}{% endblock head %}
 	</head>
 	<body class="container bg-dark text-light">
+		{% if error %}
+			<div class="alert alert-danger" role="alert">
+				{{ error }}
+			</div>
+		{% endif %}
+		{% if warning %}
+			<div class="alert alert-warning" role="alert">
+				{{ warning }}
+			</div>
+		{% endif %}
+		{% if global.update_message %}
+			<div class="alert alert-warning" role="alert">
+				A new update is available! Using an outdated client may prevent you from
+				participating in the network. Please {{ global.update_message }}.
+			</div>
+		{% endif %}
 		<nav class="navbar navbar-expand-lg navbar-dark">
 			<div class="container-fluid">
 				<a class="navbar-brand" href="#">Stonenet</a>

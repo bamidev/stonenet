@@ -38,11 +38,56 @@ use db::Database;
 use env_logger;
 use log::*;
 use net::{overlay::OverlayNode, *};
+use semver::Version;
 use signal_hook::flag;
 use simple_logging;
 use tokio;
 use toml;
 
+
+async fn check_version() -> Option<String> {
+	info!("Checking version...");
+
+	let url = "http://get.stonenet.org/windows/latest-version.txt";
+	let response = match reqwest::get(url).await {
+		Ok(r) => r,
+		Err(e) => {
+			error!("Unable to complete get request for version file: {}", e);
+			return None;
+		}
+	};
+
+	let latest_version_str = match response.text().await {
+		Ok(r) => r,
+		Err(e) => {
+			error!("Unable to download latest version file: {}", e);
+			return None;
+		}
+	};
+	let latest_version = match Version::parse(&latest_version_str) {
+		Ok(v) => v,
+		Err(e) => {
+			error!("Unable to parse latest version string: {}", e);
+			return None;
+		}
+	};
+
+	let current_version_str = env!("CARGO_PKG_VERSION");
+	let current_version = match Version::parse(&current_version_str) {
+		Ok(v) => v,
+		Err(e) => {
+			error!("Unable to parse latest version string: {}", e);
+			return None;
+		}
+	};
+
+	if latest_version > current_version {
+		info!("New version available!");
+		Some(latest_version_str.to_owned())
+	} else {
+		None
+	}
+}
 
 #[cfg(not(target_family = "windows"))]
 fn config_path(_install_dir: PathBuf) -> PathBuf {
@@ -134,6 +179,16 @@ fn load_install_dir() -> io::Result<PathBuf> {
 	Ok(install_dir)
 }
 
+#[cfg(target_family = "windows")]
+fn version_message(version_str: &str) -> String {
+	format!("<a href=\"https://get.stonenet.org/windows/stonenet-installer-{}.exe\">download it here</a>", version_str)
+}
+
+#[cfg(not(target_family = "windows"))]
+fn version_message(_version_str: &str) -> String {
+	"use your package manager to update the stonenet client".to_owned()
+}
+
 #[tokio::main]
 async fn main() {
 	initialize_logging();
@@ -180,11 +235,13 @@ async fn main() {
 		test_openness(&api, &config).await;
 
 		// Spawn web servers
+		let new_version_opt = check_version().await;
+		let update_message = if let Some(new_version) = new_version_opt { Some(version_message(&new_version)) } else { None };
 		let mut rocket_handles = Vec::new();
 		let mut join_handles = Vec::new();
 		if config.load_web_interface.unwrap_or(false) {
 			let global_state = web::Global {
-				context: web::GlobalContext { is_local: false },
+				context: web::GlobalContext { is_local: false, update_message: None },
 				api: api.clone(),
 			};
 			let (shutdown, join) =
@@ -194,7 +251,7 @@ async fn main() {
 		}
 		if config.load_user_interface.unwrap_or(false) {
 			let global_state = web::Global {
-				context: web::GlobalContext { is_local: true },
+				context: web::GlobalContext { is_local: true, update_message },
 				api: api.clone(),
 			};
 			let (shutdown, join) = web::spawn(
