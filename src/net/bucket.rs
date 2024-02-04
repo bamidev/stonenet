@@ -101,12 +101,12 @@ impl Bucket {
 					}
 					// If it is in our replacement cache, add it back
 					Some(index) => {
-						let finger = self
-							.replacement_cache
-							.remove(index)
-							.unwrap()
-							.finger;
-						self.remember(finger.node_info, finger.trusted || trusted, finger.is_relay || is_relay);
+						let finger = self.replacement_cache.remove(index).unwrap().finger;
+						self.remember(
+							finger.node_info,
+							finger.trusted || trusted,
+							finger.is_relay || is_relay,
+						);
 					}
 				}
 			}
@@ -241,7 +241,7 @@ impl BucketEntry {
 			node_info: finger,
 			trusted,
 			values_obtained: 0,
-			is_relay
+			is_relay,
 		}
 	}
 }
@@ -277,9 +277,13 @@ impl PartialOrd for BucketEntry {
 
 		// Prioritize nodes that are a relay
 		if self.is_relay {
-			if !other.is_relay { return Some(Ordering::Greater); }
+			if !other.is_relay {
+				return Some(Ordering::Greater);
+			}
 		} else {
-			if other.is_relay { return Some(Ordering::Less); }
+			if other.is_relay {
+				return Some(Ordering::Less);
+			}
 		}
 
 		// Compare values obtained

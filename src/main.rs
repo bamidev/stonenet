@@ -181,7 +181,11 @@ fn load_install_dir() -> io::Result<PathBuf> {
 
 #[cfg(target_family = "windows")]
 fn version_message(version_str: &str) -> String {
-	format!("<a href=\"http://get.stonenet.org/windows/stonenet-installer-{}.exe\">download it here</a>", version_str)
+	format!(
+		"<a href=\"http://get.stonenet.org/windows/stonenet-installer-{}.exe\">download it \
+		 here</a>",
+		version_str
+	)
 }
 
 #[cfg(not(target_family = "windows"))]
@@ -236,12 +240,19 @@ async fn main() {
 
 		// Spawn web servers
 		let new_version_opt = check_version().await;
-		let update_message = if let Some(new_version) = new_version_opt { Some(version_message(&new_version)) } else { None };
+		let update_message = if let Some(new_version) = new_version_opt {
+			Some(version_message(&new_version))
+		} else {
+			None
+		};
 		let mut rocket_handles = Vec::new();
 		let mut join_handles = Vec::new();
 		if config.load_web_interface.unwrap_or(false) {
 			let global_state = web::Global {
-				context: web::GlobalContext { is_local: false, update_message: None },
+				context: web::GlobalContext {
+					is_local: false,
+					update_message: None,
+				},
 				api: api.clone(),
 			};
 			let (shutdown, join) =
@@ -251,7 +262,10 @@ async fn main() {
 		}
 		if config.load_user_interface.unwrap_or(false) {
 			let global_state = web::Global {
-				context: web::GlobalContext { is_local: true, update_message },
+				context: web::GlobalContext {
+					is_local: true,
+					update_message,
+				},
 				api: api.clone(),
 			};
 			let (shutdown, join) = web::spawn(

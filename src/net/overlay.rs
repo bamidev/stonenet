@@ -1393,7 +1393,10 @@ impl OverlayNode {
 			Ok(r) => r,
 		};
 
-		let (connected, fingers) = self.base.find_nearest_public_contacts(&request.node_id).await;
+		let (connected, fingers) = self
+			.base
+			.find_nearest_public_contacts(&request.node_id)
+			.await;
 		let mut response = FindActorResponse {
 			contacts: FindNodeResponse {
 				is_relay_node: self.is_relay_node,

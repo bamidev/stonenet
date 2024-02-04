@@ -350,7 +350,7 @@ where
 			.exchange_on_connection(
 				connection,
 				NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST,
-				&binserde::serialize(&request).unwrap()
+				&binserde::serialize(&request).unwrap(),
 			)
 			.await;
 		let raw_response = raw_response_result?;
@@ -818,7 +818,8 @@ where
 				None
 			}
 			Ok(response) => {
-				self.mark_node_helpful_relay(node_info, response.is_relay_node).await;
+				self.mark_node_helpful_relay(node_info, response.is_relay_node)
+					.await;
 				Some(response)
 			}
 		}
@@ -1026,7 +1027,9 @@ where
 		}
 	}
 
-	pub(super) async fn mark_node_helpful_relay(&self, node_info: &NodeContactInfo, is_relay: bool) {
+	pub(super) async fn mark_node_helpful_relay(
+		&self, node_info: &NodeContactInfo, is_relay: bool,
+	) {
 		if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
 			bucket.mark_helpful(node_info, false, is_relay);
