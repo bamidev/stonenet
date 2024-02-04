@@ -11,13 +11,16 @@
 
 Name "Stonenet"
 OutFile "stonenet-installer.exe"
-InstallDir "$PROGRAMFILES\Stonenet"
 ShowInstDetails show
+
+# Try to use the 
+ReadRegStr $0 HKLM Software\Stonenet InstallDir
+InstallDir "$PROGRAMFILES\Stonenet"
 
 Section "Stonenet"
   SetOutPath - 
   WriteRegStr HKLM Software\Stonenet InstallDir "$INSTDIR"
-  
+
   File "../target/x86_64-pc-windows-gnu/release/stonenetd.exe"
   File /r ../static
   File /r ../templates
