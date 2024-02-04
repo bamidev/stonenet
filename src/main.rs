@@ -1,4 +1,5 @@
 #![feature(ip)]
+#![windows_subsystem = "windows"]
 
 #[macro_use]
 extern crate arrayref;
