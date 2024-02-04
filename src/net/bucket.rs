@@ -16,6 +16,7 @@ pub struct Bucket {
 struct BucketEntry {
 	node_info: NodeContactInfo,
 	trusted: bool,
+	is_relay: bool,
 	values_obtained: u32,
 }
 
@@ -236,11 +237,12 @@ impl Bucket {
 }
 
 impl BucketEntry {
-	pub fn new(finger: NodeContactInfo, trusted: bool) -> Self {
+	pub fn new(finger: NodeContactInfo, trusted: bool, is_relay: bool) -> Self {
 		Self {
 			node_info: finger,
 			trusted,
 			values_obtained: 0,
+			is_relay
 		}
 	}
 }
@@ -272,6 +274,13 @@ impl PartialOrd for BucketEntry {
 			.partial_cmp(&other.node_info.contact_info.score());
 		if result != Some(Ordering::Equal) {
 			return result;
+		}
+
+		// Prioritize nodes that are a relay
+		if self.is_relay {
+			if !other.is_relay { return Some(Ordering::Greater); }
+		} else {
+			if other.is_relay { return Some(Ordering::Less); }
 		}
 
 		// Compare values obtained

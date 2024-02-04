@@ -687,7 +687,7 @@ impl OverlayNode {
 		}
 
 		let id = address.as_id();
-		let fingers = self.base.find_nearest_fingers(&id).await;
+		let fingers = self.base.find_nearest_private_fingers(&id).await;
 		let this = self.clone();
 		let iter = self
 			.base
@@ -709,7 +709,7 @@ impl OverlayNode {
 	// Does a simple search on the overlay network to find a node that is connected
 	// to the given node_id, and returns the connection to that node.
 	pub async fn find_connection_for_node(&self, node_id: &IdType) -> Option<Box<Connection>> {
-		let fingers = self.base.find_nearest_fingers(node_id).await;
+		let fingers = self.base.find_nearest_private_fingers(node_id).await;
 		if fingers.len() == 0 {
 			return None;
 		}
@@ -1393,7 +1393,7 @@ impl OverlayNode {
 			Ok(r) => r,
 		};
 
-		let (connected, fingers) = self.base.find_nearest_contacts(&request.node_id).await;
+		let (connected, fingers) = self.base.find_nearest_public_contacts(&request.node_id).await;
 		let mut response = FindActorResponse {
 			contacts: FindNodeResponse {
 				is_relay_node: self.is_relay_node,

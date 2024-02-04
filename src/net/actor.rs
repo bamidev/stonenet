@@ -355,7 +355,7 @@ impl ActorNode {
 			}
 		}
 
-		let fingers = self.base.find_nearest_fingers(id).await;
+		let fingers = self.base.find_nearest_private_fingers(id).await;
 		if fingers.len() == 0 {
 			return None;
 		}
@@ -571,7 +571,6 @@ impl ActorNode {
 		}
 	}
 
-	#[allow(dead_code)]
 	async fn missing_value_response(&self, id: &IdType) -> Vec<u8> {
 		let bit = self.base.node_id.differs_at_bit(id);
 		let connection = match bit {
@@ -584,7 +583,7 @@ impl ActorNode {
 				.await
 				.map(|r| r.0),
 		};
-		let fingers = self.base.find_nearest_fingers(id).await;
+		let fingers = self.base.find_nearest_private_fingers(id).await;
 		let response = FindNodeResponse {
 			is_relay_node: self.base.interface.overlay_node().is_relay_node,
 			connected: connection,

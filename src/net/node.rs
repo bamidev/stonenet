@@ -524,7 +524,7 @@ where
 		bucket.find(id).map(|f| (f.clone(), None))
 	}
 
-	pub(super) async fn find_nearest_contacts(
+	pub(super) async fn find_nearest_public_contacts(
 		&self, id: &IdType,
 	) -> (Option<NodeContactInfo>, Vec<NodeContactInfo>) {
 		let bucket_pos = match self.differs_at_bit(id) {
@@ -568,7 +568,7 @@ where
 	/// Finds the k nodes nearest to the given id. If it can't find k fingers
 	/// that are closer to the id than this node is, it will supplement with
 	/// nodes that are farther away.
-	pub async fn find_nearest_fingers(&self, id: &IdType) -> Vec<NodeContactInfo> {
+	pub async fn find_nearest_private_fingers(&self, id: &IdType) -> Vec<NodeContactInfo> {
 		let bucket_pos = match self.differs_at_bit(id) {
 			// If ID is the same as ours, don't give any other contacts
 			None => return Vec::new(),
@@ -584,7 +584,7 @@ where
 			// FIXME: Pretty ineffecient, copying the whole vector.
 			let additional_fingers: Vec<NodeContactInfo> = {
 				let bucket = self.buckets[i].lock().await;
-				bucket.public_fingers().map(|n| n.clone()).collect()
+				bucket.private_fingers().map(|n| n.clone()).collect()
 			};
 			let remaining = self.bucket_size - fingers.len();
 			if remaining <= additional_fingers.len() {
@@ -603,7 +603,7 @@ where
 	pub async fn find_node(
 		&self, id: &IdType, result_limit: usize, hop_limit: usize,
 	) -> Vec<NodeContactInfo> {
-		let fingers = self.find_nearest_fingers(id).await;
+		let fingers = self.find_nearest_private_fingers(id).await;
 		if fingers.len() == 0 {
 			return Vec::new();
 		}
@@ -1077,7 +1077,7 @@ where
 		};
 
 		// Collect all fingers we have
-		let (connected, fingers) = self.find_nearest_contacts(&request.node_id).await;
+		let (connected, fingers) = self.find_nearest_public_contacts(&request.node_id).await;
 		let response = FindNodeResponse {
 			is_relay_node: self.overlay_node().is_relay_node,
 			connected,
@@ -1177,7 +1177,7 @@ where
 		// Start response with a FindNodeResponse if not found or expected anyway
 		let mut b = if force_including_fingers {
 			// Collect all fingers we have
-			let (connection, fingers) = self.find_nearest_contacts(&request.id).await;
+			let (connection, fingers) = self.find_nearest_public_contacts(&request.id).await;
 			let response = FindNodeResponse {
 				is_relay_node: self.overlay_node().is_relay_node,
 				connected: connection,
@@ -1193,7 +1193,7 @@ where
 			if let Some(value) = value_result {
 				buffer.extend(value);
 			} else {
-				let (connection, fingers) = self.find_nearest_contacts(&request.id).await;
+				let (connection, fingers) = self.find_nearest_public_contacts(&request.id).await;
 				let response = FindNodeResponse {
 					is_relay_node: self.overlay_node().is_relay_node,
 					connected: connection,
