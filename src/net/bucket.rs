@@ -74,7 +74,7 @@ impl Bucket {
 		}
 	}
 
-	pub fn mark_helpful(&mut self, node_info: &NodeContactInfo, trusted: bool) {
+	pub fn mark_helpful(&mut self, node_info: &NodeContactInfo, trusted: bool, is_relay: bool) {
 		match self
 			.fingers
 			.iter()
@@ -97,7 +97,7 @@ impl Bucket {
 				{
 					// If not in the replacement cache, just add it to our bucket
 					None => {
-						self.remember(node_info.clone(), trusted);
+						self.remember(node_info.clone(), trusted, is_relay);
 					}
 					// If it is in our replacement cache, add it back
 					Some(index) => {
@@ -105,9 +105,8 @@ impl Bucket {
 							.replacement_cache
 							.remove(index)
 							.unwrap()
-							.finger
-							.node_info;
-						self.remember(finger, trusted);
+							.finger;
+						self.remember(finger.node_info, finger.trusted || trusted, finger.is_relay || is_relay);
 					}
 				}
 			}
@@ -194,8 +193,8 @@ impl Bucket {
 		true
 	}
 
-	pub fn remember(&mut self, node: NodeContactInfo, trusted: bool) {
-		let new_entry = BucketEntry::new(node, trusted);
+	pub fn remember(&mut self, node: NodeContactInfo, trusted: bool, is_relay: bool) {
+		let new_entry = BucketEntry::new(node, trusted, is_relay);
 		if let Some(pos) = self.fingers.iter().rev().position(|e| &new_entry < e) {
 			self.fingers.insert(pos + 1, new_entry);
 		} else {

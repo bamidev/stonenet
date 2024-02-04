@@ -339,36 +339,25 @@ where
 		.await
 	}
 
-	pub async fn exchange_find_x_on_connection(
-		&self, connection: &mut Connection, node_id: &IdType, message_type_id: u8,
-	) -> Option<Vec<u8>> {
-		let request = FindNodeRequest {
-			node_id: node_id.clone(),
-		};
-		self.exchange_on_connection(
-			connection,
-			message_type_id,
-			&binserde::serialize(&request).unwrap(),
-		)
-		.await
-	}
-
 	/// In the paper, this is described as the 'FIND_NODE' RPC.
 	pub async fn exchange_find_node_on_connection(
 		&self, connection: &mut Connection, node_id: &IdType,
 	) -> Option<FindNodeResponse> {
+		let request = FindNodeRequest {
+			node_id: node_id.clone(),
+		};
 		let raw_response_result = self
-			.exchange_find_x_on_connection(
+			.exchange_on_connection(
 				connection,
-				node_id,
 				NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST,
+				&binserde::serialize(&request).unwrap()
 			)
 			.await;
 		let raw_response = raw_response_result?;
 		let result: sstp::Result<_> =
 			binserde::deserialize(&raw_response).map_err(|e| Traced::new(e.into()));
 		let response: FindNodeResponse = self
-			.handle_connection_issue(result, connection.their_node_info())
+			.handle_connection_issue_find(result, connection.their_node_info())
 			.await?;
 		Some(response)
 	}
@@ -808,6 +797,33 @@ where
 		}
 	}
 
+	pub(super) async fn handle_connection_issue_find(
+		&self, result: sstp::Result<FindNodeResponse>, node_info: &NodeContactInfo,
+	) -> Option<FindNodeResponse> {
+		match result {
+			Err(e) => {
+				match &*e {
+					sstp::Error::Timeout(_) => {
+						warn!("Problematic node {}: {:?}", node_info, e);
+						self.mark_node_problematic(&node_info.node_id).await;
+					}
+					_ =>
+						if !e.forgivable() {
+							warn!("Problematic node {}: {:?}", node_info, e);
+							self.reject_node(&node_info.node_id).await;
+						} else {
+							warn!("Connection issue with node {}: {:?}", node_info, e);
+						},
+				}
+				None
+			}
+			Ok(response) => {
+				self.mark_node_helpful_relay(node_info, response.is_relay_node).await;
+				Some(response)
+			}
+		}
+	}
+
 	async fn handle_exchange_result(
 		&self, mut connection: Box<Connection>, first_request_included: bool,
 		opt_response: Option<Vec<u8>>, message_type: u8, request: &[u8],
@@ -824,8 +840,6 @@ where
 		self.handle_connection_issue(result, connection.their_node_info())
 			.await
 	}
-
-	pub fn has_stopped(&self) -> bool { self.stop_flag.load(Ordering::Relaxed) }
 
 	async fn initiate_hole_punched_connection(
 		&self, already_open_relay_connection: Option<&mut Connection>, node_info: &NodeContactInfo,
@@ -1008,7 +1022,14 @@ where
 	pub(super) async fn mark_node_helpful(&self, node_info: &NodeContactInfo) {
 		if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
-			bucket.mark_helpful(node_info, false);
+			bucket.mark_helpful(node_info, false, false);
+		}
+	}
+
+	pub(super) async fn mark_node_helpful_relay(&self, node_info: &NodeContactInfo, is_relay: bool) {
+		if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
+			let mut bucket = self.buckets[bucket_index as usize].lock().await;
+			bucket.mark_helpful(node_info, false, is_relay);
 		}
 	}
 
@@ -1094,7 +1115,7 @@ where
 			let result: sstp::Result<FindNodeResponse> =
 				binserde::deserialize_with_trailing(&response).map_err(|e| Traced::new(e.into()));
 
-			let contacts = self.handle_connection_issue(result, node_info).await?;
+			let contacts = self.handle_connection_issue_find(result, node_info).await?;
 			let contacts_len = binserde::serialized_size(&contacts).unwrap();
 			(Some(contacts), contacts_len)
 		} else {
