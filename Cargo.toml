@@ -62,6 +62,7 @@ unbundled = ["reqwest/native-tls"]
 bundled = ["rusqlite/bundled", "reqwest/rustls-tls"]
 
 [target.'cfg(target_family = "windows")'.dependencies]
+reqwest = { version = "0", default-features = true }
 rusqlite = { version = "^0.30", features = ["bundled"] }
 windows = { version = "0", features = [
 	"Win32_Foundation",
@@ -87,6 +88,7 @@ assets = [
 depends = ["$auto", "libssl3", "libsqlite3-0"]
 maintainer-scripts = "assets/debian"
 systemd-units = { unit-scripts = "assets/debian/systemd" }
+features = ["unbundled"]
 
 [package.metadata.deb.variants.bundled]
 depends = []

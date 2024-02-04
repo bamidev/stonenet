@@ -48,7 +48,7 @@ use toml;
 async fn check_version() -> Option<String> {
 	info!("Checking version...");
 
-	let url = "http://get.stonenet.org/windows/latest-version.txt";
+	let url = "https://get.stonenet.org/windows/latest-version.txt";
 	let response = match reqwest::get(url).await {
 		Ok(r) => r,
 		Err(e) => {
@@ -182,7 +182,7 @@ fn load_install_dir() -> io::Result<PathBuf> {
 #[cfg(target_family = "windows")]
 fn version_message(version_str: &str) -> String {
 	format!(
-		"<a href=\"http://get.stonenet.org/windows/stonenet-installer-{}.exe\">download it \
+		"<a href=\"https://get.stonenet.org/windows/stonenet-installer-{}.exe\">download it \
 		 here</a>",
 		version_str
 	)

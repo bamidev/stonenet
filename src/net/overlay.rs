@@ -967,6 +967,9 @@ impl OverlayNode {
 
 	/// Runs a loop that pings one finger every so often.
 	async fn keep_hole_open(self: Arc<Self>, stop_flag: Arc<AtomicBool>, sleep_duration: Duration) {
+		// FIXME: Wait until the network is actually joined.
+		sleep(Duration::from_secs(120)).await;
+		
 		while !stop_flag.load(Ordering::Relaxed) {
 			let mut iter = self.base.iter_all_fingers().await;
 
