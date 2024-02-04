@@ -9,7 +9,7 @@ use std::{
 
 use chrono::*;
 use log::*;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
@@ -259,11 +259,11 @@ impl Api {
 	}*/
 
 	pub async fn fetch_object_info(
-		&self, actor_id: &IdType, sequence: u64,
+		&self, actor_address: &ActorAddress, hash: &IdType,
 	) -> db::Result<Option<ObjectInfo>> {
 		tokio::task::block_in_place(|| {
 			let mut c = self.db.connect()?;
-			c.fetch_object_info(actor_id, sequence)
+			c.fetch_object_info(actor_address, hash)
 		})
 	}
 
@@ -371,76 +371,55 @@ impl Api {
 	// Like `load_file`, but return an async stream that catches all the blocks that
 	// are being loaded in another thread.
 	pub async fn stream_file(
-		&self, actor_id: IdType, hash: IdType,
+		&self, actor_address: ActorAddress, file_hash: IdType,
 	) -> Result<Option<(String, ReceiverStream<db::Result<Vec<u8>>>)>> {
-		let (mt_tx, mt_rx) = oneshot::channel();
-		let (tx, mut rx) = mpsc::channel(1);
-
 		let db = self.db.clone();
-		tokio::task::spawn_blocking(move || {
-			let mut c = match db.connect() {
-				Ok(c) => c,
-				Err(e) => {
-					if let Err(_) = tx.blocking_send(Err(e)) {
-						error!("Unable to send init error.");
-					}
-					return;
-				}
-			};
-			let result = match c.load_file(&actor_id, &hash) {
-				Ok(c) => c,
-				Err(e) => {
-					if let Err(_) = tx.blocking_send(Err(e)) {
-						error!("Unable to send init error.");
-					}
-					return;
-				}
-			};
+		let r = db.perform(|c| c.fetch_file(&file_hash))?;
 
-			if let Some((mime_type, mut loader)) = result {
-				if let Err(_) = mt_tx.send(Some(mime_type)) {
-					error!("Unable to send none.");
-				}
-				while let Some(result) = loader.next() {
-					match result {
-						Ok(block) =>
-							if let Err(_) = tx.blocking_send(Ok(block)) {
-								error!("Unable to send block.");
-							},
-						Err(e) => {
-							match &*e {
-								db::Error::FileMissingBlock(..) => {
-									// TODO: Try to find the block on the
-									// network, and send it back instead of the
-									// error
+		let (tx, rx) = mpsc::channel(1);
+		if let Some(file) = r {
+			// Asynchronously start loading the blocks one by one, from disk preferably,
+			// from the network otherwise
+			let node = self.node.clone();
+			spawn(async move {
+				let mut actor_node: Option<Arc<ActorNode>> = None;
+				let mut loaded_actor_node = false;
+				for block_hash in file.blocks {
+					match db.perform(|c| c.fetch_block(&block_hash)) {
+						Ok(block_result) => match block_result {
+							Some(block) =>
+								if let Err(_) = tx.send(Ok(block)).await {
+									error!("Unable to send block on stream-file channel.");
+								},
+							None => {
+								if !loaded_actor_node {
+									actor_node =
+										node.get_actor_node_or_lurker(&actor_address).await;
+									loaded_actor_node = true;
 								}
-								_ => {}
-							}
-							if let Err(_) = tx.blocking_send(Err(e)) {
-								error!("Unable to send block.");
-							}
-						}
-					}
-				}
-			} else {
-				if let Err(_) = mt_tx.send(None) {
-					error!("Unable to send none.");
-				}
-			}
-		});
 
-		let mime_type = match mt_rx.await {
-			Ok(r) => r,
-			Err(_) => {
-				if let Some(result) = rx.recv().await {
-					if let Err(e) = result {
-						return Err(e);
+								if let Some(n) = &actor_node {
+									// Find the block on the network, and store it if we have found
+									// it
+									if let Some(r) = n.find_block(&block_hash).await {
+										db.perform(|mut c| c.store_block(&block_hash, &r.data));
+										tx.send(Ok(r.data)).await;
+										continue;
+									}
+								}
+							}
+						},
+						Err(e) =>
+							if let Err(_) = tx.send(Err(e)).await {
+								error!("Unable to send error on stream-file channel.");
+							},
 					}
 				}
-				panic!("Unable to receive mime type from file.");
-			}
-		};
-		Ok(mime_type.map(|mt| (mt, ReceiverStream::new(rx))))
+			});
+			Ok(Some((file.mime_type, ReceiverStream::new(rx))))
+		} else {
+			Ok(None)
+		}
 	}
 
 	pub async fn publish_post(

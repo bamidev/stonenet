@@ -14,6 +14,7 @@ use rocket::{
 	form::Form,
 	fs::NamedFile,
 	http::{ContentType, MediaType},
+	log::LogLevel,
 	response::{stream::ByteStream, Redirect},
 	Data, *,
 };
@@ -133,7 +134,7 @@ async fn index_post(
 pub async fn spawn(g: Global, port: u16, workers: Option<usize>) -> (Shutdown, JoinHandle<()>) {
 	// Set up rocket's config to not detect ctrlc itself
 	let mut config = rocket::Config::default();
-	//config.log_level = LogLevel::Off;
+	config.log_level = LogLevel::Off;
 	config.port = port;
 	config.shutdown.ctrlc = false;
 	#[cfg(unix)]
@@ -214,14 +215,7 @@ async fn actor(address_str: &str, g: &State<Global>) -> Result<Template, Templat
 async fn actor_file(
 	address_str: &str, hash_str: &str, g: &State<Global>,
 ) -> Result<(ContentType, ByteStream![Vec<u8>]), Template> {
-	let address = match IdType::from_base58(address_str) {
-		Ok(a) => a,
-		Err(_) =>
-			return Err(render_error(
-				"Error",
-				&format!("This is not a valid address"),
-			)),
-	};
+	let address = parse_actor_address(address_str)?;
 	let hash = match IdType::from_base58(hash_str) {
 		Ok(a) => a,
 		Err(_) => return Err(render_error("Error", &format!("This is not a valid hash"))),
@@ -259,15 +253,16 @@ async fn actor_file(
 	))
 }
 
-#[get("/actor/<address_str>/object/<sequence>")]
+#[get("/actor/<address_str>/object/<hash_str>")]
 async fn actor_object(
-	g: &State<Global>, address_str: &str, sequence: u64,
+	g: &State<Global>, address_str: &str, hash_str: &str,
 ) -> Result<Template, Template> {
-	let address = IdType::from_base58(address_str)
-		.map_err(|_e| render_error("Input error", "Invalid address"))?;
+	let address = parse_actor_address(address_str)?;
+	let hash = IdType::from_base58(hash_str)
+		.map_err(|_e| render_error("Input error", "Invalid object hash"))?;
 	let object_info = g
 		.api
-		.fetch_object_info(&address, sequence)
+		.fetch_object_info(&address, &hash)
 		.await
 		.map_err(|e| render_db_error(e, "Unable to load object"))?;
 	if object_info.is_none() {
@@ -601,19 +596,11 @@ async fn static_(file: PathBuf) -> Option<NamedFile> {
 
 #[get("/search?<query>")]
 async fn search(query: &str, _g: &State<Global>) -> Result<Redirect, Template> {
-	match query.from_base58() {
-		Err(_) => Err(render_error(
-			"Query error",
-			"not a valid base58 encoded string",
+	match Address::from_str(query) {
+		Err(e) => Err(render_error(
+			"Address parse error",
+			&format!("Not a valid address: {}", e),
 		)),
-		Ok(data) =>
-			if data.len() < 32 {
-				Err(render_error("Query error", "address too short"))
-			} else if data.len() > 32 {
-				Err(render_error("Query error", "address too long"))
-			} else {
-				let id = IdType::from_bytes(data.as_slice().try_into().unwrap());
-				Ok(Redirect::to(format!("/actor/{}", id.to_string())))
-			},
+		Ok(address) => Ok(Redirect::to(format!("/actor/{}", address.to_string()))),
 	}
 }

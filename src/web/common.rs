@@ -5,7 +5,7 @@ use log::*;
 use rocket_dyn_templates::{context, Template};
 use serde::Serialize;
 
-use super::{ActorAddress, Address};
+use super::{ActorAddress, Address, IdType};
 use crate::{
 	db::{self, ObjectInfo, ObjectPayloadInfo},
 	trace::Traced,
@@ -13,7 +13,8 @@ use crate::{
 
 #[derive(Serialize)]
 pub struct ObjectDisplayInfo {
-	actor_id: String,
+	hash: IdType,
+	actor_address: String,
 	actor_name: String,
 	actor_avatar: Option<String>,
 	created: String,
@@ -26,7 +27,8 @@ pub fn into_object_display_info(object: ObjectInfo) -> ObjectDisplayInfo {
 	let time_ago = human_readable_duration(&Utc::now().signed_duration_since(created));
 
 	ObjectDisplayInfo {
-		actor_id: object.actor_address.to_string(),
+		hash: object.hash,
+		actor_address: object.actor_address.to_string(),
 		actor_name: match object.actor_name {
 			None => object.actor_address.to_string(),
 			Some(name) => name.clone(),

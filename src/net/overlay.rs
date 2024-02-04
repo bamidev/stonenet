@@ -770,6 +770,16 @@ impl OverlayNode {
 		nodes.get(actor_id).map(|n| n.clone())
 	}
 
+	pub async fn get_actor_node_or_lurker(
+		self: &Arc<Self>, address: &ActorAddress,
+	) -> Option<Arc<ActorNode>> {
+		if let Some(n) = self.get_actor_node(&address.as_id()).await {
+			Some(n)
+		} else {
+			self.lurk_actor_network(address).await
+		}
+	}
+
 	async fn connect_actor_iter<'a>(
 		self: &'a Arc<Self>, actor_id: &ActorAddress,
 	) -> ConnectActorIter<'a> {
@@ -1005,6 +1015,31 @@ impl OverlayNode {
 				(actor_id, first_object, actor_type, private_key)
 			})
 			.collect()
+	}
+
+	pub async fn lurk_actor_network(
+		self: &Arc<Self>, address: &ActorAddress,
+	) -> Option<Arc<ActorNode>> {
+		let mut iter = self.connect_actor_iter(address).await;
+		while let Some((connection, actor_info)) = iter.next().await {
+			let node = Arc::new(ActorNode::new(
+				self.base.stop_flag.clone(),
+				self.clone(),
+				self.base.node_id.clone(),
+				self.base.socket.clone(),
+				address.clone(),
+				actor_info,
+				self.base.interface.db.clone(),
+				1, // A lurker node doesn't need to keep fingers in the first place
+				self.base.leak_first_request,
+				true,
+			));
+			node.base
+				.mark_node_helpful(connection.their_node_info())
+				.await;
+			return Some(node);
+		}
+		None
 	}
 
 	fn maintain_keep_alive_connection(self: &Arc<Self>, connection: Box<Connection>) {

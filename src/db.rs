@@ -1,17 +1,9 @@
 // FIXME: Remove when going stable:
 #![allow(dead_code)]
 
-pub mod file_loader;
 mod install;
 
-use std::{
-	cmp::min,
-	fmt,
-	net::SocketAddr,
-	ops::*,
-	path::*,
-	str::{self},
-};
+use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
 
 use chrono::*;
 use fallible_iterator::FallibleIterator;
@@ -24,12 +16,11 @@ use rusqlite::{
 use serde::Serialize;
 use thiserror::Error;
 
-pub use self::file_loader::FileLoader;
 use crate::{
 	common::*,
 	identity::*,
 	model::*,
-	net::{binserde},
+	net::binserde,
 	trace::{self, Traceable, Traced},
 };
 
@@ -92,7 +83,7 @@ pub enum PossiblyKnownFileHeader {
 
 #[derive(Debug, Serialize)]
 pub struct TargetedPostInfo {
-	pub actor_id: ActorAddress,
+	pub actor_address: ActorAddress,
 	pub actor_name: Option<String>,
 	pub actor_avatar: Option<IdType>,
 	pub sequence: u64,
@@ -136,7 +127,6 @@ pub enum ObjectPayloadInfo {
 	Post(PostObjectInfo),
 	Boost(BoostObjectInfo),
 	Profile(ProfileObjectInfo),
-	Move(MoveObjectInfo),
 }
 
 pub type Result<T> = trace::Result<T, self::Error>;
@@ -327,6 +317,24 @@ impl Connection {
 
 			let data = Self::_fetch_file_data(this, rowid, block_count)?;
 			Ok(Some((mime_type, data)))
+		} else {
+			Ok(None)
+		}
+	}
+
+	pub(super) fn _fetch_file_block_hash(
+		this: &impl DerefConnection, file_id: i64, sequence: u64,
+	) -> Result<Option<IdType>> {
+		let mut stat = this.prepare(
+			r#"
+			SELECT block_hash FROM file_block WHERE file_id = ? AND sequence = ?
+		"#,
+		)?;
+		let mut rows = stat.query(params![file_id, sequence])?;
+
+		if let Some(row) = rows.next()? {
+			let hash: IdType = row.get(0)?;
+			Ok(Some(hash))
 		} else {
 			Ok(None)
 		}
@@ -571,7 +579,7 @@ impl Connection {
 			let (message, attachments) = Self::_fetch_post_object_info_files(this, object_id)?;
 			Ok(Some(BoostObjectInfo {
 				original_post: TargetedPostInfo {
-					actor_id: post_actor_id,
+					actor_address: post_actor_id,
 					actor_name: post_actor_name,
 					actor_avatar: post_actor_avatar_id,
 					sequence,
@@ -679,8 +687,8 @@ impl Connection {
 					let block_count = block_count_opt.unwrap();
 					match Self::_fetch_file_data(this, file_id, block_count) {
 						Ok(message_data) => Some((
-							String::from_utf8_lossy(&message_data).to_string(),
 							mime_type,
+							String::from_utf8_lossy(&message_data).to_string(),
 						)),
 						Err(e) => match &*e {
 							// If a block is still missing from the message data file, don't
@@ -736,13 +744,14 @@ impl Connection {
 	) -> Result<Option<PostObjectInfo>> {
 		let mut stat = this.prepare(
 			r#"
-			SELECT po.rowid, o.sequence, ti.rowid, ti.address, to_.rowid, to_.sequence
+			SELECT po.rowid, o.sequence, ti.rowid, ti.address, tpo.rowid, to_.sequence
 			FROM post_object AS po
 			INNER JOIN object AS o ON po.object_id = o.rowid
-			LEFT JOIN identity AS i ON o.actor_id = i.rowid
+			INNER JOIN identity AS i ON o.actor_id = i.rowid
 			LEFT JOIN identity AS ti ON po.in_reply_to_actor_address = ti.address
 			LEFT JOIN object AS to_ ON to_.actor_id = ti.rowid
-			                       AND to_.hash = po.in_reply_to_object_hash
+			    AND to_.hash = po.in_reply_to_object_hash
+			LEFT JOIN post_object as tpo ON tpo.object_id = to_.rowid
 			WHERE o.actor_id = ? AND o.sequence = ?
 		"#,
 		)?;
@@ -752,10 +761,10 @@ impl Connection {
 			let sequence = row.get(1)?;
 			let irt_actor_rowid: Option<i64> = row.get(2)?;
 			let irt_actor_address_opt: Option<ActorAddress> = row.get(3)?;
-			let irt_object_id: Option<i64> = row.get(4)?;
+			let irt_post_id_opt: Option<i64> = row.get(4)?;
 			let irt_sequence: Option<u64> = row.get(5)?;
 
-			let in_reply_to = match irt_object_id {
+			let in_reply_to = match irt_post_id_opt {
 				None => None,
 				Some(irt_post_id) => {
 					let (irt_actor_name, irt_actor_avatar_id) = match irt_actor_rowid {
@@ -765,7 +774,7 @@ impl Connection {
 					let (irt_message_opt, irt_attachments) =
 						Self::_fetch_post_object_info_files(this, irt_post_id)?;
 					Some(TargetedPostInfo {
-						actor_id: irt_actor_address_opt.unwrap(),
+						actor_address: irt_actor_address_opt.unwrap(),
 						actor_name: irt_actor_name,
 						actor_avatar: irt_actor_avatar_id,
 						sequence: irt_sequence.unwrap(),
@@ -778,8 +787,8 @@ impl Connection {
 			Ok(Some(PostObjectInfo {
 				in_reply_to,
 				sequence,
-				message: message_opt.as_ref().map(|o| o.0.clone()),
-				mime_type: message_opt.map(|o| o.1),
+				mime_type: message_opt.as_ref().map(|o| o.0.clone()),
+				message: message_opt.map(|o| o.1),
 				attachments,
 			}))
 		} else {
@@ -1092,8 +1101,6 @@ impl Connection {
 					.map(|o| o.map(|b| ObjectPayloadInfo::Boost(b))),
 				2 => Self::_fetch_profile_object_info(tx, actor_id, sequence)
 					.map(|o| o.map(|p| ObjectPayloadInfo::Profile(p))),
-				3 => Self::_fetch_move_object_info(tx, actor_id, sequence)
-					.map(|o| o.map(|m| ObjectPayloadInfo::Move(m))),
 				other => Err(Error::InvalidObjectType(other))?,
 			};
 			let payload = if let Some(p) = payload_result? {
@@ -1353,7 +1360,7 @@ impl Connection {
 		)?;
 		let (a, o) = match in_reply_to {
 			None => (None, None),
-			Some((actor, object)) => (Some(actor), Some(object)),
+			Some((actor, object)) => (Some(actor.to_bytes()), Some(object)),
 		};
 		let post_id = stat.insert(params![object_id, files.len(), a, o])?;
 
@@ -1395,7 +1402,7 @@ impl Connection {
 				let post_id = stat.insert(params![
 					object_id,
 					plain.files.len(),
-					payload.in_reply_to.as_ref().map(|irt| irt.0.to_string()),
+					payload.in_reply_to.as_ref().map(|irt| irt.0.to_bytes()),
 					payload.in_reply_to.as_ref().map(|irt| irt.1.to_string())
 				])?;
 
@@ -1602,6 +1609,26 @@ impl Connection {
 		Ok(results)
 	}
 
+	pub fn fetch_file_blocks(&self, file_hash: &IdType, size: usize) -> Result<Vec<IdType>> {
+		let mut stat = self.prepare(
+			r#"
+			SELECT block_hash
+			FROM file_blocks AS fb
+			INNER JOIN file AS f ON fb.file_id = f.rowid
+			WHERE f.hash = ?
+			ORDER BY fb.sequence ASC
+		"#,
+		)?;
+
+		let mut result = Vec::with_capacity(size);
+		let mut rows = stat.query([file_hash])?;
+		if let Some(row) = rows.next()? {
+			let block_hash: IdType = row.get(0)?;
+			result.push(block_hash);
+		}
+		Ok(result)
+	}
+
 	pub fn fetch_block(&self, id: &IdType) -> Result<Option<Vec<u8>>> {
 		let mut stat = self.prepare(
 			r#"
@@ -1701,7 +1728,7 @@ impl Connection {
 	}
 
 	pub fn fetch_object_info(
-		&mut self, actor_id: &IdType, sequence: u64,
+		&mut self, actor_address: &ActorAddress, hash: &IdType,
 	) -> Result<Option<ObjectInfo>> {
 		let tx = self.0.transaction()?;
 		let mut stat = tx.prepare(
@@ -1709,10 +1736,10 @@ impl Connection {
 			SELECT o.actor_id, o.hash, o.sequence, o.created, o.found, o.type, i.address
 			FROM object AS o
 			LEFT JOIN identity AS i ON o.actor_id = i.rowid
-			WHERE i.address = ? AND o.sequence = ?
+			WHERE i.address = ? AND o.hash = ?
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id.to_string(), sequence])?;
+		let mut rows = stat.query(params![actor_address, hash])?;
 		Self::_parse_object_info(&tx, &mut rows)
 	}
 
@@ -2159,18 +2186,17 @@ impl Connection {
 		Ok(rows.next()?.is_some())
 	}
 
-	pub fn load_file<'a>(
-		&'a mut self, actor_id: &IdType, hash: &IdType,
+	/*pub fn load_file<'a>(
+		&'a mut self, hash: &IdType,
 	) -> Result<Option<(String, FileLoader<'a>)>> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT f.rowid, f.mime_type, f.block_count
 			FROM file AS f
-			LEFT JOIN identity AS i ON f.actor_id = i.rowid
-			WHERE i.address = ? AND f.hash = ?
+			WHERE f.hash = ?
 		"#,
 		)?;
-		let mut rows = stat.query([actor_id.to_string(), hash.to_string()])?;
+		let mut rows = stat.query([hash])?;
 		if let Some(row) = rows.next()? {
 			let file_id: i64 = row.get(0)?;
 			let mime_type = row.get(1)?;
@@ -2191,7 +2217,7 @@ impl Connection {
 		} else {
 			Ok(None)
 		}
-	}
+	}*/
 
 	/// Returns the lastest object sequence for an actor if available.
 	pub fn max_object_sequence(&self, actor_id: i64) -> Result<Option<u64>> {
