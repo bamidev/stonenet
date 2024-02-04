@@ -36,7 +36,7 @@ num = "0"
 once_cell = "1"
 rand = { version = "0.8", features = ["getrandom"] }
 rand_chacha = "0.3"
-reqwest = "0"
+reqwest = { version = "0", default-features = false }
 rocket = "0.5.0"
 rocket_dyn_templates = { version = "0.1.0", features = ["tera"] }
 rusqlite = "^0.30"
@@ -58,6 +58,7 @@ zeroize = ">=1.3, <2"
 ctor = "*"
 
 [features]
+unbundled = ["reqwest/native-tls"]
 bundled = ["rusqlite/bundled", "reqwest/rustls-tls"]
 
 [target.'cfg(target_family = "windows")'.dependencies]
