@@ -404,7 +404,7 @@ impl Transporter {
 							warn!("Error while processing stray packet: {}", e);
 						}
 					} else {
-						error!("Packet channel with transporter has been disconnected. {} {}", self.inner.local_session_id, self.inner.dest_session_id);
+						trace!("Packet channel with transporter has been disconnected. {} {}", self.inner.local_session_id, self.inner.dest_session_id);
 						return;
 					}
 				}
