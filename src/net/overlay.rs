@@ -335,7 +335,7 @@ impl MessageWorkToDo for KeepAliveToDo {
 			.node
 			.base
 			.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
-		connection.send_async(response)?;
+		connection.send(response).await?;
 		Ok(Some(connection))
 	}
 }
