@@ -984,9 +984,12 @@ impl OverlayNode {
 			}
 
 			if tried == 0 {
-				warn!("Lost connection to all nodes, rejoining the network in {:?}...", sleep_duration);
+				warn!(
+					"Lost connection to all nodes, rejoining the network in {:?}...",
+					sleep_duration
+				);
 				sleep(sleep_duration).await;
-				
+
 				if !self.join_network(stop_flag.clone()).await {
 					error!("Attempt at rejoining the network failed.")
 				} else {
@@ -1190,7 +1193,10 @@ impl OverlayNode {
 				}
 			}
 		}
-		warn!("Unable to obtain keep alive connection.");
+
+		warn!("Unable to obtain keep alive connection, will try again in 5 minutes");
+		sleep(Duration::from_secs(300)).await;
+		self.start_obtaining_keep_alive_connection();
 	}
 
 	pub async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
