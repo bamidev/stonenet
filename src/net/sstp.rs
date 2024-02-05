@@ -83,7 +83,7 @@ pub struct Connection {
 	local_session_id: u16, // our session ID
 }
 
-struct CryptedPacket {
+pub(super) struct CryptedPacket {
 	ks_seq: u16,
 	seq: u16,
 	data: Vec<u8>,
@@ -595,6 +595,9 @@ mod tests {
 		relay.spawn();
 		node1.spawn();
 		node2.spawn();
+		relay.set_next_session_id(100).await;
+		node1.set_next_session_id(200).await;
+		node2.set_next_session_id(300).await;
 
 		// Receive relayed message
 		let mut connection = node1

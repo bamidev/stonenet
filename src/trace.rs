@@ -115,8 +115,4 @@ where
 	E: Error,
 {
 	fn source(&self) -> Option<&(dyn Error + 'static)> { self.inner.source() }
-
-	fn description(&self) -> &str { self.inner.description() }
-
-	fn cause(&self) -> Option<&dyn Error> { self.inner.cause() }
 }

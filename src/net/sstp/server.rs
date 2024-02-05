@@ -1895,7 +1895,7 @@ impl SocketCollection {
 }
 
 impl SessionData {
-	pub fn new(
+	fn new(
 		their_node_id: Option<IdType>, transport_data: SessionTransportData, timeout: Duration,
 	) -> Self {
 		Self {
@@ -2407,6 +2407,7 @@ async fn handle_connection_loop(server: Arc<Server>, connection_original: Box<Co
 			}
 			Ok(message) => {
 				if message.len() == 0 {
+					error!("Received empty message.");
 					return;
 				}
 

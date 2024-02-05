@@ -264,30 +264,7 @@ impl KeyStateManager {
 }
 
 impl Transporter {
-	pub fn new(
-		encrypt_session_id: u16, our_session_id: u16, their_session_id: u16,
-		socket_sender: Arc<dyn LinkSocketSender>, node_id: IdType, peer_node_id: IdType,
-		timeout: Duration, private_key: x25519::StaticSecret, public_key: x25519::PublicKey,
-	) -> (Self, UnboundedSender<CryptedPacket>) {
-		let (tx, rx) = mpsc::unbounded_channel();
-		(
-			Self::new_with_receiver(
-				encrypt_session_id,
-				our_session_id,
-				their_session_id,
-				socket_sender,
-				node_id,
-				peer_node_id,
-				timeout,
-				private_key,
-				public_key,
-				rx,
-			),
-			tx,
-		)
-	}
-
-	pub fn new_with_receiver(
+	pub(super) fn new_with_receiver(
 		encrypt_session_id: u16, our_session_id: u16, their_session_id: u16,
 		socket_sender: Arc<dyn LinkSocketSender>, node_id: IdType, peer_node_id: IdType,
 		timeout: Duration, private_key: x25519::StaticSecret, public_key: x25519::PublicKey,
