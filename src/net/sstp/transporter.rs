@@ -1495,9 +1495,7 @@ impl TransporterInner {
 		self.window_error_free = true;
 	}
 
-	async fn send_ack_packet(
-		&self, ks: &KeyState, seq: u16, mask: Vec<u8>,
-	) -> Result<()> {
+	async fn send_ack_packet(&self, ks: &KeyState, seq: u16, mask: Vec<u8>) -> Result<()> {
 		let max_len = self.max_data_packet_length();
 		let data_packet_length = max_len;
 		let mut buffer = if (1 + mask.len()) <= data_packet_length {

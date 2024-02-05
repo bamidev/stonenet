@@ -174,14 +174,12 @@ pub(super) struct SessionData {
 }
 
 enum SessionTransportData {
-	Empty,
 	Direct(SessionTransportDataDirect),
 	Relay(SessionTransportDataRelay),
 }
 
 struct SessionTransportDataDirect {
 	dest_session_id: Option<u16>,
-	encrypt_session_id: Option<u16>,
 	hello_channel: Option<HelloSender>,
 	relay_node_id: Option<IdType>,
 	handle: Option<TransporterHandle>,
@@ -195,7 +193,6 @@ struct SessionTransportDataRelay {
 	target_session_id: u16,
 	target_addr: SocketAddr,
 	target_sender: Arc<dyn LinkSocketSender>,
-	hello_sender: Sender<(PublicKey, Signature, RelayedHelloAckPacketBody)>,
 }
 
 pub(super) struct Sessions {
@@ -280,7 +277,6 @@ impl Server {
 				>= session.keep_alive_timeout
 			{
 				match &mut session.transport_data {
-					SessionTransportData::Empty => {}
 					SessionTransportData::Direct(data) =>
 						if let Some(h) = &data.handle {
 							if !h.is_alive() {
@@ -449,7 +445,6 @@ impl Server {
 		let data = SessionTransportData::Direct(SessionTransportDataDirect {
 			relay_node_id: None,
 			dest_session_id: None,
-			encrypt_session_id: None,
 			hello_channel: Some(hello_sender),
 			packet_processor: packet_sender,
 			handle: None,
@@ -662,9 +657,7 @@ impl Server {
 	async fn new_relay_session(
 		&self, target_node_id: IdType, source_session_id: u16, source_addr: SocketAddr,
 		source_sender: Arc<dyn LinkSocketSender>, target_addr: SocketAddr,
-		target_sender: Arc<dyn LinkSocketSender>,
-		hello_sender: Sender<(PublicKey, Signature, RelayedHelloAckPacketBody)>,
-		keep_alive_timeout: Duration,
+		target_sender: Arc<dyn LinkSocketSender>, keep_alive_timeout: Duration,
 	) -> Result<(u16, Arc<Mutex<SessionData>>)> {
 		let transport_data = SessionTransportData::Relay(SessionTransportDataRelay {
 			source_session_id,
@@ -673,7 +666,6 @@ impl Server {
 			target_session_id: 0,
 			target_addr,
 			target_sender,
-			hello_sender,
 		});
 		let session_data = Arc::new(Mutex::new(SessionData::new(
 			Some(target_node_id),
@@ -691,7 +683,7 @@ impl Server {
 	}
 
 	async fn new_incomming_session(
-		&self, their_node_id: IdType, dest_session_id: u16, encrypt_session_id: u16,
+		&self, their_node_id: IdType, dest_session_id: u16,
 		packet_sender: UnboundedSender<CryptedPacket>, timeout: Duration,
 	) -> Result<(u16, bool, Arc<Mutex<SessionData>>)> {
 		// Check if session doesn't already exists
@@ -707,7 +699,6 @@ impl Server {
 		}
 		let transport_data = SessionTransportData::Direct(SessionTransportDataDirect {
 			dest_session_id: Some(dest_session_id),
-			encrypt_session_id: Some(encrypt_session_id),
 			hello_channel: None,
 			relay_node_id: None,
 			handle: None,
@@ -869,10 +860,6 @@ impl Server {
 						warn!("Relay transport data packet received from unknown socket address.");
 						false
 					},
-				SessionTransportData::Empty => {
-					warn!("Dropping packet because session transport data not set yet.");
-					return;
-				}
 			};
 		// If the result is an error, the receiving end of the queue has been
 		// closed. This happens all the time because connections get closed and
@@ -1092,7 +1079,6 @@ impl Server {
 			.await?;
 
 		let target_node_id = hello.header.base.node_public_key.generate_address();
-		let (hello_tx, _hello_rx) = mpsc::channel(1);
 		let (relayer_session_id, _) = self
 			.new_relay_session(
 				target_node_id,
@@ -1101,7 +1087,6 @@ impl Server {
 				source_socket,
 				hello.header.target.into(),
 				target_tx.clone(),
-				hello_tx,
 				DEFAULT_TIMEOUT,
 			)
 			.await?;
@@ -1136,7 +1121,6 @@ impl Server {
 			.new_incomming_session(
 				their_node_id.clone(),
 				dest_session_id,
-				encrypt_session_id,
 				packet_sender,
 				self.default_timeout,
 			)
@@ -1459,7 +1443,6 @@ impl Server {
 		let (hello_sender, mut hello_receiver) = mpsc::channel(1);
 		let transport_data = SessionTransportData::Direct(SessionTransportDataDirect {
 			dest_session_id: None,
-			encrypt_session_id: None,
 			packet_processor: packet_sender,
 			handle: None,
 			hello_channel: Some(hello_sender),
@@ -2428,7 +2411,7 @@ async fn handle_connection_loop(server: Arc<Server>, connection_original: Box<Co
 				)
 				.await
 				{
-					// An empty response means send nothing.
+					// An empty response means: send nothing.
 					if response.len() > 0 {
 						match connection.send(response).await {
 							Ok(_) => {}
