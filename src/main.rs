@@ -295,6 +295,8 @@ async fn main() {
 				Err(e) => error!("Rocket error after shutdown: {}", e),
 			}
 		}
+
+		api.close().await;
 		info!("Done.");
 	}
 }

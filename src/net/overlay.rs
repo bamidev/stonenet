@@ -377,7 +377,8 @@ impl OverlayNode {
 			is_relay_node: config.relay_node.unwrap_or(false),
 			relay_nodes: Mutex::new(LimitedVec::new(100)),
 		});
-		debug_assert!(this.base.interface.node.set(Some(this.clone())).is_ok());
+		let _is_set = this.base.interface.node.set(Some(this.clone())).is_ok();
+		debug_assert!(_is_set);
 
 		let this2 = this.clone();
 		let this3 = this.clone();

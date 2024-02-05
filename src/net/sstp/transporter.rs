@@ -1496,7 +1496,7 @@ impl TransporterInner {
 	}
 
 	async fn send_ack_packet(
-		&self, key_state: &KeyState, packet_sequence: u16, mask: Vec<u8>,
+		&self, ks: &KeyState, seq: u16, mask: Vec<u8>,
 	) -> Result<()> {
 		let max_len = self.max_data_packet_length();
 		let data_packet_length = max_len;
@@ -1512,7 +1512,7 @@ impl TransporterInner {
 			buffer[1..].copy_from_slice(&mask[..(data_packet_length - 1)]);
 		}
 
-		self.send_crypted_packet(key_state, CRYPTED_PACKET_TYPE_ACK, packet_sequence, &buffer)
+		self.send_crypted_packet(ks, CRYPTED_PACKET_TYPE_ACK, seq, &buffer)
 			.await
 	}
 
