@@ -1,6 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{common::*, model::*, net::*};
+use crate::{
+	common::*,
+	model::*,
+	net::{
+		sstp::server::{RelayHelloAckPacket, RelayHelloPacket},
+		*,
+	},
+};
 
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -203,7 +210,7 @@ pub struct PunchHoleResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RelayPunchHoleRequest {
+pub struct PassPunchHoleRequest {
 	pub target: IdType,
 	pub contact_option: ContactOption,
 	pub request_connection: bool,
@@ -211,18 +218,26 @@ pub struct RelayPunchHoleRequest {
 
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RelayPunchHoleResponse {
+pub struct PassPunchHoleResponse {
 	pub ok: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenRelayRequest {
-	pub target: NodeContactInfo,
+	pub target_node_id: IdType,
+	pub protocol: LinkProtocol,
+	pub assistant_node: NodeContactInfo,
+	pub hello_packet: RelayHelloPacket,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenRelayResponse {
 	pub ok: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OpenRelayReadyMessage {
+	pub hello_ack_packet: Option<RelayHelloAckPacket>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

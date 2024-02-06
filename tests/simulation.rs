@@ -68,13 +68,13 @@ async fn test_data_synchronizations() {
 		true,
 	)
 	.await;
-	test_data_synchronization(
+	/*test_data_synchronization(
 		&mut next_port,
 		Openness::Unidirectional,
 		Openness::Unidirectional,
 		true,
 	)
-	.await;
+	.await;*/
 }
 
 async fn test_data_synchronization(

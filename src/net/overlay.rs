@@ -17,7 +17,7 @@ use super::{
 	binserde,
 	message::*,
 	node::*,
-	sstp::{self, MessageProcessorResult, MessageWorkToDo, Result, SocketBindError},
+	sstp::{self, server::*, MessageWorkToDo, Result, DEFAULT_TIMEOUT},
 };
 use crate::{
 	common::*,
@@ -45,6 +45,12 @@ pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST: u8 = 72;
 pub const OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_RESPONSE: u8 = 73;
 pub const OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_REQUEST: u8 = 74;
 pub const OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_RESPONSE: u8 = 75;
+pub const OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST: u8 = 76;
+pub const OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE: u8 = 77;
+pub const OVERLAY_MESSAGE_TYPE_PASS_RELAY_REQUEST_REQUEST: u8 = 78;
+pub const OVERLAY_MESSAGE_TYPE_PASS_RELAY_REQUEST_RESPONSE: u8 = 79;
+pub const OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_REQUEST: u8 = 80;
+pub const OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_RESPONSE: u8 = 81;
 
 
 pub struct ConnectActorIter<'a> {
@@ -482,7 +488,7 @@ impl OverlayNode {
 		&self, relay_connection: &mut Connection, target: IdType, contact_option: ContactOption,
 		request_connection: bool,
 	) -> Option<bool> {
-		let message = RelayPunchHoleRequest {
+		let message = PassPunchHoleRequest {
 			target,
 			contact_option,
 			request_connection,
@@ -496,7 +502,7 @@ impl OverlayNode {
 			)
 			.await;
 		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response?);
-		let response: RelayPunchHoleResponse = self
+		let response: PassPunchHoleResponse = self
 			.base
 			.handle_connection_issue(result, &relay_connection.their_node_info())
 			.await?;
@@ -1200,6 +1206,13 @@ impl OverlayNode {
 	}
 
 	pub async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
+		let assistant_node_info = self
+			.find_connection_for_node(&target.node_id)
+			.await?
+			.their_node_info()
+			.clone();
+
+		// Loop through all of our relay nodes until one dealt with us successfully.
 		loop {
 			let mut relay_nodes = self.relay_nodes.lock().await;
 			if let Some(relay_node_info) = relay_nodes.pop_front() {
@@ -1210,22 +1223,22 @@ impl OverlayNode {
 					.contact_info
 					.pick_relay_option(&contact_option)
 				{
+					// Attempt to open a relay connection through the current relay node
 					match self
-						.base
-						.socket
-						.relay(
+						.open_relay_with_node(
+							&relay_node_info.node_id,
 							&relay_contact_option,
-							relay_node_info.node_id.clone(),
-							&contact_option.target,
-							&target.node_id,
+							assistant_node_info.clone(),
+							target.node_id.clone(),
+							&contact_option,
 						)
 						.await
 					{
-						Ok(c) => return Some(c),
-						Err(e) => match &*e {
-							sstp::Error::NoConnectionOptions => {}
-							_ => info!("Unable to open relay connection: {}", e),
-						},
+						// On failure with the relay node, keep trying
+						None => {}
+						// If the relay node tells us the target was not reachable, stop.
+						// Or if the connection was obtained, we're done.
+						Some(connection_result) => return connection_result,
 					}
 				}
 			} else {
@@ -1236,71 +1249,110 @@ impl OverlayNode {
 		None
 	}
 
-	/*async fn process_open_relay_request(
-		self: &Arc<Self>, connection: &mut Connection, buffer: &[u8],
-	) -> Option<Vec<u8>> {
-		let request: OpenRelayRequest = match binserde::deserialize(buffer) {
-			Ok(r) => r,
+	pub async fn open_relay_with_node(
+		&self, relay_node_id: &IdType, relay_contact_option: &ContactOption,
+		assistant_node_info: NodeContactInfo, target_node_id: IdType,
+		target_contact_option: &ContactOption,
+	) -> Option<Option<Box<Connection>>> {
+		let timeout = DEFAULT_TIMEOUT * 3;
+
+		let protocol = LinkProtocol {
+			use_ipv6: target_contact_option.target.is_ipv6(),
+			use_tcp: target_contact_option.use_tcp,
+		};
+		let initiation_info = match self
+			.base
+			.socket
+			.setup_outgoing_relay(
+				relay_node_id.clone(),
+				target_node_id.clone(),
+				&target_contact_option.target,
+				timeout,
+			)
+			.await
+		{
+			Ok(d) => d,
 			Err(e) => {
-				warn!("Malformed relay data request: {}", e);
+				error!("Unable to set up outgoing relay: {:?}", e);
 				return None;
 			}
 		};
-		let result = if self.is_super_node {
-			connection
-				.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 10)
-				.await;
-			self.base.select_connection(&request.target).await
-		} else {
-			None
+		let request = OpenRelayRequest {
+			target_node_id: target_node_id.clone(),
+			protocol,
+			assistant_node: assistant_node_info,
+			hello_packet: initiation_info.packet.clone(),
 		};
 
-		if let Some(mut target_connection) = result {
-			let opened = if let Some(ok) = self
-				.exchange_start_relay_on_connection(
-					&mut target_connection,
-					connection.their_node_info().clone(),
-				)
-				.await
-			{
-				ok
-			} else {
-				false
-			};
-
-			let response = OpenRelayResponse { ok: opened };
-			if let Err(e) = self
+		let hello_ack_opt = self
+			.exchange_open_relay(relay_node_id, relay_contact_option, &request, timeout)
+			.await?;
+		if let Some((hello_ack, relay_node_connection)) = hello_ack_opt {
+			let establish_info = hello_ack.into();
+			let relay_connection = match self
 				.base
-				.interface
-				.respond(
-					connection,
-					OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE,
-					&binserde::serialize(&response).unwrap(),
+				.socket
+				.complete_outgoing_relay(
+					relay_node_connection.socket_sender(),
+					initiation_info,
+					establish_info,
+					&target_node_id,
+					target_contact_option.target.clone(),
+					timeout,
 				)
 				.await
 			{
-				warn!("Unable to respond to relay request: {}", e);
-				self.base
-					.handle_connection_issue::<()>(Err(e), connection.their_node_info())
-					.await;
-			}
-
-			if let Err(e) = handle_relay_connection(connection, &mut target_connection).await {
-				match &*e {
-					sstp::Error::ConnectionClosed => {}
-					other => {
-						warn!("Connection issue during relaying: {}", other);
-					}
+				Ok(c) => c,
+				Err(e) => {
+					error!("Unable to complete outgoing relay: {:?}", e);
+					return None;
 				}
-			}
+			};
+			Some(Some(relay_connection))
+		} else {
+			Some(None)
+		}
+	}
 
-			// We've already responded at this point
+	async fn exchange_open_relay(
+		&self, relay_node_id: &IdType, relay_contact_option: &ContactOption,
+		request: &OpenRelayRequest, timeout: Duration,
+	) -> Option<Option<(RelayHelloAckPacket, Box<Connection>)>> {
+		// Exchange the request and response to start opening the relay
+		let buffer = binserde::serialize(request).unwrap();
+		let (raw_response, mut connection) = self
+			.base
+			.exchange_at(
+				relay_node_id,
+				relay_contact_option,
+				OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST,
+				&buffer,
+			)
+			.await?;
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_response);
+		let response: OpenRelayResponse = self
+			.base
+			.handle_connection_issue(result, connection.their_node_info())
+			.await?;
+		if !response.ok {
 			return None;
 		}
 
-		// If the connection wouldn't open, respond with a failure
-		Some(binserde::serialize(&OpenRelayResponse { ok: false }).unwrap())
-	}*/
+		// Wait for an update to know whether the target is ready to start the relay
+		// connection.
+		connection.set_keep_alive_timeout(timeout).await;
+		let raw_update_result = connection.receive().await;
+		let raw_update = self
+			.base
+			.handle_connection_issue(raw_update_result, connection.their_node_info())
+			.await?;
+		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_update);
+		let update: OpenRelayReadyMessage = self
+			.base
+			.handle_connection_issue(result, connection.their_node_info())
+			.await?;
+		Some(Some((update.hello_ack_packet?, connection)))
+	}
 
 	pub(super) async fn initiate_indirect_connection(
 		&self, relay_connection: &mut Connection, target: &IdType, their_contact: &ContactOption,
@@ -1481,14 +1533,14 @@ impl OverlayNode {
 	async fn process_relay_punch_hole_request(
 		self: &Arc<Self>, buffer: &[u8], node_info: &NodeContactInfo,
 	) -> MessageProcessorResult {
-		let request: RelayPunchHoleRequest = match binserde::deserialize(buffer) {
+		let request: PassPunchHoleRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
 				warn!("Malformed relay initiate connection request: {}", e);
 				return None;
 			}
 			Ok(r) => r,
 		};
-		let mut response = RelayPunchHoleResponse { ok: true };
+		let mut response = PassPunchHoleResponse { ok: true };
 
 		// If the requested target node happens to be one of our known bootstrap nodes,
 		// we always allow it

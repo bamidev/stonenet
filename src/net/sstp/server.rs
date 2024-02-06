@@ -5,7 +5,7 @@ use std::{
 };
 
 use tokio::sync::{
-	mpsc::{self, Sender, UnboundedSender},
+	mpsc::{self, UnboundedReceiver, UnboundedSender},
 	Mutex,
 };
 
@@ -43,32 +43,42 @@ pub type MessageFinishProcessor = dyn Fn(Result<()>, NodeContactInfo) -> Pin<Box
 	+ 'static;
 
 
-#[derive(Deserialize, Serialize)]
-struct RelayHelloPacket {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RelayHelloPacket {
 	header: RelayHelloPacketHeader,
 	body: RelayHelloPacketBody,
 }
 
 type RelayHelloPacketBody = HelloPacketBody;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct RelayHelloPacketHeader {
 	target: SocketAddrSstp,
 	base: HelloPacketHeader,
 }
 
-#[derive(Deserialize, Serialize)]
-struct RelayHelloAckPacket {
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RelayHelloAckPacket {
 	header: RelayHelloAckPacketHeader,
 	body: RelayHelloAckPacketBody,
 }
 
 type RelayHelloAckPacketBody = RelayedHelloAckPacketBody;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct RelayHelloAckPacketHeader {
 	relayer_session_id: u16,
 	base: HelloAckPacketHeader,
+}
+
+
+pub struct RelayInitiationInfo {
+	pub local_session_id: u16,
+	pub session: Arc<Mutex<SessionData>>,
+	pub hello_receiver: HelloReceiver,
+	pub packet_receiver: UnboundedReceiver<CryptedPacket>,
+	pub dh_private_key: x25519::StaticSecret,
+	pub packet: RelayHelloPacket,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -87,7 +97,7 @@ struct RelayedHelloPacket {
 
 type RelayedHelloAckPacketHeader = HelloAckPacketHeader;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct RelayedHelloAckPacketBody {
 	relayer_session_id: u16,
 	base: HelloAckPacketBody,
@@ -105,13 +115,13 @@ struct HelloAckPacket {
 	body: HelloAckPacketBody,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct HelloAckPacketHeader {
 	node_public_key: identity::PublicKey,
 	signature: Signature,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct HelloAckPacketBody {
 	dh_public_key: x25519::PublicKey,
 	source_session_id: u16,
@@ -126,28 +136,28 @@ struct HelloPacket {
 	body: HelloPacketBody,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct HelloPacketBody {
 	dh_public_key: x25519::PublicKey,
 	session_id: u16,
 	contact_info: ContactInfo,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct HelloPacketHeader {
 	node_public_key: identity::PublicKey,
 	signature: Signature,
 }
 
 type HelloReceiver = mpsc::Receiver<HelloResult>;
-type HelloResult = (
-	IdType,
-	ContactInfo,
-	u16,
-	u16,
-	x25519::PublicKey,
-	Option<Vec<u8>>,
-);
+pub struct HelloResult {
+	node_id: IdType,
+	contact_info: ContactInfo,
+	encrypt_session_id: u16,
+	dest_session_id: u16,
+	dh_public_key: x25519::PublicKey,
+	opt_response: Option<Vec<u8>>,
+}
 type HelloSender = mpsc::Sender<HelloResult>;
 
 
@@ -200,19 +210,19 @@ pub(super) struct Sessions {
 	next_id: u16,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 enum SocketAddrSstp {
 	V4(SocketAddrSstpV4),
 	V6(SocketAddrSstpV6),
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct SocketAddrSstpV4 {
 	ip: Ipv4Addr,
 	port: u16,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct SocketAddrSstpV6 {
 	ip: Ipv6Addr,
 	port: u16,
@@ -296,6 +306,55 @@ impl Server {
 			trace!("Closed session during cleanup routine {}.", done_id);
 			sessions.map.remove(&done_id).unwrap();
 		}
+	}
+
+	pub async fn complete_outgoing_relay(
+		self: &Arc<Server>, sender: Arc<dyn LinkSocketSender>,
+		initiation_data: RelayInitiationInfo, establish_info: HelloResult, target_node_id: &IdType,
+		target_addr: SocketAddr, timeout: Duration,
+	) -> Result<Box<Connection>> {
+		debug_assert!(establish_info.opt_response.is_none());
+
+		// If a specific node ID is expected, test it
+		if &establish_info.node_id != target_node_id {
+			return trace::err(Error::InvalidNodeId.into());
+		}
+
+		let transporter = Transporter::new_with_receiver(
+			establish_info.encrypt_session_id,
+			initiation_data.local_session_id,
+			establish_info.dest_session_id,
+			sender,
+			self.node_id.clone(),
+			establish_info.node_id.clone(),
+			timeout,
+			initiation_data.dh_private_key,
+			establish_info.dh_public_key,
+			initiation_data.packet_receiver,
+		);
+		let transporter_handle = transporter.spawn();
+		match &mut initiation_data.session.lock().await.transport_data {
+			SessionTransportData::Direct(data) => {
+				data.handle = Some(transporter_handle.clone());
+			}
+			_ => {
+				panic!("unexpected transport type");
+			}
+		}
+
+		Ok(Box::new(Connection {
+			transporter: transporter_handle,
+			server: self.clone(),
+			keep_alive_timeout: DEFAULT_KEEP_ALIVE_IDLE_TIME,
+			peer_address: target_addr,
+			peer_node_info: NodeContactInfo {
+				node_id: establish_info.node_id,
+				contact_info: establish_info.contact_info,
+			},
+			dest_session_id: establish_info.dest_session_id,
+			encrypt_session_id: establish_info.encrypt_session_id,
+			local_session_id: initiation_data.local_session_id,
+		}))
 	}
 
 	/// Fills the packet data into the given buffer.
@@ -471,12 +530,13 @@ impl Server {
 
 			tokio::select! {
 				result = hello_receiver.recv() => {
-					let (their_node_id, their_contact_info, encrypt_session_id, dest_session_id, their_public_key, mut opt_response) = result.expect("hello oneshot didn't work");
-					debug_assert!(opt_response.is_none() || hello_request_included, "got response in hello-ack even though hello packet didn't contain a request");
+					//let (their_node_id, their_contact_info, encrypt_session_id, dest_session_id, their_public_key, mut opt_response) = result.expect("hello oneshot didn't work");
+					let mut establish_info = result.unwrap();
+					debug_assert!(establish_info.opt_response.is_none() || hello_request_included, "got response in hello-ack even though hello packet didn't contain a request");
 
-					if let Some(mut response_buffer) = opt_response.as_mut() {
+					if let Some(mut response_buffer) = establish_info.opt_response.as_mut() {
 						// TODO: Prevent the diffie hellman from being generated twice
-						let key = KeyState::calculate_initial_key(&dh_private_key, &their_public_key);
+						let key = KeyState::calculate_initial_key(&dh_private_key, &establish_info.dh_public_key);
 						decrypt(local_session_id, 0, 0, &mut response_buffer, &key);
 					}
 
@@ -484,22 +544,22 @@ impl Server {
 					match node_id {
 						None => {},
 						Some(id) => {
-							if &their_node_id != id {
+							if &establish_info.node_id != id {
 								return trace::err(Error::InvalidNodeId.into());
 							}
 						}
 					}
 
 					let transporter = Transporter::new_with_receiver(
-						encrypt_session_id,
+						establish_info.encrypt_session_id,
 						local_session_id,
-						dest_session_id,
+						establish_info.dest_session_id,
 						sender,
 						self.node_id.clone(),
-						their_node_id.clone(),
+						establish_info.node_id.clone(),
 						timeout,
 						dh_private_key,
-						their_public_key,
+						establish_info.dh_public_key,
 						packet_receiver
 					);
 					let transporter_handle = transporter.spawn();
@@ -520,13 +580,13 @@ impl Server {
 						keep_alive_timeout: DEFAULT_KEEP_ALIVE_IDLE_TIME,
 						peer_address: target.target.clone(),
 						peer_node_info: NodeContactInfo {
-							node_id: their_node_id,
-							contact_info: their_contact_info,
+							node_id: establish_info.node_id,
+							contact_info: establish_info.contact_info,
 						},
-						dest_session_id,
-						encrypt_session_id,
+						dest_session_id: establish_info.dest_session_id,
+						encrypt_session_id: establish_info.encrypt_session_id,
 						local_session_id,
-					}), opt_response));
+					}), establish_info.opt_response));
 				},
 				_ = sleep(sleep_time) => {}
 			}
@@ -737,7 +797,31 @@ impl Server {
 		return Some((session_id, session_data));
 	}
 
-	fn new_relay_hello_packet(
+	pub fn new_relay_hello_packet(
+		&self, target: &SocketAddr, local_session_id: u16, dh_public_key: x25519::PublicKey,
+	) -> RelayHelloPacket {
+		let target2: SocketAddrSstp = target.clone().into();
+		let body = RelayHelloPacketBody {
+			dh_public_key,
+			session_id: local_session_id,
+			contact_info: self.our_contact_info(),
+		};
+		let buffer = binserde::serialize(&body).unwrap();
+
+		// Sign body and copy header with signature into the buffer
+		let signature = self.private_key.sign(&buffer);
+		let header = RelayHelloPacketHeader {
+			target: target2,
+			base: HelloPacketHeader {
+				node_public_key: self.private_key.public(),
+				signature,
+			},
+		};
+
+		RelayHelloPacket { header, body }
+	}
+
+	fn new_relay_hello_packet_raw(
 		&self, _max_len: usize, target: &SocketAddr, local_session_id: u16,
 		dh_public_key: x25519::PublicKey,
 	) -> Vec<u8> {
@@ -924,14 +1008,14 @@ impl Server {
 		let their_session_id = packet.body.base.server_session_id;
 		let relay_session_id = packet.body.relayer_session_id;
 		if hello_channel
-			.send((
-				their_node_id,
-				packet.body.base.contact_info,
-				their_session_id,
-				relay_session_id,
-				packet.body.base.dh_public_key,
-				None,
-			))
+			.send(HelloResult {
+				node_id: their_node_id,
+				contact_info: packet.body.base.contact_info,
+				encrypt_session_id: their_session_id,
+				dest_session_id: relay_session_id,
+				dh_public_key: packet.body.base.dh_public_key,
+				opt_response: None,
+			})
 			.await
 			.is_err()
 		{
@@ -1351,20 +1435,20 @@ impl Server {
 
 		let their_session_id = packet.body.server_session_id;
 		if let Some(tx) = hello_channel {
-			let response = if buffer.len() > response_offset {
+			let opt_response = if buffer.len() > response_offset {
 				Some(buffer[response_offset..].to_vec())
 			} else {
 				None
 			};
 			if tx
-				.send((
-					their_node_id,
-					packet.body.contact_info,
-					their_session_id,
-					their_session_id,
-					packet.body.dh_public_key,
-					response,
-				))
+				.send(HelloResult {
+					node_id: their_node_id,
+					contact_info: packet.body.contact_info,
+					dest_session_id: their_session_id,
+					encrypt_session_id: their_session_id,
+					dh_public_key: packet.body.dh_public_key,
+					opt_response,
+				})
 				.await
 				.is_err()
 			{
@@ -1417,8 +1501,14 @@ impl Server {
 		}
 	}
 
+	/// Opens a relay connection to another node, through a relay node. This
+	/// only works if the relay node has relaying enabled.
+	/// The only use this has is for when the target node is able to receive
+	/// connections (bidirectional), but we know our external IP address is
+	/// blocked by their firewall somehow.
+	#[allow(dead_code)]
 	pub async fn relay(
-		self: &Arc<Self>, relay: &ContactOption, relay_node_id: IdType, target: &SocketAddr,
+		self: &Arc<Self>, relay: &ContactOption, relay_node_id: IdType, target: SocketAddr,
 		target_node_id: &IdType,
 	) -> Result<Box<Connection>> {
 		let stop_flag = Arc::new(AtomicBool::new(false));
@@ -1435,85 +1525,30 @@ impl Server {
 
 	pub async fn relay_with_timeout(
 		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, relay: &ContactOption, relay_node_id: IdType,
-		target: &SocketAddr, target_node_id: &IdType, timeout: Duration,
+		target_addr: SocketAddr, target_node_id: &IdType, timeout: Duration,
 	) -> Result<Box<Connection>> {
 		let (sender, _receiver) = self.sockets.connect(relay, timeout).await?;
 
-		let (packet_sender, packet_receiver) = mpsc::unbounded_channel();
-		let (hello_sender, mut hello_receiver) = mpsc::channel(1);
-		let transport_data = SessionTransportData::Direct(SessionTransportDataDirect {
-			dest_session_id: None,
-			packet_processor: packet_sender,
-			handle: None,
-			hello_channel: Some(hello_sender),
-			relay_node_id: Some(relay_node_id),
-		});
-		let (local_session_id, session) = self
-			.new_outgoing_session(Some(target_node_id.clone()), transport_data, timeout)
-			.await
-			.ok_or(Error::OutOfSessions)?;
-
-		let dh_private_key = x25519::StaticSecret::random_from_rng(OsRng);
-		let dh_public_key = x25519::PublicKey::from(&dh_private_key);
-		let packet = self.new_relay_hello_packet(
-			sender.max_packet_length(),
-			target,
-			local_session_id,
-			dh_public_key,
-		);
+		let mut initiation_info = self
+			.setup_outgoing_relay(relay_node_id, target_node_id.clone(), &target_addr, timeout)
+			.await?;
 
 		let started = SystemTime::now();
-		let sleep_time = min(timeout / 4, MAXIMUM_RETRY_TIMEOUT);
+		let sleep_time = min(timeout / 8, MAXIMUM_RETRY_TIMEOUT);
+		let mut raw_packet = vec![
+			PACKET_TYPE_RELAY_HELLO;
+			1 + binserde::serialized_size(&initiation_info.packet).unwrap()
+		];
+		binserde::serialize_into(&mut raw_packet[1..], &initiation_info.packet).unwrap();
 		while !stop_flag.load(Ordering::Relaxed)
 			&& SystemTime::now().duration_since(started).unwrap() < timeout
 		{
-			sender.send(&packet).await?;
+			sender.send(&raw_packet).await?;
 
 			tokio::select! {
-				result = hello_receiver.recv() => {
-					let (their_node_id, their_contact_info, encrypt_session_id, dest_session_id, their_public_key, opt_response) = result.expect("hello watch didn't work");
-					debug_assert!(opt_response.is_none());
-
-					// If a specific node ID is expected, test it
-					if &their_node_id != target_node_id {
-						return trace::err(Error::InvalidNodeId.into());
-					}
-
-					let transporter = Transporter::new_with_receiver(
-						encrypt_session_id,
-						local_session_id,
-						dest_session_id,
-						sender,
-						self.node_id.clone(),
-						their_node_id.clone(),
-						timeout,
-						dh_private_key,
-						their_public_key,
-						packet_receiver
-					);
-					let transporter_handle = transporter.spawn();
-					match &mut session.lock().await.transport_data {
-						SessionTransportData::Direct(data) => {
-							data.handle = Some(transporter_handle.clone());
-						},
-						_ => {
-							panic!("unexpected transport type");
-						}
-					}
-
-					return Ok(Box::new(Connection {
-						transporter: transporter_handle,
-						server: self.clone(),
-						keep_alive_timeout: DEFAULT_KEEP_ALIVE_IDLE_TIME,
-						peer_address: target.clone(),
-						peer_node_info: NodeContactInfo {
-							node_id: their_node_id,
-							contact_info: their_contact_info,
-						},
-						dest_session_id,
-						encrypt_session_id,
-						local_session_id: local_session_id,
-					}));
+				result = initiation_info.hello_receiver.recv() => {
+					let establish_info = result.unwrap();
+					return self.complete_outgoing_relay(sender, initiation_info, establish_info, target_node_id, target_addr, timeout).await;
 				},
 				_ = sleep(sleep_time) => {}
 			}
@@ -1606,6 +1641,37 @@ impl Server {
 
 	#[cfg(test)]
 	pub async fn set_next_session_id(&self, id: u16) { self.sessions.lock().await.next_id = id; }
+
+	pub async fn setup_outgoing_relay(
+		&self, relay_node_id: IdType, target_node_id: IdType, target: &SocketAddr,
+		timeout: Duration,
+	) -> Result<RelayInitiationInfo> {
+		let (packet_sender, packet_receiver) = mpsc::unbounded_channel();
+		let (hello_sender, hello_receiver) = mpsc::channel(1);
+		let transport_data = SessionTransportData::Direct(SessionTransportDataDirect {
+			dest_session_id: None,
+			packet_processor: packet_sender,
+			handle: None,
+			hello_channel: Some(hello_sender),
+			relay_node_id: Some(relay_node_id),
+		});
+		let (local_session_id, session) = self
+			.new_outgoing_session(Some(target_node_id.clone()), transport_data, timeout)
+			.await
+			.ok_or(Error::OutOfSessions)?;
+
+		let dh_private_key = x25519::StaticSecret::random_from_rng(OsRng);
+		let dh_public_key = x25519::PublicKey::from(&dh_private_key);
+		let packet = self.new_relay_hello_packet(target, local_session_id, dh_public_key);
+		Ok(RelayInitiationInfo {
+			local_session_id,
+			session,
+			hello_receiver,
+			packet_receiver,
+			dh_private_key,
+			packet,
+		})
+	}
 
 	pub fn spawn(self: &Arc<Self>) {
 		self.clone().spawn_garbage_collector();
@@ -2355,6 +2421,19 @@ impl From<SocketAddr> for SocketAddrSstp {
 				};
 				Self::V6(addr)
 			}
+		}
+	}
+}
+
+impl From<RelayHelloAckPacket> for HelloResult {
+	fn from(other: RelayHelloAckPacket) -> Self {
+		Self {
+			node_id: other.header.base.node_public_key.generate_address(),
+			contact_info: other.body.base.contact_info,
+			encrypt_session_id: other.body.base.server_session_id,
+			dest_session_id: other.header.relayer_session_id,
+			dh_public_key: other.body.base.dh_public_key,
+			opt_response: None,
 		}
 	}
 }

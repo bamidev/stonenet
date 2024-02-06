@@ -64,6 +64,10 @@ impl Bucket {
 			.chain(self.public_fingers())
 	}
 
+	pub fn private_fingers2(&self) -> Vec<NodeContactInfo> {
+		self.private_fingers().map(|f| f.clone()).collect()
+	}
+
 	pub fn mark_obtained_value(&mut self, node_id: &IdType) {
 		if let Some(entry) = self
 			.fingers

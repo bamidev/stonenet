@@ -15,7 +15,7 @@
 //! after every window.
 
 
-mod server;
+pub(super) mod server;
 mod transporter;
 
 
@@ -39,7 +39,7 @@ use hmac::*;
 use log::*;
 use once_cell::sync::OnceCell;
 use rand::{rngs::OsRng, RngCore};
-pub use server::{MessageProcessorResult, Server, SocketBindError};
+pub use server::{MessageProcessorResult, Server};
 use sha2::{Digest, Sha256};
 use tokio::{self, spawn, time::sleep};
 use transporter::*;
@@ -268,6 +268,10 @@ impl Connection {
 			.await
 			.unwrap_or(trace::err(Error::ConnectionClosed))?;
 		Ok(())
+	}
+
+	pub(super) fn socket_sender(&self) -> Arc<dyn LinkSocketSender> {
+		self.transporter.socket_sender.clone()
 	}
 
 	pub fn send_async(&mut self, message: Vec<u8>) -> Result<()> {
@@ -604,7 +608,7 @@ mod tests {
 			.relay(
 				&ContactOption::new_udp(relay_addr),
 				relay_node_id.clone(),
-				&node2_addr,
+				node2_addr,
 				&node2_node_id,
 			)
 			.await

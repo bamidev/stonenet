@@ -305,38 +305,44 @@ where
 
 	pub async fn exchange(
 		&self, target: &NodeContactInfo, message_type: u8, buffer: &[u8],
-	) -> Option<Vec<u8>> {
+	) -> Option<(Vec<u8>, Box<Connection>)> {
 		// If no existing connection already existed, open one
 		let first_buffer = self.interface.prepare(message_type, buffer);
 		let opt_request = self.first_request(&first_buffer);
 
-		let (connection, opt_response) = self.select_direct_connection(target, opt_request).await?;
-		self.handle_exchange_result(
-			connection,
-			opt_request.is_some(),
-			opt_response,
-			message_type,
-			buffer,
-		)
-		.await
+		let (mut connection, opt_response) =
+			self.select_direct_connection(target, opt_request).await?;
+		let response = self
+			.handle_exchange_result(
+				&mut connection,
+				opt_request.is_some(),
+				opt_response,
+				message_type,
+				buffer,
+			)
+			.await?;
+		Some((response, connection))
 	}
 
 	/// Exchanges a request with a response with the given contact.
 	pub async fn exchange_at(
 		&self, node_id: &IdType, target: &ContactOption, message_type: u8, buffer: &[u8],
-	) -> Option<Vec<u8>> {
+	) -> Option<(Vec<u8>, Box<Connection>)> {
 		// TODO: Use an existing connection if possible.
 		let first_buffer = self.interface.prepare(message_type, buffer);
 		let opt_request = self.first_request(&first_buffer);
-		let (connection, opt_response) = self.connect(target, Some(node_id), opt_request).await?;
-		self.handle_exchange_result(
-			connection,
-			opt_request.is_some(),
-			opt_response,
-			message_type,
-			buffer,
-		)
-		.await
+		let (mut connection, opt_response) =
+			self.connect(target, Some(node_id), opt_request).await?;
+		let response = self
+			.handle_exchange_result(
+				&mut connection,
+				opt_request.is_some(),
+				opt_response,
+				message_type,
+				buffer,
+			)
+			.await?;
+		Some((response, connection))
 	}
 
 	/// In the paper, this is described as the 'FIND_NODE' RPC.
@@ -826,7 +832,7 @@ where
 	}
 
 	async fn handle_exchange_result(
-		&self, mut connection: Box<Connection>, first_request_included: bool,
+		&self, mut connection: &mut Connection, first_request_included: bool,
 		opt_response: Option<Vec<u8>>, message_type: u8, request: &[u8],
 	) -> Option<Vec<u8>> {
 		let result = if opt_response.is_some() {
@@ -982,7 +988,11 @@ where
 	pub async fn iter_all_fingers(&self) -> AllFingersIter<'_> {
 		AllFingersIter {
 			global_index: 255,
-			bucket_iter: self.buckets[255].lock().await.public_fingers2().into_iter(),
+			bucket_iter: self.buckets[255]
+				.lock()
+				.await
+				.private_fingers2()
+				.into_iter(),
 			buckets: &self.buckets,
 		}
 	}

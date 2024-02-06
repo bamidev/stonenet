@@ -3,10 +3,7 @@ use std::backtrace::Backtrace;
 use futures::Stream;
 use tokio::{
 	select,
-	sync::{
-		mpsc::{self, *},
-		oneshot,
-	},
+	sync::{mpsc::*, oneshot},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -98,6 +95,7 @@ pub struct TransporterHandle {
 	sender: UnboundedSender<Traced<TransporterTask>>,
 	pub(super) alive_flag: Arc<AtomicBool>,
 	is_connection_based: bool,
+	pub(super) socket_sender: Arc<dyn LinkSocketSender>,
 }
 
 /// The instruction that is sent to the transporter task to make it do what we
@@ -526,6 +524,7 @@ impl Transporter {
 			sender: tx,
 			alive_flag: Arc::new(AtomicBool::new(false)),
 			is_connection_based: self.inner.socket_sender.is_connection_based(),
+			socket_sender: self.inner.socket_sender.clone(),
 		};
 		spawn(self.run(rx));
 		handle
@@ -1754,7 +1753,7 @@ impl TransporterHandle {
 			.is_ok()
 	}
 
-	#[cfg(test)]
+	/*#[cfg(test)]
 	pub(super) fn dummy() -> Self {
 		let (tx, _) = unbounded_channel();
 		Self {
@@ -1762,7 +1761,7 @@ impl TransporterHandle {
 			alive_flag: Arc::new(AtomicBool::new(false)),
 			is_connection_based: false,
 		}
-	}
+	}*/
 
 	pub fn is_alive(&self) -> bool { self.alive_flag.load(Ordering::Relaxed) }
 
