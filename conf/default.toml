@@ -63,7 +63,7 @@ bootstrap_nodes = [
 # included in the very first packet. This speeds up node communication, at the
 # expense of privacy. The response message, and any further message, are never
 # sent on the connection unencrypted.
-leak_first_request = false
+leak_first_request = true
 
 # Maximum idle time for UDP hole-punching in seconds:
 udp_max_idle_time = 60
