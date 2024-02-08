@@ -64,14 +64,18 @@ pub struct ConnectActorIter<'a> {
 }
 pub struct FindActorIter<'a>(FindValueIter<'a, OverlayInterface>);
 
-/*#[derive(Clone, Default)]
-struct OverlayBucket {
-	pub base: StandardBucket
-}*/
-
 struct KeepAliveToDo {
 	node: Arc<OverlayNode>,
 	node_id: IdType,
+}
+
+struct OpenRelayToDo {
+	node: Arc<OverlayNode>,
+	source_addr: SocketAddr,
+	target_node_id: IdType,
+	assistant_node_info: NodeContactInfo,
+	hello_packet: RelayHelloPacket,
+	timeout: Duration,
 }
 
 pub struct OverlayNode {
@@ -457,6 +461,29 @@ impl OverlayNode {
 		Some(response.ok)
 	}
 
+	async fn exchange_pass_relayed_hello_packet(
+		&self, target: &NodeContactInfo, request: &PassRelayRequestRequest,
+	) -> Option<PassRelayRequestResponse> {
+		let raw_request = binserde::serialize(&request).unwrap();
+		let (raw_response, _) = self
+			.base
+			.exchange(
+				target,
+				OVERLAY_MESSAGE_TYPE_PASS_RELAY_REQUEST_REQUEST,
+				&raw_request,
+			)
+			.await?;
+		let result = binserde::deserialize_sstp(&raw_response);
+		self.base.handle_connection_issue(result, target).await
+	}
+
+	async fn exchange_relayed_hello_packet(
+		&self, target: &NodeContactInfo, request: &RelayRequestRequest,
+	) -> Option<RelayRequestResponse> {
+		self.exchange_pass_relayed_hello_packet(target, request)
+			.await
+	}
+
 	pub(super) async fn exchange_punch_hole_on_connection(
 		&self, connection: &mut Connection, source_node_id: IdType,
 		source_contact_option: ContactOption, request_connection: bool,
@@ -507,6 +534,26 @@ impl OverlayNode {
 			.handle_connection_issue(result, &relay_connection.their_node_info())
 			.await?;
 		Some(response.ok)
+	}
+
+	async fn exchange_relay_request_on_connection(
+		&self, connection: &mut Connection, request: &RelayRequestRequest,
+	) -> Option<()> {
+		let raw_request = binserde::serialize(request).unwrap();
+		let raw_response = self
+			.base
+			.exchange_on_connection(
+				connection,
+				OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_REQUEST,
+				&raw_request,
+			)
+			.await?;
+		self.base
+			.handle_connection_issue(
+				binserde::deserialize_sstp(&raw_response),
+				connection.their_node_info(),
+			)
+			.await
 	}
 
 	async fn exchange_reverse_connection_on_connection(
@@ -587,7 +634,7 @@ impl OverlayNode {
 					self.base.stop_flag.clone(),
 					self.clone(),
 					self.node_id().clone(),
-					self.base.socket.clone(),
+					self.base.packet_server.clone(),
 					actor_address.clone(),
 					actor_info.clone(),
 					self.db().clone(),
@@ -717,7 +764,9 @@ impl OverlayNode {
 
 	// Does a simple search on the overlay network to find a node that is connected
 	// to the given node_id, and returns the connection to that node.
-	pub async fn find_connection_for_node(&self, node_id: &IdType) -> Option<Box<Connection>> {
+	pub async fn find_connection_for_node(
+		&self, node_id: &IdType,
+	) -> Option<(Box<Connection>, bool)> {
 		let fingers = self.base.find_nearest_private_fingers(node_id).await;
 		if fingers.len() == 0 {
 			return None;
@@ -738,7 +787,7 @@ impl OverlayNode {
 							{
 								if let Some(node_info) = response.connected {
 									if &node_info.node_id == node_id {
-										return Some(connection);
+										return Some((connection, response.is_relay_node));
 									}
 								}
 
@@ -823,7 +872,7 @@ impl OverlayNode {
 					self.base.stop_flag.clone(),
 					self.clone(),
 					self.node_id().clone(),
-					self.base.socket.clone(),
+					self.base.packet_server.clone(),
 					actor_id.clone(),
 					actor_info.clone(),
 					self.db().clone(),
@@ -934,7 +983,7 @@ impl OverlayNode {
 							// Open and maintain a connection to a bidirectional node
 							// TODO: Do the same thing for IPv6
 							if let Some(ipv4_contact_info) =
-								self.base.socket.our_contact_info().ipv4
+								self.base.packet_server.our_contact_info().ipv4
 							{
 								if let Some(availability) = ipv4_contact_info.availability.udp {
 									if availability.openness == Openness::Unidirectional {
@@ -1043,7 +1092,7 @@ impl OverlayNode {
 				self.base.stop_flag.clone(),
 				self.clone(),
 				self.base.node_id.clone(),
-				self.base.socket.clone(),
+				self.base.packet_server.clone(),
 				address.clone(),
 				actor_info,
 				self.base.interface.db.clone(),
@@ -1061,7 +1110,7 @@ impl OverlayNode {
 
 	fn maintain_keep_alive_connection(self: &Arc<Self>, connection: Box<Connection>) {
 		let alive_flag = connection.alive_flag();
-		self.base.socket.spawn_connection(connection);
+		self.base.packet_server.spawn_connection(connection);
 
 		let this = self.clone();
 		spawn(async move {
@@ -1151,7 +1200,7 @@ impl OverlayNode {
 			{
 				if success {
 					connection.set_keep_alive_timeout(KEEP_ALIVE_TIMEOUT).await;
-					this.base.socket.spawn_connection(connection);
+					this.base.packet_server.spawn_connection(connection);
 					return true;
 				} else {
 					debug!("Keep alive connection was denied.");
@@ -1206,19 +1255,55 @@ impl OverlayNode {
 	}
 
 	pub async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
-		let assistant_node_info = self
-			.find_connection_for_node(&target.node_id)
-			.await?
-			.their_node_info()
-			.clone();
+		// We need to know what assistant node we are going to use
+		let (assitant_connection, is_relay) =
+			self.find_connection_for_node(&target.node_id).await?;
+		let assistant_node_info = assitant_connection.their_node_info();
 
-		// Loop through all of our relay nodes until one dealt with us successfully.
+		// If the assistant node is a relay itself, just simply relay through the
+		// assistant node
+		if is_relay {
+			if let Some((target_contact_option, _)) = self
+				.base
+				.packet_server
+				.pick_contact_option(&target.contact_info)
+			{
+				if let Some((relay_contact_option, _)) = self
+					.base
+					.packet_server
+					.pick_contact_option(&assistant_node_info.contact_info)
+				{
+					match self
+						.base
+						.packet_server
+						.relay(
+							&relay_contact_option,
+							assistant_node_info.node_id.clone(),
+							target_contact_option.target,
+							&target.node_id,
+						)
+						.await
+					{
+						Err(e) => {
+							error!("Unable to relay: {:?}", e);
+							return None;
+						}
+						Ok(c) => return Some(c),
+					}
+				}
+			}
+		}
+
+		// Otherwise, loop through all of our relay nodes until one serviced us
+		// successfully.
 		loop {
 			let mut relay_nodes = self.relay_nodes.lock().await;
 			if let Some(relay_node_info) = relay_nodes.pop_front() {
 				drop(relay_nodes);
-				let (contact_option, _) =
-					self.base.socket.pick_contact_option(&target.contact_info)?;
+				let (contact_option, _) = self
+					.base
+					.packet_server
+					.pick_contact_option(&target.contact_info)?;
 				if let Some(relay_contact_option) = relay_node_info
 					.contact_info
 					.pick_relay_option(&contact_option)
@@ -1234,11 +1319,25 @@ impl OverlayNode {
 						)
 						.await
 					{
-						// On failure with the relay node, keep trying
+						// On failure with the relay node, keep trying other relay nodes
 						None => {}
 						// If the relay node tells us the target was not reachable, stop.
 						// Or if the connection was obtained, we're done.
-						Some(connection_result) => return connection_result,
+						Some(r) => match r {
+							OpenRelayStatus::Success(connection) => return Some(connection),
+							OpenRelayStatus::AssistantUnaware => {
+								warn!(
+									"Unable to obtain relay connection because the assistant node \
+									 was unaware of the target node."
+								);
+							}
+							OpenRelayStatus::Timeout => {
+								warn!(
+									"Unable to obtain relay connection because the target node \
+									 never contacted the relay node."
+								);
+							}
+						},
 					}
 				}
 			} else {
@@ -1253,7 +1352,7 @@ impl OverlayNode {
 		&self, relay_node_id: &IdType, relay_contact_option: &ContactOption,
 		assistant_node_info: NodeContactInfo, target_node_id: IdType,
 		target_contact_option: &ContactOption,
-	) -> Option<Option<Box<Connection>>> {
+	) -> Option<OpenRelayStatus<Box<Connection>>> {
 		let timeout = DEFAULT_TIMEOUT * 3;
 
 		let protocol = LinkProtocol {
@@ -1262,7 +1361,7 @@ impl OverlayNode {
 		};
 		let initiation_info = match self
 			.base
-			.socket
+			.packet_server
 			.setup_outgoing_relay(
 				relay_node_id.clone(),
 				target_node_id.clone(),
@@ -1284,40 +1383,43 @@ impl OverlayNode {
 			hello_packet: initiation_info.packet.clone(),
 		};
 
-		let hello_ack_opt = self
+		let (status_message, relay_node_connection) = self
 			.exchange_open_relay(relay_node_id, relay_contact_option, &request, timeout)
 			.await?;
-		if let Some((hello_ack, relay_node_connection)) = hello_ack_opt {
-			let establish_info = hello_ack.into();
-			let relay_connection = match self
-				.base
-				.socket
-				.complete_outgoing_relay(
-					relay_node_connection.socket_sender(),
-					initiation_info,
-					establish_info,
-					&target_node_id,
-					target_contact_option.target.clone(),
-					timeout,
-				)
-				.await
-			{
-				Ok(c) => c,
-				Err(e) => {
-					error!("Unable to complete outgoing relay: {:?}", e);
-					return None;
-				}
-			};
-			Some(Some(relay_connection))
-		} else {
-			Some(None)
+		match status_message.status {
+			OpenRelayStatus::Success(hello_ack) => {
+				let establish_info = hello_ack.into();
+				let relay_connection = match self
+					.base
+					.packet_server
+					.complete_outgoing_relay(
+						relay_node_connection.socket_sender(),
+						initiation_info,
+						establish_info,
+						&target_node_id,
+						target_contact_option.target.clone(),
+						timeout,
+					)
+					.await
+				{
+					Ok(c) => c,
+					Err(e) => {
+						error!("Unable to complete outgoing relay: {:?}", e);
+						return None;
+					}
+				};
+				Some(OpenRelayStatus::Success(relay_connection))
+			}
+			// TODO: Implement From/Into for the OpenRelayStatus error codes.
+			OpenRelayStatus::AssistantUnaware => Some(OpenRelayStatus::AssistantUnaware),
+			OpenRelayStatus::Timeout => Some(OpenRelayStatus::Timeout),
 		}
 	}
 
 	async fn exchange_open_relay(
 		&self, relay_node_id: &IdType, relay_contact_option: &ContactOption,
 		request: &OpenRelayRequest, timeout: Duration,
-	) -> Option<Option<(RelayHelloAckPacket, Box<Connection>)>> {
+	) -> Option<(OpenRelayStatusMessage, Box<Connection>)> {
 		// Exchange the request and response to start opening the relay
 		let buffer = binserde::serialize(request).unwrap();
 		let (raw_response, mut connection) = self
@@ -1347,11 +1449,11 @@ impl OverlayNode {
 			.handle_connection_issue(raw_update_result, connection.their_node_info())
 			.await?;
 		let result: sstp::Result<_> = binserde::deserialize_sstp(&raw_update);
-		let update: OpenRelayReadyMessage = self
+		let update: OpenRelayStatusMessage = self
 			.base
 			.handle_connection_issue(result, connection.their_node_info())
 			.await?;
-		Some(Some((update.hello_ack_packet?, connection)))
+		Some((update, connection))
 	}
 
 	pub(super) async fn initiate_indirect_connection(
@@ -1450,6 +1552,50 @@ impl OverlayNode {
 	//pub fn node_info(&self) -> &NodeContactInfo {
 	// &self.base.interface.socket.our_contact_info }
 
+	pub(super) async fn process_actor_request(
+		self: &Arc<Self>, actor_node: &Arc<ActorNode>, message_type: u8, buffer: &[u8],
+		addr: &SocketAddr, node_info: &NodeContactInfo,
+	) -> MessageProcessorResult {
+		let (result, processed) = actor_node
+			.base
+			.process_request(
+				self.clone(),
+				message_type,
+				&buffer,
+				addr,
+				node_info,
+				Some(&actor_node.actor_address().as_id()),
+			)
+			.await;
+		if !processed {
+			debug_assert!(result.is_none());
+		}
+
+		if !processed {
+			actor_node
+				.process_request(message_type, buffer, addr, node_info)
+				.await
+		} else {
+			// FIXME: Remember the actor node somewhere else.
+			// The following marks the node helpful or problematic based on whether a
+			// response is decided to be made. However, sometimes a respond isn't made
+			// because we had an internal error, like unexpected database errors.
+			if let Some(mut x) = result {
+				actor_node.base.mark_node_helpful(node_info).await;
+				if x.0.len() > 0 {
+					x.0[0] |= 0x80;
+				}
+				Some(x)
+			} else {
+				actor_node
+					.base
+					.mark_node_problematic(&node_info.node_id)
+					.await;
+				None
+			}
+		}
+	}
+
 	async fn process_find_actor_request(&self, buffer: &[u8]) -> MessageProcessorResult {
 		let request: FindActorRequest = match binserde::deserialize(buffer) {
 			Err(e) => {
@@ -1528,6 +1674,187 @@ impl OverlayNode {
 				node_id: node_info.node_id.clone(),
 			})),
 		))
+	}
+
+	async fn process_open_relay_request(
+		self: &Arc<Self>, buffer: &[u8], addr: &SocketAddr,
+	) -> MessageProcessorResult {
+		let request: OpenRelayRequest = match binserde::deserialize(buffer) {
+			Ok(r) => r,
+			Err(e) => {
+				error!("Malformed open relay request: {}", e);
+				return None;
+			}
+		};
+
+		Some((
+			Vec::new(),
+			Some(Box::new(OpenRelayToDo {
+				node: self.clone(),
+				source_addr: addr.clone(),
+				target_node_id: request.target_node_id,
+				assistant_node_info: request.assistant_node,
+				hello_packet: request.hello_packet,
+				timeout: DEFAULT_TIMEOUT * 3,
+			})),
+		))
+	}
+
+	async fn process_pass_relay_request_request(
+		self: &Arc<Self>, buffer: &[u8],
+	) -> MessageProcessorResult {
+		let request: PassRelayRequestRequest = match binserde::deserialize(buffer) {
+			Ok(r) => r,
+			Err(e) => {
+				error!("Malformed open relay request: {}", e);
+				return None;
+			}
+		};
+		let request2 = Box::new(request);
+
+		let target_node_id = request2
+			.relayed_hello_packet
+			.header
+			.base
+			.node_public_key
+			.generate_address();
+		let mut response = PassRelayRequestResponse { ok: true };
+		let this = self.clone();
+		match self.base.find_connection_in_buckets(&target_node_id).await {
+			None => response.ok = false,
+			Some(c) => {
+				spawn(async move {
+					let mut connection = c.lock().await;
+
+					if this
+						.exchange_relay_request_on_connection(&mut connection, &*request2)
+						.await
+						.is_none()
+					{
+						warn!(
+							"Unable to pass relay request to node {}.",
+							connection.their_node_info()
+						);
+					}
+				});
+			}
+		}
+
+		Some((binserde::serialize(&response).unwrap(), None))
+	}
+
+	async fn process_relay_request_request(
+		self: &Arc<Self>, buffer: &[u8],
+	) -> MessageProcessorResult {
+		let request: RelayRequestRequest = match binserde::deserialize(buffer) {
+			Ok(r) => r,
+			Err(e) => {
+				error!("Malformed open relay request: {}", e);
+				return None;
+			}
+		};
+		let request2 = Box::new(request);
+
+		let target_node_id = request2
+			.relayed_hello_packet
+			.header
+			.base
+			.node_public_key
+			.generate_address();
+		let response = RelayRequestResponse {
+			ok: self.base.node_id() == &target_node_id,
+		};
+		if response.ok {
+			let this = self.clone();
+			spawn(async move {
+				let sender = match this
+					.base
+					.packet_server
+					.link_connect(&request2.relay_node_contact, DEFAULT_TIMEOUT)
+					.await
+				{
+					Ok(s) => s,
+					Err(e) => {
+						warn!(
+							"Unable to sent relayed hello ack packet to relay node: {:?}",
+							e
+						);
+						return;
+					}
+				};
+				if let Err(e) = this
+					.base
+					.packet_server
+					.process_relayed_hello_packet(
+						sender,
+						&request2.relay_node_contact,
+						request2.relayed_hello_packet,
+					)
+					.await
+				{
+					warn!("Unable to process relayed hello ack packet: {:?}", e);
+				}
+			});
+		}
+
+		Some((binserde::serialize(&response).unwrap(), None))
+	}
+
+	async fn process_punch_hole_request(self: &Arc<Self>, buffer: &[u8]) -> MessageProcessorResult {
+		let request: PunchHoleRequest = match binserde::deserialize(buffer) {
+			Err(e) => {
+				warn!("Malformed initiate connection request: {}", e);
+				return None;
+			}
+			Ok(r) => r,
+		};
+
+		// If a connection was not requested, simply send a packet to open a hole for a
+		// connection to come in
+		let success = if !request.request_connection {
+			if let Err(e) = self
+				.base
+				.packet_server
+				.send_punch_hole_packet(&request.source_contact_option)
+				.await
+			{
+				error!(
+					"Unable to send hole punch packet to {}: {:?}",
+					&request.source_contact_option, e
+				);
+				false
+			} else {
+				true
+			}
+
+		// If a connection was requested, open one and reverse the direction
+		// immediately
+		} else {
+			let this = self.clone();
+			spawn(async move {
+				if let Some((mut connection, _)) = this
+					.base
+					.connect(
+						&request.source_contact_option,
+						Some(&request.source_node_id),
+						None,
+					)
+					.await
+				{
+					if this
+						.exchange_reverse_connection_on_connection(&mut connection)
+						.await == Some(true)
+					{
+						this.base.packet_server.spawn_connection(connection);
+					}
+				}
+			});
+			true
+		};
+
+		let response = PunchHoleResponse { ok: success };
+		self.base
+			.simple_result(OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_RESPONSE, &response)
 	}
 
 	async fn process_relay_punch_hole_request(
@@ -1609,56 +1936,19 @@ impl OverlayNode {
 			OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_REQUEST =>
 				self.process_reverse_connection_request(buffer, contact)
 					.await,
+			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE =>
+				self.process_open_relay_request(buffer, &contact.target)
+					.await,
+			OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_REQUEST =>
+				self.process_relay_request_request(buffer).await,
+			OVERLAY_MESSAGE_TYPE_PASS_RELAY_REQUEST_REQUEST =>
+				self.process_pass_relay_request_request(buffer).await,
 			other_id => {
 				warn!(
 					"Unknown overlay message type ID received from {}: {}",
 					contact, other_id
 				);
 				return None;
-			}
-		}
-	}
-
-	pub(super) async fn process_actor_request(
-		self: &Arc<Self>, actor_node: &Arc<ActorNode>, message_type: u8, buffer: &[u8],
-		addr: &SocketAddr, node_info: &NodeContactInfo,
-	) -> MessageProcessorResult {
-		let (result, processed) = actor_node
-			.base
-			.process_request(
-				self.clone(),
-				message_type,
-				&buffer,
-				addr,
-				node_info,
-				Some(&actor_node.actor_address().as_id()),
-			)
-			.await;
-		if !processed {
-			debug_assert!(result.is_none());
-		}
-
-		if !processed {
-			actor_node
-				.process_request(message_type, buffer, addr, node_info)
-				.await
-		} else {
-			// FIXME: Remember the actor node somewhere else.
-			// The following marks the node helpful or problematic based on whether a
-			// response is decided to be made. However, sometimes a respond isn't made
-			// because we had an internal error, like unexpected database errors.
-			if let Some(mut x) = result {
-				actor_node.base.mark_node_helpful(node_info).await;
-				if x.0.len() > 0 {
-					x.0[0] |= 0x80;
-				}
-				Some(x)
-			} else {
-				actor_node
-					.base
-					.mark_node_problematic(&node_info.node_id)
-					.await;
-				None
 			}
 		}
 	}
@@ -1730,65 +2020,8 @@ impl OverlayNode {
 			.simple_result(OVERLAY_MESSAGE_TYPE_STORE_ACTOR_RESPONSE, &response)
 	}
 
-	async fn process_punch_hole_request(self: &Arc<Self>, buffer: &[u8]) -> MessageProcessorResult {
-		let request: PunchHoleRequest = match binserde::deserialize(buffer) {
-			Err(e) => {
-				warn!("Malformed initiate connection request: {}", e);
-				return None;
-			}
-			Ok(r) => r,
-		};
-
-		// If a connection was not requested, simply send a packet to open a hole for a
-		// connection to come in
-		let success = if !request.request_connection {
-			if let Err(e) = self
-				.base
-				.socket
-				.send_punch_hole_packet(&request.source_contact_option)
-				.await
-			{
-				error!(
-					"Unable to send hole punch packet to {}: {:?}",
-					&request.source_contact_option, e
-				);
-				false
-			} else {
-				true
-			}
-
-		// If a connection was requested, open one and reverse the direction
-		// immediately
-		} else {
-			let this = self.clone();
-			spawn(async move {
-				if let Some((mut connection, _)) = this
-					.base
-					.connect(
-						&request.source_contact_option,
-						Some(&request.source_node_id),
-						None,
-					)
-					.await
-				{
-					if this
-						.exchange_reverse_connection_on_connection(&mut connection)
-						.await == Some(true)
-					{
-						this.base.socket.spawn_connection(connection);
-					}
-				}
-			});
-			true
-		};
-
-		let response = PunchHoleResponse { ok: success };
-		self.base
-			.simple_result(OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_RESPONSE, &response)
-	}
-
 	async fn punch_hole(&self, target: &ContactOption) -> bool {
-		match self.base.socket.send_punch_hole_packet(target).await {
+		match self.base.packet_server.send_punch_hole_packet(target).await {
 			Ok(_) => true,
 			Err(e) => {
 				error!("Unable to send hole punching packet to {}: {}", &target, e);
@@ -1953,7 +2186,7 @@ impl OverlayNode {
 		bnode1_connection
 			.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 4)
 			.await;
-		let our_contact = our_contact_fn(&self.base.socket.our_contact_info());
+		let our_contact = our_contact_fn(&self.base.packet_server.our_contact_info());
 		let bnode2_id = if let Some(bnode2_id) = db
 			.fetch_bootstrap_node_id(&bnode2_addr)
 			.expect("unable to fetch bootstrap node ID")
@@ -2004,6 +2237,121 @@ impl OverlayNode {
 		} else {
 			return Some(Openness::Unidirectional);
 		}
+	}
+}
+
+#[async_trait]
+impl MessageWorkToDo for OpenRelayToDo {
+	// The OpenRelayToDo will sent a request to an assistant node to reach the
+	// target node, to ask it to sent a RelayedHelloAckPacket to our server. Then,
+	// if it worked out, the packet will be sent back to the source node.
+	async fn run(&mut self, mut connection: Box<Connection>) -> Result<Option<Box<Connection>>> {
+		let mut response = OpenRelayResponse { ok: true };
+
+		let (_, relayed_hello_packet, mut hello_receiver) = match self
+			.node
+			.base
+			.packet_server
+			.process_relay_hello_packet(
+				connection.socket_sender(),
+				&self.source_addr,
+				self.hello_packet.clone(),
+			)
+			.await
+		{
+			Ok(r) => r,
+			Err(e) => {
+				error!(
+					"Unable to process relay hello packet for open relay request: {:?}",
+					e
+				);
+				response.ok = false;
+				let raw_response = self
+					.node
+					.base
+					.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST, &response);
+				connection.send(raw_response).await?;
+				return Ok(None);
+			}
+		};
+
+		// The response wasn't sent yet
+		let raw_response = self
+			.node
+			.base
+			.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST, &response);
+		connection.send(raw_response).await?;
+		if !response.ok {
+			return Ok(None);
+		}
+
+		// Pass the packet to the assistant node.
+		match self
+			.node
+			.base
+			.contact_info()
+			.pick_relay_option(&connection.contact_option())
+		{
+			None => return Ok(None),
+			Some(relay_node_contact) => {
+				let request = PassRelayRequestRequest {
+					relay_node_contact,
+					relayed_hello_packet,
+				};
+				match self
+					.node
+					.exchange_pass_relayed_hello_packet(&self.assistant_node_info, &request)
+					.await
+				{
+					None => return Ok(None),
+					// If assistant node doesn't know the target node, we need to let the source
+					// node know
+					Some(response) =>
+						if !response.ok {
+							let message = OpenRelayStatusMessage {
+								status: OpenRelayStatus::AssistantUnaware,
+							};
+							connection
+								.send(binserde::serialize(&message).unwrap())
+								.await?;
+							return Ok(None);
+						},
+				}
+			}
+		}
+
+		// Wait for the RelayedHelloAckPacket to arrive.
+		let relayed_hello_ack_packet = select! {
+			result = hello_receiver.recv() => {
+				let packet = match result {
+					Some(r) => r,
+					None => {
+						error!("Unable to received relay hello ack packet from channel.");
+						return Ok(None);
+					}
+				};
+
+				// TODO: Send back
+				Some(packet)
+			},
+			_ = sleep(self.timeout) => {
+				warn!("Never received the expected relayed hello ack packet from target node after {:?} seconds.", self.timeout);
+				None
+			}
+		};
+
+		let message = OpenRelayStatusMessage {
+			status: match relayed_hello_ack_packet {
+				None => OpenRelayStatus::Timeout,
+				Some(packet) => OpenRelayStatus::Success(packet),
+			},
+		};
+		connection
+			.send(binserde::serialize(&message).unwrap())
+			.await?;
+		// I guess we can keep the connection open if the client wants to do anything
+		// else with it
+		Ok(Some(connection))
 	}
 }
 

@@ -911,7 +911,7 @@ impl ActorNode {
 
 				// Keep the connection open so that the other side can continue to make
 				// requests to us, like downloading any data
-				self.base.socket.handle_connection(connection).await;
+				self.base.packet_server.handle_connection(connection).await;
 			}
 			return;
 		}

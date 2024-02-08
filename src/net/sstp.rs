@@ -108,6 +108,7 @@ pub enum Error {
 	/// could indicate a MitM attack.
 	InvalidNodeId,
 	InvalidResponseMessageType((u8, u8)),
+	InvalidSessionAddress(SocketAddr),
 	InvalidSessionId(u16),
 	/// A packet had an invalid signature on it.
 	InvalidSignature,
@@ -176,6 +177,7 @@ impl fmt::Display for Error {
 				"expected message type {} from response but got {}",
 				ex, mt
 			),
+			Self::InvalidSessionAddress(addr) => write!(f, "invalid address for session: {}", addr),
 			Self::InvalidSessionId(id) =>
 				write!(f, "invalid session ID for incomming packet: {}", id),
 			Self::InvalidSignature => write!(f, "invalid signature"),

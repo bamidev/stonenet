@@ -87,7 +87,7 @@ where
 	pub(super) node_id: IdType,
 	pub(super) buckets: Vec<Mutex<Bucket>>,
 	pub(super) interface: I,
-	pub(super) socket: Arc<sstp::Server>,
+	pub(super) packet_server: Arc<sstp::Server>,
 	pub(super) bucket_size: usize,
 	pub(super) leak_first_request: bool,
 }
@@ -229,7 +229,7 @@ where
 	pub async fn connect(
 		&self, target: &ContactOption, node_id: Option<&IdType>, request: Option<&[u8]>,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
-		match self.socket.connect(target, node_id, request).await {
+		match self.packet_server.connect(target, node_id, request).await {
 			Ok(c) => Some(c),
 			Err(e) => {
 				warn!("Unable to connect to {}: {}", target, e);
@@ -282,7 +282,7 @@ where
 		request: Option<&[u8]>, timeout: Duration,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
 		match self
-			.socket
+			.packet_server
 			.connect_with_timeout(stop_flag, target, node_id, request, timeout)
 			.await
 		{
@@ -297,7 +297,7 @@ where
 		}
 	}
 
-	pub fn contact_info(&self) -> ContactInfo { self.socket.our_contact_info() }
+	pub fn contact_info(&self) -> ContactInfo { self.packet_server.our_contact_info() }
 
 	pub fn differs_at_bit(&self, other_id: &IdType) -> Option<u8> {
 		differs_at_bit(&self.node_id, other_id)
@@ -897,7 +897,7 @@ where
 					.map(|r| r.0);
 			}
 
-			if let Some(mut relay_connection) = overlay_node
+			if let Some((mut relay_connection, _)) = overlay_node
 				.find_connection_for_node(&node_info.node_id)
 				.await
 			{
@@ -1066,7 +1066,7 @@ where
 			node_id,
 			buckets,
 			interface,
-			socket,
+			packet_server: socket,
 			bucket_size,
 			leak_first_request,
 		}
@@ -1077,7 +1077,7 @@ where
 	pub fn overlay_node(&self) -> Arc<OverlayNode> { self.interface.overlay_node() }
 
 	fn pick_contact_option(&self, target: &ContactInfo) -> Option<(ContactOption, Openness)> {
-		self.socket.pick_contact_option(target)
+		self.packet_server.pick_contact_option(target)
 	}
 
 	pub(super) fn pick_contact_strategy(&self, target: &ContactInfo) -> Option<ContactStrategy> {
@@ -1311,7 +1311,7 @@ where
 	}
 
 	pub fn set_contact_info(&self, contact_info: ContactInfo) {
-		self.socket.set_contact_info(contact_info);
+		self.packet_server.set_contact_info(contact_info);
 	}
 
 	fn sort_fingers(

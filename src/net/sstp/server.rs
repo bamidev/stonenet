@@ -4,8 +4,9 @@ use std::{
 	sync::{atomic::AtomicBool, Arc, Mutex as StdMutex},
 };
 
+use futures::StreamExt;
 use tokio::sync::{
-	mpsc::{self, UnboundedReceiver, UnboundedSender},
+	mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender},
 	Mutex,
 };
 
@@ -25,6 +26,7 @@ const PACKET_TYPE_RELAY_HELLO_ACK_ACK: u8 = 7;
 const PACKET_TYPE_RELAYED_HELLO: u8 = 8;
 const PACKET_TYPE_RELAYED_HELLO_ACK: u8 = 9;
 const PACKET_TYPE_RELAYED_HELLO_ACK_ACK: u8 = 10;
+const PACKET_TYPE_RELAYED_HELLO_PASS_ACK: u8 = 11;
 
 
 pub type MessageProcessor = dyn Fn(
@@ -57,20 +59,11 @@ struct RelayHelloPacketHeader {
 	base: HelloPacketHeader,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RelayHelloAckPacket {
-	header: RelayHelloAckPacketHeader,
-	body: RelayHelloAckPacketBody,
-}
+pub type RelayHelloAckPacket = RelayedHelloAckPacket;
 
 type RelayHelloAckPacketBody = RelayedHelloAckPacketBody;
 
-#[derive(Debug, Deserialize, Serialize)]
-struct RelayHelloAckPacketHeader {
-	relayer_session_id: u16,
-	base: HelloAckPacketHeader,
-}
-
+type RelayHelloAckPacketHeader = RelayedHelloAckPacketHeader;
 
 pub struct RelayInitiationInfo {
 	pub local_session_id: u16,
@@ -82,29 +75,29 @@ pub struct RelayInitiationInfo {
 }
 
 #[derive(Deserialize, Serialize)]
-struct RelayedHelloPacketHeader {
+pub struct RelayedHelloPacketHeader {
 	relayer_session_id: u16,
-	base: HelloPacketHeader,
+	pub base: HelloPacketHeader,
 }
 
 type RelayedHelloPacketBody = HelloPacketBody;
 
 #[derive(Deserialize, Serialize)]
-struct RelayedHelloPacket {
-	header: RelayedHelloPacketHeader,
+pub struct RelayedHelloPacket {
+	pub header: RelayedHelloPacketHeader,
 	body: RelayedHelloPacketBody,
 }
 
 type RelayedHelloAckPacketHeader = HelloAckPacketHeader;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct RelayedHelloAckPacketBody {
 	relayer_session_id: u16,
 	base: HelloAckPacketBody,
 }
 
-#[derive(Deserialize, Serialize)]
-struct RelayedHelloAckPacket {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RelayedHelloAckPacket {
 	header: RelayedHelloAckPacketHeader,
 	body: RelayedHelloAckPacketBody,
 }
@@ -115,17 +108,17 @@ struct HelloAckPacket {
 	body: HelloAckPacketBody,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct HelloAckPacketHeader {
 	node_public_key: identity::PublicKey,
 	signature: Signature,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct HelloAckPacketBody {
 	dh_public_key: x25519::PublicKey,
 	source_session_id: u16,
-	server_session_id: u16,
+	target_session_id: u16,
 	contact_info: ContactInfo,
 	link_address: SocketAddrSstp,
 }
@@ -144,8 +137,8 @@ struct HelloPacketBody {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct HelloPacketHeader {
-	node_public_key: identity::PublicKey,
+pub struct HelloPacketHeader {
+	pub node_public_key: identity::PublicKey,
 	signature: Signature,
 }
 
@@ -196,6 +189,10 @@ struct SessionTransportDataDirect {
 	packet_processor: mpsc::UnboundedSender<CryptedPacket>,
 }
 
+struct SessionTransportDataPassRelay {
+	relayer_session_id: u16,
+}
+
 struct SessionTransportDataRelay {
 	source_session_id: u16,
 	source_addr: SocketAddr,
@@ -203,6 +200,7 @@ struct SessionTransportDataRelay {
 	target_session_id: u16,
 	target_addr: SocketAddr,
 	target_sender: Arc<dyn LinkSocketSender>,
+	hello_sender: Sender<RelayHelloAckPacket>,
 }
 
 pub(super) struct Sessions {
@@ -415,7 +413,7 @@ impl Server {
 		let hello_ack_body = HelloAckPacketBody {
 			dh_public_key: dh_public_key.clone(),
 			source_session_id: their_session_id,
-			server_session_id: our_session_id,
+			target_session_id: our_session_id,
 			contact_info: contact_info.clone(),
 			link_address: addr.clone().into(),
 		};
@@ -607,6 +605,49 @@ impl Server {
 		handle_connection_loop(this, connection).await;
 	}
 
+	/// Connects to the best available IP version and transport option. Only
+	/// tries one option. If no matching options were found, returns None.
+	/// If successful, returns a sender and a receiver. The receiver is only
+	/// relevant if the underlying link socket is connection based.
+	pub async fn link_connect(
+		self: &Arc<Self>, contact: &ContactOption, timeout: Duration,
+	) -> Result<Arc<dyn LinkSocketSender>> {
+		let (sender, receiver) = self.sockets.connect(contact, timeout).await?;
+
+		// If we're connecting with a connection-based link protocol, make sure to
+		// listen for incomming packets on it
+		if sender.is_connection_based() {
+			let this = self.clone();
+			let sender2 = sender.clone();
+			let target2 = contact.target.clone();
+			spawn(async move {
+				Self::serve_connection_based_socket(
+					this.stop_flag.clone(),
+					sender2.clone(),
+					receiver,
+					target2,
+					Arc::new(move |_link_socket, address, packet| {
+						let this2 = this.clone();
+						let sender3 = sender2.clone();
+						let address2 = address.clone();
+						// FIXME: Make sure packet is received in an arc or box, so that cloning it
+						// is effecient
+						let packet2 = packet.to_vec();
+						spawn(async move {
+							match this2.process_packet(sender3, &address2, &packet2).await {
+								Ok(()) => {}
+								Err(e) => warn!("Sstp io error: {}", e),
+							}
+						});
+					}),
+				)
+				.await;
+			});
+		}
+
+		Ok(sender)
+	}
+
 	pub fn listen(
 		&self,
 		message_processor: impl Fn(
@@ -645,7 +686,7 @@ impl Server {
 		let body = HelloAckPacketBody {
 			dh_public_key: dh_public_key.clone(),
 			source_session_id: their_session_id,
-			server_session_id: our_session_id,
+			target_session_id: our_session_id,
 			contact_info: contact_info.clone(),
 			link_address: addr.clone().into(),
 		};
@@ -684,7 +725,7 @@ impl Server {
 			base: HelloAckPacketBody {
 				dh_public_key: dh_public_key.clone(),
 				source_session_id: their_session_id,
-				server_session_id: our_session_id,
+				target_session_id: our_session_id,
 				contact_info: contact_info.clone(),
 				link_address: addr.clone().into(),
 			},
@@ -717,7 +758,8 @@ impl Server {
 	async fn new_relay_session(
 		&self, target_node_id: IdType, source_session_id: u16, source_addr: SocketAddr,
 		source_sender: Arc<dyn LinkSocketSender>, target_addr: SocketAddr,
-		target_sender: Arc<dyn LinkSocketSender>, keep_alive_timeout: Duration,
+		target_sender: Arc<dyn LinkSocketSender>, hello_sender: Sender<RelayedHelloAckPacket>,
+		keep_alive_timeout: Duration,
 	) -> Result<(u16, Arc<Mutex<SessionData>>)> {
 		let transport_data = SessionTransportData::Relay(SessionTransportDataRelay {
 			source_session_id,
@@ -726,6 +768,7 @@ impl Server {
 			target_session_id: 0,
 			target_addr,
 			target_sender,
+			hello_sender,
 		});
 		let session_data = Arc::new(Mutex::new(SessionData::new(
 			Some(target_node_id),
@@ -1000,12 +1043,12 @@ impl Server {
 		let body_offset = binserde::serialized_size(&packet.header).unwrap();
 		Self::verify_hello_ack_packet_raw(
 			&their_node_id,
-			&packet.header.base.node_public_key,
-			&packet.header.base.signature,
+			&packet.header.node_public_key,
+			&packet.header.signature,
 			&buffer[body_offset..],
 		)?;
 
-		let their_session_id = packet.body.base.server_session_id;
+		let their_session_id = packet.body.base.target_session_id;
 		let relay_session_id = packet.body.relayer_session_id;
 		if hello_channel
 			.send(HelloResult {
@@ -1024,10 +1067,18 @@ impl Server {
 		Ok(())
 	}
 
-	async fn process_relayed_hello_packet(
+	pub async fn process_relayed_hello_packet_raw(
 		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, contact: &ContactOption, buffer: &[u8],
 	) -> Result<()> {
 		let packet: RelayedHelloPacket = binserde::deserialize(buffer)?;
+		self.process_relayed_hello_packet(sender, contact, packet)
+			.await
+	}
+
+	pub async fn process_relayed_hello_packet(
+		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, contact: &ContactOption,
+		packet: RelayedHelloPacket,
+	) -> Result<()> {
 		Self::verify_hello_packet(
 			&packet.header.base.node_public_key,
 			&packet.header.base.signature,
@@ -1064,20 +1115,10 @@ impl Server {
 		.await
 	}
 
-	async fn process_relayed_hello_ack_packet(
-		&self, buffer: &[u8], addr: &SocketAddr,
-	) -> Result<()> {
-		let header: RelayedHelloAckPacketHeader = binserde::deserialize_with_trailing(buffer)?;
-
-		let body_offset = 96;
-		Self::verify_hello_packet_raw(
-			&header.node_public_key,
-			&header.signature,
-			&buffer[body_offset..],
-		)?;
-		let body: RelayedHelloAckPacketBody = binserde::deserialize(&buffer[body_offset..])?;
-
-		let relayer_session_id = body.relayer_session_id;
+	pub async fn process_relayed_hello_ack_packet(
+		&self, target_addr: &SocketAddr, packet: RelayedHelloAckPacket,
+	) -> Result<(Arc<dyn LinkSocketSender>, RelayHelloAckPacket)> {
+		let relayer_session_id = packet.body.relayer_session_id;
 		let session = {
 			let sessions = self.sessions.lock().await;
 			sessions
@@ -1086,37 +1127,52 @@ impl Server {
 				.ok_or(Error::InvalidSessionId(relayer_session_id))?
 				.clone()
 		};
-		let target_session_id = body.base.server_session_id;
-		let (source_sender, _target_sender) = {
-			let mut session = session.lock().await;
+		let target_session_id = packet.body.base.target_session_id;
 
-			match &mut session.transport_data {
-				SessionTransportData::Relay(data) => {
-					//data.target_node_id = header.node_public_key.generate_address();
+		let mut session = session.lock().await;
+		match &mut session.transport_data {
+			SessionTransportData::Relay(data) => {
+				//data.target_node_id = header.node_public_key.generate_address();
 
-					if &data.target_addr != addr {
-						warn!("Received packets from wrong socket address.");
-						return Ok(());
-					}
-					if data.source_session_id != body.base.source_session_id {
-						return trace::err(Error::InvalidSessionId(body.base.source_session_id));
-					}
-					data.target_session_id = target_session_id;
-					(data.source_sender.clone(), data.target_sender.clone())
+				if &data.target_addr != target_addr {
+					warn!("Received packets from wrong socket address.");
+					return trace::err(Error::InvalidSessionAddress(target_addr.clone()));
 				}
-				_ => panic!("unexpected session transport data type"),
-			}
-		};
+				if data.source_session_id != packet.body.base.source_session_id {
+					return trace::err(Error::InvalidSessionId(packet.body.base.source_session_id));
+				}
+				data.target_session_id = target_session_id;
 
-		//Self::send_relayed_hello_ack_ack_packet(&*target_sender,
-		// target_session_id).await?;
-		let relay_ack_packet = RelayHelloAckPacket {
-			header: RelayHelloAckPacketHeader {
-				relayer_session_id,
-				base: header,
-			},
-			body,
-		};
+				let relay_ack_packet: RelayedHelloAckPacket = packet;
+
+				if !data.hello_sender.is_closed() {
+					data.hello_sender
+						.send(relay_ack_packet.clone())
+						.await
+						.unwrap();
+				}
+				return Ok((data.source_sender.clone(), relay_ack_packet));
+			}
+			_ => panic!("unexpected session transport data type"),
+		}
+	}
+
+	async fn process_relayed_hello_ack_packet_raw(
+		&self, buffer: &[u8], target_addr: &SocketAddr,
+	) -> Result<()> {
+		let packet: RelayedHelloAckPacket = binserde::deserialize(buffer)?;
+
+		let body_offset = 96;
+		Self::verify_hello_packet_raw(
+			&packet.header.node_public_key,
+			&packet.header.signature,
+			&buffer[body_offset..],
+		)?;
+
+		let (source_sender, relay_ack_packet) = self
+			.process_relayed_hello_ack_packet(target_addr, packet)
+			.await?;
+
 		Self::send_packet(
 			&*source_sender,
 			PACKET_TYPE_RELAY_HELLO_ACK,
@@ -1142,19 +1198,22 @@ impl Server {
 		}
 	}
 
-	async fn process_relay_hello_packet(
-		&self, source_socket: Arc<dyn LinkSocketSender>, source_addr: &SocketAddr, buffer: &[u8],
-	) -> Result<()> {
-		let hello: RelayHelloPacket = binserde::deserialize(buffer)?;
-
+	pub async fn process_relay_hello_packet(
+		&self, source_socket: Arc<dyn LinkSocketSender>, source_addr: &SocketAddr,
+		packet: RelayHelloPacket,
+	) -> Result<(
+		Arc<dyn LinkSocketSender>,
+		RelayedHelloPacket,
+		Receiver<RelayedHelloAckPacket>,
+	)> {
 		Self::verify_hello_packet(
-			&hello.header.base.node_public_key,
-			&hello.header.base.signature,
-			&hello.body,
+			&packet.header.base.node_public_key,
+			&packet.header.base.signature,
+			&packet.body,
 		)?;
 
 		let target_contact = ContactOption::new(
-			hello.header.target.clone().into(),
+			packet.header.target.clone().into(),
 			source_socket.is_connection_based(),
 		);
 		let (target_tx, _target_rx) = self
@@ -1162,15 +1221,17 @@ impl Server {
 			.connect(&target_contact, DEFAULT_TIMEOUT)
 			.await?;
 
-		let target_node_id = hello.header.base.node_public_key.generate_address();
+		let target_node_id = packet.header.base.node_public_key.generate_address();
+		let (hello_sender, hello_receiver) = mpsc::channel(1);
 		let (relayer_session_id, _) = self
 			.new_relay_session(
 				target_node_id,
-				hello.body.session_id,
+				packet.body.session_id,
 				source_addr.clone(),
 				source_socket,
-				hello.header.target.into(),
+				packet.header.target.into(),
 				target_tx.clone(),
+				hello_sender,
 				DEFAULT_TIMEOUT,
 			)
 			.await?;
@@ -1178,10 +1239,20 @@ impl Server {
 		let relayed_hello = RelayedHelloPacket {
 			header: RelayedHelloPacketHeader {
 				relayer_session_id,
-				base: hello.header.base,
+				base: packet.header.base,
 			},
-			body: hello.body,
+			body: packet.body,
 		};
+		Ok((target_tx, relayed_hello, hello_receiver))
+	}
+
+	async fn process_relay_hello_packet_raw(
+		&self, source_socket: Arc<dyn LinkSocketSender>, source_addr: &SocketAddr, buffer: &[u8],
+	) -> Result<()> {
+		let packet: RelayHelloPacket = binserde::deserialize(buffer)?;
+		let (target_tx, relayed_hello, _) = self
+			.process_relay_hello_packet(source_socket, source_addr, packet)
+			.await?;
 		Self::send_packet(&*target_tx, PACKET_TYPE_RELAYED_HELLO, &relayed_hello).await
 	}
 
@@ -1433,7 +1504,7 @@ impl Server {
 		};
 
 
-		let their_session_id = packet.body.server_session_id;
+		let their_session_id = packet.body.target_session_id;
 		if let Some(tx) = hello_channel {
 			let opt_response = if buffer.len() > response_offset {
 				Some(buffer[response_offset..].to_vec())
@@ -1483,15 +1554,15 @@ impl Server {
 				Ok(())
 			}
 			PACKET_TYPE_RELAY_HELLO =>
-				self.process_relay_hello_packet(link_socket, &contact.target, buffer)
+				self.process_relay_hello_packet_raw(link_socket, &contact.target, buffer)
 					.await,
 			PACKET_TYPE_RELAY_HELLO_ACK => self.process_relay_hello_ack_packet(buffer).await,
 			PACKET_TYPE_RELAY_HELLO_ACK_ACK => Ok(()),
 			PACKET_TYPE_RELAYED_HELLO =>
-				self.process_relayed_hello_packet(link_socket, contact, buffer)
+				self.process_relayed_hello_packet_raw(link_socket, contact, buffer)
 					.await,
 			PACKET_TYPE_RELAYED_HELLO_ACK =>
-				self.process_relayed_hello_ack_packet(buffer, &contact.target)
+				self.process_relayed_hello_ack_packet_raw(buffer, &contact.target)
 					.await,
 			PACKET_TYPE_RELAYED_HELLO_ACK_ACK => Ok(()),
 			// Hole punching packets don't need to be responded to. They don't have any data other
@@ -1527,7 +1598,7 @@ impl Server {
 		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, relay: &ContactOption, relay_node_id: IdType,
 		target_addr: SocketAddr, target_node_id: &IdType, timeout: Duration,
 	) -> Result<Box<Connection>> {
-		let (sender, _receiver) = self.sockets.connect(relay, timeout).await?;
+		let sender = self.link_connect(relay, timeout).await?;
 
 		let mut initiation_info = self
 			.setup_outgoing_relay(relay_node_id, target_node_id.clone(), &target_addr, timeout)
@@ -1582,8 +1653,8 @@ impl Server {
 		Ok(())
 	}*/
 
-	pub async fn send_punch_hole_packet(&self, contact: &ContactOption) -> Result<()> {
-		let (tx, _rx) = self.sockets.connect(contact, self.default_timeout).await?;
+	pub async fn send_punch_hole_packet(self: &Arc<Self>, contact: &ContactOption) -> Result<()> {
+		let tx = self.link_connect(contact, self.default_timeout).await?;
 		let buffer = vec![PACKET_TYPE_PUNCH_HOLE; 1];
 		tx.send(&buffer).await?;
 		Ok(())
@@ -2241,11 +2312,7 @@ impl SocketCollection {
 		Ok(None)
 	}
 
-	/// Connects to the best available IP version and transport option. Only
-	/// tries one option. If no matching options were found, returns None.
-	/// If successful, returns a sender and a receiver. The receiver is only
-	/// relevant if the underlying link socket is connection based.
-	pub async fn connect(
+	async fn connect(
 		&self, contact: &ContactOption, timeout: Duration,
 	) -> Result<(Arc<dyn LinkSocketSender>, Box<dyn LinkSocketReceiver>)> {
 		match &contact.target {
@@ -2428,10 +2495,10 @@ impl From<SocketAddr> for SocketAddrSstp {
 impl From<RelayHelloAckPacket> for HelloResult {
 	fn from(other: RelayHelloAckPacket) -> Self {
 		Self {
-			node_id: other.header.base.node_public_key.generate_address(),
+			node_id: other.header.node_public_key.generate_address(),
 			contact_info: other.body.base.contact_info,
-			encrypt_session_id: other.body.base.server_session_id,
-			dest_session_id: other.header.relayer_session_id,
+			encrypt_session_id: other.body.base.target_session_id,
+			dest_session_id: other.body.relayer_session_id,
 			dh_public_key: other.body.base.dh_public_key,
 			opt_response: None,
 		}

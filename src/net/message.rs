@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use self::sstp::server::RelayedHelloPacket;
 use crate::{
 	common::*,
 	model::*,
@@ -222,6 +223,20 @@ pub struct PassPunchHoleResponse {
 	pub ok: bool,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct RelayRequestRequest {
+	pub relay_node_contact: ContactOption,
+	pub relayed_hello_packet: RelayedHelloPacket,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RelayRequestResponse {
+	pub ok: bool,
+}
+
+pub type PassRelayRequestRequest = RelayRequestRequest;
+pub type PassRelayRequestResponse = RelayRequestResponse;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenRelayRequest {
 	pub target_node_id: IdType,
@@ -236,8 +251,17 @@ pub struct OpenRelayResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct OpenRelayReadyMessage {
-	pub hello_ack_packet: Option<RelayHelloAckPacket>,
+pub struct OpenRelayStatusMessage {
+	pub status: OpenRelayStatus<RelayHelloAckPacket>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum OpenRelayStatus<T> {
+	Success(T),
+	/// The assistant node is unaware of the target node
+	AssistantUnaware,
+	/// The target node never contacted the relay node
+	Timeout,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
