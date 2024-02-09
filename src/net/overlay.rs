@@ -1740,64 +1740,8 @@ impl OverlayNode {
 			}
 		}
 
-		Some((binserde::serialize(&response).unwrap(), None))
-	}
-
-	async fn process_relay_request_request(
-		self: &Arc<Self>, buffer: &[u8],
-	) -> MessageProcessorResult {
-		let request: RelayRequestRequest = match binserde::deserialize(buffer) {
-			Ok(r) => r,
-			Err(e) => {
-				error!("Malformed open relay request: {}", e);
-				return None;
-			}
-		};
-		let request2 = Box::new(request);
-
-		let target_node_id = request2
-			.relayed_hello_packet
-			.header
-			.base
-			.node_public_key
-			.generate_address();
-		let response = RelayRequestResponse {
-			ok: self.base.node_id() == &target_node_id,
-		};
-		if response.ok {
-			let this = self.clone();
-			spawn(async move {
-				let sender = match this
-					.base
-					.packet_server
-					.link_connect(&request2.relay_node_contact, DEFAULT_TIMEOUT)
-					.await
-				{
-					Ok(s) => s,
-					Err(e) => {
-						warn!(
-							"Unable to sent relayed hello ack packet to relay node: {:?}",
-							e
-						);
-						return;
-					}
-				};
-				if let Err(e) = this
-					.base
-					.packet_server
-					.process_relayed_hello_packet(
-						sender,
-						&request2.relay_node_contact,
-						request2.relayed_hello_packet,
-					)
-					.await
-				{
-					warn!("Unable to process relayed hello ack packet: {:?}", e);
-				}
-			});
-		}
-
-		Some((binserde::serialize(&response).unwrap(), None))
+		self.base
+			.simple_result(OVERLAY_MESSAGE_TYPE_PASS_RELAY_REQUEST_RESPONSE, &response)
 	}
 
 	async fn process_punch_hole_request(self: &Arc<Self>, buffer: &[u8]) -> MessageProcessorResult {
@@ -1915,6 +1859,64 @@ impl OverlayNode {
 
 		self.base
 			.simple_result(OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_RESPONSE, &response)
+	}
+
+	async fn process_relay_request_request(
+		self: &Arc<Self>, buffer: &[u8],
+	) -> MessageProcessorResult {
+		let request: RelayRequestRequest = match binserde::deserialize(buffer) {
+			Ok(r) => r,
+			Err(e) => {
+				error!("Malformed open relay request: {}", e);
+				return None;
+			}
+		};
+		let request2 = Box::new(request);
+
+		let target_node_id = request2
+			.relayed_hello_packet
+			.header
+			.base
+			.node_public_key
+			.generate_address();
+		let response = RelayRequestResponse {
+			ok: self.base.node_id() == &target_node_id,
+		};
+		if response.ok {
+			let this = self.clone();
+			spawn(async move {
+				let sender = match this
+					.base
+					.packet_server
+					.link_connect(&request2.relay_node_contact, DEFAULT_TIMEOUT)
+					.await
+				{
+					Ok(s) => s,
+					Err(e) => {
+						warn!(
+							"Unable to sent relayed hello ack packet to relay node: {:?}",
+							e
+						);
+						return;
+					}
+				};
+				if let Err(e) = this
+					.base
+					.packet_server
+					.process_relayed_hello_packet(
+						sender,
+						&request2.relay_node_contact,
+						request2.relayed_hello_packet,
+					)
+					.await
+				{
+					warn!("Unable to process relayed hello ack packet: {:?}", e);
+				}
+			});
+		}
+
+		self.base
+			.simple_result(OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_RESPONSE, &response)
 	}
 
 	pub(super) async fn process_request(
