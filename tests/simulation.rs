@@ -12,7 +12,7 @@ use stonenetd::{api::Api, config::Config, db::*, model::*, net::*, test::*};
 fn initialize() { env_logger::init(); }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_data_synchronizations() {
+async fn test_data_synchronizations_normal() {
 	let mut next_port = 20000;
 	test_data_synchronization(
 		&mut next_port,
@@ -21,13 +21,18 @@ async fn test_data_synchronizations() {
 		true,
 	)
 	.await;
-	/*test_data_synchronization(
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_data_synchronizattions_limited() {
+	let mut next_port = 30000;
+	test_data_synchronization(
 		&mut next_port,
 		Openness::Unidirectional,
 		Openness::Unidirectional,
 		true,
 	)
-	.await;*/
+	.await;
 }
 
 #[cfg(test)]
@@ -43,34 +48,29 @@ async fn test_data_synchronization(
 	config1.ipv4_address = Some("127.0.0.1".to_string());
 	config1.ipv4_udp_port = Some(*next_port);
 	config1.ipv4_udp_openness = Some("bidirectional".to_string());
-	config1.relay_node = Some(true);
-	config1.leak_first_request = Some(true);
 	*next_port += 1;
 	let mut config2 = Config::default();
 	config2.ipv4_address = Some("127.0.0.1".to_string());
 	config2.ipv4_udp_port = Some(*next_port);
 	config2.ipv4_udp_openness = Some("bidirectional".to_string());
 	config2.relay_node = Some(true);
-	config2.leak_first_request = Some(true);
 	config2.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
 	*next_port += 1;
 	let mut config3 = Config::default();
 	config3.ipv4_address = Some("127.0.0.1".to_string());
 	config3.ipv4_udp_port = Some(*next_port);
 	config3.ipv4_udp_openness = Some(node1_openness.to_string());
-	config3.leak_first_request = Some(true);
 	config3.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
 	*next_port += 1;
 	let mut config4 = Config::default();
 	config4.ipv4_address = Some("127.0.0.1".to_string());
 	config4.ipv4_udp_port = Some(*next_port);
 	config4.ipv4_udp_openness = Some(node2_openness.to_string());
-	config4.leak_first_request = Some(true);
 	config4.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
 	*next_port += 1;
 	let bootstrap_node = load_test_node(stop_flag.clone(), &mut rng, &config1, "bootstrap").await;
-	let random_node: Api = load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
 	let node1 = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
+	let random_node: Api = load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
 	let node2 = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
 
 	// Create a profile for node 1

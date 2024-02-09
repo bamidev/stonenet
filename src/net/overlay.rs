@@ -776,12 +776,8 @@ impl OverlayNode {
 					if let Some((response, connection)) =
 						self.base.exchange_find_node(&finger, node_id.clone()).await
 					{
-						println!("R {}", node_id);
-						println!("RESPONSE[{}] {:?}", connection.their_node_info(), &response);
-						assert!(response.fingers.len() > 0, "SSSS");
 						if let Some(node_info) = response.connected {
 							if &node_info.node_id == node_id {
-								println!("SSSSSSSSSOMEMMEMEME");
 								return Some((connection, response.is_relay_node));
 							}
 						}
@@ -1251,6 +1247,10 @@ impl OverlayNode {
 	}
 
 	pub async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
+		debug_assert!(
+			&target.node_id != self.node_id(),
+			"can't open a relay to yourself"
+		);
 		// We need to know what assistant node we are going to use
 		let (assitant_connection, is_relay) = self
 			.find_assistant_connection_for_node(&target.node_id)
