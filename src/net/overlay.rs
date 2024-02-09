@@ -2410,19 +2410,9 @@ pub(super) async fn process_request_message(
 #[cfg(test)]
 mod tests {
 
-	use std::{
-		fs::remove_file,
-		net::IpAddr,
-		sync::{atomic::AtomicBool, Arc},
-	};
+	use std::sync::{atomic::AtomicBool, Arc};
 
-	use rand::RngCore;
-
-	use crate::{
-		config::*,
-		net::{overlay::*, *},
-		test,
-	};
+	use crate::{net::overlay::*, test};
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_direct() {

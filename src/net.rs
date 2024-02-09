@@ -290,7 +290,7 @@ impl ContactInfo {
 
 	pub fn pick_relay_option(&self, target_option: &ContactOption) -> Option<ContactOption> {
 		match target_option.target {
-			SocketAddr::V6(ipv6) =>
+			SocketAddr::V6(_ipv6) =>
 				if let Some(e) = &self.ipv6 {
 					if target_option.use_tcp {
 						if let Some(tcp) = &e.availability.tcp {
@@ -308,7 +308,7 @@ impl ContactInfo {
 						}
 					}
 				},
-			SocketAddr::V4(ipv4) =>
+			SocketAddr::V4(_ipv4) =>
 				if let Some(e) = &self.ipv4 {
 					if target_option.use_tcp {
 						if let Some(tcp) = &e.availability.tcp {

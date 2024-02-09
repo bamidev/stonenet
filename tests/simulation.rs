@@ -1,24 +1,11 @@
-use std::{
-	fs::remove_file,
-	io,
-	path::PathBuf,
-	sync::{
-		atomic::{AtomicBool, Ordering},
-		Arc,
-	},
+use std::sync::{
+	atomic::{AtomicBool, Ordering},
+	Arc,
 };
 
 use log::*;
-use rand::{CryptoRng, RngCore};
-use stonenetd::{
-	api::Api,
-	config::Config,
-	db::*,
-	identity::PrivateKey,
-	model::*,
-	net::{overlay::*, *},
-	test::*,
-};
+use rand::RngCore;
+use stonenetd::{api::Api, config::Config, db::*, model::*, net::*, test::*};
 
 
 #[ctor::ctor]

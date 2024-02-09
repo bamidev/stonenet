@@ -1,9 +1,4 @@
-use std::{
-	fs::remove_file,
-	io,
-	path::PathBuf,
-	sync::{atomic::AtomicBool, Arc},
-};
+use std::sync::{atomic::AtomicBool, Arc};
 
 use log::*;
 use rand::prelude::*;

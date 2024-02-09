@@ -1,6 +1,5 @@
 use std::{
 	collections::VecDeque,
-	f64::consts::E,
 	sync::{atomic::*, Arc},
 	time::SystemTime,
 };
