@@ -12,6 +12,11 @@ use crate::{
 
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct GetAssistantNodeResponse {
+	pub node_info: Option<NodeContactInfo>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BroadcastNewObject {
 	pub hash: IdType,
 	pub object: Object,
@@ -218,7 +223,7 @@ pub struct PassPunchHoleRequest {
 }
 
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct PassPunchHoleResponse {
 	pub ok: bool,
 }
@@ -229,13 +234,16 @@ pub struct RelayRequestRequest {
 	pub relayed_hello_packet: RelayedHelloPacket,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RelayRequestResponse {
-	pub ok: bool,
+#[derive(Serialize, Deserialize)]
+pub struct PassRelayRequestRequest {
+	pub target_node_id: IdType,
+	pub base: RelayRequestRequest,
 }
 
-pub type PassRelayRequestRequest = RelayRequestRequest;
-pub type PassRelayRequestResponse = RelayRequestResponse;
+#[derive(Serialize, Deserialize)]
+pub struct PassRelayRequestResponse {
+	pub ok: bool,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenRelayRequest {

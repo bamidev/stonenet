@@ -288,29 +288,41 @@ impl ContactInfo {
 		}
 	}
 
-	pub fn pick_relay_option(&self, option: &ContactOption) -> Option<ContactOption> {
-		match option.target {
+	pub fn pick_relay_option(&self, target_option: &ContactOption) -> Option<ContactOption> {
+		match target_option.target {
 			SocketAddr::V6(ipv6) =>
 				if let Some(e) = &self.ipv6 {
-					if option.use_tcp {
-						if e.availability.tcp.is_some() {
-							return Some(ContactOption::new(SocketAddr::V6(ipv6), true));
+					if target_option.use_tcp {
+						if let Some(tcp) = &e.availability.tcp {
+							return Some(ContactOption::new(
+								SocketAddr::V6(SocketAddrV6::new(e.addr, tcp.port, 0, 0)),
+								true,
+							));
 						}
 					} else {
-						if e.availability.udp.is_some() {
-							return Some(ContactOption::new(SocketAddr::V6(ipv6), false));
+						if let Some(udp) = &e.availability.udp {
+							return Some(ContactOption::new(
+								SocketAddr::V6(SocketAddrV6::new(e.addr, udp.port, 0, 0)),
+								false,
+							));
 						}
 					}
 				},
 			SocketAddr::V4(ipv4) =>
 				if let Some(e) = &self.ipv4 {
-					if option.use_tcp {
-						if e.availability.tcp.is_some() {
-							return Some(ContactOption::new(SocketAddr::V4(ipv4), true));
+					if target_option.use_tcp {
+						if let Some(tcp) = &e.availability.tcp {
+							return Some(ContactOption::new(
+								SocketAddr::V4(SocketAddrV4::new(e.addr, tcp.port)),
+								true,
+							));
 						}
 					} else {
-						if e.availability.udp.is_some() {
-							return Some(ContactOption::new(SocketAddr::V4(ipv4), false));
+						if let Some(udp) = &e.availability.udp {
+							return Some(ContactOption::new(
+								SocketAddr::V4(SocketAddrV4::new(e.addr, udp.port)),
+								false,
+							));
 						}
 					}
 				},

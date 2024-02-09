@@ -473,15 +473,8 @@ impl OverlayNode {
 				&raw_request,
 			)
 			.await?;
-		let result = binserde::deserialize_sstp(&raw_response);
+		let result: Result<PassRelayRequestResponse> = binserde::deserialize_sstp(&raw_response);
 		self.base.handle_connection_issue(result, target).await
-	}
-
-	async fn exchange_relayed_hello_packet(
-		&self, target: &NodeContactInfo, request: &RelayRequestRequest,
-	) -> Option<RelayRequestResponse> {
-		self.exchange_pass_relayed_hello_packet(target, request)
-			.await
 	}
 
 	pub(super) async fn exchange_punch_hole_on_connection(
@@ -762,12 +755,15 @@ impl OverlayNode {
 		FindActorIter(iter)
 	}
 
-	// Does a simple search on the overlay network to find a node that is connected
-	// to the given node_id, and returns the connection to that node.
-	pub async fn find_connection_for_node(
+	/// Does a simple search on the overlay network to find a node that is
+	/// connected to the given node_id, and returns the connection to that node.
+	pub async fn find_assistant_connection_for_node(
 		&self, node_id: &IdType,
 	) -> Option<(Box<Connection>, bool)> {
-		let fingers = self.base.find_nearest_private_fingers(node_id).await;
+		// TODO: If the node itself has actually been found, and it has a bidirectional
+		// contact option all of the sudden, let the caller know.
+		let mut fingers = self.base.find_nearest_private_fingers(node_id).await;
+		fingers.retain(|f| &f.node_id != node_id);
 		if fingers.len() == 0 {
 			return None;
 		}
@@ -777,40 +773,40 @@ impl OverlayNode {
 		loop {
 			let new_fingers = loop {
 				if let Some(finger) = fingers_iter.next() {
-					match self.base.select_direct_connection(&finger, None).await {
-						None => {}
-						Some((mut connection, _)) => {
-							if let Some(response) = self
-								.base
-								.exchange_find_node_on_connection(&mut *connection, &node_id)
-								.await
-							{
-								if let Some(node_info) = response.connected {
-									if &node_info.node_id == node_id {
-										return Some((connection, response.is_relay_node));
-									}
-								}
-
-								drop(connection);
-								let mut fingers = response.fingers;
-								fingers.retain(|f| {
-									if &f.node_id == self.node_id() {
-										false
-									} else if let Some(bit) = differs_at_bit(node_id, &f.node_id) {
-										if bit > higest_bit_found {
-											higest_bit_found = bit;
-											true
-										} else {
-											false
-										}
-									} else {
-										true
-									}
-								});
-								if fingers.len() > 0 {
-									break fingers;
-								}
+					if let Some((response, connection)) =
+						self.base.exchange_find_node(&finger, node_id.clone()).await
+					{
+						println!("R {}", node_id);
+						println!("RESPONSE[{}] {:?}", connection.their_node_info(), &response);
+						assert!(response.fingers.len() > 0, "SSSS");
+						if let Some(node_info) = response.connected {
+							if &node_info.node_id == node_id {
+								println!("SSSSSSSSSOMEMMEMEME");
+								return Some((connection, response.is_relay_node));
 							}
+						}
+
+						drop(connection);
+						let mut fingers = response.fingers;
+						fingers.retain(|f| {
+							if &f.node_id == self.node_id() {
+								false
+							} else if let Some(bit) = differs_at_bit(node_id, &f.node_id) {
+								if bit > higest_bit_found {
+									higest_bit_found = bit;
+									true
+								} else {
+									false
+								}
+							// If finger's ID is the same as `node_id`, we've
+							// found our target but we were looking for the
+							// assitant. Don't contact the target node though...
+							} else {
+								false
+							}
+						});
+						if fingers.len() > 0 {
+							break fingers;
 						}
 					}
 				} else {
@@ -986,7 +982,7 @@ impl OverlayNode {
 								self.base.packet_server.our_contact_info().ipv4
 							{
 								if let Some(availability) = ipv4_contact_info.availability.udp {
-									if availability.openness == Openness::Unidirectional {
+									if availability.openness != Openness::Bidirectional {
 										self.obtain_keep_alive_connection().await;
 									}
 								}
@@ -1256,8 +1252,9 @@ impl OverlayNode {
 
 	pub async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {
 		// We need to know what assistant node we are going to use
-		let (assitant_connection, is_relay) =
-			self.find_connection_for_node(&target.node_id).await?;
+		let (assitant_connection, is_relay) = self
+			.find_assistant_connection_for_node(&target.node_id)
+			.await?;
 		let assistant_node_info = assitant_connection.their_node_info();
 
 		// If the assistant node is a relay itself, just simply relay through the
@@ -1711,23 +1708,20 @@ impl OverlayNode {
 			}
 		};
 		let request2 = Box::new(request);
-
-		let target_node_id = request2
-			.relayed_hello_packet
-			.header
-			.base
-			.node_public_key
-			.generate_address();
 		let mut response = PassRelayRequestResponse { ok: true };
 		let this = self.clone();
-		match self.base.find_connection_in_buckets(&target_node_id).await {
+		match self
+			.base
+			.find_connection_in_buckets(&request2.target_node_id)
+			.await
+		{
 			None => response.ok = false,
 			Some(c) => {
 				spawn(async move {
 					let mut connection = c.lock().await;
 
 					if this
-						.exchange_relay_request_on_connection(&mut connection, &*request2)
+						.exchange_relay_request_on_connection(&mut connection, &request2.base)
 						.await
 						.is_none()
 					{
@@ -1867,56 +1861,45 @@ impl OverlayNode {
 		let request: RelayRequestRequest = match binserde::deserialize(buffer) {
 			Ok(r) => r,
 			Err(e) => {
-				error!("Malformed open relay request: {}", e);
+				warn!("Malformed open relay request: {}", e);
 				return None;
 			}
 		};
 		let request2 = Box::new(request);
 
-		let target_node_id = request2
-			.relayed_hello_packet
-			.header
-			.base
-			.node_public_key
-			.generate_address();
-		let response = RelayRequestResponse {
-			ok: self.base.node_id() == &target_node_id,
-		};
-		if response.ok {
-			let this = self.clone();
-			spawn(async move {
-				let sender = match this
-					.base
-					.packet_server
-					.link_connect(&request2.relay_node_contact, DEFAULT_TIMEOUT)
-					.await
-				{
-					Ok(s) => s,
-					Err(e) => {
-						warn!(
-							"Unable to sent relayed hello ack packet to relay node: {:?}",
-							e
-						);
-						return;
-					}
-				};
-				if let Err(e) = this
-					.base
-					.packet_server
-					.process_relayed_hello_packet(
-						sender,
-						&request2.relay_node_contact,
-						request2.relayed_hello_packet,
-					)
-					.await
-				{
-					warn!("Unable to process relayed hello ack packet: {:?}", e);
+		let this = self.clone();
+		spawn(async move {
+			let sender = match this
+				.base
+				.packet_server
+				.link_connect(&request2.relay_node_contact, DEFAULT_TIMEOUT)
+				.await
+			{
+				Ok(s) => s,
+				Err(e) => {
+					warn!(
+						"Unable to sent relayed hello ack packet to relay node: {:?}",
+						e
+					);
+					return;
 				}
-			});
-		}
+			};
+			if let Err(e) = this
+				.base
+				.packet_server
+				.process_relayed_hello_packet(
+					sender,
+					&request2.relay_node_contact,
+					request2.relayed_hello_packet,
+				)
+				.await
+			{
+				warn!("Unable to process relayed hello ack packet: {:?}", e);
+			}
+		});
 
 		self.base
-			.simple_result(OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_RESPONSE, &response)
+			.simple_result(OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_RESPONSE, &())
 	}
 
 	pub(super) async fn process_request(
@@ -1938,7 +1921,7 @@ impl OverlayNode {
 			OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_REQUEST =>
 				self.process_reverse_connection_request(buffer, contact)
 					.await,
-			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE =>
+			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST =>
 				self.process_open_relay_request(buffer, &contact.target)
 					.await,
 			OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_REQUEST =>
@@ -2271,7 +2254,7 @@ impl MessageWorkToDo for OpenRelayToDo {
 				let raw_response = self
 					.node
 					.base
-					.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST, &response);
+					.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE, &response);
 				connection.send(raw_response).await?;
 				return Ok(None);
 			}
@@ -2281,7 +2264,7 @@ impl MessageWorkToDo for OpenRelayToDo {
 		let raw_response = self
 			.node
 			.base
-			.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST, &response);
+			.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE, &response);
 		connection.send(raw_response).await?;
 		if !response.ok {
 			return Ok(None);
@@ -2297,8 +2280,11 @@ impl MessageWorkToDo for OpenRelayToDo {
 			None => return Ok(None),
 			Some(relay_node_contact) => {
 				let request = PassRelayRequestRequest {
-					relay_node_contact,
-					relayed_hello_packet,
+					target_node_id: self.target_node_id.clone(),
+					base: RelayRequestRequest {
+						relay_node_contact,
+						relayed_hello_packet,
+					},
 				};
 				match self
 					.node
@@ -2417,5 +2403,120 @@ pub(super) async fn process_request_message(
 		} else {
 			connection2
 		}
+	}
+}
+
+
+#[cfg(test)]
+mod tests {
+
+	use std::{
+		fs::remove_file,
+		net::IpAddr,
+		sync::{atomic::AtomicBool, Arc},
+	};
+
+	use rand::RngCore;
+
+	use crate::{
+		config::*,
+		net::{overlay::*, *},
+		test,
+	};
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_direct() {
+		test_overlay_connectivity("unidirectional", "bidirectional", false, 11000).await;
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_hole_punching_normal() {
+		test_overlay_connectivity("unidirectional", "punchable", false, 12000).await;
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_hole_punching_reversed() {
+		test_overlay_connectivity("punchable", "unidirectional", false, 13000).await;
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_relay_direct() {
+		test_overlay_connectivity("unidirectional", "unidirectional", true, 14000).await;
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_relay_indirect() {
+		test_overlay_connectivity("unidirectional", "unidirectional", false, 15000).await;
+	}
+
+	async fn test_overlay_connectivity(
+		openness_source_node: &str, openness_target_node: &str, assistant_is_relay: bool,
+		first_port: u16,
+	) {
+		// Setup all nodes
+		let mut rng = test::initialize_rng();
+		let stop_flag = Arc::new(AtomicBool::new(false));
+		let mut assistant_config = Config::default();
+		assistant_config.ipv4_address = Some("127.0.0.1".to_string());
+		assistant_config.ipv4_udp_port = Some(first_port);
+		assistant_config.ipv4_udp_openness = Some("bidirectional".to_string());
+		assistant_config.relay_node = Some(assistant_is_relay);
+		let mut relay_config = Config::default();
+		relay_config.bootstrap_nodes = vec![format!(
+			"127.0.0.1:{}",
+			assistant_config.ipv4_udp_port.unwrap()
+		)];
+		relay_config.ipv4_address = Some("127.0.0.1".to_string());
+		relay_config.ipv4_udp_port = Some(first_port + 1);
+		relay_config.ipv4_udp_openness = Some("bidirectional".to_string());
+		relay_config.relay_node = Some(true);
+		let mut source_config = Config::default();
+		source_config.bootstrap_nodes = vec![format!(
+			"127.0.0.1:{}",
+			assistant_config.ipv4_udp_port.unwrap()
+		)];
+		source_config.ipv4_address = Some("127.0.0.1".to_string());
+		source_config.ipv4_udp_port = Some(first_port + 2);
+		source_config.ipv4_udp_openness = Some(openness_source_node.to_string());
+		let mut target_config = Config::default();
+		target_config.bootstrap_nodes = vec![format!(
+			"127.0.0.1:{}",
+			assistant_config.ipv4_udp_port.unwrap()
+		)];
+		target_config.ipv4_address = Some("127.0.0.1".to_string());
+		target_config.ipv4_udp_port = Some(first_port + 3);
+		target_config.ipv4_udp_openness = Some(openness_target_node.to_string());
+
+		let _assistant_node =
+			test::load_test_node(stop_flag.clone(), &mut rng, &assistant_config, "assistant").await;
+		let target_node =
+			test::load_test_node(stop_flag.clone(), &mut rng, &target_config, "target").await;
+		// Load the 'relay' node after the 'target' node, so that the 'target' node
+		// always attached itself to the 'assistant' node rather than the 'relay' node.
+		let _relay_node =
+			test::load_test_node(stop_flag.clone(), &mut rng, &relay_config, "random").await;
+
+		// Create data at the target node
+		let (actor_address, actor_info) = target_node
+			.create_my_identity("test", "Test", None, None, "Description...")
+			.unwrap();
+		let _ = target_node
+			.node
+			.join_actor_network(&actor_address, &actor_info)
+			.await
+			.unwrap();
+
+		// Find data as the source node
+		let source_node =
+			test::load_test_node(stop_flag.clone(), &mut rng, &source_config, "source").await;
+		let profile = source_node
+			.fetch_profile_info(&actor_address)
+			.await
+			.unwrap()
+			.expect("no actor profile found");
+		stop_flag.store(true, Ordering::Relaxed);
+
+		assert_eq!(profile.actor.name, "Test");
+		assert_eq!(&profile.description.unwrap(), "Description...");
 	}
 }

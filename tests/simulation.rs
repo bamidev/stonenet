@@ -24,40 +24,6 @@ use stonenetd::{
 #[ctor::ctor]
 fn initialize() { env_logger::init(); }
 
-async fn load_test_node(
-	stop_flag: Arc<AtomicBool>, rng: &mut (impl CryptoRng + RngCore), config: &Config,
-	filename: &str,
-) -> Api {
-	// FIXME: Generate proper random temporary file names.
-	let file = PathBuf::from(filename);
-	match remove_file(&file) {
-		Ok(()) => {}
-		Err(e) =>
-			if e.kind() != io::ErrorKind::NotFound {
-				panic!(
-					"unable to remove database file {}: {}",
-					file.to_string_lossy(),
-					e
-				);
-			},
-	}
-	let db = Database::load(file).expect("unable to load database");
-	let private_key = PrivateKey::generate_with_rng(rng);
-	let node_id = private_key.public().generate_address();
-	info!(
-		"Node {} runs on port {}.",
-		node_id,
-		config.ipv4_udp_port.expect("no port in config")
-	);
-	let node = OverlayNode::start(stop_flag.clone(), &config, node_id, private_key, db.clone())
-		.await
-		.expect("unable to start node");
-
-	node.join_network(stop_flag).await;
-
-	Api { node, db }
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn test_data_synchronizations() {
 	let mut next_port = 20000;
@@ -77,6 +43,7 @@ async fn test_data_synchronizations() {
 	.await;*/
 }
 
+#[cfg(test)]
 async fn test_data_synchronization(
 	next_port: &mut u16, node1_openness: Openness, node2_openness: Openness,
 	test_notifications: bool,
@@ -114,17 +81,10 @@ async fn test_data_synchronization(
 	config4.leak_first_request = Some(true);
 	config4.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
 	*next_port += 1;
-	let bootstrap_node = load_test_node(
-		stop_flag.clone(),
-		&mut rng,
-		&config1,
-		"/tmp/bootstrap.sqlite",
-	)
-	.await;
-	let random_node: Api =
-		load_test_node(stop_flag.clone(), &mut rng, &config2, "/tmp/random.sqlite").await;
-	let node1 = load_test_node(stop_flag.clone(), &mut rng, &config3, "/tmp/node1.sqlite").await;
-	let node2 = load_test_node(stop_flag.clone(), &mut rng, &config4, "/tmp/node2.sqlite").await;
+	let bootstrap_node = load_test_node(stop_flag.clone(), &mut rng, &config1, "bootstrap").await;
+	let random_node: Api = load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
+	let node1 = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
+	let node2 = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
 
 	// Create a profile for node 1
 	let profile_description = r#"
@@ -308,8 +268,4 @@ Hoi ik ben Kees!
 	node2.close().await;
 	random_node.close().await;
 	bootstrap_node.close().await;
-	remove_file("/tmp/bootstrap.sqlite").unwrap();
-	remove_file("/tmp/random.sqlite").unwrap();
-	remove_file("/tmp/node1.sqlite").unwrap();
-	remove_file("/tmp/node2.sqlite").unwrap();
 }

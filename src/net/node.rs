@@ -1,5 +1,6 @@
 use std::{
 	collections::VecDeque,
+	f64::consts::E,
 	sync::{atomic::*, Arc},
 	time::SystemTime,
 };
@@ -250,7 +251,7 @@ where
 				self.connect(&strategy.contact, Some(&node_info.node_id), request)
 					.await,
 			ContactStrategyMethod::PunchHole => Some((
-				self.initiate_hole_punched_connection(
+				self.initiate_assisted_connection(
 					already_open_connection,
 					node_info,
 					strategy,
@@ -260,7 +261,7 @@ where
 				None,
 			)),
 			ContactStrategyMethod::Reversed => Some((
-				self.initiate_hole_punched_connection(
+				self.initiate_assisted_connection(
 					already_open_connection,
 					node_info,
 					strategy,
@@ -343,6 +344,21 @@ where
 			)
 			.await?;
 		Some((response, connection))
+	}
+
+	pub async fn exchange_find_node(
+		&self, target: &NodeContactInfo, node_id: IdType,
+	) -> Option<(FindNodeResponse, Box<Connection>)> {
+		let request = FindNodeRequest { node_id };
+		let raw_request = binserde::serialize(&request).unwrap();
+		let (raw_response, connection) = self
+			.exchange(target, NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST, &raw_request)
+			.await?;
+		let result = binserde::deserialize_sstp(&raw_response);
+		let response = self
+			.handle_connection_issue_find(result, connection.their_node_info())
+			.await;
+		response.map(|r| (r, connection))
 	}
 
 	/// In the paper, this is described as the 'FIND_NODE' RPC.
@@ -835,10 +851,25 @@ where
 		&self, mut connection: &mut Connection, first_request_included: bool,
 		opt_response: Option<Vec<u8>>, message_type: u8, request: &[u8],
 	) -> Option<Vec<u8>> {
-		let result = if opt_response.is_some() {
-			return opt_response;
+		fn parse_response(mut buffer: Vec<u8>, request_message_type: u8) -> sstp::Result<Vec<u8>> {
+			// TODO: Hmmm, what's the point of a response message type? Lets just remove
+			// it...
+			let response_message_type = buffer.remove(0);
+			if (response_message_type & 0x7F) != (request_message_type + 1) {
+				warn!("Received invalid response message type, dropping response.");
+				trace::err(sstp::Error::MalformedMessage(None))
+			} else {
+				Ok(buffer)
+			}
+		}
+
+		let result = if let Some(buffer) = opt_response {
+			parse_response(buffer, message_type)
 		} else if first_request_included {
-			connection.receive().await
+			match connection.receive().await {
+				Err(e) => Err(e),
+				Ok(message) => parse_response(message, message_type),
+			}
 		} else {
 			self.interface
 				.exchange(&mut connection, message_type, request)
@@ -848,7 +879,7 @@ where
 			.await
 	}
 
-	async fn initiate_hole_punched_connection(
+	async fn initiate_assisted_connection(
 		&self, already_open_relay_connection: Option<&mut Connection>, node_info: &NodeContactInfo,
 		strategy: &ContactStrategy, reversed: bool,
 	) -> Option<Box<Connection>> {
@@ -898,7 +929,7 @@ where
 			}
 
 			if let Some((mut relay_connection, _)) = overlay_node
-				.find_connection_for_node(&node_info.node_id)
+				.find_assistant_connection_for_node(&node_info.node_id)
 				.await
 			{
 				let my_contact_info = self.contact_info();

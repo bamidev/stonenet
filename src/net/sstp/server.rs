@@ -4,7 +4,6 @@ use std::{
 	sync::{atomic::AtomicBool, Arc, Mutex as StdMutex},
 };
 
-use futures::StreamExt;
 use tokio::sync::{
 	mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender},
 	Mutex,
@@ -1062,7 +1061,7 @@ impl Server {
 			.await
 			.is_err()
 		{
-			error!("Unable to send relay-hello-ack info back on hello channel");
+			debug!("Unable to send relay-hello-ack info back on hello channel");
 		}
 		Ok(())
 	}
