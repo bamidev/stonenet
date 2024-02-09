@@ -12,7 +12,7 @@ use stonenetd::{api::Api, config::Config, db::*, model::*, net::*, test::*};
 fn initialize() { env_logger::init(); }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_data_synchronizations_normal() {
+async fn test_data_synchronizations_assisting() {
 	let mut next_port = 20000;
 	test_data_synchronization(
 		&mut next_port,
@@ -24,7 +24,7 @@ async fn test_data_synchronizations_normal() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_data_synchronizattions_limited() {
+async fn test_data_synchronizattions_relaying() {
 	let mut next_port = 30000;
 	test_data_synchronization(
 		&mut next_port,
