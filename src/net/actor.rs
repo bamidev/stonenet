@@ -1,5 +1,4 @@
 use std::{
-	result::Result as StdResult,
 	time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -569,28 +568,6 @@ impl ActorNode {
 			)),
 			downloading_objects: Mutex::new(Vec::new()),
 		}
-	}
-
-	async fn missing_value_response(&self, id: &IdType) -> Vec<u8> {
-		let bit = self.base.node_id.differs_at_bit(id);
-		let connection = match bit {
-			None => None,
-			Some(b) => self
-				.base
-				.interface
-				.connection_manager
-				.find_near(b)
-				.await
-				.map(|r| r.0),
-		};
-		let fingers = self.base.find_nearest_private_fingers(id).await;
-		let response = FindNodeResponse {
-			is_relay_node: self.base.interface.overlay_node().is_relay_node,
-			connected: connection,
-			fingers,
-		};
-		let result: StdResult<(), FindNodeResponse> = Err(response);
-		binserde::serialize(&result).unwrap()
 	}
 
 	async fn process_get_profile_request(&self, buffer: &[u8]) -> MessageProcessorResult {

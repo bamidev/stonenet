@@ -1741,12 +1741,14 @@ impl TransporterInner {
 
 impl TransporterHandle {
 	/// Initiate the closing sequence on the connection
+	#[allow(dead_code)]
 	pub async fn close(&mut self) -> Option<Result<()>> {
 		let (tx, rx) = oneshot::channel();
 		self.sender.send(TransporterTask::Close(tx).trace()).ok()?;
 		rx.await.ok()
 	}
 
+	#[allow(dead_code)]
 	pub fn close_async(self) -> bool {
 		self.sender
 			.send(TransporterTask::CloseAsync.trace())

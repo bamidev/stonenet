@@ -312,33 +312,31 @@ impl MessageWorkToDo for KeepAliveToDo {
 
 		if let Some(bucket_index) = self.node.base.differs_at_bit(&self.node_id) {
 			let mut bucket = self.node.base.buckets[bucket_index as usize].lock().await;
-			if let Some((connected_node, _)) = &bucket.connection {
-				if distance(self.node.node_id(), &self.node_id)
-					< distance(self.node.node_id(), &connected_node.node_id)
-				{
-					bucket.connection = None;
-				}
-			}
 
-			if bucket.connection.is_none() {
-				connection.set_keep_alive_timeout(KEEP_ALIVE_TIMEOUT).await;
-				response.ok = true;
+			connection.set_keep_alive_timeout(KEEP_ALIVE_TIMEOUT).await;
+			let node_info = connection.their_node_info().clone();
+			response.ok =
+				bucket.space_for_connection(&self.node.node_id(), connection.their_node_id());
+			if response.ok {
 				info!(
-					"Keeping connection with {} alive.",
-					connection.peer_address()
+					"[{}] Keeping connection with {} alive.",
+					self.node.node_id(),
+					node_info
 				);
-				let raw_response = self
-					.node
-					.base
-					.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
-				connection.send_async(raw_response)?;
-
-				bucket.connection = Some((
-					connection.their_node_info().clone(),
-					Arc::new(Mutex::new(connection)),
-				));
-				return Ok(None);
+			} else {
+				warn!("Rejected keep-alive connection with {}.", node_info);
 			}
+			let raw_response = self
+				.node
+				.base
+				.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
+			let result = connection.send_async(raw_response);
+			if response.ok {
+				let success = bucket.add_connection(self.node.node_id(), connection);
+				debug_assert!(success, "unable to add connection to bucket");
+			}
+			result?;
+			return Ok(None);
 		}
 
 		let response = self
@@ -604,16 +602,6 @@ impl OverlayNode {
 		Some(())
 	}
 
-	pub async fn find_connection_from_buckets(
-		&self, id: &IdType,
-	) -> Option<Arc<Mutex<Box<sstp::Connection>>>> {
-		if let Some(bucket_pos) = self.base.differs_at_bit(id) {
-			let bucket = self.base.buckets[bucket_pos as usize].lock().await;
-			return bucket.connection.as_ref().map(|c| c.1.clone());
-		}
-		None
-	}
-
 	/// Tries to connect to the actor network of the given actor ID, but in
 	/// 'lurking' mode. Meaning, the nodes of the network won't consider you as
 	/// a part of it.
@@ -776,7 +764,7 @@ impl OverlayNode {
 					if let Some((response, connection)) =
 						self.base.exchange_find_node(&finger, node_id.clone()).await
 					{
-						if let Some(node_info) = response.connected {
+						for node_info in response.connected {
 							if &node_info.node_id == node_id {
 								return Some((connection, response.is_relay_node));
 							}
@@ -1126,7 +1114,8 @@ impl OverlayNode {
 		let this = self.clone();
 		spawn(async move {
 			let mut next_ping = SystemTime::now() + Duration::from_secs(60);
-			while !this.base.stop_flag.load(Ordering::Relaxed) {
+			let stop_flag = this.base.stop_flag.clone();
+			while !stop_flag.load(Ordering::Relaxed) {
 				sleep(
 					next_ping
 						.duration_since(SystemTime::now())
@@ -1135,26 +1124,30 @@ impl OverlayNode {
 				.await;
 				next_ping = SystemTime::now() + Duration::from_secs(60);
 
+				// Sent a ping request to all connections at once
 				for i in 0..256 {
-					let bucket = this.base.buckets[i].lock().await;
-					if let Some((_, connection_mutex)) = &bucket.connection {
-						let connection_mutex2 = connection_mutex.clone();
-						drop(bucket);
-						let mut connection = connection_mutex2.lock().await;
-						if this
-							.base
-							.exchange_ping_on_connection(&mut connection)
-							.await
-							.is_none()
-						{
-							warn!(
-								"Unable to ping on keep alive node connection of node {}",
-								connection.their_node_id()
-							);
-							let mut bucket = this.base.buckets[i].lock().await;
-							bucket.connection = None;
+					let this2 = this.clone();
+					spawn(async move {
+						let bucket = this2.base.buckets[i].lock().await;
+
+						for (_, connection_mutex) in bucket.connections.iter() {
+							let mut connection = connection_mutex.lock().await;
+							if this2
+								.base
+								.exchange_ping_on_connection(&mut connection)
+								.await
+								.is_none()
+							{
+								warn!(
+									"Unable to ping on keep alive node connection of node {}, \
+									 rejecting it...",
+									connection.their_node_id()
+								);
+								let mut bucket = this2.base.buckets[i].lock().await;
+								bucket.reject(connection.their_node_id());
+							}
 						}
-					}
+					});
 				}
 			}
 		});
@@ -1241,9 +1234,15 @@ impl OverlayNode {
 			}
 		}
 
-		warn!("Unable to obtain keep alive connection, will try again in 5 minutes");
-		sleep(Duration::from_secs(300)).await;
-		self.start_obtaining_keep_alive_connection();
+		warn!(
+			"Unable to obtain keep alive connection, will try again in 5 minutes {}",
+			self.node_id()
+		);
+		let this = self.clone();
+		spawn(async move {
+			sleep(Duration::from_secs(300)).await;
+			this.start_obtaining_keep_alive_connection();
+		});
 	}
 
 	pub async fn open_relay(&self, target: &NodeContactInfo) -> Option<Box<Connection>> {

@@ -30,7 +30,7 @@ async fn test_data_synchronizattions_relaying() {
 		&mut next_port,
 		Openness::Unidirectional,
 		Openness::Unidirectional,
-		true,
+		false,
 	)
 	.await;
 }
