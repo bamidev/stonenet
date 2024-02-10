@@ -1061,7 +1061,7 @@ impl Server {
 			.await
 			.is_err()
 		{
-			debug!("Unable to send relay-hello-ack info back on hello channel");
+			warn!("Unable to send relay-hello-ack info back on hello channel");
 		}
 		Ok(())
 	}

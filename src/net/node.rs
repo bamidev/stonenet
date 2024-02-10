@@ -9,7 +9,7 @@ use futures::future::join_all;
 use log::*;
 use num::BigUint;
 use serde::de::DeserializeOwned;
-use tokio::{spawn, sync::Mutex, time::sleep};
+use tokio::{sync::Mutex, time::sleep};
 
 use super::{
 	bucket::Bucket,
@@ -479,9 +479,9 @@ where
 		&self, response: &FindNodeResponse, visited: &[(IdType, ContactOption)],
 	) -> Vec<(NodeContactInfo, ContactStrategy)> {
 		let mut new_fingers =
-			Vec::with_capacity(response.fingers.len() + response.connected.is_some() as usize);
+			Vec::with_capacity(response.fingers.len() + response.connected.len() as usize);
 
-		for f in &response.fingers {
+		for f in &response.connected {
 			match self.pick_contact_option(&f.contact_info) {
 				None => {}
 				Some((option, openness)) =>
@@ -493,17 +493,16 @@ where
 			}
 		}
 
-		match &response.connected {
-			None => {}
-			Some(c) => match self.pick_contact_option(&c.contact_info) {
+		for f in &response.fingers {
+			match self.pick_contact_option(&f.contact_info) {
 				None => {}
 				Some((option, openness)) =>
 					if visited.iter().find(|v| v.1 == option).is_none() {
 						if let Some(strategy) = ContactStrategy::new(option, openness) {
-							new_fingers.push((c.clone(), strategy));
+							new_fingers.push((f.clone(), strategy));
 						}
 					},
-			},
+			}
 		}
 
 		new_fingers
@@ -524,10 +523,11 @@ where
 		};
 		let bucket = self.buckets[bucket_pos].lock().await;
 		// First check if we have an active connection to it
-		if bucket.connection.is_some() {
-			let connection_data = bucket.connection.as_ref().unwrap();
-			if &connection_data.0.node_id == id {
-				return Some((connection_data.0.clone(), Some(connection_data.1.clone())));
+		if let Some((node_info, connection)) =
+			bucket.connections.iter().find(|c| &c.0.node_id == id)
+		{
+			if &node_info.node_id == id {
+				return Some((node_info.clone(), Some(connection.clone())));
 			}
 		}
 		// Then see if we have it in our cache.
@@ -536,24 +536,22 @@ where
 
 	pub(super) async fn find_nearest_public_contacts(
 		&self, id: &IdType,
-	) -> (Option<NodeContactInfo>, Vec<NodeContactInfo>) {
+	) -> (Vec<NodeContactInfo>, Vec<NodeContactInfo>) {
 		let bucket_pos = match self.differs_at_bit(id) {
 			// If ID is the same as ours, don't give any other contacts
-			None => return (None, Vec::new()),
+			None => return (Vec::new(), Vec::new()),
 			Some(p) => p as usize,
 		};
 
 		// Return the fingers lower down the binary tree first, as they differ
 		// at the same bit as our ID.
 		// Then return the fingers otherwise lowest in the binary tree.
-		let mut connection: Option<NodeContactInfo> = None;
+		let mut connections: Vec<NodeContactInfo> = Vec::new();
 		let mut fingers = Vec::with_capacity(self.bucket_size);
 		for i in (0..(bucket_pos + 1)).rev() {
 			let additional_fingers: Vec<NodeContactInfo> = {
 				let bucket = self.buckets[i].lock().await;
-				if bucket.connection.is_some() {
-					connection = bucket.connection.as_ref().map(|(n, _)| n.clone());
-				}
+				connections = bucket.connections.iter().map(|(n, _)| n.clone()).collect();
 				bucket
 					.public_fingers_no_connection()
 					.map(|n| n.clone())
@@ -568,11 +566,11 @@ where
 			}
 
 			if fingers.len() >= self.bucket_size {
-				return (connection, fingers);
+				return (connections, fingers);
 			}
 		}
 
-		(connection, fingers)
+		(connections, fingers)
 	}
 
 	/// Finds the k nodes nearest to the given id. If it can't find k fingers
@@ -627,10 +625,10 @@ where
 		for i in (0..256).rev() {
 			let bucket_mutex = &self.buckets[i];
 			let bucket = bucket_mutex.lock().await;
-			if let Some((node_info, connection_mutex)) = &bucket.connection {
-				if &node_info.node_id == id {
-					return Some(connection_mutex.clone());
-				}
+			if let Some((_, connection_mutex)) =
+				&bucket.connections.iter().find(|(n, _)| &n.node_id == id)
+			{
+				return Some(connection_mutex.clone());
 			}
 		}
 		None
@@ -1391,7 +1389,7 @@ impl<'a> AsyncIterator for AllFingersIter<'a> {
 					self.bucket_iter = self.buckets[self.global_index]
 						.lock()
 						.await
-						.public_fingers2()
+						.private_fingers2()
 						.into_iter();
 				} else {
 					break;
@@ -1501,12 +1499,14 @@ where
 									}
 								}
 
-								if let Some(connected_contact) = find_node_response.connected {
+								/*for connected_contact in &find_node_response.connected {
 									// Keep the connection alive by pinging on it so that we may
 									// still use it if we end up needing it much later.
 									let mutex = Arc::new(Mutex::new(Some(connection)));
 									let mutex2 = mutex.clone();
 									let node2 = self.node.clone();
+
+
 									if let Some((_, c)) = self.open_assistant_connection.take() {
 										spawn(async move {
 											// The connection needs to be closed manually because
@@ -1523,7 +1523,7 @@ where
 
 									self.open_assistant_connection =
 										Some((connected_contact.node_id, mutex));
-								}
+								}*/
 							}
 
 							// If a value was found, return it, otherwise keep the search loop going

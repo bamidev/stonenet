@@ -1,13 +1,14 @@
 use std::{cmp::Ordering, sync::Arc};
 
-use tokio::{spawn, sync::Mutex};
 
-use super::{sstp::Connection, NodeContactInfo};
+use tokio::{sync::Mutex};
+
+use super::{distance, sstp::Connection, NodeContactInfo};
 use crate::{common::*, limited_store::LimitedVec};
 
 
 pub struct Bucket {
-	pub(super) connection: Option<(NodeContactInfo, Arc<Mutex<Box<Connection>>>)>,
+	pub(super) connections: LimitedVec<(NodeContactInfo, Arc<Mutex<Box<Connection>>>)>,
 	fingers: LimitedVec<BucketEntry>,
 	replacement_cache: LimitedVec<BucketReplacementEntry>,
 }
@@ -28,12 +29,55 @@ pub struct BucketReplacementEntry {
 
 
 impl Bucket {
+	pub fn add_connection(&mut self, our_node_id: &IdType, connection: Box<Connection>) -> bool {
+		let new_node_info = connection.their_node_info();
+		let new_distance = distance(our_node_id, &new_node_info.node_id);
+
+		if let Some(pos) = self
+			.connections
+			.iter()
+			.position(|(n, _)| new_distance < distance(our_node_id, &n.node_id))
+		{
+			let node_info = new_node_info.clone();
+			let mutex = Arc::new(Mutex::new(connection));
+			self.connections.insert(pos, (node_info, mutex));
+			true
+		} else if self.connections.len() < self.connections.limit() {
+			let node_info = new_node_info.clone();
+			let mutex = Arc::new(Mutex::new(connection));
+			self.connections.push_back((node_info, mutex));
+			true
+		} else {
+			false
+		}
+	}
+
+	pub fn space_for_connection(
+		&mut self, our_node_id: &IdType, connection_node_id: &IdType,
+	) -> bool {
+		if self.connections.len() < self.connections.limit() {
+			return true;
+		}
+
+		let new_distance = distance(our_node_id, connection_node_id);
+		if self
+			.connections
+			.iter()
+			.position(|(n, _)| new_distance < distance(our_node_id, &n.node_id))
+			.is_some()
+		{
+			true
+		} else {
+			false
+		}
+	}
+
 	/// The fingers that can given to other nodes
 	pub fn public_fingers(&self) -> impl Iterator<Item = &NodeContactInfo> {
-		self.fingers
+		self.connections
 			.iter()
-			.map(|e| &e.node_info)
-			.chain(self.connection.iter().map(|e| &e.0))
+			.map(|e| &e.0)
+			.chain(self.fingers.iter().map(|e| &e.node_info))
 	}
 
 	/// The fingers that can given to other nodes
@@ -47,8 +91,8 @@ impl Bucket {
 	}
 
 	pub fn find(&self, id: &IdType) -> Option<&NodeContactInfo> {
-		if let Some(contact) = self.connection.as_ref() {
-			return Some(&contact.0);
+		if let Some(index) = self.connections.iter().position(|c| &c.0.node_id == id) {
+			return Some(&self.connections[index].0);
 		}
 		if let Some(index) = self.fingers.iter().position(|f| &f.node_info.node_id == id) {
 			return Some(&self.fingers[index].node_info);
@@ -150,15 +194,10 @@ impl Bucket {
 	}
 
 	pub fn reject(&mut self, id: &IdType) {
-		// If it refers to a connection, drop the connection.
-		if let Some((node_info, connection)) = self.connection.as_ref() {
-			if &node_info.node_id == id {
-				let c = connection.clone();
-				spawn(async move {
-					let _ = c.lock().await.close().await;
-				});
-				self.connection = None;
-				//return;
+		match self.connections.iter().position(|c| &c.0.node_id == id) {
+			None => {}
+			Some(index) => {
+				self.connections.remove(index);
 			}
 		}
 
@@ -183,7 +222,7 @@ impl Bucket {
 
 	pub fn new(size: usize) -> Self {
 		Self {
-			connection: None,
+			connections: LimitedVec::new(size),
 			fingers: LimitedVec::new(size),
 			replacement_cache: LimitedVec::new(size),
 		}
@@ -197,13 +236,23 @@ impl Bucket {
 		true
 	}
 
-	pub fn remember(&mut self, node: NodeContactInfo, trusted: bool, is_relay: bool) {
+	pub fn remember(&mut self, node: NodeContactInfo, trusted: bool, is_relay: bool) -> bool {
 		let new_entry = BucketEntry::new(node, trusted, is_relay);
+
+		// Try to add it above an exististing entry if it has higher priority
+
 		if let Some(pos) = self.fingers.iter().rev().position(|e| &new_entry < e) {
-			self.fingers.insert(pos + 1, new_entry);
-		} else {
-			self.fingers.insert(0, new_entry);
+			self.fingers.insert(pos, new_entry);
+			return true;
 		}
+
+		// Otherwise, add it to the bottom (only if space is available)
+		if self.fingers.len() < self.fingers.limit() {
+			self.fingers.push_back(new_entry);
+			return true;
+		}
+
+		false
 	}
 
 	/// Returns a finger that can be tried out to check if

@@ -225,8 +225,10 @@ impl Connection {
 	#[allow(dead_code)]
 	pub fn alive_flag(&self) -> Arc<AtomicBool> { self.transporter.alive_flag.clone() }
 
+	#[allow(dead_code)]
 	pub async fn close(&mut self) -> Result<()> { self.transporter.close().await.unwrap_or(Ok(())) }
 
+	#[allow(dead_code)]
 	pub fn close_async(self) { self.transporter.close_async(); }
 
 	pub fn contact_option(&self) -> ContactOption {
