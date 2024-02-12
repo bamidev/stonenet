@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use std::{
-	cmp::min,
 	sync::Arc,
 	time::{SystemTime, UNIX_EPOCH},
 };
@@ -39,79 +38,78 @@ impl Api {
 
 	pub fn create_my_identity(
 		&self, label: &str, name: &str, avatar: Option<&FileData>, wallpaper: Option<&FileData>,
-		description: &str,
+		description: Option<&FileData>,
 	) -> db::Result<(ActorAddress, ActorInfo)> {
-		let private_key = PrivateKey::generate();
-		let this = self.clone();
+		self.db.perform(|c| {
+			// Prepare profile object
+			let avatar_hash = if let Some(f) = avatar {
+				Some(db::Connection::_store_file_data(&c, &f.mime_type, &f.data)?.1)
+			} else {
+				None
+			};
+			let wallpaper_hash = if let Some(f) = wallpaper {
+				Some(db::Connection::_store_file_data(&c, &f.mime_type, &f.data)?.1)
+			} else {
+				None
+			};
+			let description_hash = if let Some(f) = description {
+				Some(db::Connection::_store_file_data(&c, &f.mime_type, &f.data)?.1)
+			} else {
+				None
+			};
+			let profile = ProfileObject {
+				name: name.to_string(),
+				avatar: avatar_hash.clone(),
+				wallpaper: wallpaper_hash.clone(),
+				description: description_hash.clone(),
+			};
 
-		// Prepare profile object
-		let avatar_data = avatar.map(|f| self.split_file(&f.mime_type, &f.data));
-		let wallpaper_data = wallpaper.map(|f| self.split_file(&f.mime_type, &f.data));
-		let description_hash_opt = if description.len() > 0 {
-			Some(IdType::hash(description.as_bytes()))
-		} else {
-			None
-		};
-		let profile = ProfileObject {
-			name: name.to_string(),
-			avatar: avatar_data.as_ref().map(|(hash, _)| hash.clone()),
-			wallpaper: wallpaper_data.as_ref().map(|(hash, _)| hash.clone()),
-			description: description_hash_opt.clone(),
-		};
+			// Sign the profile object and construct an object out of it
+			let payload = ObjectPayload::Profile(profile);
+			let sign_data = ObjectSignData {
+				sequence: 0,
+				previous_hash: IdType::default(),
+				created: SystemTime::now()
+					.duration_since(UNIX_EPOCH)
+					.unwrap()
+					.as_millis() as u64,
+				payload: &payload,
+			};
+			let private_key = PrivateKey::generate();
+			let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
+			let object_hash = IdType::hash(&signature.to_bytes());
+			let object = Object {
+				signature,
+				previous_hash: IdType::default(),
+				sequence: 0,
+				created: sign_data.created,
+				payload,
+			};
 
-		// Sign the profile object and construct an object out of it
-		let payload = ObjectPayload::Profile(profile.clone());
-		let sign_data = ObjectSignData {
-			sequence: 0,
-			previous_hash: IdType::default(),
-			created: SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.unwrap()
-				.as_millis() as u64,
-			payload: &payload,
-		};
-		let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
-		let object_hash = IdType::hash(&signature.to_bytes());
-		let object = Object {
-			signature,
-			previous_hash: IdType::default(),
-			sequence: 0,
-			created: sign_data.created,
-			payload,
-		};
+			// Generate an actor ID with our new object hash.
+			let actor_info = ActorInfo::V1(ActorInfoV1 {
+				flags: 0,
+				public_key: private_key.public(),
+				first_object: object_hash.clone(),
+				actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
+			});
+			let actor_address = actor_info.generate_address();
 
-		// Generate an actor ID with our new object hash.
-		let actor_info = ActorInfo::V1(ActorInfoV1 {
-			public_key: private_key.public(),
-			first_object: object_hash.clone(),
-			actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
-		});
-		let actor_address = actor_info.generate_address();
-
-		// Create the identity on disk
-		tokio::task::block_in_place(|| {
-			let mut c = this.db.connect()?;
-			c.create_my_identity(
+			// Create the identity on disk
+			db::Connection::_create_my_identity(
+				&c,
 				label,
 				&private_key,
 				&object_hash,
 				&object,
 				name,
-				avatar_data.as_ref().map(|(hash, blocks)| {
-					(hash, avatar.unwrap().mime_type.as_str(), blocks.as_slice())
-				}),
-				wallpaper_data.as_ref().map(|(hash, blocks)| {
-					(
-						hash,
-						wallpaper.unwrap().mime_type.as_str(),
-						blocks.as_slice(),
-					)
-				}),
-				description_hash_opt.map(|hash| (hash, description)),
-			)
-		})?;
+				avatar_hash.as_ref(),
+				wallpaper_hash.as_ref(),
+				description_hash.as_ref(),
+			)?;
 
-		Ok((actor_address, actor_info))
+			Ok((actor_address, actor_info))
+		})
 	}
 
 	pub async fn find_block(
@@ -374,7 +372,7 @@ impl Api {
 		&self, actor_address: ActorAddress, file_hash: IdType,
 	) -> Result<Option<(String, ReceiverStream<db::Result<Vec<u8>>>)>> {
 		let db = self.db.clone();
-		let r = db.perform(|c| c.fetch_file(&file_hash))?;
+		let r: Option<File> = db.perform(|c| c.fetch_file(&file_hash))?;
 
 		let (tx, rx) = mpsc::channel(1);
 		if let Some(file) = r {
@@ -384,13 +382,16 @@ impl Api {
 			spawn(async move {
 				let mut actor_node: Option<Arc<ActorNode>> = None;
 				let mut loaded_actor_node = false;
-				for block_hash in file.blocks {
-					match db.perform(|c| c.fetch_block(&block_hash)) {
+				for i in 0..file.blocks.len() {
+					let block_hash = &file.blocks[i];
+					match db.perform(|c| c.fetch_block(block_hash)) {
 						Ok(block_result) => match block_result {
-							Some(block) =>
+							Some(mut block) => {
+								db::decrypt_block(i as _, &file.plain_hash, &mut block);
 								if let Err(_) = tx.send(Ok(block)).await {
 									error!("Unable to send block on stream-file channel.");
-								},
+								}
+							}
 							None => {
 								if !loaded_actor_node {
 									actor_node =
@@ -401,9 +402,9 @@ impl Api {
 								if let Some(n) = &actor_node {
 									// Find the block on the network, and store it if we have found
 									// it
-									if let Some(r) = n.find_block(&block_hash).await {
+									if let Some(r) = n.find_block(block_hash).await {
 										if let Err(e) =
-											db.perform(|mut c| c.store_block(&block_hash, &r.data))
+											db.perform(|mut c| c.store_block(block_hash, &r.data))
 										{
 											if let Err(_) = tx.send(Err(e)).await {
 												error!(
@@ -411,7 +412,9 @@ impl Api {
 												);
 											}
 										}
-										if let Err(_) = tx.send(Ok(r.data)).await {
+										let mut block = r.data;
+										db::decrypt_block(i as _, &file.plain_hash, &mut block);
+										if let Err(_) = tx.send(Ok(block)).await {
 											error!("Unable to send block on stream-file channel.");
 										}
 										continue;
@@ -527,45 +530,6 @@ impl Api {
 		let hash = IdType::hash(&signature.to_bytes());
 
 		Ok((hash, signature))
-	}
-
-	pub fn split_file(&self, mime_type: &str, data: &[u8]) -> (IdType, Vec<(IdType, Vec<u8>)>) {
-		debug_assert!(data.len() <= u64::MAX as usize, "data too large");
-		debug_assert!(data.len() > 0, "data can not be empty");
-		let block_count = data.len() / BLOCK_SIZE + ((data.len() % BLOCK_SIZE) > 0) as usize;
-		let mut blocks: Vec<&[u8]> = Vec::with_capacity(block_count);
-		let mut file = File {
-			mime_type: mime_type.to_string(),
-			blocks: Vec::with_capacity(block_count),
-		};
-		let mut result = Vec::with_capacity(block_count);
-
-		// Devide data into blocks
-		let mut i = 0;
-		loop {
-			let slice = &data[i..];
-			let actual_block_size = min(BLOCK_SIZE, slice.len());
-			blocks.push(&slice[..actual_block_size]);
-
-			i += db::BLOCK_SIZE;
-			if i >= data.len() {
-				break;
-			}
-		}
-
-		// Calculate the block hashes
-		for i in 0..block_count {
-			let block_data = blocks[i];
-			let block_hash = IdType::hash(block_data);
-			file.blocks.push(block_hash.clone());
-			result.push((block_hash, block_data.to_vec()));
-		}
-
-		// Calculate the file hash
-		let file_buf = binserde::serialize(&file).unwrap();
-		let file_hash = IdType::hash(&file_buf);
-
-		(file_hash, result)
 	}
 }
 

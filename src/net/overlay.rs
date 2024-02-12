@@ -950,6 +950,7 @@ impl OverlayNode {
 										(
 											id,
 											ActorInfo::V1(ActorInfoV1 {
+												flags: 0,
 												public_key: private_key.public(),
 												first_object,
 												actor_type,
@@ -2487,7 +2488,7 @@ mod tests {
 
 		// Create data at the target node
 		let (actor_address, actor_info) = target_node
-			.create_my_identity("test", "Test", None, None, "Description...")
+			.create_my_identity("test", "Test", None, None, None)
 			.unwrap();
 		let _ = target_node
 			.node
@@ -2506,6 +2507,5 @@ mod tests {
 		stop_flag.store(true, Ordering::Relaxed);
 
 		assert_eq!(profile.actor.name, "Test");
-		assert_eq!(&profile.description.unwrap(), "Description...");
 	}
 }

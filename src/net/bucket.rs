@@ -1,7 +1,6 @@
 use std::{cmp::Ordering, sync::Arc};
 
-
-use tokio::{sync::Mutex};
+use tokio::sync::Mutex;
 
 use super::{distance, sstp::Connection, NodeContactInfo};
 use crate::{common::*, limited_store::LimitedVec};

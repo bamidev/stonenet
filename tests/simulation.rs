@@ -87,13 +87,17 @@ Hoi ik ben Kees!
 		data: vec![0u8; 10000000],
 	};
 	rng.fill_bytes(&mut wallpaper_file_data.data);
+	let description_file_data = FileData {
+		mime_type: "text/markdown".to_string(),
+		data: profile_description.as_bytes().to_vec(),
+	};
 	let (actor_id, actor_info) = node1
 		.create_my_identity(
 			"kees",
 			"Kees",
 			Some(&avatar_file_data),
 			Some(&wallpaper_file_data),
-			profile_description,
+			Some(&description_file_data),
 		)
 		.expect("unable to create identity");
 	let _ = node1

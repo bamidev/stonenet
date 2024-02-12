@@ -37,6 +37,7 @@ pub enum Address {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ActorInfoV1 {
+	pub flags: u8,
 	pub public_key: PublicKey,
 	pub first_object: IdType,
 	pub actor_type: String,
@@ -62,6 +63,7 @@ pub struct FileData {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct File {
+	pub plain_hash: IdType,
 	pub mime_type: String,
 	pub blocks: Vec<IdType>,
 }

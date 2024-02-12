@@ -110,6 +110,7 @@ pub const QUERY: &'static str = r#"
 		hash TEXT PRIMARY KEY,
 		mime_type TEXT NOT NULL,
 		block_count INTEGER NOT NULL,
+		plain_hash TEXT NOT NULL,
 		UNIQUE(hash)
 	);
 
@@ -140,7 +141,7 @@ pub const QUERY: &'static str = r#"
 		name TEXT,
 		avatar_file_hash TEXT,
 		wallpaper_file_hash TEXT,
-		description_block_hash TEXT
+		description_file_hash TEXT
 	);
 
 	COMMIT;

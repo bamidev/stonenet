@@ -428,7 +428,7 @@ async fn my_identity_new_post(
 		&name,
 		avatar_file_data.as_ref(),
 		wallpaper_file_data.as_ref(),
-		&description,
+		description.as_ref(),
 	) {
 		Ok(_) => Ok(Redirect::to("/my-identity")),
 		Err(e) => Err(render_db_error(e, "unable to create my identity")),
@@ -497,7 +497,13 @@ async fn process_message_form(
 
 async fn process_profile_form(
 	data: Data<'_>, boundary: &str,
-) -> io::Result<(String, String, Option<FileData>, Option<FileData>, String)> {
+) -> io::Result<(
+	String,
+	String,
+	Option<FileData>,
+	Option<FileData>,
+	Option<FileData>,
+)> {
 	let data_stream = data.open(UPLOAD_FILE_LIMIT.parse().unwrap());
 	let raw_data = data_stream.into_bytes().await?;
 
@@ -586,7 +592,14 @@ async fn process_profile_form(
 				},
 			None => None,
 		},
-		String::from_utf8_lossy(&description_buf).to_string(),
+		if description_buf.len() > 0 {
+			Some(FileData {
+				mime_type: "text/markdown".to_string(),
+				data: description_buf,
+			})
+		} else {
+			None
+		},
 	))
 }
 

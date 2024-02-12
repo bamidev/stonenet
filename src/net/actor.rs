@@ -1,6 +1,4 @@
-use std::{
-	time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::future::join_all;
@@ -181,9 +179,9 @@ impl ActorNode {
 		self.store_object(id, object, verified_from_start)?;
 		match &object.payload {
 			ObjectPayload::Profile(payload) => {
-				if let Some(block_id) = payload.description.as_ref() {
-					if self.needs_block(block_id) {
-						if !self.collect_block(connection, block_id).await? {
+				if let Some(file_id) = payload.description.as_ref() {
+					if self.needs_file(file_id) {
+						if !self.collect_file(connection, file_id).await? {
 							return Ok(false);
 						}
 					}
