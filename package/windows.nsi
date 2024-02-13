@@ -47,6 +47,7 @@ Section "Stonenet"
 	File /r ../static
 	File /r ../templates
 	File /oname=config.toml ../conf/default.toml
+	File /oname=db.sqlite ../assets/empty.sqlite
 
 	WriteUninstaller $INSTDIR\uninstaller.exe
 
