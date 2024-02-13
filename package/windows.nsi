@@ -47,9 +47,12 @@ Section "Stonenet"
 	File /r ../static
 	File /r ../templates
 	File /oname=config.toml ../conf/default.toml
-	File /oname=db.sqlite ../assets/empty.sqlite
 
 	WriteUninstaller $INSTDIR\uninstaller.exe
+
+	# Place a file for the sqlite database if it doens't exist yet
+	SetOverwrite off
+	File /oname=db.sqlite ../assets/empty.sqlite
 
 	WriteRegStr HKLM Software\Microsoft\Windows\CurrentVersion\Run StonenetDaemon '"$INSTDIR\stonenetd.exe"'
 	# Remove 32-bit autorun entry for previous installs.
