@@ -1,4 +1,5 @@
 !include "MUI.nsh"
+!include "x64.nsh"
 
 !define MUI_ABORTWARNING
 
@@ -16,10 +17,15 @@
 
 !insertmacro MUI_LANGUAGE "English"
 
+Section "Initialize"
+	SetRegView 64
+SectionEnd
+
+
 Name "Stonenet"
 OutFile "stonenet-installer.exe"
 ShowInstDetails show
-InstallDir "$PROGRAMFILES\Stonenet"
+InstallDir "$PROGRAMFILES64\Stonenet"
 InstallDirRegKey HKLM Software\Stonenet InstallDir
 
 
@@ -42,7 +48,15 @@ Section "Stonenet"
 	File /r ../templates
 	File /oname=config.toml ../conf/default.toml
 
+	WriteUninstaller $INSTDIR\uninstaller.exe
+
 	WriteRegStr HKLM Software\Microsoft\Windows\CurrentVersion\Run StonenetDaemon '"$INSTDIR\stonenetd.exe"'
+	# Remove 32-bit autorun entry for previous installs.
+	DeleteRegValue HKLM "Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run" "StonenetDaemon"
+SectionEnd
+
+Section "Uninstall"
+	RmDir /r "$INSTDIR"
 SectionEnd
 
 #Function CreateDesktopShortcut
