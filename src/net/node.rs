@@ -551,7 +551,10 @@ where
 		for i in (0..(bucket_pos + 1)).rev() {
 			let additional_fingers: Vec<NodeContactInfo> = {
 				let bucket = self.buckets[i].lock().await;
-				connections = bucket.connections.iter().map(|(n, _)| n.clone()).collect();
+				// Only add connections that are part of the specific bucket
+				if i == bucket_pos {
+					connections = bucket.connections.iter().map(|(n, _)| n.clone()).collect();
+				}
 				bucket
 					.public_fingers_no_connection()
 					.map(|n| n.clone())
