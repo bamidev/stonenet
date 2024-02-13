@@ -431,7 +431,10 @@ async fn my_identity_new_post(
 		description.as_ref(),
 	) {
 		Ok(_) => Ok(Redirect::to("/my-identity")),
-		Err(e) => Err(render_db_error(e, "unable to create my identity")),
+		Err(e) => {
+			let error_string = format!("unable to create my identity: {}", &e);
+			Err(render_db_error(e, &error_string))
+		}
 	}
 }
 
