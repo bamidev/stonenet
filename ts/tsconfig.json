@@ -1,0 +1,14 @@
+{
+    "compilerOptions": {
+        "outDir": "../static/js",
+        "target": "es5",
+        "sourceMap": true,
+        "allowJs": true,
+        "lib": [
+            "es5",
+            "dom"
+        ]
+    },
+    "include": ["src/**/*"],
+    "moduleResolution": "node"
+}

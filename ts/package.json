@@ -1,0 +1,28 @@
+{
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "build-dev": "webpack --mode development",
+        "build": "webpack --mode production"
+    },
+    "devDependencies": {
+        "css-loader": "*",
+        "ts-loader": "*",
+        "webpack": "*"
+    },
+    "dependencies": {
+      "@milkdown/core": "7.3.3",
+      "@milkdown/ctx": "7.3.3",
+      "@milkdown/plugin-block": "7.3.3",
+      "@milkdown/plugin-clipboard": "7.3.3",
+      "@milkdown/plugin-indent": "7.3.3",
+      "@milkdown/plugin-math": "7.3.3",
+      "@milkdown/plugin-prism": "7.3.3",
+      "@milkdown/plugin-upload": "7.3.3",
+      "@milkdown/preset-commonmark": "7.3.3",
+      "@milkdown/prose": "7.3.3",
+      "@milkdown/theme-nord": "7.3.3",
+      "@milkdown/transformer": "7.3.3"
+    }
+  }

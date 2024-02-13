@@ -35,7 +35,8 @@
 				<h5 class="card-title">{{title}}</h5>
 			</div>
 			<div class="card-body">
-				<textarea name="message" rows="5" style="width: 100%" placeholder="Write a message..."></textarea>
+				<div class="editor"></div>
+				<textarea class="no-editor" name="message" rows="5" style="width: 100%" placeholder="Write a message..."></textarea>
 				<input name="attachments" type="file" multiple="multiple" />
 			</div>
 			<div class="card-footer">
