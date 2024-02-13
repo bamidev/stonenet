@@ -167,15 +167,8 @@ fn load_install_dir() -> io::Result<PathBuf> { Ok(PathBuf::new()) }
 
 #[cfg(target_family = "windows")]
 fn load_install_dir() -> io::Result<PathBuf> {
-	use std::path::PathBuf;
-
-	use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
-
-	let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-	let cur_ver = hklm.open_subkey("Software\\Wow6432Node\\Stonenet")?;
-	let path: String = cur_ver.get_value("InstallDir")?;
-	let install_dir =
-		PathBuf::from_str(&path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	let mut install_dir = env::current_exe().unwrap();
+	install_dir.pop();
 
 	env::set_current_dir(&install_dir).unwrap();
 
