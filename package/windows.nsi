@@ -49,6 +49,8 @@ Section "Stonenet"
 	File /oname=config.toml ../conf/default.toml
 
 	WriteUninstaller $INSTDIR\uninstaller.exe
+	WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Stonenet" "DisplayName" "Stonenet"
+	WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Stonenet" "UninstallString" '"$INSTDIR\uninstaller.exe"'
 
 	# Place a file for the sqlite database if it doens't exist yet
 	SetOverwrite off
