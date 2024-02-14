@@ -35,8 +35,8 @@
 				<h5 class="card-title">{{title}}</h5>
 			</div>
 			<div class="card-body">
-				<div class="editor"></div>
-				<textarea class="no-editor" name="message" rows="5" style="width: 100%" placeholder="Write a message..."></textarea>
+				<div id="editor"></div>
+				<textarea class="default-editor" name="message" rows="5" style="width: 100%" placeholder="Write a message..."></textarea>
 				<input name="attachments" type="file" multiple="multiple" />
 			</div>
 			<div class="card-footer">
@@ -79,7 +79,7 @@
 {% macro compose_object_footer(actor, hash) %}
 	<div class="card-footer text-right">
 		<form class="d-inline" method="post" action="/actor/{{actor}}/object/{{hash}}/boost">
-			<button class="btn btn-secondary disabled" type="submit">Boost</button>
+			<button class="btn btn-secondary disabled" type="submit">Like</button>
 		</form>
 		<a class="btn btn-secondary float-end" href="/actor/{{actor}}/object/{{hash}}">Open</a>
 	</div>
@@ -92,7 +92,7 @@
 	{% endif %}
 	<div class="card-header d-flex align-items-center">
 		<span class="flex-grow-1">
-			<img class="rounded-circle" width="{{avatar_size}}" height="{{avatar_size}}" src="/actor/{{actor_address}}/file/{{avatar}}" alt="Avatar of {{name}}" />
+			<img class="rounded-circle" width="{{avatar_size}}" height="{{avatar_size}}" src="/actor/{{actor_address}}/file/{{avatar}}" />
 			<a class="m-2" href="/actor/{{actor_address}}" target="_blank">{{name}}</a>
 		</span>
 		{% if created and time_ago %}
@@ -197,14 +197,19 @@
 
 	<div class="card-body">
 		<div class="overflow-scroll" style="display: block; max-height: 200px;">
-			<div id="message-{{index}}">
+			<div
+			{% if use_markdown %}
+				id="milkdown-content-{{ index }}"
+				class="content-markdown"
+				style="white-space: pre-wrap;"
+			{% endif %}
+				id="message-{{index}}"
+			>
 				{{message | escape | linebreaksbr | safe}}
 			</div>
+
 			{% if use_markdown %}
-				<script type="text/javascript">
-					var element = document.getElementById("message-{{index}}")
-					element.innerHTML = marked.parse(element.innerText)
-				</script>
+				<div id="milkdown-view-{{ index }}" class="milkdown-view"></div>
 			{% endif %}
 		</div>
 		<div class="attachments">

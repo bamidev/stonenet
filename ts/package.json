@@ -9,6 +9,7 @@
     "devDependencies": {
         "css-loader": "*",
         "ts-loader": "*",
+        "style-loader": "*",
         "webpack": "*"
     },
     "dependencies": {
@@ -17,6 +18,7 @@
       "@milkdown/plugin-block": "7.3.3",
       "@milkdown/plugin-clipboard": "7.3.3",
       "@milkdown/plugin-indent": "7.3.3",
+      "@milkdown/plugin-listener": "7.3.3",
       "@milkdown/plugin-math": "7.3.3",
       "@milkdown/plugin-prism": "7.3.3",
       "@milkdown/plugin-upload": "7.3.3",
