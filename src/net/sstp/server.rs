@@ -66,9 +66,9 @@ type RelayHelloAckPacketHeader = RelayedHelloAckPacketHeader;
 
 pub struct RelayInitiationInfo {
 	pub local_session_id: u16,
-	pub session: Arc<Mutex<SessionData>>,
+	pub(super) session: Arc<Mutex<SessionData>>,
 	pub hello_receiver: HelloReceiver,
-	pub packet_receiver: UnboundedReceiver<CryptedPacket>,
+	pub(super) packet_receiver: UnboundedReceiver<CryptedPacket>,
 	pub dh_private_key: x25519::StaticSecret,
 	pub packet: RelayHelloPacket,
 }
