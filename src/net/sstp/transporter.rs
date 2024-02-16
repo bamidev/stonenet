@@ -382,6 +382,17 @@ impl Transporter {
 						trace!("Packet channel with transporter has been disconnected. {} {}", self.inner.local_session_id, self.inner.dest_session_id);
 						return;
 					}
+				},
+				// Generally speaking, the transporter should be busy processing a task most of the time.
+				// Whenever a task hasn't been given (yet), that might be because of the work that
+				// is done in between the calls to `send` or `receive` in the corresponding
+				// connection instance.
+				_ = sleep(Duration::from_secs(1)) => {
+					#[cfg(debug_assertions)]
+					{
+						warn!("Transporter has been sleeping for a second.");
+						warn!("{:?}", self.inner.current_backtrace);
+					}
 				}
 			}
 		}
