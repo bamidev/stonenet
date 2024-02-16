@@ -82,7 +82,7 @@ pub struct OverlayNode {
 	pub(super) base: Arc<Node<OverlayInterface>>,
 	bootstrap_nodes: Vec<SocketAddr>,
 	pub(super) expected_connections:
-		Arc<Mutex<HashMap<ContactOption, oneshot::Sender<Box<sstp::Connection>>>>>,
+		Arc<Mutex<HashMap<IdType, oneshot::Sender<Box<sstp::Connection>>>>>,
 	pub(super) is_relay_node: bool,
 	relay_nodes: Mutex<LimitedVec<NodeContactInfo>>,
 }
@@ -1485,7 +1485,7 @@ impl OverlayNode {
 				// If a connection from the same target is already expected, we can't touch it.
 				// It would leave the other task that's still waiting on the previous connection
 				// hanging.
-				if expected_connections.contains_key(their_contact) {
+				if expected_connections.contains_key(target) {
 					error!(
 						"Attempted to request reversed connection from same node more than once: \
 						 {} {}",
@@ -1493,7 +1493,7 @@ impl OverlayNode {
 					);
 					return None;
 				}
-				expected_connections.insert(their_contact.clone(), tx_in);
+				expected_connections.insert(target.clone(), tx_in);
 			}
 
 			let result = select! {
@@ -1506,7 +1506,7 @@ impl OverlayNode {
 			};
 
 			let mut expected_connections = self.expected_connections.lock().await;
-			let removed = expected_connections.remove(their_contact).is_some();
+			let removed = expected_connections.remove(target).is_some();
 
 			// It could happen that the connection sender has already been taken from the
 			// expected_connections map, but the sender hasn't been used yet. It is unlikely
@@ -1919,7 +1919,7 @@ impl OverlayNode {
 				self.process_relay_punch_hole_request(buffer, node_info)
 					.await,
 			OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_REQUEST =>
-				self.process_reverse_connection_request(buffer, contact)
+				self.process_reverse_connection_request(buffer, &node_info.node_id)
 					.await,
 			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST =>
 				self.process_open_relay_request(buffer, &contact.target)
@@ -1939,7 +1939,7 @@ impl OverlayNode {
 	}
 
 	async fn process_reverse_connection_request(
-		&self, buffer: &[u8], contact_option: &ContactOption,
+		&self, buffer: &[u8], node_id: &IdType,
 	) -> MessageProcessorResult {
 		if buffer.len() > 0 {
 			warn!("Malformed reverse connection request.");
@@ -1950,7 +1950,7 @@ impl OverlayNode {
 			.expected_connections
 			.lock()
 			.await
-			.remove(contact_option);
+			.remove(node_id);
 		let response = ReverseConnectionResponse {
 			ok: result.is_some(),
 		};
