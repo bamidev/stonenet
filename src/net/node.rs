@@ -360,6 +360,18 @@ where
 		response.map(|r| (r, connection))
 	}
 
+	pub async fn exchange_find_node_at(&self, target: &ContactOption, target_node_id: &IdType, request: &FindNodeRequest) -> Option<(FindNodeResponse, Box<Connection>)> {
+		let raw_request = binserde::serialize(&request).unwrap();
+		let (raw_response, connection) = self
+			.exchange_at(target_node_id, target, NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST, &raw_request)
+			.await?;
+		let result = binserde::deserialize_sstp(&raw_response);
+		let response = self
+			.handle_connection_issue_find(result, connection.their_node_info())
+			.await;
+		response.map(|r| (r, connection))
+	}
+
 	/// In the paper, this is described as the 'FIND_NODE' RPC.
 	pub async fn exchange_find_node_on_connection(
 		&self, connection: &mut Connection, node_id: &IdType,
@@ -457,11 +469,23 @@ where
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
 	/// RPC.
 	async fn exchange_ping(&self, target: &NodeContactInfo) -> Option<()> {
-		let message = PingRequest {};
 		self.exchange(
 			target,
 			NETWORK_MESSAGE_TYPE_PING_REQUEST,
-			&binserde::serialize(&message).unwrap(),
+			&[],
+		)
+		.await?;
+		Some(())
+	}
+
+	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
+	/// RPC.
+	async fn exchange_ping_at(&self, target: &ContactOption, node_id: &IdType) -> Option<()> {
+		self.exchange_at(
+			node_id,
+			target,
+			NETWORK_MESSAGE_TYPE_PING_REQUEST,
+			&[],
 		)
 		.await?;
 		Some(())
@@ -654,7 +678,7 @@ where
 		while found.len() > result_limit {
 			found.pop_back();
 		}
-
+		
 		let mut i = 0;
 		while candidates.len() > 0 && i < visit_limit {
 			let (candidate_dist, candidate_contact, strategy) = candidates[0].clone();
@@ -668,58 +692,46 @@ where
 			}
 			visited.push((candidate_contact.node_id.clone(), strategy.contact.clone()));
 
-			match self
-				.connect(&strategy.contact, Some(&candidate_contact.node_id), None)
-				.await
-			{
+			let request = FindNodeRequest { node_id: id.clone() };
+			match self.exchange_find_node_at(&strategy.contact, &candidate_contact.node_id, &request).await {
 				None => info!(
-					"Disregarding finger {}, unable to connect...",
+					"Disregarding finger {},",
 					&candidate_contact.node_id
 				),
-				Some((mut connection, _)) => {
-					match self
-						.exchange_find_node_on_connection(&mut connection, &id)
-						.await
+				Some((response, _)) => {
+					if response.is_relay_node
+						&& strategy.method == ContactStrategyMethod::Direct
 					{
-						None => {
-							info!("Disregarding finger {}", &candidate_contact.node_id);
+						self.overlay_node()
+							.remember_relay_node(&candidate_contact)
+							.await;
+					}
+					let mut new_fingers =
+						self.extract_fingers_from_response(&response, &visited);
+					new_fingers.retain(|(f, strat)| {
+						if f.node_id == self.node_id {
+							return false;
 						}
-						Some(response) => {
-							if response.is_relay_node
-								&& strategy.method == ContactStrategyMethod::Direct
-							{
-								self.overlay_node()
-									.remember_relay_node(&candidate_contact)
-									.await;
-							}
-							let mut new_fingers =
-								self.extract_fingers_from_response(&response, &visited);
-							new_fingers.retain(|(f, strat)| {
-								if f.node_id == self.node_id {
-									return false;
-								}
-								if strat.method != ContactStrategyMethod::Direct {
-									return false;
-								}
-								let finger_dist = distance(id, &f.node_id);
-								finger_dist < candidate_dist
-							});
-							Self::append_candidates(id, &mut found, &new_fingers);
-							while found.len() > result_limit {
-								found.pop_back();
-							}
-							// If the exact ID has been found, we stop
-							if new_fingers.iter().find(|f| &f.0.node_id == id).is_some() {
-								break;
-							}
-							Self::append_candidates(id, &mut candidates, &new_fingers);
-							// Prevent using candidates that were found too far back. We
-							// don't intend to iterate over the whole network. Only the
-							// last few candidates that were close.
-							while candidates.len() > self.bucket_size {
-								candidates.pop_back();
-							}
+						if strat.method != ContactStrategyMethod::Direct {
+							return false;
 						}
+						let finger_dist = distance(id, &f.node_id);
+						finger_dist < candidate_dist
+					});
+					Self::append_candidates(id, &mut found, &new_fingers);
+					while found.len() > result_limit {
+						found.pop_back();
+					}
+					// If the exact ID has been found, we stop
+					if new_fingers.iter().find(|f| &f.0.node_id == id).is_some() {
+						break;
+					}
+					Self::append_candidates(id, &mut candidates, &new_fingers);
+					// Prevent using candidates that were found too far back. We
+					// don't intend to iterate over the whole network. Only the
+					// last few candidates that were close.
+					while candidates.len() > self.bucket_size {
+						candidates.pop_back();
 					}
 				}
 			}
@@ -1295,10 +1307,19 @@ where
 		(result, true)
 	}
 
-	/// Pings a node and returns its latency and node ID .
+	/// Pings a node and returns its latency and node ID.
 	pub async fn ping(&self, target: &NodeContactInfo) -> Option<u32> {
 		let start = SystemTime::now();
 		self.exchange_ping(target).await?;
+		let stop = SystemTime::now();
+		let latency = stop.duration_since(start).unwrap().as_millis() as u32;
+		Some(latency)
+	}
+
+	/// Pings a node and returns its latency and node ID.
+	pub async fn ping_at(&self, target: &ContactOption, node_id: &IdType) -> Option<u32> {
+		let start = SystemTime::now();
+		self.exchange_ping_at(target, node_id).await?;
 		let stop = SystemTime::now();
 		let latency = stop.duration_since(start).unwrap().as_millis() as u32;
 		Some(latency)

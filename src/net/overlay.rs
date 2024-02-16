@@ -803,6 +803,17 @@ impl OverlayNode {
 		//None
 	}
 
+	#[allow(dead_code)]
+	pub async fn find_node(&self, node_id: &IdType) -> Option<NodeContactInfo> {
+		let result = self.base.find_node(node_id, 1, 100).await;
+		for node_info in result {
+			if &node_info.node_id == node_id {
+				return Some(node_info);
+			}
+		}
+		None
+	}
+
 	pub async fn get_actor_node(&self, actor_id: &IdType) -> Option<Arc<ActorNode>> {
 		let nodes = self.base.interface.actor_nodes.lock().await;
 		nodes.get(actor_id).map(|n| n.clone())
@@ -1546,8 +1557,13 @@ impl OverlayNode {
 
 	pub fn node_id(&self) -> &IdType { &self.base.node_id }
 
-	//pub fn node_info(&self) -> &NodeContactInfo {
-	// &self.base.interface.socket.our_contact_info }
+	pub async fn ping(&self, target: &NodeContactInfo) -> Option<u32> {
+		self.base.ping(target).await
+	}
+
+	pub async fn ping_at(&self, target: &ContactOption, node_id: &IdType) -> Option<u32> {
+		self.base.ping_at(target, node_id).await
+	}
 
 	pub(super) async fn process_actor_request(
 		self: &Arc<Self>, actor_node: &Arc<ActorNode>, message_type: u8, buffer: &[u8],
@@ -2015,7 +2031,9 @@ impl OverlayNode {
 		}
 	}
 
-	pub(super) async fn remember_relay_node(&self, node_info: &NodeContactInfo) -> bool {
+	/// Remembers the given node info as one of our relay nodes, if the room is available.
+	/// Returns whether it was added.
+	pub async fn remember_relay_node(&self, node_info: &NodeContactInfo) -> bool {
 		let mut relay_nodes = self.relay_nodes.lock().await;
 		if relay_nodes
 			.iter()
@@ -2453,8 +2471,7 @@ mod tests {
 		assistant_config.relay_node = Some(assistant_is_relay);
 		let mut relay_config = Config::default();
 		relay_config.bootstrap_nodes = vec![format!(
-			"127.0.0.1:{}",
-			assistant_config.ipv4_udp_port.unwrap()
+			"127.0.0.1:{}", assistant_config.ipv4_udp_port.unwrap()
 		)];
 		relay_config.ipv4_address = Some("127.0.0.1".to_string());
 		relay_config.ipv4_udp_port = Some(first_port + 1);
@@ -2462,16 +2479,14 @@ mod tests {
 		relay_config.relay_node = Some(true);
 		let mut source_config = Config::default();
 		source_config.bootstrap_nodes = vec![format!(
-			"127.0.0.1:{}",
-			assistant_config.ipv4_udp_port.unwrap()
+			"127.0.0.1:{}", assistant_config.ipv4_udp_port.unwrap()
 		)];
 		source_config.ipv4_address = Some("127.0.0.1".to_string());
 		source_config.ipv4_udp_port = Some(first_port + 2);
 		source_config.ipv4_udp_openness = Some(openness_source_node.to_string());
 		let mut target_config = Config::default();
 		target_config.bootstrap_nodes = vec![format!(
-			"127.0.0.1:{}",
-			assistant_config.ipv4_udp_port.unwrap()
+			"127.0.0.1:{}", assistant_config.ipv4_udp_port.unwrap()
 		)];
 		target_config.ipv4_address = Some("127.0.0.1".to_string());
 		target_config.ipv4_udp_port = Some(first_port + 3);
@@ -2483,7 +2498,7 @@ mod tests {
 			test::load_test_node(stop_flag.clone(), &mut rng, &target_config, "target").await;
 		// Load the 'relay' node after the 'target' node, so that the 'target' node
 		// always attached itself to the 'assistant' node rather than the 'relay' node.
-		let _relay_node =
+		let relay_node =
 			test::load_test_node(stop_flag.clone(), &mut rng, &relay_config, "random").await;
 
 		// Create data at the target node
@@ -2499,6 +2514,10 @@ mod tests {
 		// Find data as the source node
 		let source_node =
 			test::load_test_node(stop_flag.clone(), &mut rng, &source_config, "source").await;
+		// Make sure that we find the relay node in case the source node needs it
+		let relay_node_info = source_node.node.find_node(relay_node.node.node_id()).await.expect("relay node not found");
+		source_node.node.remember_relay_node(&relay_node_info).await;
+
 		let profile = source_node
 			.fetch_profile_info(&actor_address)
 			.await

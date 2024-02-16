@@ -61,6 +61,7 @@ ctor = "*"
 [features]
 unbundled = ["reqwest/native-tls"]
 bundled = ["rusqlite/bundled", "reqwest/rustls-tls"]
+trace-packets = []
 
 [target.'cfg(target_family = "windows")'.dependencies]
 reqwest = { version = "0", default-features = true }

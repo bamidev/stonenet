@@ -307,6 +307,7 @@ impl Connection {
 	/// Updates the cleanup timeout of the connection.
 	pub async fn set_keep_alive_timeout(&mut self, timeout: Duration) -> bool {
 		self.keep_alive_timeout = timeout;
+		self.transporter.keep_alive();
 		let sessions = self.server.sessions.lock().await;
 		if let Some(session_mutex) = sessions.map.get(&self.local_session_id) {
 			let session_mutex2 = session_mutex.clone();

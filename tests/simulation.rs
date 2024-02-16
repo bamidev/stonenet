@@ -70,8 +70,12 @@ async fn test_data_synchronization(
 	*next_port += 1;
 	let bootstrap_node = load_test_node(stop_flag.clone(), &mut rng, &config1, "bootstrap").await;
 	let node1 = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
-	let random_node: Api = load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
+	let relay_node: Api = load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
 	let node2 = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
+
+	// Make sure node 2 knows about the relay node
+	let relay_node_info = node2.node.find_node(relay_node.node.node_id()).await.expect("relay node not found");
+	node2.node.remember_relay_node(&relay_node_info).await;
 
 	// Create a profile for node 1
 	let profile_description = r#"
@@ -257,6 +261,6 @@ Hoi ik ben Kees!
 	stop_flag.store(true, Ordering::Relaxed);
 	node1.close().await;
 	node2.close().await;
-	random_node.close().await;
+	relay_node.close().await;
 	bootstrap_node.close().await;
 }

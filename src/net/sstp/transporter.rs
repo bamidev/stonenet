@@ -53,6 +53,7 @@ pub struct Transporter {
 	pub(super) inner: TransporterInner,
 	pub alive_flag: Arc<AtomicBool>,
 	key_state_manager: KeyStateManager,
+	pub(super) keep_alive: bool,
 }
 
 pub(super) struct TransporterInner {
@@ -110,6 +111,7 @@ enum TransporterTask {
 	SendAsync(Vec<u8>),
 	Close(oneshot::Sender<Result<()>>),
 	CloseAsync,
+	KeepAlive
 }
 
 struct WindowInfo {
@@ -281,6 +283,7 @@ impl Transporter {
 			),
 			alive_flag: Arc::new(AtomicBool::new(false)),
 			key_state_manager: KeyStateManager::new(private_key, public_key, INITIAL_WINDOW_SIZE),
+			keep_alive: false,
 		}
 	}
 
@@ -361,6 +364,10 @@ impl Transporter {
 							TransporterTask::SendAsync(message) => self.send(message, None).await,
 							TransporterTask::Close(tx) => { close_sender = Some(tx); break; }
 							TransporterTask::CloseAsync => break,
+							TransporterTask::KeepAlive => {
+								self.keep_alive = true;
+								true
+							}
 						};
 						// If there was an error that caused the task to be stopped prematurely, stop everything without trying to close it cleanly.
 						if !success {
@@ -389,9 +396,11 @@ impl Transporter {
 				// connection instance.
 				_ = sleep(Duration::from_secs(1)) => {
 					#[cfg(debug_assertions)]
-					{
+					if !self.keep_alive {
 						warn!("Transporter has been sleeping for a second.");
-						warn!("{:?}", self.inner.current_backtrace);
+						if let Some(backtrace) = &self.inner.current_backtrace {
+							warn!("Last task: {:?}", backtrace);
+						}
 					}
 				}
 			}
@@ -1591,6 +1600,9 @@ impl TransporterInner {
 	async fn send_crypted_packet(
 		&self, ks: &KeyState, message_type: u8, seq: u16, packet: &[u8],
 	) -> Result<()> {
+		#[cfg(feature = "trace-packets")]
+		trace!("Send crypted packet (message_type={}, ks_seq={}, seq={}, session={}->{})", message_type, ks.sequence, seq, self.local_session_id, self.dest_session_id);
+
 		let buffer = self.prepare_crypted_packet(ks, message_type, seq, packet);
 		self.socket_sender
 			.send(&buffer)
@@ -1780,6 +1792,10 @@ impl TransporterHandle {
 
 	pub fn is_connection_based(&self) -> bool { self.is_connection_based }
 
+	pub fn keep_alive(&self) -> bool {
+		self.sender.send(TransporterTask::KeepAlive.trace()).is_ok()
+	}
+
 	/// Instructs the Receiver's task to start receiving a message, which will
 	/// make all received packets available on the returned receiver stream.
 	/// Blocks until the transporter task is able to start the task.
@@ -1838,6 +1854,7 @@ impl fmt::Display for TransporterTask {
 			Self::SendAsync(_) => write!(f, "send async"),
 			Self::Close(_) => write!(f, "close"),
 			Self::CloseAsync => write!(f, "close async"),
+			Self::KeepAlive => write!(f, "keep alive"),
 		}
 	}
 }
