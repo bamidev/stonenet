@@ -234,13 +234,20 @@ async fn main() {
 		let api = Api { node, db };
 		test_openness(&api, &config).await;
 
-		// Spawn web servers
-		let new_version_opt = check_version().await;
-		let update_message = if let Some(new_version) = new_version_opt {
-			Some(version_message(&new_version))
-		} else {
-			None
+		// Check for updates (only in release mode)
+		#[cfg(not(debug_assertions))]
+		let update_message = {
+			let new_version_opt = check_version().await;
+			if let Some(new_version) = new_version_opt {
+				Some(version_message(&new_version))
+			} else {
+				None
+			}
 		};
+		#[cfg(debug_assertions)]
+		let update_message = None;
+
+		// Spawn web servers
 		let mut rocket_handles = Vec::new();
 		let mut join_handles = Vec::new();
 		if config.load_web_interface.unwrap_or(false) {
