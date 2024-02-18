@@ -231,6 +231,7 @@ impl Connection {
 		}
 	}
 
+	#[allow(dead_code)]
 	pub fn is_alive(&self) -> bool { self.transporter.alive_flag.load(Ordering::Relaxed) }
 
 	//pub fn network_level(&self) -> NetworkLevel {
@@ -239,6 +240,7 @@ impl Connection {
 	#[allow(dead_code)]
 	pub fn local_session_id(&self) -> u16 { self.local_session_id }
 
+	#[allow(dead_code)]
 	pub fn peer_address(&self) -> &SocketAddr { &self.peer_address }
 
 	pub async fn receive(&mut self) -> Result<Vec<u8>> {

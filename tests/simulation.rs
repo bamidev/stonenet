@@ -24,7 +24,7 @@ async fn test_data_synchronizations_assisting() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_data_synchronizattions_relaying() {
+async fn test_data_synchronizations_relaying() {
 	let mut next_port = 30000;
 	test_data_synchronization(
 		&mut next_port,

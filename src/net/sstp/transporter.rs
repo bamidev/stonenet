@@ -265,10 +265,10 @@ impl KeyStateManager {
 
 impl Transporter {
 	pub(super) fn new_with_receiver(
-		encrypt_session_id: u16, our_session_id: u16, their_session_id: u16,
-		socket_sender: Arc<dyn LinkSocketSender>, node_id: IdType, peer_node_id: IdType,
-		timeout: Duration, private_key: x25519::StaticSecret, public_key: x25519::PublicKey,
-		receiver: UnboundedReceiver<CryptedPacket>,
+		alive_flag: Arc<AtomicBool>, encrypt_session_id: u16, our_session_id: u16,
+		their_session_id: u16, socket_sender: Arc<dyn LinkSocketSender>, node_id: IdType,
+		peer_node_id: IdType, timeout: Duration, private_key: x25519::StaticSecret,
+		public_key: x25519::PublicKey, receiver: UnboundedReceiver<CryptedPacket>,
 	) -> Self {
 		Self {
 			inner: TransporterInner::new(
@@ -281,7 +281,7 @@ impl Transporter {
 				peer_node_id,
 				timeout,
 			),
-			alive_flag: Arc::new(AtomicBool::new(false)),
+			alive_flag,
 			key_state_manager: KeyStateManager::new(private_key, public_key, INITIAL_WINDOW_SIZE),
 			keep_alive: false,
 		}
@@ -308,6 +308,7 @@ impl Transporter {
 				.receive_window(&mut size_sender2, &packet_sender, ks, window_wait_time)
 				.await
 			{
+				self.inner.first_window = false;
 				return false;
 			}
 			self.inner.first_window = false;
@@ -709,7 +710,7 @@ impl TransporterInner {
 	) -> Self {
 		Self {
 			close_received: false,
-			current_backtrace: None,
+			current_backtrace: Some(Backtrace::force_capture()),
 			current_ks_unprocessed_first_packet: None,
 			current_ks_unprocessed_packets: HashMap::new(),
 			encrypt_session_id,
@@ -1104,7 +1105,7 @@ impl TransporterInner {
 	) -> Result<Option<bool>> {
 		let packet_type = data.drain(0..3).last().unwrap();
 		match packet_type {
-			CRYPTED_PACKET_TYPE_ACK => trace!(
+			CRYPTED_PACKET_TYPE_ACK => debug!(
 				"Ignoring ack packet while in receiving mode. (Is the other end in receiving mode \
 				 as well?)"
 			),
@@ -1464,6 +1465,7 @@ impl TransporterInner {
 									} else if self.current_ks_unprocessed_packets.len() > 0 {
 										if initial_end_time > SystemTime::now() {
 											interval = self.timeout / 8;
+											waiting = false;
 										}
 									}
 								}
@@ -1479,6 +1481,10 @@ impl TransporterInner {
 								return false;
 							}
 							if !waiting { i += 1; }
+							else {
+								let _ = packet_sender.send(trace::err(Error::Timeout(initial_wait_time)));
+								return false;
+							}
 						} else {
 							let _ = packet_sender.send(trace::err(Error::Timeout(self.timeout)));
 							return false;
@@ -1793,16 +1799,7 @@ impl TransporterHandle {
 			.is_ok()
 	}
 
-	/*#[cfg(test)]
-	pub(super) fn dummy() -> Self {
-		let (tx, _) = unbounded_channel();
-		Self {
-			sender: tx,
-			alive_flag: Arc::new(AtomicBool::new(false)),
-			is_connection_based: false,
-		}
-	}*/
-
+	#[allow(dead_code)]
 	pub fn is_alive(&self) -> bool { self.alive_flag.load(Ordering::Relaxed) }
 
 	pub fn is_connection_based(&self) -> bool { self.is_connection_based }

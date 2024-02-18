@@ -9,6 +9,7 @@ use std::{
 use async_trait::async_trait;
 use futures::{channel::oneshot, future::join_all};
 use log::*;
+use rand::{rngs::OsRng, Rng};
 use tokio::{self, select, spawn, sync::Mutex, time::sleep};
 
 use super::{
@@ -365,6 +366,8 @@ impl OverlayNode {
 			sstp::DEFAULT_TIMEOUT,
 		)
 		.await?;
+		let mut rng = OsRng {};
+		socket.set_next_session_id(rng.gen()).await;
 
 		let this = Arc::new(Self {
 			base: Arc::new(Node::new(
@@ -1177,7 +1180,9 @@ impl OverlayNode {
 			{
 				if success {
 					connection.set_keep_alive_timeout(KEEP_ALIVE_TIMEOUT).await;
-					this.base.packet_server.spawn_connection(connection);
+					this.base
+						.packet_server
+						.spawn_connection(connection, Some(KEEP_ALIVE_TIMEOUT));
 					return true;
 				} else {
 					debug!("Keep alive connection was denied.");
@@ -1782,7 +1787,7 @@ impl OverlayNode {
 						.exchange_reverse_connection_on_connection(&mut connection)
 						.await == Some(true)
 					{
-						this.base.packet_server.spawn_connection(connection);
+						this.base.packet_server.spawn_connection(connection, None);
 					}
 				}
 			});

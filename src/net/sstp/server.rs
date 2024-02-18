@@ -211,9 +211,9 @@ enum SessionTransportData {
 }
 
 struct SessionTransportDataDirect {
+	alive_flag: Arc<AtomicBool>,
 	dest_session_id: Option<u16>,
 	dest_public_key: Option<PublicKey>,
-	handle: Option<TransporterHandle>,
 	hello_channel: Option<HelloSender>,
 	hello_relay_ack_sender: Option<Sender<u16>>,
 	packet_processor: mpsc::UnboundedSender<CryptedPacket>,
@@ -318,11 +318,7 @@ impl Server {
 			{
 				match &mut session.transport_data {
 					SessionTransportData::Direct(data) =>
-						if let Some(h) = &data.handle {
-							if !h.is_alive() {
-								data.handle = None;
-							}
-						} else {
+						if !data.alive_flag.load(Ordering::Relaxed) {
 							done_ids.push(*session_id);
 						},
 					SessionTransportData::Relay(_) => {
@@ -350,7 +346,13 @@ impl Server {
 			return trace::err(Error::InvalidNodeId.into());
 		}
 
+		let alive_flag = match &mut initiation_data.session.lock().await.transport_data {
+			SessionTransportData::Direct(data) => data.alive_flag.clone(),
+			_ => panic!("invalid session transport data type"),
+		};
+
 		let transporter = Transporter::new_with_receiver(
+			alive_flag,
 			establish_info.encrypt_session_id,
 			initiation_data.local_session_id,
 			establish_info.dest_session_id,
@@ -363,14 +365,6 @@ impl Server {
 			initiation_data.packet_receiver,
 		);
 		let transporter_handle = transporter.spawn();
-		match &mut initiation_data.session.lock().await.transport_data {
-			SessionTransportData::Direct(data) => {
-				data.handle = Some(transporter_handle.clone());
-			}
-			_ => {
-				panic!("unexpected transport type");
-			}
-		}
 
 		Ok(Box::new(Connection {
 			transporter: transporter_handle,
@@ -448,14 +442,15 @@ impl Server {
 		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, target: &ContactOption,
 		node_id: Option<&IdType>, request: Option<&[u8]>, timeout: Duration,
 	) -> Result<(Box<Connection>, Option<Vec<u8>>)> {
-		println!("connect_with_timeout");
 		let sender = self.link_connect(target, timeout).await?;
 
 		// Spawn transporter before sending out the hello packet, so that it is ready
 		// before the hello-ack arrives
 		let (packet_sender, packet_receiver) = mpsc::unbounded_channel();
 		let (hello_sender, mut hello_receiver) = mpsc::channel(1);
+		let alive_flag = Arc::new(AtomicBool::new(true));
 		let data = SessionTransportData::Direct(SessionTransportDataDirect {
+			alive_flag: alive_flag.clone(),
 			relay_node_id: None,
 			relay_public_key: None,
 			dest_session_id: None,
@@ -463,10 +458,9 @@ impl Server {
 			hello_channel: Some(hello_sender),
 			hello_relay_ack_sender: None,
 			packet_processor: packet_sender,
-			handle: None,
 		});
 		let dh_private_key = x25519::StaticSecret::random_from_rng(OsRng);
-		let (local_session_id, session) = self
+		let (local_session_id, _session) = self
 			.new_outgoing_session(node_id.map(|id| id.clone()), data, timeout)
 			.await
 			.ok_or(Error::OutOfSessions)?;
@@ -508,6 +502,7 @@ impl Server {
 					}
 
 					let transporter = Transporter::new_with_receiver(
+						alive_flag,
 						establish_info.encrypt_session_id,
 						local_session_id,
 						establish_info.dest_session_id,
@@ -520,14 +515,6 @@ impl Server {
 						packet_receiver
 					);
 					let transporter_handle = transporter.spawn();
-					match &mut session.lock().await.transport_data {
-						SessionTransportData::Direct(data) => {
-							data.handle = Some(transporter_handle.clone());
-						},
-						_ => {
-							panic!("unexpected transport type");
-						}
-					}
 
 					if !target.use_tcp {
 						self.send_hello_ack_ack_packet(&*sender, establish_info.dest_session_id).await?;
@@ -559,9 +546,10 @@ impl Server {
 	}
 
 	/// Gives the connection away to be start listening on it for requests
-	pub async fn handle_connection(self: &Arc<Self>, connection: Box<Connection>) {
-		let this = self.clone();
-		handle_connection_loop(this, connection).await;
+	pub async fn handle_connection(
+		self: &Arc<Self>, connection: Box<Connection>, timeout: Option<Duration>,
+	) {
+		handle_connection_loop(self.clone(), connection, timeout.unwrap_or(DEFAULT_TIMEOUT)).await;
 	}
 
 	/// Connects to the best available IP version and transport option. Only
@@ -758,8 +746,8 @@ impl Server {
 	}
 
 	async fn new_incomming_session(
-		&self, their_node_id: IdType, their_public_key: PublicKey, dest_session_id: u16,
-		packet_sender: UnboundedSender<CryptedPacket>, timeout: Duration,
+		&self, alive_flag: Arc<AtomicBool>, their_node_id: IdType, their_public_key: PublicKey,
+		dest_session_id: u16, packet_sender: UnboundedSender<CryptedPacket>, timeout: Duration,
 	) -> Result<(u16, bool, Arc<Mutex<SessionData>>)> {
 		// Check if session doesn't already exists
 		let mut sessions = self.sessions.lock().await;
@@ -773,12 +761,12 @@ impl Server {
 				return Ok((our_session_id, false, session_data)),
 		}
 		let transport_data = SessionTransportData::Direct(SessionTransportDataDirect {
+			alive_flag,
 			dest_session_id: Some(dest_session_id),
 			dest_public_key: Some(their_public_key),
 			hello_channel: None,
 			relay_node_id: None,
 			relay_public_key: None,
-			handle: None,
 			packet_processor: packet_sender,
 			hello_relay_ack_sender: None,
 		});
@@ -1272,9 +1260,11 @@ impl Server {
 		) -> (Vec<u8>, bool),
 	) -> Result<()> {
 		let their_node_id = public_key.generate_address();
+		let alive_flag = Arc::new(AtomicBool::new(true));
 		let (packet_sender, packet_receiver) = mpsc::unbounded_channel();
 		let (our_session_id, is_new, session) = self
 			.new_incomming_session(
+				alive_flag.clone(),
 				their_node_id.clone(),
 				public_key,
 				dest_session_id,
@@ -1340,8 +1330,24 @@ impl Server {
 			return Ok(());
 		}
 
+		let (hello_ack_tx, mut hello_ack_rx) = mpsc::channel(1);
+		{
+			let mut s = session.lock().await;
+			match &mut s.transport_data {
+				SessionTransportData::Direct(data) => {
+					data.relay_public_key = relayer_public_key;
+				}
+				_ => {
+					panic!("unexpected transport type");
+				}
+			};
+
+			s.hello_ack_channel = Some(hello_ack_tx);
+		};
+
 		// Spawn transporter
 		let transporter = Transporter::new_with_receiver(
+			alive_flag,
 			encrypt_session_id,
 			our_session_id,
 			dest_session_id,
@@ -1354,21 +1360,6 @@ impl Server {
 			packet_receiver,
 		);
 		let transporter_handle = transporter.spawn();
-		let (hello_ack_tx, mut hello_ack_rx) = mpsc::channel(1);
-		{
-			let mut s = session.lock().await;
-			match &mut s.transport_data {
-				SessionTransportData::Direct(data) => {
-					data.handle = Some(transporter_handle.clone());
-					data.relay_public_key = relayer_public_key;
-				}
-				_ => {
-					panic!("unexpected transport type");
-				}
-			};
-
-			s.hello_ack_channel = Some(hello_ack_tx);
-		}
 
 		// Send hello-ack packet back after the session has been set up, and wait until
 		// it has been received by the other side.
@@ -1432,7 +1423,7 @@ impl Server {
 					on_finish(Ok(()), peer_node_info).await;
 
 					if let Some(c) = opt_connection {
-						handle_connection_loop(self.clone(), c).await;
+						handle_connection_loop(self.clone(), c, DEFAULT_TIMEOUT).await;
 					}
 				}
 			}
@@ -1932,7 +1923,6 @@ impl Server {
 		*self.our_contact_info.lock().unwrap() = contact_info;
 	}
 
-	#[cfg(test)]
 	pub async fn set_next_session_id(&self, id: u16) { self.sessions.lock().await.next_id = id; }
 
 	pub async fn setup_outgoing_relay(
@@ -1942,10 +1932,10 @@ impl Server {
 		let (packet_sender, packet_receiver) = mpsc::unbounded_channel();
 		let (hello_sender, hello_receiver) = mpsc::channel(1);
 		let transport_data = SessionTransportData::Direct(SessionTransportDataDirect {
+			alive_flag: Arc::new(AtomicBool::new(true)),
 			dest_session_id: None,
 			dest_public_key: None,
 			packet_processor: packet_sender,
-			handle: None,
 			hello_channel: Some(hello_sender),
 			hello_relay_ack_sender,
 			relay_node_id: Some(relay_node_id),
@@ -1995,10 +1985,12 @@ impl Server {
 	}
 
 	/// Gives the connection away to be start listening on it for requests
-	pub fn spawn_connection(self: &Arc<Self>, connection: Box<Connection>) {
+	pub fn spawn_connection(
+		self: &Arc<Self>, connection: Box<Connection>, timeout: Option<Duration>,
+	) {
 		let this = self.clone();
 		spawn(async move {
-			handle_connection_loop(this, connection).await;
+			handle_connection_loop(this, connection, timeout.unwrap_or(DEFAULT_TIMEOUT)).await;
 		});
 	}
 
@@ -2727,10 +2719,12 @@ impl Into<SocketAddr> for SocketAddrSstp {
 }
 
 
-async fn handle_connection_loop(server: Arc<Server>, connection_original: Box<Connection>) {
+async fn handle_connection_loop(
+	server: Arc<Server>, connection_original: Box<Connection>, timeout: Duration,
+) {
 	let mut result = Some(connection_original);
 	while let Some(mut connection) = result.take() {
-		match connection.wait_for(Duration::from_secs(120)).await {
+		match connection.wait_for(timeout).await {
 			Err(e) => {
 				match &*e {
 					Error::ConnectionClosed => {}
