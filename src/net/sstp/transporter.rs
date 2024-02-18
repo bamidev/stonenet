@@ -394,14 +394,14 @@ impl Transporter {
 				// Whenever a task hasn't been given (yet), that might be because of the work that
 				// is done in between the calls to `send` or `receive` in the corresponding
 				// connection instance.
-				_ = sleep(Duration::from_secs(1)) => {
-					/*#[cfg(debug_assertions)]
+				_ = sleep(Duration::from_secs(10)) => {
+					#[cfg(debug_assertions)]
 					if !self.keep_alive {
-						warn!("Transporter has been sleeping for a second.");
+						warn!("Transporter has been sleeping for ten seconds.");
 						if let Some(backtrace) = &self.inner.current_backtrace {
 							warn!("Last task: {:?}", backtrace);
 						}
-					}*/
+					}
 				}
 			}
 		}
