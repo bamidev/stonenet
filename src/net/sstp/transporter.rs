@@ -111,7 +111,7 @@ enum TransporterTask {
 	SendAsync(Vec<u8>),
 	Close(oneshot::Sender<Result<()>>),
 	CloseAsync,
-	KeepAlive
+	KeepAlive,
 }
 
 struct WindowInfo {
@@ -395,13 +395,13 @@ impl Transporter {
 				// is done in between the calls to `send` or `receive` in the corresponding
 				// connection instance.
 				_ = sleep(Duration::from_secs(1)) => {
-					#[cfg(debug_assertions)]
+					/*#[cfg(debug_assertions)]
 					if !self.keep_alive {
 						warn!("Transporter has been sleeping for a second.");
 						if let Some(backtrace) = &self.inner.current_backtrace {
 							warn!("Last task: {:?}", backtrace);
 						}
-					}
+					}*/
 				}
 			}
 		}
@@ -963,16 +963,24 @@ impl TransporterInner {
 		&mut self, ks: KeyStateDuo<'_>, packet: CryptedPacket,
 	) -> Result<Option<StdResult<(u16, x25519::PublicKey), Vec<u8>>>> {
 		if packet.ks_seq == ks.current.sequence {
+			//trace!("process_packet_while_sender current {} (session={}->{})",
+			// packet.ks_seq, self.local_session_id, self.dest_session_id);
 			return self
 				.process_packet_while_sending_ks_current(ks.current, packet.seq, packet.data)
 				.await;
 		} else if packet.ks_seq == ks.previous.sequence {
+			//trace!("process_packet_while_sender prev {} (session={}->{})", packet.ks_seq,
+			// self.local_session_id, self.dest_session_id);
 			self.process_stray_packet_for_ks_previous(ks, packet.seq, packet.data)
 				.await?;
 		} else if packet.ks_seq == ks.current.sequence.wrapping_add(1) {
+			//trace!("process_packet_while_sender next {} (session={}->{})", packet.ks_seq,
+			// self.local_session_id, self.dest_session_id);
 			self.next_ks_unprocessed_packets
 				.push((packet.seq, packet.data));
 		} else {
+			//trace!("process_packet_while_sender else {} (session={}->{})", packet.ks_seq,
+			// self.local_session_id, self.dest_session_id);
 			warn!(
 				"Dropping packet with invalid ks_seq={} (session_id={})3",
 				packet.ks_seq, self.local_session_id
@@ -1601,7 +1609,14 @@ impl TransporterInner {
 		&self, ks: &KeyState, message_type: u8, seq: u16, packet: &[u8],
 	) -> Result<()> {
 		#[cfg(feature = "trace-packets")]
-		trace!("Send crypted packet (message_type={}, ks_seq={}, seq={}, session={}->{})", message_type, ks.sequence, seq, self.local_session_id, self.dest_session_id);
+		trace!(
+			"Send crypted packet (message_type={}, ks_seq={}, seq={}, session={}->{})",
+			message_type,
+			ks.sequence,
+			seq,
+			self.local_session_id,
+			self.dest_session_id
+		);
 
 		let buffer = self.prepare_crypted_packet(ks, message_type, seq, packet);
 		self.socket_sender

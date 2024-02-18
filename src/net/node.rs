@@ -360,10 +360,17 @@ where
 		response.map(|r| (r, connection))
 	}
 
-	pub async fn exchange_find_node_at(&self, target: &ContactOption, target_node_id: &IdType, request: &FindNodeRequest) -> Option<(FindNodeResponse, Box<Connection>)> {
+	pub async fn exchange_find_node_at(
+		&self, target: &ContactOption, target_node_id: &IdType, request: &FindNodeRequest,
+	) -> Option<(FindNodeResponse, Box<Connection>)> {
 		let raw_request = binserde::serialize(&request).unwrap();
 		let (raw_response, connection) = self
-			.exchange_at(target_node_id, target, NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST, &raw_request)
+			.exchange_at(
+				target_node_id,
+				target,
+				NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST,
+				&raw_request,
+			)
 			.await?;
 		let result = binserde::deserialize_sstp(&raw_response);
 		let response = self
@@ -469,25 +476,16 @@ where
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
 	/// RPC.
 	async fn exchange_ping(&self, target: &NodeContactInfo) -> Option<()> {
-		self.exchange(
-			target,
-			NETWORK_MESSAGE_TYPE_PING_REQUEST,
-			&[],
-		)
-		.await?;
+		self.exchange(target, NETWORK_MESSAGE_TYPE_PING_REQUEST, &[])
+			.await?;
 		Some(())
 	}
 
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
 	/// RPC.
 	async fn exchange_ping_at(&self, target: &ContactOption, node_id: &IdType) -> Option<()> {
-		self.exchange_at(
-			node_id,
-			target,
-			NETWORK_MESSAGE_TYPE_PING_REQUEST,
-			&[],
-		)
-		.await?;
+		self.exchange_at(node_id, target, NETWORK_MESSAGE_TYPE_PING_REQUEST, &[])
+			.await?;
 		Some(())
 	}
 
@@ -678,7 +676,7 @@ where
 		while found.len() > result_limit {
 			found.pop_back();
 		}
-		
+
 		let mut i = 0;
 		while candidates.len() > 0 && i < visit_limit {
 			let (candidate_dist, candidate_contact, strategy) = candidates[0].clone();
@@ -692,22 +690,21 @@ where
 			}
 			visited.push((candidate_contact.node_id.clone(), strategy.contact.clone()));
 
-			let request = FindNodeRequest { node_id: id.clone() };
-			match self.exchange_find_node_at(&strategy.contact, &candidate_contact.node_id, &request).await {
-				None => info!(
-					"Disregarding finger {},",
-					&candidate_contact.node_id
-				),
+			let request = FindNodeRequest {
+				node_id: id.clone(),
+			};
+			match self
+				.exchange_find_node_at(&strategy.contact, &candidate_contact.node_id, &request)
+				.await
+			{
+				None => info!("Disregarding finger {},", &candidate_contact.node_id),
 				Some((response, _)) => {
-					if response.is_relay_node
-						&& strategy.method == ContactStrategyMethod::Direct
-					{
+					if response.is_relay_node && strategy.method == ContactStrategyMethod::Direct {
 						self.overlay_node()
 							.remember_relay_node(&candidate_contact)
 							.await;
 					}
-					let mut new_fingers =
-						self.extract_fingers_from_response(&response, &visited);
+					let mut new_fingers = self.extract_fingers_from_response(&response, &visited);
 					new_fingers.retain(|(f, strat)| {
 						if f.node_id == self.node_id {
 							return false;
@@ -1457,20 +1454,6 @@ where
 				continue;
 			}
 
-			let _assistant_connection: Option<Arc<Mutex<Option<Box<Connection>>>>> =
-				if strategy.method == ContactStrategyMethod::PunchHole
-					|| strategy.method == ContactStrategyMethod::Reversed
-				{
-					if let Some((_node_id, _connection)) = &mut self.open_assistant_connection {
-						// TODO: Check if the node of the assistant connection is the same node that
-						// gave us the current contact. If so, return `connection`.
-						None
-					} else {
-						None
-					}
-				} else {
-					None
-				};
 			match self
 				.node
 				.connect_by_strategy(&candidate_contact, &strategy, None, None)
@@ -1493,6 +1476,8 @@ where
 						// If node didn't respond right, ignore it
 						None => {}
 						Some((possible_value, possible_contacts)) => {
+							drop(connection);
+
 							// If node returned new fingers, append them to our list
 							if let Some(find_node_response) = possible_contacts {
 								if find_node_response.is_relay_node

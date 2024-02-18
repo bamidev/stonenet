@@ -74,7 +74,11 @@ async fn test_data_synchronization(
 	let node2 = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
 
 	// Make sure node 2 knows about the relay node
-	let relay_node_info = node2.node.find_node(relay_node.node.node_id()).await.expect("relay node not found");
+	let relay_node_info = node2
+		.node
+		.find_node(relay_node.node.node_id())
+		.await
+		.expect("relay node not found");
 	node2.node.remember_relay_node(&relay_node_info).await;
 
 	// Create a profile for node 1

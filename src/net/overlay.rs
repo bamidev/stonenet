@@ -1100,26 +1100,6 @@ impl OverlayNode {
 		None
 	}
 
-	fn maintain_keep_alive_connection(self: &Arc<Self>, connection: Box<Connection>) {
-		let alive_flag = connection.alive_flag();
-		self.base.packet_server.spawn_connection(connection);
-
-		let this = self.clone();
-		spawn(async move {
-			while alive_flag.load(Ordering::Relaxed) == false {
-				sleep(Duration::from_secs(1)).await;
-			}
-			while alive_flag.load(Ordering::Relaxed) == true {
-				sleep(Duration::from_secs(10)).await;
-			}
-
-			// After the connection has closed, try to find a new one.
-			if !this.base.stop_flag.load(Ordering::Relaxed) {
-				this.start_obtaining_keep_alive_connection();
-			}
-		});
-	}
-
 	/// Will send a ping request every minute or so to all connections that are
 	/// maintained on the overlay network.
 	fn maintain_node_connections(self: &Arc<Self>) {
@@ -1375,6 +1355,7 @@ impl OverlayNode {
 				target_node_id.clone(),
 				&target_contact_option.target,
 				timeout,
+				None,
 			)
 			.await
 		{
@@ -1557,10 +1538,12 @@ impl OverlayNode {
 
 	pub fn node_id(&self) -> &IdType { &self.base.node_id }
 
+	#[allow(dead_code)]
 	pub async fn ping(&self, target: &NodeContactInfo) -> Option<u32> {
 		self.base.ping(target).await
 	}
 
+	#[allow(dead_code)]
 	pub async fn ping_at(&self, target: &ContactOption, node_id: &IdType) -> Option<u32> {
 		self.base.ping_at(target, node_id).await
 	}
@@ -1962,11 +1945,7 @@ impl OverlayNode {
 			return None;
 		}
 
-		let result = self
-			.expected_connections
-			.lock()
-			.await
-			.remove(node_id);
+		let result = self.expected_connections.lock().await.remove(node_id);
 		let response = ReverseConnectionResponse {
 			ok: result.is_some(),
 		};
@@ -2031,8 +2010,8 @@ impl OverlayNode {
 		}
 	}
 
-	/// Remembers the given node info as one of our relay nodes, if the room is available.
-	/// Returns whether it was added.
+	/// Remembers the given node info as one of our relay nodes, if the room is
+	/// available. Returns whether it was added.
 	pub async fn remember_relay_node(&self, node_info: &NodeContactInfo) -> bool {
 		let mut relay_nodes = self.relay_nodes.lock().await;
 		if relay_nodes
@@ -2259,6 +2238,7 @@ impl MessageWorkToDo for OpenRelayToDo {
 				connection.socket_sender(),
 				&self.source_addr,
 				self.hello_packet.clone(),
+				None,
 			)
 			.await
 		{
@@ -2471,7 +2451,8 @@ mod tests {
 		assistant_config.relay_node = Some(assistant_is_relay);
 		let mut relay_config = Config::default();
 		relay_config.bootstrap_nodes = vec![format!(
-			"127.0.0.1:{}", assistant_config.ipv4_udp_port.unwrap()
+			"127.0.0.1:{}",
+			assistant_config.ipv4_udp_port.unwrap()
 		)];
 		relay_config.ipv4_address = Some("127.0.0.1".to_string());
 		relay_config.ipv4_udp_port = Some(first_port + 1);
@@ -2479,14 +2460,16 @@ mod tests {
 		relay_config.relay_node = Some(true);
 		let mut source_config = Config::default();
 		source_config.bootstrap_nodes = vec![format!(
-			"127.0.0.1:{}", assistant_config.ipv4_udp_port.unwrap()
+			"127.0.0.1:{}",
+			assistant_config.ipv4_udp_port.unwrap()
 		)];
 		source_config.ipv4_address = Some("127.0.0.1".to_string());
 		source_config.ipv4_udp_port = Some(first_port + 2);
 		source_config.ipv4_udp_openness = Some(openness_source_node.to_string());
 		let mut target_config = Config::default();
 		target_config.bootstrap_nodes = vec![format!(
-			"127.0.0.1:{}", assistant_config.ipv4_udp_port.unwrap()
+			"127.0.0.1:{}",
+			assistant_config.ipv4_udp_port.unwrap()
 		)];
 		target_config.ipv4_address = Some("127.0.0.1".to_string());
 		target_config.ipv4_udp_port = Some(first_port + 3);
@@ -2515,7 +2498,11 @@ mod tests {
 		let source_node =
 			test::load_test_node(stop_flag.clone(), &mut rng, &source_config, "source").await;
 		// Make sure that we find the relay node in case the source node needs it
-		let relay_node_info = source_node.node.find_node(relay_node.node.node_id()).await.expect("relay node not found");
+		let relay_node_info = source_node
+			.node
+			.find_node(relay_node.node.node_id())
+			.await
+			.expect("relay node not found");
 		source_node.node.remember_relay_node(&relay_node_info).await;
 
 		let profile = source_node

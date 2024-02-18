@@ -79,7 +79,6 @@ pub struct Connection {
 	peer_address: SocketAddr,
 	peer_node_info: NodeContactInfo,
 	dest_session_id: u16,
-	encrypt_session_id: u16,
 	local_session_id: u16, // our session ID
 }
 
@@ -120,8 +119,6 @@ pub enum Error {
 	OutOfSessions,
 	/// There were less bytes in the packet than was expected.
 	PacketTooSmall,
-	SessionForRelaying(u16),
-	SessionNotForRelaying(u16),
 	/// No packets have been received in the given amount of time
 	Timeout(Duration),
 }
@@ -191,10 +188,6 @@ impl fmt::Display for Error {
 			Self::Timeout(timeout) => write!(f, "timeout of {:?} exceeded", timeout),
 			Self::BothReceiving => write!(f, "both sides are in receiving mode"),
 			Self::BothSending => write!(f, "both sides are in sending mode"),
-			Self::SessionForRelaying(session_id) =>
-				write!(f, "session ID {} is not for relaying", session_id),
-			Self::SessionNotForRelaying(session_id) =>
-				write!(f, "session ID {} is not for relaying", session_id),
 		}
 	}
 }
@@ -371,8 +364,8 @@ mod tests {
 
 	// Disable the TCP test for now because I've disabled the packet processing of
 	// the outgoing connection.
-	//#[tokio::test]
-	//async fn test_connection_with_tcp() { test_connection(false).await; }
+	#[tokio::test]
+	async fn test_connection_with_tcp() { test_connection(false).await; }
 
 	#[tokio::test]
 	async fn test_connection_with_udp() { test_connection(true).await; }
