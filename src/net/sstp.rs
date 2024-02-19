@@ -40,7 +40,7 @@ use log::*;
 use once_cell::sync::OnceCell;
 use rand::{rngs::OsRng, RngCore};
 pub use server::{MessageProcessorResult, Server};
-use sha2::{Digest, Sha256};
+use sha3::{Digest, Sha3_256};
 use tokio::{self, spawn, time::sleep};
 use transporter::*;
 use x25519_dalek as x25519;

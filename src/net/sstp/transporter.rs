@@ -134,7 +134,7 @@ impl KeyState {
 		private_key: &x25519::StaticSecret, public_key: &x25519::PublicKey,
 	) -> GenericArray<u8, U32> {
 		let shared_secret = private_key.diffie_hellman(&public_key);
-		let mut hasher = Sha256::new();
+		let mut hasher = Sha3_256::new();
 		hasher.update(shared_secret.as_bytes());
 		hasher.finalize()
 	}
@@ -157,7 +157,7 @@ impl KeyState {
 	/// Calculates a new key based on the current DH keys.
 	pub fn reset_key(&mut self, window_size: u16) {
 		let shared_secret = self.private_key.diffie_hellman(&self.public_key);
-		let mut hasher = Sha256::new();
+		let mut hasher = Sha3_256::new();
 		hasher.update(shared_secret.as_bytes());
 		let initial_key = hasher.finalize();
 		if self.keychain.capacity() < (window_size + 1) as usize {
@@ -171,7 +171,7 @@ impl KeyState {
 	/// Generates a new key
 	pub fn advance_key(&mut self, data: &[u8]) {
 		let last_key = self.keychain.last().unwrap();
-		let mut mac = Hmac::<Sha256>::new_from_slice(last_key).unwrap();
+		let mut mac = Hmac::<Sha3_256>::new_from_slice(last_key).unwrap();
 		mac.update(data);
 		let new_key = mac.finalize().into_bytes();
 		self.keychain.push(new_key);

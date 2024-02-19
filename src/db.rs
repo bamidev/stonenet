@@ -166,6 +166,71 @@ impl ToSql for IdType {
 	}
 }
 
+impl ToSql for ActorPublicKeyV1 {
+	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+		Ok(ToSqlOutput::Owned(Value::Blob(
+			self.clone().to_bytes().to_vec(),
+		)))
+	}
+}
+
+impl FromSql for ActorPublicKeyV1 {
+	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+		match value {
+			ValueRef::Blob(blob) =>
+				if blob.len() != 57 {
+					Err(FromSqlError::InvalidBlobSize {
+						expected_size: 57,
+						blob_size: blob.len(),
+					})
+				} else {
+					Ok(Self::from_bytes(*array_ref![blob, 0, 57]).unwrap())
+				},
+			_ => Err(FromSqlError::InvalidType),
+		}
+	}
+}
+
+impl FromSql for ActorPrivateKeyV1 {
+	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+		match value {
+			ValueRef::Blob(blob) =>
+				if blob.len() != 57 {
+					Err(FromSqlError::InvalidBlobSize {
+						expected_size: 57,
+						blob_size: blob.len(),
+					})
+				} else {
+					Ok(Self::from_bytes(*array_ref![blob, 0, 57]))
+				},
+			_ => Err(FromSqlError::InvalidType),
+		}
+	}
+}
+
+impl FromSql for ActorSignatureV1 {
+	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+		match value {
+			ValueRef::Blob(blob) =>
+				if blob.len() != 114 {
+					Err(FromSqlError::InvalidBlobSize {
+						expected_size: 114,
+						blob_size: blob.len(),
+					})
+				} else {
+					Ok(Self::from_bytes(*array_ref![blob, 0, 114]))
+				},
+			_ => Err(FromSqlError::InvalidType),
+		}
+	}
+}
+
+impl ToSql for ActorSignatureV1 {
+	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+		Ok(ToSqlOutput::Borrowed(ValueRef::Blob(self.as_bytes())))
+	}
+}
+
 impl FromSql for NodePublicKey {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
 		match value {
@@ -1030,12 +1095,11 @@ impl Connection {
 			let object_id = row.get(0)?;
 			let sequence = row.get(1)?;
 			let created = row.get(2)?;
-			let raw_signature: Vec<u8> = row.get(3)?;
+			let signature: ActorSignatureV1 = row.get(3)?;
 			let hash: IdType = row.get(4)?;
 			let object_type = row.get(5)?;
 			let previous_hash: Option<IdType> = row.get(6)?;
 			let verified_from_start: bool = row.get(7)?;
-			let signature = NodeSignature::from_bytes(raw_signature.as_slice().try_into().unwrap());
 
 			let payload = match object_type {
 				0 => Self::_fetch_post_object(tx, object_id)
@@ -1235,7 +1299,7 @@ impl Connection {
 	}
 
 	fn _store_identity(
-		tx: &impl DerefConnection, address: &ActorAddress, public_key: &NodePublicKey,
+		tx: &impl DerefConnection, address: &ActorAddress, public_key: &ActorPublicKeyV1,
 		first_object: &IdType,
 	) -> Result<i64> {
 		let mut stat = tx.prepare(
@@ -1245,16 +1309,16 @@ impl Connection {
 		)?;
 		let rowid = stat.insert(params![
 			address,
-			public_key.as_bytes(),
-			first_object.to_string(),
+			public_key,
+			first_object,
 			ACTOR_TYPE_BLOGCHAIN
 		])?;
 		Ok(rowid)
 	}
 
 	fn _store_my_identity(
-		tx: &impl DerefConnection, label: &str, private_key: &NodePrivateKey, first_object: &IdType,
-		actor_type: String,
+		tx: &impl DerefConnection, label: &str, private_key: &ActorPrivateKeyV1,
+		first_object: &IdType, actor_type: String,
 	) -> Result<i64> {
 		let actor_info = ActorInfoV1 {
 			flags: 0,
@@ -1300,7 +1364,7 @@ impl Connection {
 				actor_rowid,
 				object.sequence,
 				id.to_string(),
-				object.signature.to_bytes(),
+				object.signature,
 				object.created,
 				Utc::now().timestamp_millis(),
 				object.payload.type_id(),
@@ -1316,7 +1380,7 @@ impl Connection {
 
 	pub fn _store_post(
 		tx: &impl DerefConnection, actor_id: i64, created: u64, previous_hash: &IdType,
-		tags: &[String], files: &[IdType], hash: &IdType, signature: &NodeSignature,
+		tags: &[String], files: &[IdType], hash: &IdType, signature: &ActorSignatureV1,
 		in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> Result<()> {
 		// Create post object
@@ -1335,7 +1399,7 @@ impl Connection {
 			next_sequence,
 			previous_hash.to_string(),
 			hash.to_string(),
-			signature.to_bytes(),
+			signature,
 			created,
 			created,
 			OBJECT_TYPE_POST,
@@ -1440,7 +1504,7 @@ impl Connection {
 			actor_id,
 			object.sequence,
 			object_id.to_string(),
-			object.signature.to_bytes(),
+			object.signature,
 			object.created,
 			Utc::now().timestamp_millis(),
 			object.payload.type_id(),
@@ -1480,7 +1544,7 @@ impl Connection {
 	}
 
 	pub fn _create_my_identity(
-		tx: &impl DerefConnection, label: &str, private_key: &NodePrivateKey,
+		tx: &impl DerefConnection, label: &str, private_key: &ActorPrivateKeyV1,
 		first_object_hash: &IdType, first_object: &Object, name: &str,
 		avatar_hash: Option<&IdType>, wallpaper_hash: Option<&IdType>,
 		description_hash: Option<&IdType>,
@@ -1678,7 +1742,7 @@ impl Connection {
 		let mut list = Vec::new();
 		while let Some(row) = rows.next()? {
 			let address: ActorAddress = row.get(0)?;
-			let public_key: NodePublicKey = row.get(1)?;
+			let public_key: ActorPublicKeyV1 = row.get(1)?;
 			let first_object: IdType = row.get(2)?;
 			let actor_type: String = row.get(3)?;
 			let actor_info = ActorInfo::V1(ActorInfoV1 {
@@ -1827,7 +1891,7 @@ impl Connection {
 		)?;
 		let mut rows = stat.query(params![address])?;
 		if let Some(row) = rows.next()? {
-			let public_key: NodePublicKey = row.get(0)?;
+			let public_key: ActorPublicKeyV1 = row.get(0)?;
 			let first_object: IdType = row.get(1)?;
 			let actor_type: String = row.get(2)?;
 			Ok(Some(ActorInfo::V1(ActorInfoV1 {
@@ -1849,7 +1913,7 @@ impl Connection {
 		)?;
 		let mut rows = stat.query([id])?;
 		if let Some(row) = rows.next()? {
-			let public_key: NodePublicKey = row.get(0)?;
+			let public_key: ActorPublicKeyV1 = row.get(0)?;
 			let first_object: IdType = row.get(1)?;
 			let actor_type: String = row.get(2)?;
 			Ok(Some(ActorInfo::V1(ActorInfoV1 {
@@ -1865,7 +1929,7 @@ impl Connection {
 
 	pub fn fetch_my_identity(
 		&self, address: &ActorAddress,
-	) -> Result<Option<(String, NodePrivateKey)>> {
+	) -> Result<Option<(String, ActorPrivateKeyV1)>> {
 		let mut stat = self.0.prepare(
 			r#"
 			SELECT label, private_key FROM my_identity AS mi LEFT JOIN identity AS i
@@ -1877,7 +1941,7 @@ impl Connection {
 			None => Ok(None),
 			Some(row) => {
 				let label = row.get(0)?;
-				let private_key: NodePrivateKey = row.get(1)?;
+				let private_key: ActorPrivateKeyV1 = row.get(1)?;
 				Ok(Some((label, private_key)))
 			}
 		}
@@ -1885,7 +1949,7 @@ impl Connection {
 
 	pub fn fetch_my_identity_by_label(
 		&self, label: &str,
-	) -> Result<Option<(ActorAddress, NodePrivateKey)>> {
+	) -> Result<Option<(ActorAddress, ActorPrivateKeyV1)>> {
 		let mut stat = self.0.prepare(
 			r#"
 			SELECT i.address, mi.private_key
@@ -1898,7 +1962,7 @@ impl Connection {
 			None => Ok(None),
 			Some(row) => {
 				let address: ActorAddress = row.get(0)?;
-				let private_key: NodePrivateKey = row.get(1)?;
+				let private_key: ActorPrivateKeyV1 = row.get(1)?;
 				Ok(Some((address, private_key)))
 			}
 		}
@@ -1906,7 +1970,7 @@ impl Connection {
 
 	pub fn fetch_my_identities(
 		&self,
-	) -> Result<Vec<(String, ActorAddress, IdType, String, NodePrivateKey)>> {
+	) -> Result<Vec<(String, ActorAddress, IdType, String, ActorPrivateKeyV1)>> {
 		let mut stat = self.0.prepare(
 			r#"
 			SELECT label, i.address, i.first_object, i.type, mi.private_key
@@ -1921,7 +1985,7 @@ impl Connection {
 			let address: ActorAddress = row.get(1)?;
 			let first_object: IdType = row.get(2)?;
 			let actor_type: String = row.get(3)?;
-			let private_key: NodePrivateKey = row.get(4)?;
+			let private_key: ActorPrivateKeyV1 = row.get(4)?;
 			ids.push((row.get(0)?, address, first_object, actor_type, private_key));
 		}
 		Ok(ids)
@@ -2064,8 +2128,8 @@ impl Connection {
 				)?;
 				stat.insert(params![
 					actor_id,
-					actor_info.public_key.to_bytes(),
-					actor_info.first_object.as_bytes(),
+					actor_info.public_key,
+					actor_info.first_object,
 					ACTOR_TYPE_BLOGCHAIN
 				])?
 			};
@@ -2250,16 +2314,16 @@ impl Connection {
 	}
 
 	pub fn store_identity(
-		&mut self, address: &ActorAddress, public_key: &NodePublicKey, first_object: &IdType,
+		&mut self, address: &ActorAddress, public_key: &ActorPublicKeyV1, first_object: &IdType,
 	) -> Result<()> {
 		let mut stat = self.prepare(
 			r#"
 			INSERT INTO identity (address, public_key, first_object, type) VALUES(?,?,?,?)
 		"#,
 		)?;
-		stat.insert(rusqlite::params![
+		stat.insert(params![
 			address,
-			public_key.as_bytes(),
+			public_key,
 			first_object,
 			ACTOR_TYPE_BLOGCHAIN
 		])?;
@@ -2267,7 +2331,8 @@ impl Connection {
 	}
 
 	pub fn store_my_identity(
-		&mut self, label: &str, address: &IdType, private_key: &NodePrivateKey, first_object: &IdType,
+		&mut self, label: &str, address: &IdType, private_key: &NodePrivateKey,
+		first_object: &IdType,
 	) -> rusqlite::Result<()> {
 		let tx = self.0.transaction()?;
 

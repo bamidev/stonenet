@@ -38,7 +38,7 @@ pub enum Address {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ActorInfoV1 {
 	pub flags: u8,
-	pub public_key: NodePublicKey,
+	pub public_key: ActorPublicKeyV1,
 	pub first_object: IdType,
 	pub actor_type: String,
 }
@@ -136,7 +136,7 @@ pub struct ProfileObject {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Object {
-	pub signature: NodeSignature,
+	pub signature: ActorSignatureV1,
 	pub sequence: u64,
 	pub previous_hash: IdType,
 	pub created: u64,
@@ -166,7 +166,7 @@ pub enum ObjectPayload {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ObjectHeader {
 	pub index: u64,
-	pub signature: NodeSignature,
+	pub signature: ActorSignatureV1,
 }
 
 

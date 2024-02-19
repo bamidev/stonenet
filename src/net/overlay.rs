@@ -1062,7 +1062,7 @@ impl OverlayNode {
 
 	fn load_my_actor_nodes(
 		&self, c: &db::Connection,
-	) -> Vec<(ActorAddress, IdType, String, NodePrivateKey)> {
+	) -> Vec<(ActorAddress, IdType, String, ActorPrivateKeyV1)> {
 		let result = match c.fetch_my_identities() {
 			Ok(r) => r,
 			Err(e) => {

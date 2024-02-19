@@ -5,7 +5,7 @@ use base58::*;
 use num::bigint::BigUint;
 use rusqlite::types::*;
 use serde::{Deserialize, Serialize, Serializer};
-use sha2::{Digest, Sha256};
+use sha3::{Digest, Sha3_256};
 
 
 #[async_trait]
@@ -106,7 +106,7 @@ impl IdType {
 	}
 
 	pub fn hash(bytes: &[u8]) -> Self {
-		let mut hasher = Sha256::new();
+		let mut hasher = Sha3_256::new();
 		hasher.update(bytes);
 		let buffer: [u8; 32] = hasher.finalize().into();
 		buffer.into()

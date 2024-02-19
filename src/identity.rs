@@ -4,47 +4,109 @@ use std::{
 	ops::{Deref, DerefMut},
 };
 
-use ed25519_dalek::{self, Signer};
+use ed25519_dalek::{self as ed25519, Signer};
+use ed448_rust as ed448;
 use rand::{prelude::*, rngs::OsRng};
 use rusqlite::{types::*, ToSql};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde_big_array::BigArray;
+use sha3::{Digest, Sha3_256};
 use zeroize::Zeroize;
 
 use crate::common::*;
 
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ActorPublicKeyV1(#[serde(with = "BigArray")] [u8; 57]);
+pub type ActorPublicKeyV1Error = ();
+
+pub struct ActorPrivateKeyV1(ed448::PrivateKey);
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ActorSignatureV1(#[serde(with = "BigArray")] [u8; 114]);
+
 #[derive(Debug, PartialEq)]
-pub struct NodePublicKey(ed25519_dalek::VerifyingKey);
+pub struct NodePublicKey(ed25519::VerifyingKey);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NodeSignature(ed25519_dalek::Signature);
-pub type NodeSignatureError = ed25519_dalek::SignatureError;
+pub struct NodeSignature(ed25519::Signature);
+pub type NodeSignatureError = ed25519::SignatureError;
 
 #[derive(Debug)]
-pub struct NodePublicKeyError(ed25519_dalek::SignatureError);
+pub struct NodePublicKeyError(ed25519::SignatureError);
 
 #[derive(Debug, Serialize)]
 pub struct NodePrivateKey {
-	inner: ed25519_dalek::SigningKey,
+	inner: ed25519::SigningKey,
 	#[serde(skip_serializing)]
 	copy: NodePrivateKeyCopy,
 }
-pub type NodeKeypairError = ed25519_dalek::SignatureError;
 
 #[derive(Debug, Zeroize)]
 #[zeroize(drop)]
-struct NodePrivateKeyCopy([u8; ed25519_dalek::SECRET_KEY_LENGTH]);
+struct NodePrivateKeyCopy([u8; ed25519::SECRET_KEY_LENGTH]);
 
+
+impl ActorPublicKeyV1 {
+	pub fn from_bytes(bytes: [u8; 57]) -> Result<Self, ActorPublicKeyV1Error> { Ok(Self(bytes)) }
+
+	pub fn generate_address(&self) -> IdType {
+		let mut hasher = Sha3_256::new();
+		hasher.update(&self.0);
+		let buffer: [u8; 32] = hasher.finalize().into();
+		buffer.into()
+	}
+
+	pub fn to_bytes(self) -> [u8; 57] { self.0 }
+
+	pub fn verify(&self, message: &[u8], signature: &ActorSignatureV1) -> bool {
+		let inner = ed448::PublicKey::from(self.0.clone());
+		inner.verify(message, &signature.0, None).is_ok()
+	}
+}
+
+impl ActorPrivateKeyV1 {
+	pub fn as_bytes(&self) -> &[u8; ed448::KEY_LENGTH] { self.0.as_bytes() }
+
+	pub fn from_bytes(bytes: [u8; ed448::KEY_LENGTH]) -> Self {
+		Self(ed448::PrivateKey::from(bytes))
+	}
+
+	pub fn generate_with_rng<R>(rng: &mut R) -> Self
+	where
+		R: CryptoRng + RngCore,
+	{
+		Self(ed448::PrivateKey::new(rng))
+	}
+
+	pub fn public(&self) -> ActorPublicKeyV1 {
+		ActorPublicKeyV1(ed448::PublicKey::from(&self.0).as_byte())
+	}
+
+	pub fn sign(&self, message: &[u8]) -> ActorSignatureV1 {
+		ActorSignatureV1(self.0.sign(message, None).expect("sign error"))
+	}
+}
+
+impl ActorSignatureV1 {
+	pub fn as_bytes(&self) -> &[u8; ed448::SIG_LENGTH] { &self.0 }
+
+	pub fn from_bytes(bytes: [u8; ed448::SIG_LENGTH]) -> Self { Self(bytes) }
+
+	pub fn hash(&self) -> IdType { IdType::hash(self.as_bytes()) }
+
+	pub fn to_bytes(self) -> [u8; ed448::SIG_LENGTH] { self.0 }
+}
 
 impl NodePublicKey {
 	pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, NodePublicKeyError> {
 		Ok(Self(
-			ed25519_dalek::VerifyingKey::from_bytes(&bytes).map_err(|e| NodePublicKeyError(e))?,
+			ed25519::VerifyingKey::from_bytes(&bytes).map_err(|e| NodePublicKeyError(e))?,
 		))
 	}
 
 	pub fn generate_address(&self) -> IdType {
-		let mut hasher = Sha256::new();
+		let mut hasher = Sha3_256::new();
 		hasher.update(self.0.to_bytes());
 		let buffer: [u8; 32] = hasher.finalize().into();
 		buffer.into()
@@ -61,7 +123,7 @@ impl NodePrivateKey {
 	pub fn to_bytes(&self) -> [u8; 32] { self.inner.to_bytes() }
 
 	pub fn from_bytes(mut bytes: [u8; 32]) -> Self {
-		let this = Self::new(ed25519_dalek::SigningKey::from_bytes(&bytes));
+		let this = Self::new(ed25519::SigningKey::from_bytes(&bytes));
 		bytes.zeroize();
 		this
 	}
@@ -75,10 +137,10 @@ impl NodePrivateKey {
 	where
 		R: CryptoRng + RngCore,
 	{
-		Self::new(ed25519_dalek::SigningKey::generate(rng))
+		Self::new(ed25519::SigningKey::generate(rng))
 	}
 
-	fn new(inner: ed25519_dalek::SigningKey) -> Self {
+	fn new(inner: ed25519::SigningKey) -> Self {
 		Self {
 			copy: NodePrivateKeyCopy(inner.to_bytes()),
 			inner,
@@ -94,15 +156,13 @@ impl FromSql for NodePrivateKey {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
 		match value {
 			ValueRef::Blob(bytes) =>
-				if bytes.len() >= ed25519_dalek::SECRET_KEY_LENGTH {
+				if bytes.len() >= ed25519::SECRET_KEY_LENGTH {
 					FromSqlResult::Ok(NodePrivateKey::from_bytes(
-						bytes[..ed25519_dalek::SECRET_KEY_LENGTH]
-							.try_into()
-							.unwrap(),
+						bytes[..ed25519::SECRET_KEY_LENGTH].try_into().unwrap(),
 					))
 				} else {
 					FromSqlResult::Err(FromSqlError::InvalidBlobSize {
-						expected_size: ed25519_dalek::SECRET_KEY_LENGTH,
+						expected_size: ed25519::SECRET_KEY_LENGTH,
 						blob_size: bytes.len(),
 					})
 				},
@@ -126,35 +186,27 @@ impl fmt::Display for NodePublicKeyError {
 }
 
 impl Clone for NodePrivateKey {
-	fn clone(&self) -> Self {
-		Self::new(ed25519_dalek::SigningKey::from_bytes(
-			&self.inner.to_bytes(),
-		))
-	}
+	fn clone(&self) -> Self { Self::new(ed25519::SigningKey::from_bytes(&self.inner.to_bytes())) }
 }
 
 impl NodeSignature {
 	pub fn to_bytes(&self) -> [u8; 64] { self.0.to_bytes() }
 
-	pub fn from_bytes(bytes: [u8; 64]) -> Self {
-		Self(ed25519_dalek::Signature::from_bytes(&bytes))
-	}
+	pub fn from_bytes(bytes: [u8; 64]) -> Self { Self(ed25519::Signature::from_bytes(&bytes)) }
 
 	pub fn hash(&self) -> IdType { IdType::hash(&self.to_bytes()) }
 }
 
-impl From<ed25519_dalek::VerifyingKey> for NodePublicKey {
-	fn from(other: ed25519_dalek::VerifyingKey) -> Self { Self(other) }
+impl From<ed25519::VerifyingKey> for NodePublicKey {
+	fn from(other: ed25519::VerifyingKey) -> Self { Self(other) }
 }
 
 impl Clone for NodePublicKey {
-	fn clone(&self) -> Self {
-		Self(ed25519_dalek::VerifyingKey::from_bytes(self.0.as_bytes()).unwrap())
-	}
+	fn clone(&self) -> Self { Self(ed25519::VerifyingKey::from_bytes(self.0.as_bytes()).unwrap()) }
 }
 
 impl Deref for NodePublicKey {
-	type Target = ed25519_dalek::VerifyingKey;
+	type Target = ed25519::VerifyingKey;
 
 	fn deref(&self) -> &Self::Target { &self.0 }
 }
@@ -169,10 +221,8 @@ impl<'de> Deserialize<'de> for NodePublicKey {
 		D: serde::Deserializer<'de>,
 	{
 		//let mut bytes = [0u8; 32];
-		let bytes: [u8; ed25519_dalek::PUBLIC_KEY_LENGTH] = Deserialize::deserialize(d)?;
-		Ok(Self(
-			ed25519_dalek::VerifyingKey::from_bytes(&bytes).unwrap(),
-		))
+		let bytes: [u8; ed25519::PUBLIC_KEY_LENGTH] = Deserialize::deserialize(d)?;
+		Ok(Self(ed25519::VerifyingKey::from_bytes(&bytes).unwrap()))
 	}
 }
 
@@ -181,7 +231,7 @@ impl Serialize for NodePublicKey {
 	where
 		S: serde::Serializer,
 	{
-		self.0.to_bytes().serialize(s)
+		Serialize::serialize(&self.0.to_bytes(), s)
 	}
 }
 
@@ -196,6 +246,18 @@ mod tests {
 
 	#[test]
 	fn test_type_sizes() {
+		let actor_public_key = ActorPublicKeyV1::from_bytes([0u8; ed448::KEY_LENGTH]).unwrap();
+		assert_eq!(
+			binserde::serialized_size(&actor_public_key).unwrap(),
+			ed448::KEY_LENGTH
+		);
+
+		let signature = ActorSignatureV1::from_bytes([0u8; ed448::SIG_LENGTH]);
+		assert_eq!(
+			binserde::serialized_size(&signature).unwrap(),
+			ed448::SIG_LENGTH
+		);
+
 		let public_key = NodePublicKey::from_bytes([0u8; PUBLIC_KEY_LENGTH]).unwrap();
 		assert_eq!(
 			binserde::serialized_size(&public_key).unwrap(),

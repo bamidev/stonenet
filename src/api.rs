@@ -8,6 +8,7 @@ use std::{
 
 use chrono::*;
 use log::*;
+use rand::rngs::OsRng;
 use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -75,9 +76,9 @@ impl Api {
 					.as_millis() as u64,
 				payload: &payload,
 			};
-			let private_key = NodePrivateKey::generate();
+			let private_key = ActorPrivateKeyV1::generate_with_rng(&mut OsRng);
 			let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
-			let object_hash = IdType::hash(&signature.to_bytes());
+			let object_hash = signature.hash();
 			let object = Object {
 				signature,
 				previous_hash: IdType::default(),
@@ -194,7 +195,7 @@ impl Api {
 
 	pub fn fetch_my_identity(
 		&self, address: &ActorAddress,
-	) -> db::Result<Option<(String, NodePrivateKey)>> {
+	) -> db::Result<Option<(String, ActorPrivateKeyV1)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -204,7 +205,7 @@ impl Api {
 
 	pub fn fetch_my_identity_by_label(
 		&self, label: &str,
-	) -> db::Result<Option<(ActorAddress, NodePrivateKey)>> {
+	) -> db::Result<Option<(ActorAddress, ActorPrivateKeyV1)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -214,7 +215,7 @@ impl Api {
 
 	pub fn fetch_my_identities(
 		&self,
-	) -> db::Result<Vec<(String, ActorAddress, IdType, String, NodePrivateKey)>> {
+	) -> db::Result<Vec<(String, ActorAddress, IdType, String, ActorPrivateKeyV1)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -436,8 +437,8 @@ impl Api {
 	}
 
 	pub async fn publish_post(
-		&self, identity: &ActorAddress, private_key: &NodePrivateKey, message: &str, tags: Vec<String>,
-		attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
+		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, message: &str,
+		tags: Vec<String>, attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> db::Result<IdType> {
 		let (hash, object) = self.db.perform(|mut c| {
 			let tx = c.transaction()?;
@@ -514,8 +515,8 @@ impl Api {
 	/// Calculates the signature of the s
 	fn sign_object(
 		sequence: u64, previous_hash: &IdType, created: u64, payload: &ObjectPayload,
-		private_key: &NodePrivateKey,
-	) -> db::Result<(IdType, NodeSignature)> {
+		private_key: &ActorPrivateKeyV1,
+	) -> db::Result<(IdType, ActorSignatureV1)> {
 		// Prepare data to be signed
 		let sign_data = ObjectSignData {
 			previous_hash: previous_hash.clone(),
@@ -527,7 +528,7 @@ impl Api {
 
 		// Sign it
 		let signature = private_key.sign(&raw_sign_data);
-		let hash = IdType::hash(&signature.to_bytes());
+		let hash = signature.hash();
 
 		Ok((hash, signature))
 	}

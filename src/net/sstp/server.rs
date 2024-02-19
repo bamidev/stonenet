@@ -2018,7 +2018,9 @@ impl Server {
 		Ok(())
 	}
 
-	fn verify_hello_packet<B>(public_key: &NodePublicKey, signature: &NodeSignature, body: &B) -> Result<()>
+	fn verify_hello_packet<B>(
+		public_key: &NodePublicKey, signature: &NodeSignature, body: &B,
+	) -> Result<()>
 	where
 		B: Serialize,
 	{
