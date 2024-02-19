@@ -1124,9 +1124,9 @@ impl OverlayNode {
 				for i in 0..256 {
 					let this2 = this.clone();
 					spawn(async move {
-						let bucket = this2.base.buckets[i].lock().await;
+						let connections = this2.base.buckets[i].lock().await.connections.clone();
 
-						for (_, connection_mutex) in bucket.connections.iter() {
+						for (_, connection_mutex) in connections.iter() {
 							let mut connection = connection_mutex.lock().await;
 							if this2
 								.base
