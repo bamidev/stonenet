@@ -1,7 +1,9 @@
 use std::{cmp::Ordering, sync::Arc};
 
+use tokio::sync::Mutex;
+
 use super::{distance, sstp::Connection, NodeContactInfo};
-use crate::{common::*, limited_store::LimitedVec, trace::Mutex};
+use crate::{common::*, limited_store::LimitedVec};
 
 
 pub struct Bucket {

@@ -9,7 +9,7 @@ use futures::future::join_all;
 use log::*;
 use num::BigUint;
 use serde::de::DeserializeOwned;
-use tokio::time::sleep;
+use tokio::{sync::Mutex as EternalMutex, time::sleep};
 
 use super::{
 	bucket::Bucket,
@@ -76,7 +76,7 @@ where
 
 	visited: Vec<(IdType, ContactOption)>,
 	candidates: VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
-	open_assistant_connection: Option<(IdType, Arc<Mutex<Option<Box<Connection>>>>)>,
+	open_assistant_connection: Option<(IdType, Arc<EternalMutex<Option<Box<Connection>>>>)>,
 }
 
 pub struct Node<I>
@@ -537,7 +537,10 @@ where
 
 	pub async fn find_finger_or_connection(
 		&self, id: &IdType,
-	) -> Option<(NodeContactInfo, Option<Arc<Mutex<Box<sstp::Connection>>>>)> {
+	) -> Option<(
+		NodeContactInfo,
+		Option<Arc<EternalMutex<Box<sstp::Connection>>>>,
+	)> {
 		let bucket_pos = match self.differs_at_bit(id) {
 			// If ID is the same as ours, don't give any other contacts
 			None => return None,
@@ -646,7 +649,7 @@ where
 
 	pub async fn find_connection_in_buckets(
 		&self, id: &IdType,
-	) -> Option<Arc<Mutex<Box<Connection>>>> {
+	) -> Option<Arc<EternalMutex<Box<Connection>>>> {
 		for i in (0..256).rev() {
 			let bucket_mutex = &self.buckets[i];
 			let bucket = bucket_mutex.lock().await;
@@ -1038,7 +1041,9 @@ where
 	}
 
 	/// Keeps pinging on the connection every second to keep it alive.
-	async fn keep_pinging(self: &Arc<Self>, connection_mutex: Arc<Mutex<Option<Box<Connection>>>>) {
+	async fn keep_pinging(
+		self: &Arc<Self>, connection_mutex: Arc<EternalMutex<Option<Box<Connection>>>>,
+	) {
 		loop {
 			sleep(Duration::from_secs(1)).await;
 
