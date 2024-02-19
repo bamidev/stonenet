@@ -323,12 +323,12 @@ impl Connection {
 	pub fn dest_session_id(&self) -> u16 { self.dest_session_id }
 }
 
-impl From<PublicKeyError> for Error {
-	fn from(_other: PublicKeyError) -> Self { Self::InvalidPublicKey }
+impl From<NodePublicKeyError> for Error {
+	fn from(_other: NodePublicKeyError) -> Self { Self::InvalidPublicKey }
 }
 
-impl From<PublicKeyError> for Traced<Error> {
-	fn from(other: PublicKeyError) -> Self { Into::<Error>::into(other).trace() }
+impl From<NodePublicKeyError> for Traced<Error> {
+	fn from(other: NodePublicKeyError) -> Self { Into::<Error>::into(other).trace() }
 }
 
 impl From<io::Error> for Error {
@@ -391,7 +391,7 @@ mod tests {
 			slave_config.ipv4_tcp_port = Some(10001);
 		}
 		let stop_flag = Arc::new(AtomicBool::new(false));
-		let master_private_key = PrivateKey::generate_with_rng(&mut rng);
+		let master_private_key = NodePrivateKey::generate_with_rng(&mut rng);
 		let master_node_id = master_private_key.public().generate_address();
 		let master = sstp::Server::bind(
 			stop_flag.clone(),
@@ -402,7 +402,7 @@ mod tests {
 		)
 		.await
 		.expect("unable to bind master");
-		let slave_private_key = PrivateKey::generate_with_rng(&mut rng);
+		let slave_private_key = NodePrivateKey::generate_with_rng(&mut rng);
 		let slave_node_id = slave_private_key.public().generate_address();
 		let slave = Arc::new(
 			sstp::Server::bind(
@@ -519,7 +519,7 @@ mod tests {
 		let relay_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10002));
 		let node2_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10004));
 		let stop_flag = Arc::new(AtomicBool::new(false));
-		let relay_private_key = PrivateKey::generate();
+		let relay_private_key = NodePrivateKey::generate();
 		let relay_node_id = relay_private_key.public().generate_address();
 		let relay = sstp::Server::bind(
 			stop_flag.clone(),
@@ -530,7 +530,7 @@ mod tests {
 		)
 		.await
 		.expect("unable to bind relay");
-		let node1_private_key = PrivateKey::generate();
+		let node1_private_key = NodePrivateKey::generate();
 		let node1_node_id = node1_private_key.public().generate_address();
 		let node1 = sstp::Server::bind(
 			stop_flag.clone(),
@@ -541,7 +541,7 @@ mod tests {
 		)
 		.await
 		.expect("unable to bind node 1");
-		let node2_private_key = PrivateKey::generate();
+		let node2_private_key = NodePrivateKey::generate();
 		let node2_node_id = node2_private_key.public().generate_address();
 		let node2 = Arc::new(
 			sstp::Server::bind(

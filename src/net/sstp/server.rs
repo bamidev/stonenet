@@ -78,7 +78,7 @@ pub struct RelayInitiationInfo {
 #[derive(Deserialize, Serialize)]
 pub struct RelayedHelloPacketHeader {
 	relayer_session_id: u16,
-	relayer_public_key: PublicKey,
+	relayer_public_key: NodePublicKey,
 	pub base: HelloPacketHeader,
 }
 
@@ -107,7 +107,7 @@ pub struct RelayedHelloAckPacket {
 #[derive(Deserialize, Serialize)]
 struct HelloAckAckPacket {
 	session_id: u16,
-	signature: Signature,
+	signature: NodeSignature,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -136,8 +136,8 @@ struct HelloAckPacket {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct HelloAckPacketHeader {
-	node_public_key: identity::PublicKey,
-	signature: Signature,
+	node_public_key: identity::NodePublicKey,
+	signature: NodeSignature,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -164,8 +164,8 @@ struct HelloPacketBody {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HelloPacketHeader {
-	pub node_public_key: identity::PublicKey,
-	signature: Signature,
+	pub node_public_key: identity::NodePublicKey,
+	signature: NodeSignature,
 }
 
 type HelloReceiver = mpsc::Receiver<HelloResult>;
@@ -189,7 +189,7 @@ pub struct Server {
 	our_contact_info: StdMutex<ContactInfo>,
 	pub(super) sessions: Mutex<Sessions>,
 	node_id: IdType,
-	private_key: identity::PrivateKey,
+	private_key: identity::NodePrivateKey,
 	default_timeout: Duration,
 	// TODO: Remove pub in following line:
 	pub message_processors: OnceCell<(Box<MessageProcessor>, Box<MessageFinishProcessor>)>,
@@ -211,23 +211,23 @@ enum SessionTransportData {
 struct SessionTransportDataDirect {
 	alive_flag: Arc<AtomicBool>,
 	dest_session_id: Option<u16>,
-	dest_public_key: Option<PublicKey>,
+	dest_public_key: Option<NodePublicKey>,
 	hello_channel: Option<HelloSender>,
 	hello_relay_ack_sender: Option<Sender<u16>>,
 	packet_processor: mpsc::UnboundedSender<CryptedPacket>,
 	relay_node_id: Option<IdType>,
-	relay_public_key: Option<PublicKey>,
+	relay_public_key: Option<NodePublicKey>,
 }
 
 struct SessionTransportDataRelay {
 	source_session_id: u16,
 	source_addr: SocketAddr,
-	source_public_key: PublicKey,
+	source_public_key: NodePublicKey,
 	source_sender: Arc<dyn LinkSocketSender>,
 	target_session_id: u16,
 	target_addr: SocketAddr,
 	target_node_id: IdType,
-	target_public_key: Option<PublicKey>,
+	target_public_key: Option<NodePublicKey>,
 	target_sender: Option<Arc<dyn LinkSocketSender>>,
 	relay_hello_sender: Sender<RelayHelloAckPacket>,
 	relay_hello_ack_ack_sender: Option<Sender<u16>>,
@@ -289,7 +289,7 @@ impl Server {
 	/// default_timeout: The timeout that incomming connection will be
 	/// configured for
 	pub async fn bind(
-		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: PrivateKey,
+		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: NodePrivateKey,
 		default_timeout: Duration,
 	) -> StdResult<Arc<Self>, SocketBindError> {
 		let contact_info = ContactInfo::from_config(config);
@@ -710,7 +710,7 @@ impl Server {
 	}
 
 	async fn new_relay_session(
-		&self, source_session_id: u16, source_addr: SocketAddr, source_public_key: PublicKey,
+		&self, source_session_id: u16, source_addr: SocketAddr, source_public_key: NodePublicKey,
 		source_sender: Arc<dyn LinkSocketSender>, target_node_id: IdType, target_addr: SocketAddr,
 		hello_sender: Sender<RelayedHelloAckPacket>,
 		relay_hello_ack_ack_sender: Option<Sender<u16>>, keep_alive_timeout: Duration,
@@ -744,7 +744,7 @@ impl Server {
 	}
 
 	async fn new_incomming_session(
-		&self, alive_flag: Arc<AtomicBool>, their_node_id: IdType, their_public_key: PublicKey,
+		&self, alive_flag: Arc<AtomicBool>, their_node_id: IdType, their_public_key: NodePublicKey,
 		dest_session_id: u16, packet_sender: UnboundedSender<CryptedPacket>, timeout: Duration,
 	) -> Result<(u16, bool, Arc<Mutex<SessionData>>)> {
 		// Check if session doesn't already exists
@@ -1244,9 +1244,9 @@ impl Server {
 
 	async fn _process_hello_packet(
 		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, contact: &ContactOption,
-		dest_session_id: u16, encrypt_session_id: u16, public_key: PublicKey,
+		dest_session_id: u16, encrypt_session_id: u16, public_key: NodePublicKey,
 		dh_public_key: x25519::PublicKey, contact_info: ContactInfo, opt_request: Option<&[u8]>,
-		relayer_public_key: Option<PublicKey>,
+		relayer_public_key: Option<NodePublicKey>,
 		new_packet: impl FnOnce(
 			usize,
 			&x25519::PublicKey,
@@ -2004,7 +2004,7 @@ impl Server {
 	}
 
 	fn verify_hello_ack_packet_raw(
-		node_id: &IdType, public_key: &PublicKey, signature: &Signature, buffer: &[u8],
+		node_id: &IdType, public_key: &NodePublicKey, signature: &NodeSignature, buffer: &[u8],
 	) -> Result<()> {
 		// Verify node ID
 		if &public_key.generate_address() != node_id {
@@ -2018,7 +2018,7 @@ impl Server {
 		Ok(())
 	}
 
-	fn verify_hello_packet<B>(public_key: &PublicKey, signature: &Signature, body: &B) -> Result<()>
+	fn verify_hello_packet<B>(public_key: &NodePublicKey, signature: &NodeSignature, body: &B) -> Result<()>
 	where
 		B: Serialize,
 	{
@@ -2031,7 +2031,7 @@ impl Server {
 	}
 
 	fn verify_hello_packet_raw(
-		public_key: &PublicKey, signature: &Signature, buffer: &[u8],
+		public_key: &NodePublicKey, signature: &NodeSignature, buffer: &[u8],
 	) -> Result<()> {
 		// Verify signature
 		if !public_key.verify(buffer, signature) {

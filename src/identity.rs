@@ -14,32 +14,32 @@ use zeroize::Zeroize;
 use crate::common::*;
 
 #[derive(Debug, PartialEq)]
-pub struct PublicKey(ed25519_dalek::VerifyingKey);
+pub struct NodePublicKey(ed25519_dalek::VerifyingKey);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Signature(ed25519_dalek::Signature);
-pub type SignatureError = ed25519_dalek::SignatureError;
+pub struct NodeSignature(ed25519_dalek::Signature);
+pub type NodeSignatureError = ed25519_dalek::SignatureError;
 
-pub type Identity = PublicKey;
 #[derive(Debug)]
-pub struct PublicKeyError(ed25519_dalek::SignatureError);
+pub struct NodePublicKeyError(ed25519_dalek::SignatureError);
 
 #[derive(Debug, Serialize)]
-pub struct PrivateKey {
+pub struct NodePrivateKey {
 	inner: ed25519_dalek::SigningKey,
 	#[serde(skip_serializing)]
-	copy: PrivateKeyCopy,
+	copy: NodePrivateKeyCopy,
 }
-pub type KeypairError = ed25519_dalek::SignatureError;
+pub type NodeKeypairError = ed25519_dalek::SignatureError;
 
 #[derive(Debug, Zeroize)]
 #[zeroize(drop)]
-struct PrivateKeyCopy([u8; ed25519_dalek::SECRET_KEY_LENGTH]);
+struct NodePrivateKeyCopy([u8; ed25519_dalek::SECRET_KEY_LENGTH]);
 
-impl PublicKey {
-	pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, PublicKeyError> {
+
+impl NodePublicKey {
+	pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, NodePublicKeyError> {
 		Ok(Self(
-			ed25519_dalek::VerifyingKey::from_bytes(&bytes).map_err(|e| PublicKeyError(e))?,
+			ed25519_dalek::VerifyingKey::from_bytes(&bytes).map_err(|e| NodePublicKeyError(e))?,
 		))
 	}
 
@@ -50,12 +50,12 @@ impl PublicKey {
 		buffer.into()
 	}
 
-	pub fn verify(&self, message: &[u8], signature: &Signature) -> bool {
+	pub fn verify(&self, message: &[u8], signature: &NodeSignature) -> bool {
 		self.0.verify_strict(message, &signature.0).is_ok()
 	}
 }
 
-impl PrivateKey {
+impl NodePrivateKey {
 	pub fn as_bytes(&self) -> &[u8; 32] { &self.copy.0 }
 
 	pub fn to_bytes(&self) -> [u8; 32] { self.inner.to_bytes() }
@@ -80,22 +80,22 @@ impl PrivateKey {
 
 	fn new(inner: ed25519_dalek::SigningKey) -> Self {
 		Self {
-			copy: PrivateKeyCopy(inner.to_bytes()),
+			copy: NodePrivateKeyCopy(inner.to_bytes()),
 			inner,
 		}
 	}
 
-	pub fn public(&self) -> PublicKey { PublicKey(self.inner.verifying_key()) }
+	pub fn public(&self) -> NodePublicKey { NodePublicKey(self.inner.verifying_key()) }
 
-	pub fn sign(&self, message: &[u8]) -> Signature { Signature(self.inner.sign(message)) }
+	pub fn sign(&self, message: &[u8]) -> NodeSignature { NodeSignature(self.inner.sign(message)) }
 }
 
-impl FromSql for PrivateKey {
+impl FromSql for NodePrivateKey {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
 		match value {
 			ValueRef::Blob(bytes) =>
 				if bytes.len() >= ed25519_dalek::SECRET_KEY_LENGTH {
-					FromSqlResult::Ok(PrivateKey::from_bytes(
+					FromSqlResult::Ok(NodePrivateKey::from_bytes(
 						bytes[..ed25519_dalek::SECRET_KEY_LENGTH]
 							.try_into()
 							.unwrap(),
@@ -111,21 +111,21 @@ impl FromSql for PrivateKey {
 	}
 }
 
-impl ToSql for PrivateKey {
+impl ToSql for NodePrivateKey {
 	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
 		Ok(ToSqlOutput::Borrowed(ValueRef::Blob(self.as_bytes())))
 	}
 }
 
-impl Error for PublicKeyError {}
+impl Error for NodePublicKeyError {}
 
-impl fmt::Display for PublicKeyError {
+impl fmt::Display for NodePublicKeyError {
 	fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
 		write!(fmt, "{}", self.0)
 	}
 }
 
-impl Clone for PrivateKey {
+impl Clone for NodePrivateKey {
 	fn clone(&self) -> Self {
 		Self::new(ed25519_dalek::SigningKey::from_bytes(
 			&self.inner.to_bytes(),
@@ -133,7 +133,7 @@ impl Clone for PrivateKey {
 	}
 }
 
-impl Signature {
+impl NodeSignature {
 	pub fn to_bytes(&self) -> [u8; 64] { self.0.to_bytes() }
 
 	pub fn from_bytes(bytes: [u8; 64]) -> Self {
@@ -143,27 +143,27 @@ impl Signature {
 	pub fn hash(&self) -> IdType { IdType::hash(&self.to_bytes()) }
 }
 
-impl From<ed25519_dalek::VerifyingKey> for PublicKey {
+impl From<ed25519_dalek::VerifyingKey> for NodePublicKey {
 	fn from(other: ed25519_dalek::VerifyingKey) -> Self { Self(other) }
 }
 
-impl Clone for PublicKey {
+impl Clone for NodePublicKey {
 	fn clone(&self) -> Self {
 		Self(ed25519_dalek::VerifyingKey::from_bytes(self.0.as_bytes()).unwrap())
 	}
 }
 
-impl Deref for PublicKey {
+impl Deref for NodePublicKey {
 	type Target = ed25519_dalek::VerifyingKey;
 
 	fn deref(&self) -> &Self::Target { &self.0 }
 }
 
-impl DerefMut for PublicKey {
+impl DerefMut for NodePublicKey {
 	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
 }
 
-impl<'de> Deserialize<'de> for PublicKey {
+impl<'de> Deserialize<'de> for NodePublicKey {
 	fn deserialize<D>(d: D) -> Result<Self, D::Error>
 	where
 		D: serde::Deserializer<'de>,
@@ -176,7 +176,7 @@ impl<'de> Deserialize<'de> for PublicKey {
 	}
 }
 
-impl Serialize for PublicKey {
+impl Serialize for NodePublicKey {
 	fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
 	where
 		S: serde::Serializer,
@@ -196,13 +196,13 @@ mod tests {
 
 	#[test]
 	fn test_type_sizes() {
-		let public_key = PublicKey::from_bytes([0u8; PUBLIC_KEY_LENGTH]).unwrap();
+		let public_key = NodePublicKey::from_bytes([0u8; PUBLIC_KEY_LENGTH]).unwrap();
 		assert_eq!(
 			binserde::serialized_size(&public_key).unwrap(),
 			PUBLIC_KEY_LENGTH
 		);
 
-		let signature = Signature::from_bytes([0u8; SIGNATURE_LENGTH]);
+		let signature = NodeSignature::from_bytes([0u8; SIGNATURE_LENGTH]);
 		assert_eq!(
 			binserde::serialized_size(&signature).unwrap(),
 			SIGNATURE_LENGTH
@@ -218,7 +218,7 @@ mod tests {
 		let mut buffer = vec![0u8; 1024];
 		rng.fill_bytes(&mut buffer);
 
-		let keypair = PrivateKey::generate();
+		let keypair = NodePrivateKey::generate();
 		let signature = keypair.sign(&buffer);
 		assert!(
 			keypair.public().verify(&buffer, &signature),
@@ -226,7 +226,7 @@ mod tests {
 		);
 
 		let signature_bytes = signature.to_bytes();
-		let signature2 = Signature::from_bytes(signature_bytes);
+		let signature2 = NodeSignature::from_bytes(signature_bytes);
 		assert!(
 			keypair.public().verify(&buffer, &signature2),
 			"can't verify own signature after encoding+decoding it"

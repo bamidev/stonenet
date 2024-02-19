@@ -354,7 +354,7 @@ impl OverlayNode {
 	pub async fn close(self: Arc<Self>) { self.base.close().await; }
 
 	pub async fn start(
-		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: PrivateKey,
+		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: NodePrivateKey,
 		db: Database,
 	) -> StdResult<Arc<Self>, SocketBindError> {
 		let bootstrap_nodes = resolve_bootstrap_addresses(&config.bootstrap_nodes, true, true);
@@ -1062,7 +1062,7 @@ impl OverlayNode {
 
 	fn load_my_actor_nodes(
 		&self, c: &db::Connection,
-	) -> Vec<(ActorAddress, IdType, String, PrivateKey)> {
+	) -> Vec<(ActorAddress, IdType, String, NodePrivateKey)> {
 		let result = match c.fetch_my_identities() {
 			Ok(r) => r,
 			Err(e) => {

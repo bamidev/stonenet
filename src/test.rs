@@ -6,7 +6,7 @@ use rand_chacha::ChaCha8Rng;
 use tempfile::NamedTempFile;
 
 use crate::{
-	api::Api, config::Config, db::Database, identity::PrivateKey, net::overlay::OverlayNode,
+	api::Api, config::Config, db::Database, identity::NodePrivateKey, net::overlay::OverlayNode,
 };
 
 
@@ -25,7 +25,7 @@ pub async fn load_test_node(
 	// Leak it on purpose so that the temp file may live until the end of all tests
 	// However, the OS will not clean it up after exit either...
 	Box::into_raw(Box::new(temp_file));
-	let private_key = PrivateKey::generate_with_rng(rng);
+	let private_key = NodePrivateKey::generate_with_rng(rng);
 	let node_id = private_key.public().generate_address();
 	info!(
 		"Node {} runs on port {}.",

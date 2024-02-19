@@ -75,7 +75,7 @@ impl Api {
 					.as_millis() as u64,
 				payload: &payload,
 			};
-			let private_key = PrivateKey::generate();
+			let private_key = NodePrivateKey::generate();
 			let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
 			let object_hash = IdType::hash(&signature.to_bytes());
 			let object = Object {
@@ -194,7 +194,7 @@ impl Api {
 
 	pub fn fetch_my_identity(
 		&self, address: &ActorAddress,
-	) -> db::Result<Option<(String, PrivateKey)>> {
+	) -> db::Result<Option<(String, NodePrivateKey)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -204,7 +204,7 @@ impl Api {
 
 	pub fn fetch_my_identity_by_label(
 		&self, label: &str,
-	) -> db::Result<Option<(ActorAddress, PrivateKey)>> {
+	) -> db::Result<Option<(ActorAddress, NodePrivateKey)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -214,7 +214,7 @@ impl Api {
 
 	pub fn fetch_my_identities(
 		&self,
-	) -> db::Result<Vec<(String, ActorAddress, IdType, String, PrivateKey)>> {
+	) -> db::Result<Vec<(String, ActorAddress, IdType, String, NodePrivateKey)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect()?;
@@ -436,7 +436,7 @@ impl Api {
 	}
 
 	pub async fn publish_post(
-		&self, identity: &ActorAddress, private_key: &PrivateKey, message: &str, tags: Vec<String>,
+		&self, identity: &ActorAddress, private_key: &NodePrivateKey, message: &str, tags: Vec<String>,
 		attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> db::Result<IdType> {
 		let (hash, object) = self.db.perform(|mut c| {
@@ -514,8 +514,8 @@ impl Api {
 	/// Calculates the signature of the s
 	fn sign_object(
 		sequence: u64, previous_hash: &IdType, created: u64, payload: &ObjectPayload,
-		private_key: &PrivateKey,
-	) -> db::Result<(IdType, Signature)> {
+		private_key: &NodePrivateKey,
+	) -> db::Result<(IdType, NodeSignature)> {
 		// Prepare data to be signed
 		let sign_data = ObjectSignData {
 			previous_hash: previous_hash.clone(),

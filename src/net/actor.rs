@@ -530,7 +530,7 @@ impl ActorNode {
 	}
 
 	#[allow(dead_code)]
-	fn load_public_key(&self) -> PublicKey {
+	fn load_public_key(&self) -> NodePublicKey {
 		let actor_info = tokio::task::block_in_place(|| {
 			let c = self.db().connect().expect("unable to connect to database");
 			c.fetch_identity(self.actor_address())
@@ -809,7 +809,7 @@ impl ActorNode {
 		true
 	}*/
 
-	fn verify_object(&self, id: &IdType, object: &Object, public_key: &PublicKey) -> bool {
+	fn verify_object(&self, id: &IdType, object: &Object, public_key: &NodePublicKey) -> bool {
 		if object.created as u128
 			> SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -1225,7 +1225,7 @@ impl ActorNode {
 
 impl PublishObjectToDo {
 	async fn receive_object(
-		&self, c: &mut Connection, object_id: &IdType, public_key: &PublicKey,
+		&self, c: &mut Connection, object_id: &IdType, public_key: &NodePublicKey,
 	) -> Option<Object> {
 		let buffer = match c.receive().await {
 			Ok(v) => Arc::new(v),
