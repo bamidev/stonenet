@@ -6,8 +6,27 @@ use std::{
 	fmt::{Debug, Display},
 	ops::{Deref, DerefMut},
 	result::Result as StdResult,
+	sync::{
+		atomic::{AtomicBool, Ordering},
+		Arc,
+	},
+	time::Duration,
 };
 
+use log::warn;
+use tokio::{spawn, time::sleep};
+
+
+const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(1);
+
+
+pub struct Mutex<T>(tokio::sync::Mutex<T>);
+
+pub struct MutexGuard<'a, T> {
+	inner: tokio::sync::MutexGuard<'a, T>,
+	#[cfg(debug_assertions)]
+	locked: Arc<AtomicBool>,
+}
 
 pub type Result<T, E> = StdResult<T, Traced<E>>;
 
@@ -36,6 +55,51 @@ pub fn err<T, E>(inner: E) -> Result<T, E> {
 	})
 }
 
+
+impl<T> Mutex<T> {
+	#[cfg(debug_assertions)]
+	pub async fn lock(&self) -> MutexGuard<'_, T> {
+		let locked = Arc::new(AtomicBool::new(true));
+
+		let backtrace = Backtrace::force_capture();
+		let locked2 = locked.clone();
+		spawn(async move {
+			sleep(DEADLOCK_TIMEOUT).await;
+			if locked2.load(Ordering::Relaxed) {
+				warn!("Deadlock detected: {:?}", &backtrace);
+			}
+		});
+
+		MutexGuard {
+			inner: self.0.lock().await,
+			locked,
+		}
+	}
+
+	pub fn new(t: T) -> Self { Self(tokio::sync::Mutex::new(t)) }
+
+	#[cfg(not(debug_assertions))]
+	pub async fn lock(&self) -> MutexGuard<'_, T> {
+		MutexGuard {
+			inner: self.0.lock().await,
+		}
+	}
+}
+
+#[cfg(debug_assertions)]
+impl<'a, T> Drop for MutexGuard<'a, T> {
+	fn drop(&mut self) { self.locked.store(false, Ordering::Relaxed); }
+}
+
+impl<'a, T> Deref for MutexGuard<'a, T> {
+	type Target = T;
+
+	fn deref(&self) -> &Self::Target { &*self.inner }
+}
+
+impl<'a, T> DerefMut for MutexGuard<'a, T> {
+	fn deref_mut(&mut self) -> &mut Self::Target { &mut *self.inner }
+}
 
 impl<E> Traceable<E> for E {
 	fn trace(self) -> Traced<E> { Traced::new(self) }

@@ -9,7 +9,7 @@ use futures::future::join_all;
 use log::*;
 use num::BigUint;
 use serde::de::DeserializeOwned;
-use tokio::{sync::Mutex, time::sleep};
+use tokio::time::sleep;
 
 use super::{
 	bucket::Bucket,
@@ -21,7 +21,7 @@ use super::{
 use crate::{
 	common::*,
 	db,
-	trace::{self, Traced},
+	trace::{self, Mutex, Traced},
 };
 
 

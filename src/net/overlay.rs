@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use futures::{channel::oneshot, future::join_all};
 use log::*;
 use rand::{rngs::OsRng, Rng};
-use tokio::{self, select, spawn, sync::Mutex, time::sleep};
+use tokio::{self, select, spawn, time::sleep};
 
 use super::{
 	actor::*,
@@ -28,6 +28,7 @@ use crate::{
 	limited_store::LimitedVec,
 	model::*,
 	net::*,
+	trace::Mutex,
 };
 
 

@@ -7,13 +7,11 @@ use std::{
 use futures::{future::BoxFuture, FutureExt};
 use tokio::{
 	select,
-	sync::{
-		mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender},
-		Mutex,
-	},
+	sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender},
 };
 
 use super::*;
+use crate::trace::Mutex;
 
 
 const DEFAULT_KEEP_ALIVE_IDLE_TIME: Duration = Duration::from_secs(120);
@@ -870,7 +868,7 @@ impl Server {
 		let packet = CryptedPacket { ks_seq, seq, data };
 
 		let should_close = {
-			let sessions: tokio::sync::MutexGuard<'_, Sessions> = self.sessions.lock().await;
+			let sessions = self.sessions.lock().await;
 			if let Some(s) = sessions.map.get(&session_id).map(|s| s.clone()) {
 				drop(sessions);
 				let mut session = s.lock().await;
