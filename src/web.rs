@@ -8,7 +8,6 @@ use std::{
 };
 
 use ::serde::*;
-use base58::FromBase58;
 use multipart::server::Multipart;
 use rocket::{
 	form::Form,

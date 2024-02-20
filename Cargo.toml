@@ -1,6 +1,6 @@
 [package]
 name = "stonenetd"
-version = "0.0.12"
+version = "0.0.13"
 authors = ["Danny de Jong"]
 description = "The daemon for the completely decentralized & censorship-resistant media platform."
 edition = "2021"
@@ -19,7 +19,7 @@ serde-big-array = "*"
 bincode = "1"
 chrono = { version = "0", features = ["clock"] }
 ctrlc = "3"
-curve25519-dalek = "=4.1.1"
+curve25519-dalek = "< 4.1.2"
 dirs = "4"
 chacha20 = ">=0.9, <1.0"
 ed25519 = { version = "*", features = ["serde"] }

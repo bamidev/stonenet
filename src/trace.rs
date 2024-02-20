@@ -6,15 +6,16 @@ use std::{
 	fmt::{Debug, Display},
 	ops::{Deref, DerefMut},
 	result::Result as StdResult,
-	sync::{
-		atomic::{AtomicBool, Ordering},
-		Arc,
-	},
 	time::Duration,
 };
+#[cfg(debug_assertions)]
+use std::sync::{
+	atomic::{AtomicBool, Ordering},
+	Arc,
+};
 
+#[cfg(debug_assertions)]
 use log::warn;
-use tokio::{spawn, time::sleep};
 
 
 const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(1);
