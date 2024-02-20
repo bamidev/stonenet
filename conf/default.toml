@@ -65,8 +65,8 @@ bootstrap_nodes = [
 # sent on the connection unencrypted.
 leak_first_request = true
 
-# Maximum idle time for UDP hole-punching in seconds:
-udp_max_idle_time = 60
+# The interval (in seconds) in which other nodes are pinged.
+node_ping_interval = 60
 
 # The number of nodes to remember in each 'bucket'. This is a technical feature
 # that generally does not need to be changed. However, increasing this number

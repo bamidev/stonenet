@@ -410,14 +410,23 @@ impl OverlayNode {
 		);
 		socket.spawn();
 
-		if let Some(idle_time) = config.udp_max_idle_time {
-			let this4 = this.clone();
-			spawn(async move {
-				this4
-					.keep_hole_open(stop_flag, Duration::from_secs(idle_time))
-					.await;
-			});
-		}
+		// Keep pinging other nodes
+		// TODO: Make sure to send a ping on each available link protocol, because a port needs to
+		// remain the same on each on of them.
+		let idle_time = config.node_ping_interval.unwrap_or(60);
+		let this4 = this.clone();
+		let stop_flag2 = stop_flag.clone();
+		spawn(async move {
+			this4
+				.keep_hole_open(stop_flag2, Duration::from_secs(idle_time))
+				.await;
+		});
+
+		// When nodes attach to us, make sure to ping on those connections to keep them alive.
+		this.maintain_node_connections();
+
+		// Synchronize data on each actor network every hour
+		this.maintain_synchronization(stop_flag);
 
 		Ok(this)
 	}
@@ -938,8 +947,6 @@ impl OverlayNode {
 		// TODO: Find remembered nodes from the database and try them out first. This is
 		// currently not implemented yet.
 
-		self.maintain_node_connections();
-
 		let mut i = 0;
 		// TODO: Contact all bootstrap nodes
 		while i < self.bootstrap_nodes.len() && !stop_flag.load(Ordering::Relaxed) {
@@ -991,7 +998,6 @@ impl OverlayNode {
 							}
 
 							self.join_actor_networks(actor_node_infos).await;
-							self.maintain_synchronization(stop_flag);
 
 							return true;
 						}
