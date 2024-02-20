@@ -1,5 +1,10 @@
 #![allow(dead_code)]
 
+#[cfg(debug_assertions)]
+use std::sync::{
+	atomic::{AtomicBool, Ordering},
+	Arc,
+};
 use std::{
 	backtrace::Backtrace,
 	error::Error,
@@ -8,15 +13,11 @@ use std::{
 	result::Result as StdResult,
 	time::Duration,
 };
-#[cfg(debug_assertions)]
-use std::sync::{
-	atomic::{AtomicBool, Ordering},
-	Arc,
-};
 
 #[cfg(debug_assertions)]
 use log::warn;
-
+#[cfg(debug_assertions)]
+use tokio::{spawn, time::sleep};
 
 const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(1);
 
