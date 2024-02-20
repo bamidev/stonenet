@@ -8,8 +8,8 @@
     },
     "devDependencies": {
         "css-loader": "*",
+        "mini-css-extract-plugin": "*",
         "ts-loader": "*",
-        "style-loader": "*",
         "webpack": "*"
     },
     "dependencies": {
@@ -17,6 +17,7 @@
       "@milkdown/ctx": "7.3.3",
       "@milkdown/plugin-block": "7.3.3",
       "@milkdown/plugin-clipboard": "7.3.3",
+      "@milkdown/plugin-emoji": "7.3.3",
       "@milkdown/plugin-indent": "7.3.3",
       "@milkdown/plugin-listener": "7.3.3",
       "@milkdown/plugin-math": "7.3.3",

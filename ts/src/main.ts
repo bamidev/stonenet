@@ -2,9 +2,11 @@ import { defaultValueCtx, editorViewOptionsCtx, Editor, rootCtx } from '@milkdow
 import { commonmark } from '@milkdown/preset-commonmark';
 import { block } from '@milkdown/plugin-block';
 import { clipboard } from '@milkdown/plugin-clipboard';
+//import { emoji } from '@milkdown/plugin-emoji';
 import { indent, indentConfig } from '@milkdown/plugin-indent';
 import { listener, listenerCtx } from '@milkdown/plugin-listener';
 import { math } from '@milkdown/plugin-math';
+//import { nord } from '@milkdown/theme-nord';
 import { prism, prismConfig } from '@milkdown/plugin-prism';
 
 // Import PRISM languages
@@ -36,6 +38,7 @@ function load_markdown(selector: string, editable: boolean, content?: string) {
 
 	Editor
 		.make()
+		//.config(nord)
 		.config(ctx => {
 			if (content) { console.log('content'); console.log(content)
 				ctx.set(defaultValueCtx, content)
@@ -78,6 +81,7 @@ function load_markdown(selector: string, editable: boolean, content?: string) {
 		.use(block)
 		.use(commonmark)
 		.use(clipboard)
+		//.use(emoji)
 		.use(indent)
 		.use(listener)
 		.use(math)

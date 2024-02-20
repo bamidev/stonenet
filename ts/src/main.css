@@ -1,3 +1,17 @@
-@import 'prosemirror-view/style/prosemirror.css'
-@import 'prosemirror-tables/style/tables.css'
-@import '@milkdown/theme-nord/style.css'
+@import 'prosemirror-view/style/prosemirror.css';
+@import 'prosemirror-tables/style/tables.css';
+@import '@milkdown/theme-nord/style.css';
+
+
+#editor {
+    border: 1px solid black;
+}
+
+img.attachment {
+	margin-bottom: 0.5em;
+	margin-top: 0.5em;
+	max-height: 500px;
+	max-width: 100%;
+	height: auto;
+	width: auto;
+}
