@@ -1,4 +1,4 @@
 [Desktop Entry]
 Type=Application
 Name=Stonenet
-Exec=xdg-open http://localhost:37338
+Exec=stonenet-desktop

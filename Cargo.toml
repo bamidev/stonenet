@@ -1,7 +1,7 @@
 [package]
 name = "stonenetd"
-version = "0.0.14"
-authors = ["Danny de Jong"]
+version = "0.0.15"
+authors = ["Bamidev"]
 description = "The daemon for the completely decentralized & censorship-resistant media platform."
 edition = "2021"
 homepage = "https://stonenet.org"
@@ -88,7 +88,6 @@ assets = [
 	["assets/empty.sqlite", "var/lib/stonenet/db.sqlite", "774"],
 	["static/**/*", "usr/share/stonenet/static", "644"],
 	["templates/**/*", "usr/share/stonenet/templates", "644"],
-	["assets/generic/xdg/stonenet.desktop", "usr/share/applications/", "644"],
 ]
 depends = ["$auto", "libssl3", "libsqlite3-0"]
 maintainer-scripts = "assets/debian"
@@ -99,3 +98,6 @@ features = ["unbundled"]
 depends = []
 revision = "bundled"
 features = ["bundled"]
+
+[workspace]
+members = ["desktop"]
