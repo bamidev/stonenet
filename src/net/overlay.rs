@@ -411,8 +411,8 @@ impl OverlayNode {
 		socket.spawn();
 
 		// Keep pinging other nodes
-		// TODO: Make sure to send a ping on each available link protocol, because a port needs to
-		// remain the same on each on of them.
+		// TODO: Make sure to send a ping on each available link protocol, because a
+		// port needs to remain the same on each on of them.
 		let idle_time = config.node_ping_interval.unwrap_or(60);
 		let this4 = this.clone();
 		let stop_flag2 = stop_flag.clone();
@@ -422,7 +422,8 @@ impl OverlayNode {
 				.await;
 		});
 
-		// When nodes attach to us, make sure to ping on those connections to keep them alive.
+		// When nodes attach to us, make sure to ping on those connections to keep them
+		// alive.
 		this.maintain_node_connections();
 
 		// Synchronize data on each actor network every hour
