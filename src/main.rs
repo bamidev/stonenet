@@ -90,12 +90,12 @@ async fn check_version() -> Option<String> {
 	}
 }
 
-#[cfg(not(target_family = "windows"))]
+#[cfg(not(feature = "self-contained"))]
 fn config_path(_install_dir: PathBuf) -> PathBuf {
 	PathBuf::from_str(config::CONFIG_FILE_PATH).unwrap()
 }
 
-#[cfg(target_family = "windows")]
+#[cfg(feature = "self-contained")]
 fn config_path(install_dir: PathBuf) -> PathBuf {
 	let mut path = install_dir;
 	path.push("config.toml");
@@ -103,10 +103,19 @@ fn config_path(install_dir: PathBuf) -> PathBuf {
 }
 
 fn initialize_logging() {
-	match env::var_os("SYSTEM_LOG_FILE") {
-		None => env_logger::init(),
-		Some(filename) => simple_logging::log_to_file(filename, LevelFilter::Info)
-			.expect("unable to unitialize logger"),
+	#[cfg(not(features = "self-contained"))]
+	let result = env::var_os("SYSTEM_LOG_FILE").map(|os| PathBuf::from(os));
+	#[cfg(feature = "self-contained")]
+	let result = Some({
+		let mut path = env::current_exe().map(|p| p.parent().unwrap().to_path_buf()).expect("unable to obtain executable path");
+		path.push("stonenet.log");
+		path
+	});
+
+	if let Some(filename) = result {
+		simple_logging::log_to_file(filename, LevelFilter::Debug).expect("unable to unitialize logger")
+	} else {
+		env_logger::init()
 	}
 }
 
@@ -146,7 +155,7 @@ where
 	}
 }
 
-#[cfg(not(target_family = "windows"))]
+#[cfg(not(feature = "self-contained"))]
 fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Database> {
 	Database::load(
 		PathBuf::from_str(&config.database_path)
@@ -155,17 +164,17 @@ fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Database>
 	.map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
 
-#[cfg(target_family = "windows")]
+#[cfg(feature = "self-contained")]
 fn load_database(_config: &Config, install_dir: PathBuf) -> io::Result<Database> {
 	let mut db_path = install_dir;
 	db_path.push("db.sqlite");
 	Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
 
-#[cfg(not(target_family = "windows"))]
+#[cfg(not(feature = "self-contained"))]
 fn load_install_dir() -> io::Result<PathBuf> { Ok(PathBuf::new()) }
 
-#[cfg(target_family = "windows")]
+#[cfg(feature = "self-contained")]
 fn load_install_dir() -> io::Result<PathBuf> {
 	let mut install_dir = env::current_exe().unwrap();
 	install_dir.pop();
@@ -184,7 +193,7 @@ fn version_message(version_str: &str) -> String {
 	)
 }
 
-#[cfg(not(target_family = "windows"))]
+#[cfg(not(feature = "self-contained"))]
 fn version_message(_version_str: &str) -> String {
 	"use your package manager to update the stonenet client".to_owned()
 }
