@@ -1,4 +1,6 @@
-use std::{path::PathBuf, process};
+#![windows_subsystem = "windows"]
+
+use std::process;
 
 use browser_window::{application::*, browser::*};
 
