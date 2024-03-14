@@ -2305,7 +2305,11 @@ impl Connection {
 	}
 
 	pub fn open(path: &Path) -> rusqlite::Result<Self> {
-		Ok(Self(rusqlite::Connection::open(&path)?))
+		let x = rusqlite::Connection::open(&path)?;
+		// For some reason foreign key checks are not working properly on windows, so disable it for now.
+		#[cfg(target_family = "windows")]
+		x.pragma_update(None, "foreign_keys", false)?;
+		Ok(Self(x))
 	}
 
 	pub fn store_block(&mut self, hash: &IdType, data: &[u8]) -> Result<()> {
