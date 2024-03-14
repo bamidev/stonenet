@@ -11,7 +11,7 @@ rust-version = "1.68"
 
 
 [target.'cfg(target_family = "windows")'.dependencies]
-browser-window = { version = "0.11", features = ["edge2"] }
+browser-window = { version = "0.12", features = ["edge2"] }
 windows = { version = "0", features = [
 	"Win32_Foundation",
 	"Win32_Security",
@@ -20,7 +20,7 @@ windows = { version = "0", features = [
 winreg = "*"
 
 [target.'cfg(not(target_family = "windows"))'.dependencies]
-browser-window = { version = "0.11", features = ["webkitgtk"] }
+browser-window = { version = "0.12", features = ["webkitgtk"] }
 
 [package.metadata.deb]
 name = "stonenet-desktop"
