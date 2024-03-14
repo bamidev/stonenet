@@ -1288,6 +1288,28 @@ impl Connection {
 		tx: &impl DerefConnection, hash: &IdType, plain_hash: &IdType, mime_type: &str,
 		block_count: u32,
 	) -> Result<i64> {
+		match tx.query_row(r#"
+			SELECT rowid, plain_hash, mime_type, block_count FROM file WHERE hash = ?
+		"#, [hash], |r| {
+			let rowid: i64 = r.get(0)?;
+			let ph: IdType = r.get(1)?;
+			let mt: String = r.get(2)?;
+			let bc: u32 = r.get(3)?;
+			Ok((rowid, ph, mt, bc))
+		}) {
+			Ok((rowid, plain_hash2, mime_type2, block_count2)) => {
+				if plain_hash == &plain_hash2 && mime_type == &mime_type2 && block_count == block_count2 {
+					return Ok(rowid);
+				}
+				// TODO: Return an error
+			}
+			Err(e) => {
+				if e != rusqlite::Error::QueryReturnedNoRows {
+					return trace::err(e.into());
+				}
+			}
+		}
+
 		tx.execute(
 			r#"
 			INSERT INTO file (hash, plain_hash, mime_type, block_count)
