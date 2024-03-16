@@ -1182,6 +1182,11 @@ impl OverlayNode {
 		});
 	}
 
+	pub async fn obtain_id(&self, target: &SocketAddr) -> Option<IdType> {
+		let contact_info: ContactInfo = target.into();
+		self.base.obtain_id(&contact_info).await
+	}
+
 	/// Tries to obtain a keep-alive connection from one of the available
 	/// fingers.
 	async fn obtain_keep_alive_connection(self: &Arc<Self>) {

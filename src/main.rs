@@ -42,7 +42,8 @@ use net::{overlay::OverlayNode, *};
 use semver::Version;
 use signal_hook::flag;
 use simple_logging;
-use tokio;
+use stonenetd::net::resolve_bootstrap_addresses;
+use tokio::{self, time::sleep};
 use toml;
 
 
@@ -107,13 +108,16 @@ fn initialize_logging() {
 	let result = env::var_os("SYSTEM_LOG_FILE").map(|os| PathBuf::from(os));
 	#[cfg(feature = "self-contained")]
 	let result = Some({
-		let mut path = env::current_exe().map(|p| p.parent().unwrap().to_path_buf()).expect("unable to obtain executable path");
+		let mut path = env::current_exe()
+			.map(|p| p.parent().unwrap().to_path_buf())
+			.expect("unable to obtain executable path");
 		path.push("stonenet.log");
 		path
 	});
 
 	if let Some(filename) = result {
-		simple_logging::log_to_file(filename, LevelFilter::Debug).expect("unable to unitialize logger")
+		simple_logging::log_to_file(filename, LevelFilter::Debug)
+			.expect("unable to unitialize logger")
 	} else {
 		env_logger::init()
 	}
@@ -241,7 +245,8 @@ async fn main() {
 
 		// Test openness
 		let api = Api { node, db };
-		test_openness(&api, &config).await;
+		let new_bootstrap_nodes = test_bootstrap_nodes(&api, &config).await;
+		test_openness(&api, &config, new_bootstrap_nodes).await;
 
 		// Check for updates (only in release mode)
 		#[cfg(not(debug_assertions))]
@@ -345,7 +350,27 @@ async fn node_main(stop_flag: Arc<AtomicBool>, g: &Api, config: &Config) {
 	}
 }
 
-async fn test_openness(g: &Api, config: &Config) {
+/// Populates our bootstrap_id table with the node ID's of our bootstrap nodes
+async fn test_bootstrap_nodes(g: &Api, config: &Config) -> bool {
+	let bootstrap_nodes = resolve_bootstrap_addresses(&config.bootstrap_nodes, true, true);
+
+	let mut updated = 0;
+	for bootstrap_node in &bootstrap_nodes {
+		if let Some(bootstrap_id) = g.node.obtain_id(&bootstrap_node).await {
+			g.db.perform(|mut c| {
+				if c.remember_bootstrap_node_id(&bootstrap_node, &bootstrap_id)? {
+					updated += 1;
+				}
+				Ok(())
+			})
+			.expect("database error");
+		}
+	}
+	updated > 0
+}
+
+async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
+	// TODO: Clean up this code:
 	if config.ipv4_address.is_some() {
 		let mut bootstrap_nodes: Option<Vec<SocketAddr>> = None;
 
@@ -359,6 +384,12 @@ async fn test_openness(g: &Api, config: &Config) {
 				Some(Openness::Unidirectional)
 			}
 		} else {
+			if should_wait {
+				info!("Waiting 2 minutes before testing openness...");
+				sleep(Duration::from_secs(120)).await;
+				should_wait = false;
+			}
+
 			info!("Testing UDPv4 openness...");
 			bootstrap_nodes = Some(resolve_bootstrap_addresses(
 				&config.bootstrap_nodes,
@@ -400,6 +431,12 @@ async fn test_openness(g: &Api, config: &Config) {
 				Some(Openness::Unidirectional)
 			}
 		} else {
+			if should_wait {
+				info!("Waiting 2 minutes before testing openness...");
+				sleep(Duration::from_secs(120)).await;
+				should_wait = false;
+			}
+
 			info!("Testing TCPv4 openness...");
 			if bootstrap_nodes.is_none() {
 				bootstrap_nodes = Some(resolve_bootstrap_addresses(
@@ -448,6 +485,12 @@ async fn test_openness(g: &Api, config: &Config) {
 				Some(Openness::Unidirectional)
 			}
 		} else {
+			if should_wait {
+				info!("Waiting 2 minutes before testing openness...");
+				sleep(Duration::from_secs(120)).await;
+				should_wait = false;
+			}
+
 			info!("Testing UDPv6 openness...");
 			bootstrap_nodes = Some(resolve_bootstrap_addresses(
 				&config.bootstrap_nodes,
@@ -489,6 +532,12 @@ async fn test_openness(g: &Api, config: &Config) {
 				Some(Openness::Unidirectional)
 			}
 		} else {
+			if should_wait {
+				info!("Waiting 2 minutes before testing openness...");
+				sleep(Duration::from_secs(120)).await;
+				should_wait = false;
+			}
+
 			info!("Testing TCPv6 openness...");
 			if bootstrap_nodes.is_none() {
 				bootstrap_nodes = Some(resolve_bootstrap_addresses(

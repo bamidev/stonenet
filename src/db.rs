@@ -1288,26 +1288,32 @@ impl Connection {
 		tx: &impl DerefConnection, hash: &IdType, plain_hash: &IdType, mime_type: &str,
 		block_count: u32,
 	) -> Result<i64> {
-		match tx.query_row(r#"
+		match tx.query_row(
+			r#"
 			SELECT rowid, plain_hash, mime_type, block_count FROM file WHERE hash = ?
-		"#, [hash], |r| {
-			let rowid: i64 = r.get(0)?;
-			let ph: IdType = r.get(1)?;
-			let mt: String = r.get(2)?;
-			let bc: u32 = r.get(3)?;
-			Ok((rowid, ph, mt, bc))
-		}) {
+		"#,
+			[hash],
+			|r| {
+				let rowid: i64 = r.get(0)?;
+				let ph: IdType = r.get(1)?;
+				let mt: String = r.get(2)?;
+				let bc: u32 = r.get(3)?;
+				Ok((rowid, ph, mt, bc))
+			},
+		) {
 			Ok((rowid, plain_hash2, mime_type2, block_count2)) => {
-				if plain_hash == &plain_hash2 && mime_type == &mime_type2 && block_count == block_count2 {
+				if plain_hash == &plain_hash2
+					&& mime_type == &mime_type2
+					&& block_count == block_count2
+				{
 					return Ok(rowid);
 				}
 				// TODO: Return an error
 			}
-			Err(e) => {
+			Err(e) =>
 				if e != rusqlite::Error::QueryReturnedNoRows {
 					return trace::err(e.into());
-				}
-			}
+				},
 		}
 
 		tx.execute(
@@ -2306,7 +2312,8 @@ impl Connection {
 
 	pub fn open(path: &Path) -> rusqlite::Result<Self> {
 		let x = rusqlite::Connection::open(&path)?;
-		// For some reason foreign key checks are not working properly on windows, so disable it for now.
+		// For some reason foreign key checks are not working properly on windows, so
+		// disable it for now.
 		#[cfg(target_family = "windows")]
 		x.pragma_update(None, "foreign_keys", false)?;
 		Ok(Self(x))
@@ -2437,7 +2444,7 @@ impl Connection {
 
 	pub fn remember_bootstrap_node_id(
 		&mut self, address: &SocketAddr, node_id: &IdType,
-	) -> Result<()> {
+	) -> Result<bool> {
 		let tx = self.0.transaction()?;
 		let updated = tx.execute(
 			"UPDATE bootstrap_id SET node_id = ? WHERE address = ?",
@@ -2450,7 +2457,7 @@ impl Connection {
 			)?;
 		}
 		tx.commit()?;
-		Ok(())
+		Ok(updated == 0)
 	}
 
 	pub fn remember_node(&mut self, address: &SocketAddr, node_id: &IdType) -> Result<()> {

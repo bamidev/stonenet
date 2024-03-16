@@ -991,7 +991,7 @@ where
 		// FIXME: It would save a few packets if we would just take the node_id from
 		// the first 'FIND_NODE' request. But that would require some
 		// restructuring of the code base.
-		let node_id = match self.test_presence(node_address).await {
+		let node_id = match self.obtain_id(node_address).await {
 			None => return false,
 			Some(id) => id,
 		};
@@ -1384,17 +1384,30 @@ where
 		candidates
 	}
 
-	pub async fn test_presence(&self, target: &ContactInfo) -> Option<IdType> {
-		let (mut connection, _) = self.select_direct_connection2(target, None, None).await?;
+	pub async fn obtain_id(&self, target: &ContactInfo) -> Option<IdType> {
+		let first_buffer = self
+			.interface
+			.prepare(NETWORK_MESSAGE_TYPE_PING_REQUEST, &[]);
+		let opt_request = self.first_request(&first_buffer);
+		let (mut connection, opt_response) = self
+			.select_direct_connection2(target, None, opt_request)
+			.await?;
 		let their_node_id = connection.their_node_id().clone();
-		let result = self.exchange_ping_on_connection(&mut connection).await;
-		result?;
+		let _response = self
+			.handle_exchange_result(
+				&mut connection,
+				opt_request.is_some(),
+				opt_response,
+				NETWORK_MESSAGE_TYPE_PING_REQUEST,
+				&[],
+			)
+			.await?;
 		Some(their_node_id)
 	}
 
 	/// Tests wether the node is available, and if their node ID is correct.
 	pub async fn test_id(&self, contact: &NodeContactInfo) -> bool {
-		match self.test_presence(&contact.contact_info).await {
+		match self.obtain_id(&contact.contact_info).await {
 			None => false,
 			Some(id) => id == contact.node_id,
 		}
