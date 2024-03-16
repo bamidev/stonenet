@@ -31,6 +31,8 @@ use std::{
 	},
 	time::Duration,
 };
+#[cfg(target_family = "windows")]
+use std::fs;
 
 use api::Api;
 use config::{Config, *};
@@ -96,7 +98,7 @@ fn config_path(_install_dir: PathBuf) -> PathBuf {
 	PathBuf::from_str(config::CONFIG_FILE_PATH).unwrap()
 }
 
-#[cfg(ntarget_family = "windows")]
+#[cfg(target_family = "windows")]
 fn config_path(install_dir: PathBuf) -> PathBuf {
 	let mut path = install_dir;
 	path.push("config.toml");
@@ -108,6 +110,7 @@ fn initialize_logging() {
 	let result = env::var_os("APPDATA").map(|os| {
 		let mut p = PathBuf::from(os);
 		p.push("Stonenet");
+		let _ = fs::create_dir(&p);
 		p.push("stonenet.log");
 		p
 	});
@@ -171,6 +174,7 @@ fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Database>
 fn load_database(_config: &Config, install_dir: PathBuf) -> io::Result<Database> {
 	let mut db_path = PathBuf::from(env::var_os("APPDATA").expect("Unable to read %APPDATA%."));
 	db_path.push("Stonenet");
+	let _ = fs::create_dir(&db_path);
 	db_path.push("db.sqlite");
 	Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }

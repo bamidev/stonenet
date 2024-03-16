@@ -43,6 +43,10 @@ Section "Stonenet"
 	File /r ../templates
 	File /oname=config.toml ../conf/default.toml
 
+	# Pre-create directory for Edge WebView2 framework to use
+	CreateDirectory "$INSTDIR\stonenet-desktop.exe.WebView2"
+	ExecWait 'icacls "$INSTDIR\stonenet-desktop.exe.WebView2" /grant Users:F'
+
 	WriteUninstaller $INSTDIR\uninstaller.exe
 	WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Stonenet" "DisplayName" "Stonenet"
 	WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Stonenet" "UninstallString" '"$INSTDIR\uninstaller.exe"'
