@@ -233,6 +233,10 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 
 				// Try all unidirectional nodes first, just remember the others
 				for node in actor_nodes {
+					if &node.node_id == self.base.0.node.node_id() {
+						continue;
+					}
+
 					if let Some(strategy) =
 						self.base.0.node.pick_contact_strategy(&node.contact_info)
 					{
