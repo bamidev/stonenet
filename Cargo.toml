@@ -1,6 +1,6 @@
 [package]
 name = "stonenetd"
-version = "0.0.15"
+version = "0.0.16"
 authors = ["Bamidev"]
 description = "The daemon for the completely decentralized & censorship-resistant media platform."
 edition = "2021"
