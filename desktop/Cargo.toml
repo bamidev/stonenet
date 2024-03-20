@@ -22,6 +22,10 @@ winreg = "*"
 [target.'cfg(not(target_family = "windows"))'.dependencies]
 browser-window = { version = "0.12.0", features = ["webkitgtk"] }
 
+[dependencies]
+native-dialog = "0.7.0"
+sysinfo = "0.30.7"
+
 [package.metadata.deb]
 name = "stonenet-desktop"
 revision = "main"

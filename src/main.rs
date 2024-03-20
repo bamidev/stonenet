@@ -17,6 +17,8 @@ mod test;
 mod trace;
 mod web;
 
+#[cfg(target_family = "windows")]
+use std::fs;
 use std::{
 	env, fmt,
 	fs::File,
@@ -31,8 +33,6 @@ use std::{
 	},
 	time::Duration,
 };
-#[cfg(target_family = "windows")]
-use std::fs;
 
 use api::Api;
 use config::{Config, *};
