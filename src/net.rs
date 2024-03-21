@@ -508,33 +508,6 @@ impl fmt::Display for ContactOption {
 	}
 }
 
-#[allow(dead_code)]
-impl NetworkLevel {
-	pub fn from_ip(ip: &IpAddr) -> NetworkLevel {
-		if ip.is_global() {
-			NetworkLevel::Global
-		} else {
-			if let Some(interface) = Self::find_interface_for_ip(ip) {
-				NetworkLevel::Local(interface)
-			} else {
-				NetworkLevel::Unknown
-			}
-		}
-	}
-
-	fn find_interface_for_ip(ip: &IpAddr) -> Option<String> {
-		let map = NETWORK_INTERFACES.lock().unwrap();
-		for (interface, ips) in map.iter() {
-			for ip_range in ips {
-				if ip_range.contains(*ip) {
-					return Some(interface.clone());
-				}
-			}
-		}
-		None
-	}
-}
-
 impl NodeContactInfo {
 	pub fn update(&mut self, addr: &SocketAddr, for_tcp: bool) {
 		self.contact_info.update(addr, for_tcp);
