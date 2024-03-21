@@ -5,12 +5,14 @@
 #                                        #
 ##########################################
 
-EXECUTABLE_PATH=/usr/local/bin/stonenetd
-CONFIG_PATH=/usr/local/etc/stonenet
-DATA_FILES_PATH=/usr/local/share/stonenet
-LOGFILE=/var/log/stonenet.log
-# If your system is not using Systemd, just comment out this following line:
-SYSTEMD_PATH=/lib/systemd/system
+PREFIX="${PREFIX:=/usr/local}"
+EXECUTABLE_PATH="$PREFIX/bin/stonenetd"
+CONFIG_PATH="$PREFIX/etc/stonenet"
+DATA_FILES_PATH="$PREFIX/share/stonenet"
+LOGFILE="$PREFIX/var/log/stonenet.log"
+# If your system is using Systemd, just uncomment the following line to enable
+# the Systemd service:
+#SYSTEMD_PATH=/lib/systemd/system
 
 
 ##########################################
