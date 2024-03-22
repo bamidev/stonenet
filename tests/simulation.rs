@@ -5,7 +5,7 @@ use std::sync::{
 
 use log::*;
 use rand::RngCore;
-use stonenetd::{api::Api, config::Config, db::*, core::*, net::*, test::*};
+use stonenetd::{api::Api, config::Config, core::*, db::*, net::*, test::*};
 
 
 #[ctor::ctor]

@@ -6,6 +6,7 @@ pub mod common;
 pub mod config;
 pub mod core;
 pub mod db;
+mod entity;
 pub mod identity;
 pub mod limited_store;
 pub mod net;

@@ -5,6 +5,7 @@ mod install;
 
 use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
 
+use ::serde::Serialize;
 use chacha20::{
 	cipher::{KeyIvInit, StreamCipher},
 	ChaCha20,
@@ -18,13 +19,12 @@ use rusqlite::{
 	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Value, ValueRef},
 	Rows, ToSql,
 };
-use ::serde::Serialize;
 use thiserror::Error;
 
 use crate::{
 	common::*,
-	identity::*,
 	core::*,
+	identity::*,
 	net::binserde,
 	trace::{self, Traceable, Traced},
 };

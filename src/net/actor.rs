@@ -15,9 +15,9 @@ use super::{
 };
 use crate::{
 	common::*,
+	core::*,
 	db::{self, Database},
 	identity::*,
-	core::*,
 	trace::Mutex,
 };
 

@@ -6,10 +6,11 @@ extern crate arrayref;
 mod api;
 mod common;
 mod config;
+mod core;
 mod db;
+mod entity;
 mod identity;
 mod limited_store;
-mod core;
 mod net;
 #[cfg(test)]
 mod test;
@@ -43,7 +44,6 @@ use net::{overlay::OverlayNode, *};
 use semver::Version;
 use signal_hook::flag;
 use simple_logging;
-use stonenetd::net::resolve_bootstrap_addresses;
 use tokio::{self, time::sleep};
 use toml;
 
@@ -161,26 +161,34 @@ where
 }
 
 #[cfg(not(target_family = "windows"))]
-async fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<(Database, sea_orm::DatabaseConnection)> {
+async fn load_database(
+	config: &Config, _install_dir: PathBuf,
+) -> io::Result<(Database, sea_orm::DatabaseConnection)> {
 	let old_db = Database::load(
 		PathBuf::from_str(&config.database_path)
 			.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
 	)
 	.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &config.database_path)).await.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &config.database_path))
+		.await
+		.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 	Ok((old_db, new_db))
 }
 
 #[cfg(target_family = "windows")]
-async fn load_database(_config: &Config, install_dir: PathBuf) -> io::Result<(Database, sea_orm::DatabaseConnection)> {
+async fn load_database(
+	_config: &Config, install_dir: PathBuf,
+) -> io::Result<(Database, sea_orm::DatabaseConnection)> {
 	let mut db_path = PathBuf::from(env::var_os("APPDATA").expect("Unable to read %APPDATA%."));
 	db_path.push("Stonenet");
 	let _ = fs::create_dir(&db_path);
 	db_path.push("db.sqlite");
 	let old_db = Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &db_path)).await.map_err(|e| io::Error::new(io::ErrorKind::Other, e));
+	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &db_path))
+		.await
+		.map_err(|e| io::Error::new(io::ErrorKind::Other, e));
 	(old_db, new_db)
 }
 
@@ -366,13 +374,14 @@ async fn test_bootstrap_nodes(g: &Api, config: &Config) -> bool {
 	let mut updated = 0;
 	for bootstrap_node in &bootstrap_nodes {
 		if let Some(bootstrap_id) = g.node.obtain_id(&bootstrap_node).await {
-			g.old_db.perform(|mut c| {
-				if c.remember_bootstrap_node_id(&bootstrap_node, &bootstrap_id)? {
-					updated += 1;
-				}
-				Ok(())
-			})
-			.expect("database error");
+			g.old_db
+				.perform(|mut c| {
+					if c.remember_bootstrap_node_id(&bootstrap_node, &bootstrap_id)? {
+						updated += 1;
+					}
+					Ok(())
+				})
+				.expect("database error");
 		}
 	}
 	updated > 0

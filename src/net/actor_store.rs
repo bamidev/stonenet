@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use tokio::sync::Mutex;
 
 use super::NodeContactInfo;
-use crate::{common::*, limited_store::*, core::*};
+use crate::{common::*, core::*, limited_store::*};
 
 pub type ActorStore = LimitedMap<IdType, ActorStoreEntry>;
 

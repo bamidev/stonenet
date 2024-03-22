@@ -23,10 +23,10 @@ use super::{
 use crate::{
 	common::*,
 	config::*,
+	core::*,
 	db::{self, Database},
 	identity::*,
 	limited_store::LimitedVec,
-	core::*,
 	net::*,
 	trace::Mutex,
 };

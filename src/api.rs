@@ -14,9 +14,9 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
 	common::*,
+	core::*,
 	db::{self, *},
 	identity::*,
-	core::*,
 	net::{actor::ActorNode, binserde, message::*, overlay::OverlayNode},
 };
 
@@ -30,7 +30,7 @@ pub enum Error {
 pub struct Api {
 	pub node: Arc<OverlayNode>,
 	pub old_db: Database,
-	pub orm: sea_orm::DatabaseConnection
+	pub orm: sea_orm::DatabaseConnection,
 }
 
 //pub type Result<T> = std::result::Result<T, self::Error>;
@@ -513,7 +513,9 @@ impl Api {
 		Ok(hash)
 	}
 
-	fn publish_share(&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: ShareObject) {
+	fn publish_share(
+		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: ShareObject,
+	) {
 		//self.orm.
 	}
 

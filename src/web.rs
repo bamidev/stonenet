@@ -323,8 +323,6 @@ async fn actor_object_post(
 async fn actor_object_share(
 	g: &State<Global>, address_str: &str, hash_str: &str,
 ) -> Result<Redirect, Template> {
-	
-
 	let _address = parse_actor_address(address_str)?;
 	let _hash = IdType::from_base58(hash_str)
 		.map_err(|_e| render_error("Input error", "Invalid object hash"))?;
