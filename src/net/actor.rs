@@ -17,7 +17,7 @@ use crate::{
 	common::*,
 	db::{self, Database},
 	identity::*,
-	model::*,
+	core::*,
 	trace::Mutex,
 };
 

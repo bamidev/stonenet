@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use self::sstp::server::RelayedHelloPacket;
 use crate::{
 	common::*,
-	model::*,
+	core::*,
 	net::{
 		sstp::server::{RelayHelloAckPacket, RelayHelloPacket},
 		*,

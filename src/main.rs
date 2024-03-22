@@ -9,7 +9,7 @@ mod config;
 mod db;
 mod identity;
 mod limited_store;
-mod model;
+mod core;
 mod net;
 #[cfg(test)]
 mod test;
@@ -161,21 +161,27 @@ where
 }
 
 #[cfg(not(target_family = "windows"))]
-fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Database> {
-	Database::load(
+async fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<(Database, sea_orm::DatabaseConnection)> {
+	let old_db = Database::load(
 		PathBuf::from_str(&config.database_path)
 			.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
 	)
-	.map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+	.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &config.database_path)).await.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	Ok((old_db, new_db))
 }
 
 #[cfg(target_family = "windows")]
-fn load_database(_config: &Config, install_dir: PathBuf) -> io::Result<Database> {
+async fn load_database(_config: &Config, install_dir: PathBuf) -> io::Result<(Database, sea_orm::DatabaseConnection)> {
 	let mut db_path = PathBuf::from(env::var_os("APPDATA").expect("Unable to read %APPDATA%."));
 	db_path.push("Stonenet");
 	let _ = fs::create_dir(&db_path);
 	db_path.push("db.sqlite");
-	Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+	let old_db = Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &db_path)).await.map_err(|e| io::Error::new(io::ErrorKind::Other, e));
+	(old_db, new_db)
 }
 
 #[cfg(not(target_family = "windows"))]
@@ -235,7 +241,7 @@ async fn main() {
 		.expect("Error setting Ctrl-C handler");
 
 		// Load database
-		let db = match load_database(&config, install_dir) {
+		let (old_db, orm) = match load_database(&config, install_dir).await {
 			Ok(db) => db,
 			Err(e) => {
 				error!("Unable to load database: {}", e);
@@ -244,10 +250,10 @@ async fn main() {
 		};
 
 		// Load node
-		let node = load_node(stop_flag.clone(), db.clone(), &config).await;
+		let node = load_node(stop_flag.clone(), old_db.clone(), &config).await;
 
 		// Test openness
-		let api = Api { node, db };
+		let api = Api { node, old_db, orm };
 		let new_bootstrap_nodes = test_bootstrap_nodes(&api, &config).await;
 		test_openness(&api, &config, new_bootstrap_nodes).await;
 
@@ -360,7 +366,7 @@ async fn test_bootstrap_nodes(g: &Api, config: &Config) -> bool {
 	let mut updated = 0;
 	for bootstrap_node in &bootstrap_nodes {
 		if let Some(bootstrap_id) = g.node.obtain_id(&bootstrap_node).await {
-			g.db.perform(|mut c| {
+			g.old_db.perform(|mut c| {
 				if c.remember_bootstrap_node_id(&bootstrap_node, &bootstrap_id)? {
 					updated += 1;
 				}

@@ -26,7 +26,7 @@ use crate::{
 	db::{self, Database},
 	identity::*,
 	limited_store::LimitedVec,
-	model::*,
+	core::*,
 	net::*,
 	trace::Mutex,
 };

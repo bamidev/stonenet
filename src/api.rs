@@ -16,7 +16,7 @@ use super::{
 	common::*,
 	db::{self, *},
 	identity::*,
-	model::*,
+	core::*,
 	net::{actor::ActorNode, binserde, message::*, overlay::OverlayNode},
 };
 
@@ -29,7 +29,8 @@ pub enum Error {
 #[derive(Clone)]
 pub struct Api {
 	pub node: Arc<OverlayNode>,
-	pub db: Database,
+	pub old_db: Database,
+	pub orm: sea_orm::DatabaseConnection
 }
 
 //pub type Result<T> = std::result::Result<T, self::Error>;
@@ -41,7 +42,7 @@ impl Api {
 		&self, label: &str, name: &str, avatar: Option<&FileData>, wallpaper: Option<&FileData>,
 		description: Option<&FileData>,
 	) -> db::Result<(ActorAddress, ActorInfo)> {
-		self.db.perform(|c| {
+		self.old_db.perform(|c| {
 			// Prepare profile object
 			let avatar_hash = if let Some(f) = avatar {
 				Some(db::Connection::_store_file_data(&c, &f.mime_type, &f.data)?.1)
@@ -117,7 +118,7 @@ impl Api {
 		&self, actor_node: &ActorNode, id: &IdType,
 	) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.old_db.connect()?;
 			c.fetch_block(id)
 		})?;
 
@@ -129,7 +130,7 @@ impl Api {
 
 	pub async fn find_file(&self, actor_node: &ActorNode, id: &IdType) -> db::Result<Option<File>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.old_db.connect()?;
 			c.fetch_file(id)
 		})?;
 
@@ -143,7 +144,7 @@ impl Api {
 		&self, actor_node: &ActorNode, id: &IdType,
 	) -> db::Result<Option<FileData>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.old_db.connect()?;
 			c.fetch_file_data(id)
 		})?;
 
@@ -175,7 +176,7 @@ impl Api {
 		&self, actor_node: &ActorNode, id: &IdType,
 	) -> db::Result<Option<FindObjectResult>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.old_db.connect()?;
 			c.fetch_object(id)
 		})?;
 
@@ -188,7 +189,7 @@ impl Api {
 	pub fn fetch_home_feed(&self, count: u64, offset: u64) -> db::Result<Vec<ObjectInfo>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
-			let mut c = this.db.connect()?;
+			let mut c = this.old_db.connect()?;
 			c.fetch_home_feed(count, offset)
 		})
 	}
@@ -198,7 +199,7 @@ impl Api {
 	) -> db::Result<Option<(String, ActorPrivateKeyV1)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
-			let c = this.db.connect()?;
+			let c = this.old_db.connect()?;
 			c.fetch_my_identity(address)
 		})
 	}
@@ -208,7 +209,7 @@ impl Api {
 	) -> db::Result<Option<(ActorAddress, ActorPrivateKeyV1)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
-			let c = this.db.connect()?;
+			let c = this.old_db.connect()?;
 			c.fetch_my_identity_by_label(label)
 		})
 	}
@@ -218,7 +219,7 @@ impl Api {
 	) -> db::Result<Vec<(String, ActorAddress, IdType, String, ActorPrivateKeyV1)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
-			let c = this.db.connect()?;
+			let c = this.old_db.connect()?;
 			c.fetch_my_identities()
 		})
 	}
@@ -261,7 +262,7 @@ impl Api {
 		&self, actor_address: &ActorAddress, hash: &IdType,
 	) -> db::Result<Option<ObjectInfo>> {
 		tokio::task::block_in_place(|| {
-			let mut c = self.db.connect()?;
+			let mut c = self.old_db.connect()?;
 			c.fetch_object_info(actor_address, hash)
 		})
 	}
@@ -300,7 +301,7 @@ impl Api {
 		&self, actor_id: &ActorAddress,
 	) -> db::Result<Option<ProfileObjectInfo>> {
 		let profile = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.old_db.connect()?;
 			c.fetch_profile_info(actor_id)
 		})?;
 		if profile.is_some() {
@@ -310,7 +311,7 @@ impl Api {
 		// Try to get the profile from the actor network
 		if let Some(_) = self.node.find_actor_profile_info(actor_id).await {
 			let profile = tokio::task::block_in_place(|| {
-				let c = self.db.connect()?;
+				let c = self.old_db.connect()?;
 				c.fetch_profile_info(actor_id)
 			})?;
 			return Ok(profile);
@@ -320,7 +321,7 @@ impl Api {
 
 	pub async fn follow(&self, address: &ActorAddress, join_network: bool) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.old_db.connect()?;
 			c.fetch_identity(address)
 		})?;
 		let actor_info = match result {
@@ -332,7 +333,7 @@ impl Api {
 		};
 
 		let _private_key = tokio::task::block_in_place(|| {
-			let mut c = self.db.connect()?;
+			let mut c = self.old_db.connect()?;
 			c.follow(address, &actor_info)
 		})?;
 
@@ -350,7 +351,7 @@ impl Api {
 
 	pub async fn unfollow(&self, actor_id: &ActorAddress) -> db::Result<bool> {
 		let success = tokio::task::block_in_place(|| {
-			let mut c = self.db.connect()?;
+			let mut c = self.old_db.connect()?;
 			c.unfollow(actor_id)
 		})?;
 
@@ -362,7 +363,7 @@ impl Api {
 
 	pub fn is_following(&self, actor_id: &ActorAddress) -> db::Result<bool> {
 		tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.old_db.connect()?;
 			c.is_following(actor_id)
 		})
 	}
@@ -372,7 +373,7 @@ impl Api {
 	pub async fn stream_file(
 		&self, actor_address: ActorAddress, file_hash: IdType,
 	) -> Result<Option<(String, ReceiverStream<db::Result<Vec<u8>>>)>> {
-		let db = self.db.clone();
+		let db = self.old_db.clone();
 		let r: Option<File> = db.perform(|c| c.fetch_file(&file_hash))?;
 
 		let (tx, rx) = mpsc::channel(1);
@@ -440,7 +441,7 @@ impl Api {
 		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, message: &str,
 		tags: Vec<String>, attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> db::Result<IdType> {
-		let (hash, object) = self.db.perform(|mut c| {
+		let (hash, object) = self.old_db.perform(|mut c| {
 			let tx = c.transaction()?;
 			let identity_id =
 				db::Connection::_find_identity(&tx, identity)?.expect("unknown identity");
@@ -510,6 +511,10 @@ impl Api {
 		}
 
 		Ok(hash)
+	}
+
+	fn publish_share(&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: ShareObject) {
+		//self.orm.
 	}
 
 	/// Calculates the signature of the s

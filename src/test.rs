@@ -21,7 +21,8 @@ pub async fn load_test_node(
 	filename: &str,
 ) -> Api {
 	let temp_file = NamedTempFile::with_prefix(filename).unwrap();
-	let db = Database::load(temp_file.path().to_owned()).expect("unable to load database");
+	let old_db = Database::load(temp_file.path().to_owned()).expect("unable to load database");
+	let orm = sea_orm::Database::connect("sqlite://{}?mode=rwc").await.expect("unable to load ORM");
 	// Leak it on purpose so that the temp file may live until the end of all tests
 	// However, the OS will not clean it up after exit either...
 	Box::into_raw(Box::new(temp_file));
@@ -32,11 +33,11 @@ pub async fn load_test_node(
 		node_id,
 		config.ipv4_udp_port.expect("no port in config")
 	);
-	let node = OverlayNode::start(stop_flag.clone(), &config, node_id, private_key, db.clone())
+	let node = OverlayNode::start(stop_flag.clone(), &config, node_id, private_key, old_db.clone())
 		.await
 		.expect("unable to start node");
 
 	node.join_network(stop_flag).await;
 
-	Api { node, db }
+	Api { node, old_db, orm }
 }

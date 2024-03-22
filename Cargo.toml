@@ -43,8 +43,9 @@ reqwest = { version = "0", default-features = false }
 rocket = "0.5.0"
 rocket_dyn_templates = { version = "0.1.0", features = ["tera"] }
 rusqlite = "^0.30"
+sea-orm = "0.12.15"
 semver = "1"
-serde = { version = "1", features = ["derive", "rc"] }
+serde = { version = "1.0.197", features = ["derive", "rc"] }
 serde_json = "1"
 sha3 = ">=0.10"
 signal-hook = "0"

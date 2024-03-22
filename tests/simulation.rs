@@ -5,7 +5,7 @@ use std::sync::{
 
 use log::*;
 use rand::RngCore;
-use stonenetd::{api::Api, config::Config, db::*, model::*, net::*, test::*};
+use stonenetd::{api::Api, config::Config, db::*, core::*, net::*, test::*};
 
 
 #[ctor::ctor]
@@ -227,7 +227,7 @@ Hoi ik ben Kees!
 	// Load posts
 	debug!("Loading home feed.");
 	let home_feed = tokio::task::block_in_place(|| {
-		let mut c = node2.db.connect().expect("unable to open database");
+		let mut c = node2.old_db.connect().expect("unable to open database");
 		c.fetch_home_feed(5, 0).expect("unable to fetch home feed")
 	});
 	assert_eq!(home_feed.len(), 4 + test_notifications as usize);

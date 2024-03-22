@@ -50,7 +50,7 @@ pub struct Block {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct BoostObject {
+pub struct ShareObject {
 	pub post_actor_address: ActorAddress,
 	pub object_sequence: u64,
 }
@@ -159,7 +159,7 @@ pub const OBJECT_TYPE_MOVE: u8 = 3;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ObjectPayload {
 	Post(PostObject),
-	Boost(BoostObject),
+	Boost(ShareObject),
 	Profile(ProfileObject),
 }
 

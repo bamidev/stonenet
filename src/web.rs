@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 
 use self::common::*;
-use crate::{api::Api, common::*, model::*};
+use crate::{api::Api, common::*, core::*};
 
 
 pub struct Global {
@@ -317,6 +317,20 @@ async fn actor_object_post(
 		.await
 		.map_err(|e| render_db_error(e, "Unable to publish post"))?;
 	Ok(Redirect::to("/"))
+}
+
+#[post("/actor/<address_str>/object/<hash_str>/share")]
+async fn actor_object_share(
+	g: &State<Global>, address_str: &str, hash_str: &str,
+) -> Result<Redirect, Template> {
+	
+
+	let _address = parse_actor_address(address_str)?;
+	let _hash = IdType::from_base58(hash_str)
+		.map_err(|_e| render_error("Input error", "Invalid object hash"))?;
+
+	todo!();
+	//g.api.publish_share()
 }
 
 #[derive(FromForm)]

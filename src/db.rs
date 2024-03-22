@@ -18,13 +18,13 @@ use rusqlite::{
 	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Value, ValueRef},
 	Rows, ToSql,
 };
-use serde::Serialize;
+use ::serde::Serialize;
 use thiserror::Error;
 
 use crate::{
 	common::*,
 	identity::*,
-	model::*,
+	core::*,
 	net::binserde,
 	trace::{self, Traceable, Traced},
 };
@@ -593,7 +593,7 @@ impl Connection {
 		Ok(files)
 	}*/
 
-	pub fn _fetch_boost_object<C>(this: &C, object_id: i64) -> Result<Option<BoostObject>>
+	pub fn _fetch_boost_object<C>(this: &C, object_id: i64) -> Result<Option<ShareObject>>
 	where
 		C: DerefConnection,
 	{
@@ -609,7 +609,7 @@ impl Connection {
 			let post_actor_address: ActorAddress = row.get(0)?;
 			let object_sequence = row.get(1)?;
 
-			Ok(Some(BoostObject {
+			Ok(Some(ShareObject {
 				post_actor_address,
 				object_sequence,
 			}))

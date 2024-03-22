@@ -3,7 +3,7 @@ use std::str::FromStr;
 use chrono::*;
 use log::*;
 use rocket_dyn_templates::{context, Template};
-use serde::Serialize;
+use ::serde::Serialize;
 
 use super::{ActorAddress, Address, IdType};
 use crate::{
