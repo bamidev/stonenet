@@ -191,7 +191,17 @@ fn load_install_dir() -> io::Result<PathBuf> {
 	Ok(install_dir)
 }
 
-#[cfg(target_family = "windows")]
+#[cfg(package_manager = "apt")]
+fn version_message(_version_str: &str) -> String {
+	"Update stonenet with: <code>apt update && update upgrade</code>".to_owned()
+}
+
+#[cfg(package_manager = "homebrew")]
+fn version_message(_version_str: &str) -> String {
+	"Update stonenet with: <code>brew update</code>".to_owned()
+}
+
+#[cfg(package_manager = "windows-installer")]
 fn version_message(version_str: &str) -> String {
 	format!(
 		"<a target=\"_blank\" href=\"https://get.stonenet.org/windows/stonenet-installer-{}.exe\">download the update \
@@ -200,7 +210,7 @@ fn version_message(version_str: &str) -> String {
 	)
 }
 
-#[cfg(not(target_family = "windows"))]
+#[cfg(not(package_manager))]
 fn version_message(_version_str: &str) -> String {
 	"use your package manager to update the stonenet client".to_owned()
 }
