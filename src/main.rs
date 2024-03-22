@@ -249,7 +249,7 @@ async fn main() {
 		// Test openness
 		let api = Api { node, db };
 		let new_bootstrap_nodes = test_bootstrap_nodes(&api, &config).await;
-		test_openness(&api, &config, new_bootstrap_nodes).await;
+		test_openness(&api, &config, !new_bootstrap_nodes).await;
 
 		// Check for updates (only in release mode)
 		#[cfg(not(debug_assertions))]
@@ -372,7 +372,7 @@ async fn test_bootstrap_nodes(g: &Api, config: &Config) -> bool {
 	updated > 0
 }
 
-async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
+async fn test_openness(g: &Api, config: &Config, should_test: bool) {
 	// TODO: Clean up this code:
 	if config.ipv4_address.is_some() {
 		let mut bootstrap_nodes: Option<Vec<SocketAddr>> = None;
@@ -386,13 +386,7 @@ async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
 				info!("Using UDPv4 openness: unidirectional");
 				Some(Openness::Unidirectional)
 			}
-		} else {
-			if should_wait {
-				info!("Waiting 2 minutes before testing openness...");
-				sleep(Duration::from_secs(120)).await;
-				should_wait = false;
-			}
-
+		} else if should_test {
 			info!("Testing UDPv4 openness...");
 			bootstrap_nodes = Some(resolve_bootstrap_addresses(
 				&config.bootstrap_nodes,
@@ -413,7 +407,7 @@ async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
 			} else {
 				None
 			}
-		};
+		} else { None };
 
 		if let Some(openness) = udp4_openness {
 			let mut ci = g.node.contact_info();
@@ -433,13 +427,7 @@ async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
 				info!("Using TCPv4 openness: unidirectional");
 				Some(Openness::Unidirectional)
 			}
-		} else {
-			if should_wait {
-				info!("Waiting 2 minutes before testing openness...");
-				sleep(Duration::from_secs(120)).await;
-				should_wait = false;
-			}
-
+		} else if should_test {
 			info!("Testing TCPv4 openness...");
 			if bootstrap_nodes.is_none() {
 				bootstrap_nodes = Some(resolve_bootstrap_addresses(
@@ -462,7 +450,7 @@ async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
 			} else {
 				None
 			}
-		};
+		} else { None };
 
 		if let Some(openness) = tcpv4_openness {
 			let mut ci = g.node.contact_info();
@@ -487,13 +475,7 @@ async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
 				info!("Using UDPv6 openness: unidirectional");
 				Some(Openness::Unidirectional)
 			}
-		} else {
-			if should_wait {
-				info!("Waiting 2 minutes before testing openness...");
-				sleep(Duration::from_secs(120)).await;
-				should_wait = false;
-			}
-
+		} else if should_test {
 			info!("Testing UDPv6 openness...");
 			bootstrap_nodes = Some(resolve_bootstrap_addresses(
 				&config.bootstrap_nodes,
@@ -514,7 +496,7 @@ async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
 			} else {
 				None
 			}
-		};
+		} else { None };
 
 		if let Some(openness) = udp6_openness {
 			let mut ci = g.node.contact_info();
@@ -534,13 +516,7 @@ async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
 				info!("Using TCPv6 openness: unidirectional");
 				Some(Openness::Unidirectional)
 			}
-		} else {
-			if should_wait {
-				info!("Waiting 2 minutes before testing openness...");
-				sleep(Duration::from_secs(120)).await;
-				should_wait = false;
-			}
-
+		} else if should_test {
 			info!("Testing TCPv6 openness...");
 			if bootstrap_nodes.is_none() {
 				bootstrap_nodes = Some(resolve_bootstrap_addresses(
@@ -563,7 +539,7 @@ async fn test_openness(g: &Api, config: &Config, mut should_wait: bool) {
 			} else {
 				None
 			}
-		};
+		} else { None };
 
 		if let Some(openness) = tcpv6_openness {
 			let mut ci = g.node.contact_info();
