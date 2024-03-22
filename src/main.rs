@@ -6,10 +6,10 @@ extern crate arrayref;
 mod api;
 mod common;
 mod config;
+mod model;
 mod db;
 mod identity;
 mod limited_store;
-mod model;
 mod net;
 #[cfg(test)]
 mod test;
