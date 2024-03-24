@@ -46,6 +46,42 @@ where
 	Ok(())
 }
 
+/// Recreates the table so that all foreign keys are pointing to the correct
+/// table again.
+async fn reset_table<'c, E>(
+	tx: &DatabaseTransaction, schema: &Schema, entity: E, table_name: &str,
+) -> trace::Result<(), DbErr>
+where
+	E: EntityTrait,
+{
+	// First, rename the table
+	let old_table_name = "old_".to_string() + table_name;
+	let stat = Table::rename()
+		.table(Alias::new(table_name), Alias::new(&old_table_name))
+		.to_owned();
+	tx.execute_unprepared(&stat.build(SqliteQueryBuilder))
+		.await?;
+
+	// Then, create the new table of for the entity
+	let stat = schema.create_table_from_entity(entity);
+	tx.execute_unprepared(&stat.build(SqliteQueryBuilder))
+		.await?;
+
+	// Then, copy everything over to the new table
+	let query = format!(
+		"INSERT INTO {} SELECT * FROM {}",
+		table_name, &old_table_name
+	);
+	let stat = Statement::from_sql_and_values(DatabaseBackend::Sqlite, query, []);
+	tx.execute(stat).await?;
+
+	// Delete old table
+	let stat = Table::drop().table(Alias::new(old_table_name)).to_owned();
+	tx.execute_unprepared(&stat.build(SqliteQueryBuilder))
+		.await?;
+	Ok(())
+}
+
 
 #[async_trait]
 impl MigrationTrait for Migration {
@@ -125,6 +161,14 @@ impl MigrationTrait for Migration {
 		.await?;
 		let post_tag = crate::entity::prelude::PostTag;
 		add_id_column(tx, &schema, post_tag, "post_tag", &["post_id", "tag"]).await?;
+
+		// Reset foreign keys on some tables
+		let entity = crate::entity::prelude::BoostObject;
+		reset_table(tx, &schema, entity, "boost_object").await?;
+		let entity = crate::entity::prelude::FileBlocks;
+		reset_table(tx, &schema, entity, "file_blocks").await?;
+		let entity = crate::entity::prelude::PostObject;
+		reset_table(tx, &schema, entity, "post_object").await?;
 		Ok(())
 	}
 }
