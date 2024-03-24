@@ -1516,9 +1516,9 @@ impl Connection {
 		let mut stat = tx.prepare(
 			r#"
 			INSERT INTO object (
-				actor_id, sequence, hash, signature, created, found, type
+				actor_id, sequence, hash, signature, created, found, type, verified_from_start
 			)
-			VALUES (?,?,?,?,?,?,?)
+			VALUES (?,?,?,?,?,?,?,?)
 		"#,
 		)?;
 		let object_id = stat.insert(params![
@@ -1529,6 +1529,7 @@ impl Connection {
 			object.created,
 			Utc::now().timestamp_millis(),
 			object.payload.type_id(),
+			true
 		])?;
 
 		tx.execute(
