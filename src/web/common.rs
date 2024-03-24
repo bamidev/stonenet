@@ -96,7 +96,7 @@ pub fn parse_actor_address(string: &str) -> Result<ActorAddress, Template> {
 }
 
 pub fn render_db_error(error: Traced<db::Error>, message: &str) -> Template {
-	error!("Database error: {}: {}", message, error);
+	error!("Database error: {}: {:?}", message, error);
 	Template::render(
 		"error",
 		context! {
