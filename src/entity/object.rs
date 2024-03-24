@@ -31,8 +31,6 @@ pub enum Relation {
 		on_delete = "NoAction"
 	)]
 	Identity,
-	#[sea_orm(has_many = "super::move_object::Entity")]
-	MoveObject,
 	#[sea_orm(has_many = "super::post_object::Entity")]
 	PostObject,
 }
@@ -43,10 +41,6 @@ impl Related<super::boost_object::Entity> for Entity {
 
 impl Related<super::identity::Entity> for Entity {
 	fn to() -> RelationDef { Relation::Identity.def() }
-}
-
-impl Related<super::move_object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::MoveObject.def() }
 }
 
 impl Related<super::post_object::Entity> for Entity {

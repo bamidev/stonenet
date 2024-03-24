@@ -17,7 +17,7 @@ pub enum Relation {
 	#[sea_orm(
 		belongs_to = "super::post_object::Entity",
 		from = "Column::PostId",
-		to = "super::post_object::Column::Id",
+		to = "super::post_object::Column::ObjectId",
 		on_update = "NoAction",
 		on_delete = "NoAction"
 	)]

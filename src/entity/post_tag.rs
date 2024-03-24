@@ -7,7 +7,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
-	pub post_id: i32,
+	pub post_id: i64,
 	pub tag: String,
 }
 
@@ -16,7 +16,7 @@ pub enum Relation {
 	#[sea_orm(
 		belongs_to = "super::post_object::Entity",
 		from = "Column::PostId",
-		to = "super::post_object::Column::Id",
+		to = "super::post_object::Column::ObjectId",
 		on_update = "NoAction",
 		on_delete = "NoAction"
 	)]

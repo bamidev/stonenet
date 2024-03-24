@@ -5,8 +5,7 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "post_object")]
 pub struct Model {
-	#[sea_orm(primary_key, auto_increment = true)]
-	pub id: i64,
+	#[sea_orm(primary_key, auto_increment = false)]
 	pub object_id: i32,
 	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))", nullable)]
 	pub in_reply_to_actor_address: Option<Vec<u8>>,
@@ -24,18 +23,12 @@ pub enum Relation {
 		on_delete = "NoAction"
 	)]
 	Object,
-	#[sea_orm(has_many = "super::post_files::Entity")]
-	PostFiles,
 	#[sea_orm(has_many = "super::post_tag::Entity")]
 	PostTag,
 }
 
 impl Related<super::object::Entity> for Entity {
 	fn to() -> RelationDef { Relation::Object.def() }
-}
-
-impl Related<super::post_files::Entity> for Entity {
-	fn to() -> RelationDef { Relation::PostFiles.def() }
 }
 
 impl Related<super::post_tag::Entity> for Entity {

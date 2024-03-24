@@ -11,6 +11,7 @@ mod db;
 mod entity;
 mod identity;
 mod limited_store;
+mod migration;
 mod net;
 #[cfg(test)]
 mod test;
@@ -46,6 +47,8 @@ use signal_hook::flag;
 use simple_logging;
 use tokio::{self, time::sleep};
 use toml;
+
+use crate::migration::Migrations;
 
 
 async fn check_version() -> Option<String> {
@@ -173,6 +176,7 @@ async fn load_database(
 	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &config.database_path))
 		.await
 		.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
 	Ok((old_db, new_db))
 }
 
@@ -256,6 +260,12 @@ async fn main() {
 				return;
 			}
 		};
+
+		// Run migrations (does nothing if there is nothing to migrate)
+		{
+			let migrations = Migrations::load();
+			migrations.run(&orm).await.expect("migration issue");
+		}
 
 		// Load node
 		let node = load_node(stop_flag.clone(), old_db.clone(), &config).await;

@@ -4,10 +4,8 @@ pub use super::{
 	block::Entity as Block, boost_object::Entity as BoostObject,
 	bootstrap_id::Entity as BootstrapId, file::Entity as File, file_blocks::Entity as FileBlocks,
 	following::Entity as Following, friend::Entity as Friend, identity::Entity as Identity,
-	move_object::Entity as MoveObject, my_identity::Entity as MyIdentity,
-	node_identity::Entity as NodeIdentity, object::Entity as Object,
-	post_files::Entity as PostFiles, post_object::Entity as PostObject,
+	my_identity::Entity as MyIdentity, node_identity::Entity as NodeIdentity,
+	object::Entity as Object, post_files::Entity as PostFiles, post_object::Entity as PostObject,
 	post_tag::Entity as PostTag, profile_object::Entity as ProfileObject,
-	remembered_actor_nodes::Entity as RememberedActorNodes,
-	remembered_fingers::Entity as RememberedFingers, version::Entity as Version,
+	remembered_fingers::Entity as RememberedFingers,
 };
