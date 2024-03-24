@@ -43,14 +43,36 @@
 						{% endif %}
 					</ul>
 				</div>
-
 				<div class="d-flex">
 					<form action="/search" method="get" class="form-inline">
 						<input class="form-control" type="text" name="query" size="44" placeholder="Paste address here..." />
 					</form>
 				</div>
-			</nav>
-		</div>
+			</div>
+		</nav>
+
+		<nav class="navbar navbar-expand-lg navbar-light">
+					<form action="/" method="post" class="w-100">
+			<div class="container-fluid">
+				<div class="row">
+						<div class="col-md-3"></div>
+						<div class="col-md-3">
+							<label for="">Active identity:</label>
+						</div>
+						<div class="col-md-3">
+							<div class="input-group">
+								<select class="form-select form-select-sm w-50 d-inline" id="identity" name="identity">
+									{% for identity in identities %}
+										<option value="{{identity.address}}">{{identity.label}}</option>
+									{% endfor %}
+								</select>
+								<button class="btn btn-secondary" type="submit">Use</button>
+							</div>
+						</div>
+				</div>
+			</div>
+					</form>
+		</nav>
 
 		<div id="body" class="row">
 			<div class="col col-md-3">

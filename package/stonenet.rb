@@ -16,10 +16,8 @@ class Stonenet < Formula
       PREFIX=#{prefix}
     ]
     system "cargo", "build", "--release"
-    system "cargo", "build", "-p", "stonenet-desktop", "--release"
     
     bin.install "target/release/stonenetd" => "stonenetd"
-    bin.install "target/release/stonenet-desktop" => "stonenet-desktop"
     system "install" "conf/base.toml" "#{prefix}/usr/local/etc/config.toml"
     system "install" "static" "#{prefix}/usr/local/share/stonenet/static"
     system "install" "templates" "#{prefix}/usr/local/share/stonenet/templates"
