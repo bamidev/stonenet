@@ -1,5 +1,5 @@
-{% extends "base" %}
-{% import "macros" as macros %}
+{% extends "base.tera" %}
+{% import "macros.tera" as macros %}
 {% block title %}Object{% endblock %}
 
 {% block content %}

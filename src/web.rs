@@ -1,50 +1,96 @@
+mod actor;
 mod common;
+mod my_identity;
 
 use std::{
-	io,
-	net::{IpAddr, Ipv4Addr},
-	path::{Path, PathBuf},
+	fmt::{Debug, Display},
+	net::*,
 	str::FromStr,
+	sync::{atomic::*, Arc},
+	time::Duration,
 };
 
 use ::serde::*;
-use multipart::server::Multipart;
-use rocket::{
-	form::Form,
-	fs::NamedFile,
-	http::{ContentType, MediaType},
-	log::LogLevel,
-	response::{stream::ByteStream, Redirect},
-	Data, *,
-};
-use rocket_dyn_templates::{context, Template};
-use tokio::task::JoinHandle;
-use tokio_stream::StreamExt;
+use axum::{body::Body, extract::*, response::Response, routing::get, Router};
+use log::*;
+use tera::{Context, Tera};
+use tokio::time::sleep;
+use tower_http::services::ServeDir;
 
-use self::common::*;
 use crate::{api::Api, common::*, core::*};
 
 
+#[derive(Clone, Default, Serialize)]
+pub struct AppState {
+	active_identity: Option<String>,
+	identities: Vec<String>,
+}
+
+#[derive(Clone)]
 pub struct Global {
-	pub context: GlobalContext,
+	pub state: AppState,
+	pub server_info: ServerInfo,
 	pub api: Api,
+	pub template_engine: Tera,
 }
 
 #[derive(Clone, Serialize)]
-pub struct GlobalContext {
-	pub is_local: bool,
+pub struct ServerInfo {
+	pub is_exposed: bool,
 	pub update_message: Option<String>,
 }
 
 
-#[derive(Serialize)]
-struct IdentityData {
-	label: String,
-	address: String,
+impl Global {
+	pub fn render(&self, template_name: &str, context: Context) -> Response {
+		let mut complete_context = Context::new();
+		complete_context.insert("app", &self.state);
+		complete_context.insert("server", &self.server_info);
+		complete_context.extend(context);
+
+		match self
+			.template_engine
+			.render(template_name, &complete_context)
+		{
+			Err(e) => server_error_response(
+				e,
+				&format!("Unable to render template \"{}\"", template_name),
+			),
+			Ok(html) => Response::builder()
+				.header("Content-Type", "text/html")
+				.body(Body::from(html))
+				.unwrap(),
+		}
+	}
 }
 
-#[get("/?<page>")]
-async fn index(page: Option<u64>, g: &State<Global>) -> Template {
+pub fn error_response<S>(status_code: u16, message: S) -> Response
+where
+	S: Into<String>,
+{
+	Response::builder()
+		.status(status_code)
+		.header("Content-Type", "text/plain")
+		.body(Body::from(message.into()))
+		.unwrap()
+}
+
+pub fn not_found_error_response(message: &str) -> Response { error_response(404, message) }
+
+pub fn server_error_response<E>(e: E, message: &str) -> Response
+where
+	E: Debug + Display,
+{
+	error!("{}: {:?}", message, e);
+	error_response(500, format!("{}: {}", message, e))
+}
+
+pub fn server_error_response2(message: &str) -> Response {
+	error!("{}", message);
+	error_response(500, format!("{}", message))
+}
+
+/*async fn index(page: Option<u64>, g: &State<GlobalState>) -> Template {
 	let identities = match g.api.fetch_my_identities() {
 		Ok(i) => i,
 		Err(e) => return render_db_error(e, "unable to fetch my identities"),
@@ -79,15 +125,13 @@ async fn index(page: Option<u64>, g: &State<Global>) -> Template {
 	)
 }
 
-#[derive(FromForm)]
 struct PostPostData {
 	message: String,
 	identity: String,
 }
 
-#[post("/", data = "<data>")]
 async fn index_post(
-	g: &State<Global>, content_type: &ContentType, data: Data<'_>,
+	g: &State<GlobalState>, content_type: &ContentType, data: Data<'_>,
 ) -> Result<Template, Template> {
 	let (_, boundary) = content_type
 		.params()
@@ -129,91 +173,65 @@ async fn index_post(
 		.map_err(|e| render_db_error(e, "unable to publish post"))?;
 
 	Ok(index(None, g).await)
-}
+}*/
 
-pub async fn spawn(g: Global, port: u16, workers: Option<usize>) -> (Shutdown, JoinHandle<()>) {
-	// Set up rocket's config to not detect ctrlc itself
-	let mut config = rocket::Config::default();
-	config.log_level = LogLevel::Off;
-	config.port = port;
-	config.shutdown.ctrlc = false;
-	#[cfg(unix)]
-	config.shutdown.signals.clear();
-	if let Some(w) = workers {
-		config.workers = w;
-	}
-	if g.context.is_local {
-		config.address = IpAddr::V4(Ipv4Addr::LOCALHOST);
-	} else {
-		config.address = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-	}
-
-	let mut routes = routes![actor, actor_file, actor_object, static_, index, search];
-	if g.context.is_local {
-		routes.extend(routes![
-			actor_object_post,
-			actor_post,
-			index_post,
-			my_identity,
-			my_identity_new,
-			my_identity_new_post,
-		]);
-	}
-	let r = rocket::custom(&config)
-		.attach(Template::fairing())
-		.manage(g)
-		.mount("/", routes)
-		.ignite()
-		.await
-		.expect("Rocket ignition failed");
-	let handle = r.shutdown();
-	let task = tokio::spawn(async move {
-		let _ = r.launch().await.expect("Rocket runtime failed");
+pub async fn spawn(
+	stop_flag: Arc<AtomicBool>, port: u16, workers: Option<usize>, api: Api,
+	server_info: ServerInfo,
+) {
+	let global = Arc::new(Global {
+		state: AppState::default(),
+		api,
+		server_info,
+		template_engine: Tera::new("templates/**/*.tera").unwrap(),
 	});
-	(handle, task)
+
+	let ip = if global.server_info.is_exposed {
+		Ipv4Addr::LOCALHOST
+	} else {
+		Ipv4Addr::UNSPECIFIED
+	};
+	let addr = SocketAddrV4::new(ip, port);
+
+	let app = Router::new()
+		.nest_service("/static", ServeDir::new("static"))
+		.nest("/actor", actor::router(global.clone()))
+		.nest("/my-identity", my_identity::router(global.clone()))
+		.route("/search", get(search))
+		.with_state(global);
+
+	let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+	axum::serve(listener, app)
+		.with_graceful_shutdown(async move {
+			while !stop_flag.load(Ordering::Relaxed) {
+				sleep(Duration::from_secs(1)).await;
+			}
+		})
+		.await
+		.unwrap();
 }
 
-#[get("/actor/<address_str>")]
-async fn actor(address_str: &str, g: &State<Global>) -> Result<Template, Template> {
-	#[derive(rocket::serde::Serialize)]
-	struct Object {
-		body: String,
+#[derive(Deserialize)]
+struct SearchQuery {
+	address: String,
+}
+
+async fn search(Query(query): Query<SearchQuery>) -> Response {
+	match Address::from_str(&query.address) {
+		Err(e) => server_error_response(e, "Invalid address"),
+		Ok(address) => Response::builder()
+			.status(303)
+			.header("Location", format!("/actor/{}", address))
+			.body(Body::empty())
+			.unwrap(),
 	}
-
-	let actor_address = parse_actor_address(address_str)?;
-	let profile = match g.api.fetch_profile_info(&actor_address).await {
-		Ok(p) => p,
-		Err(e) => return Err(render_db_error(e, "Unable to fetch profile")),
-	};
-	let is_following: bool = match g.api.is_following(&actor_address) {
-		Ok(f) => f,
-		Err(e) => return Err(render_db_error(e, "Unable to fetch follow status")),
-	};
-	// TODO: Check if public key is available, if so, following is still possible.
-
-	/*let latest_objects = match g.fetch_home_feed(&address, 5, 0) {
-		Err(e) => return render_error(&e, "Database error", &format!("Database error while trying to fetch latest objects: {}", e)),
-		Ok(a) => a
-	};
-	let mut futs = Vec::with_capacity(latest_objects.len());
-	for i in 0..latest_objects.len() {
-		let object = latest_objects[i];
-
-	}*/
-
-	Ok(Template::render(
-		"actor",
-		context! {
-			address: address_str.to_owned(),
-			profile,
-			is_following
-		},
-	))
 }
+
+/*
 
 #[get("/actor/<address_str>/file/<hash_str>")]
 async fn actor_file(
-	address_str: &str, hash_str: &str, g: &State<Global>,
+	address_str: &str, hash_str: &str, g: &State<GlobalState>,
 ) -> Result<(ContentType, ByteStream![Vec<u8>]), Template> {
 	let address = parse_actor_address(address_str)?;
 	let hash = match IdType::from_base58(hash_str) {
@@ -255,7 +273,7 @@ async fn actor_file(
 
 #[get("/actor/<address_str>/object/<hash_str>")]
 async fn actor_object(
-	g: &State<Global>, address_str: &str, hash_str: &str,
+	g: &State<GlobalState>, address_str: &str, hash_str: &str,
 ) -> Result<Template, Template> {
 	let address = parse_actor_address(address_str)?;
 	let hash = IdType::from_base58(hash_str)
@@ -292,7 +310,7 @@ async fn actor_object(
 
 #[post("/actor/<address_str>/object/<hash_str>", data = "<form_data>")]
 async fn actor_object_post(
-	g: &State<Global>, address_str: &str, hash_str: &str, form_data: Form<PostPostData>,
+	g: &State<GlobalState>, address_str: &str, hash_str: &str, form_data: Form<PostPostData>,
 ) -> Result<Redirect, Template> {
 	let address = parse_actor_address(address_str)?;
 	let hash = IdType::from_base58(hash_str)
@@ -321,7 +339,7 @@ async fn actor_object_post(
 
 #[post("/actor/<address_str>/object/<hash_str>/share")]
 async fn actor_object_share(
-	g: &State<Global>, address_str: &str, hash_str: &str,
+	g: &State<GlobalState>, address_str: &str, hash_str: &str,
 ) -> Result<Redirect, Template> {
 	let _address = parse_actor_address(address_str)?;
 	let _hash = IdType::from_base58(hash_str)
@@ -338,7 +356,7 @@ struct ActorActions {
 
 #[post("/actor/<address_str>", data = "<form_data>")]
 async fn actor_post(
-	address_str: &str, g: &State<Global>, form_data: Form<ActorActions>,
+	address_str: &str, g: &State<GlobalState>, form_data: Form<ActorActions>,
 ) -> Result<Template, Template> {
 	match form_data.follow.as_ref() {
 		None => {}
@@ -374,7 +392,7 @@ async fn actor_post(
 }
 
 #[get("/my-identity")]
-async fn my_identity(g: &State<Global>) -> Template {
+async fn my_identity(g: &State<GlobalState>) -> Template {
 	#[derive(rocket::serde::Serialize)]
 	struct Object {
 		id: u64,
@@ -410,7 +428,7 @@ async fn my_identity_new() -> Template { Template::render("identity/new", contex
 
 #[post("/my-identity/new", data = "<data>")]
 async fn my_identity_new_post(
-	g: &State<Global>, content_type: &ContentType, data: Data<'_>,
+	g: &State<GlobalState>, content_type: &ContentType, data: Data<'_>,
 ) -> Result<Redirect, Template> {
 	if !content_type.is_form_data() {
 		return Err(render_error("bad request", "invalid content type header"));
@@ -623,7 +641,7 @@ async fn static_(file: PathBuf) -> Option<NamedFile> {
 }
 
 #[get("/search?<query>")]
-async fn search(query: &str, _g: &State<Global>) -> Result<Redirect, Template> {
+async fn search(query: &str, _g: &State<GlobalState>) -> Result<Redirect, Template> {
 	match Address::from_str(query) {
 		Err(e) => Err(render_error(
 			"Address parse error",
@@ -631,4 +649,4 @@ async fn search(query: &str, _g: &State<Global>) -> Result<Redirect, Template> {
 		)),
 		Ok(address) => Ok(Redirect::to(format!("/actor/{}", address.to_string()))),
 	}
-}
+}*/

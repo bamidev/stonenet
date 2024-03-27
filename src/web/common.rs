@@ -1,15 +1,11 @@
-use std::str::FromStr;
+
 
 use ::serde::Serialize;
 use chrono::*;
-use log::*;
-use rocket_dyn_templates::{context, Template};
 
-use super::{ActorAddress, Address, IdType};
-use crate::{
-	db::{self, ObjectInfo, ObjectPayloadInfo},
-	trace::Traced,
-};
+
+use super::IdType;
+use crate::db::{ObjectInfo, ObjectPayloadInfo};
 
 #[derive(Serialize)]
 pub struct ObjectDisplayInfo {
@@ -77,41 +73,4 @@ pub fn human_readable_duration(duration: &Duration) -> String {
 			seconds.to_string() + " seconds"
 		}
 	}
-}
-
-pub fn parse_actor_address(string: &str) -> Result<ActorAddress, Template> {
-	let address = match Address::from_str(string) {
-		Ok(a) => a,
-		Err(e) =>
-			return Err(render_error(
-				"Invalid data",
-				&format!("Malformed address: {}", e),
-			)),
-	};
-	let actor_address = match address {
-		Address::Actor(aa) => aa,
-		_ => return Err(render_error("Invalid data", "Not an actor address")),
-	};
-	Ok(actor_address)
-}
-
-pub fn render_db_error(error: Traced<db::Error>, message: &str) -> Template {
-	error!("Database error: {}: {:?}", message, error);
-	Template::render(
-		"error",
-		context! {
-			title: "Database error",
-			message
-		},
-	)
-}
-
-pub fn render_error(title: &str, message: &str) -> Template {
-	Template::render(
-		"error",
-		context! {
-			title,
-			message
-		},
-	)
 }

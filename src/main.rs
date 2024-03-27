@@ -45,7 +45,7 @@ use net::{overlay::OverlayNode, *};
 use semver::Version;
 use signal_hook::flag;
 use simple_logging;
-use tokio::{self, time::sleep};
+use tokio::{self};
 use toml;
 
 use crate::migration::Migrations;
@@ -299,37 +299,33 @@ async fn main() {
 		let update_message = None;
 
 		// Spawn web servers
-		let mut rocket_handles = Vec::new();
-		let mut join_handles = Vec::new();
 		if config.load_web_interface.unwrap_or(false) {
-			let global_state = web::Global {
-				context: web::GlobalContext {
-					is_local: false,
-					update_message: None,
-				},
-				api: api.clone(),
+			let server_info = web::ServerInfo {
+				is_exposed: false,
+				update_message: None,
 			};
-			let (shutdown, join) =
-				web::spawn(global_state, config.web_interface_port.unwrap_or(80), None).await;
-			rocket_handles.push(shutdown);
-			join_handles.push(join);
-		}
-		if config.load_user_interface.unwrap_or(false) {
-			let global_state = web::Global {
-				context: web::GlobalContext {
-					is_local: true,
-					update_message,
-				},
-				api: api.clone(),
-			};
-			let (shutdown, join) = web::spawn(
-				global_state,
-				config.user_interface_port.unwrap_or(37338),
+			web::spawn(
+				stop_flag.clone(),
+				config.web_interface_port.unwrap_or(80),
 				None,
+				api.clone(),
+				server_info,
 			)
 			.await;
-			rocket_handles.push(shutdown);
-			join_handles.push(join);
+		}
+		if config.load_user_interface.unwrap_or(false) {
+			let server_info = web::ServerInfo {
+				is_exposed: true,
+				update_message,
+			};
+			web::spawn(
+				stop_flag.clone(),
+				config.user_interface_port.unwrap_or(37338),
+				None,
+				api.clone(),
+				server_info,
+			)
+			.await;
 		}
 
 		// Run the main loop, until it exits because of a signal
@@ -337,15 +333,6 @@ async fn main() {
 
 		// Shutdown rocket servers
 		info!("Exiting stonenetd...");
-		for handle in rocket_handles {
-			handle.notify();
-		}
-		for handle in join_handles {
-			match handle.await {
-				Ok(()) => {}
-				Err(e) => error!("Rocket error after shutdown: {}", e),
-			}
-		}
 
 		api.close().await;
 		info!("Done.");
@@ -442,7 +429,9 @@ async fn test_openness(g: &Api, config: &Config, should_test: bool) {
 			} else {
 				None
 			}
-		} else { None };
+		} else {
+			None
+		};
 
 		if let Some(openness) = udp4_openness {
 			let mut ci = g.node.contact_info();
@@ -485,7 +474,9 @@ async fn test_openness(g: &Api, config: &Config, should_test: bool) {
 			} else {
 				None
 			}
-		} else { None };
+		} else {
+			None
+		};
 
 		if let Some(openness) = tcpv4_openness {
 			let mut ci = g.node.contact_info();
@@ -531,7 +522,9 @@ async fn test_openness(g: &Api, config: &Config, should_test: bool) {
 			} else {
 				None
 			}
-		} else { None };
+		} else {
+			None
+		};
 
 		if let Some(openness) = udp6_openness {
 			let mut ci = g.node.contact_info();
@@ -574,7 +567,9 @@ async fn test_openness(g: &Api, config: &Config, should_test: bool) {
 			} else {
 				None
 			}
-		} else { None };
+		} else {
+			None
+		};
 
 		if let Some(openness) = tcpv6_openness {
 			let mut ci = g.node.contact_info();
