@@ -18,3 +18,5 @@ pub mod post_object;
 pub mod post_tag;
 pub mod profile_object;
 pub mod remembered_fingers;
+
+pub use prelude::*;

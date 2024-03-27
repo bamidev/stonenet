@@ -1,4 +1,4 @@
-{% extends "base" %}
+{% extends "base.tera" %}
 {% block title %}Profile{% endblock %}
 
 {% block content %}
