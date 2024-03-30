@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::{extract::*, middleware::*, response::Response, routing::*, *};
 
 use crate::web::*;
@@ -5,12 +7,17 @@ use crate::web::*;
 
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
-		.route("/:hash", get(file_get))
+		.route("/:file-hash", get(file_get))
 		.route_layer(from_fn_with_state(g, file_middleware))
 }
 
 async fn file_middleware(mut request: Request, next: Next) -> Response {
-	let hash_str = request.extract_parts::<Path<String>>().await.unwrap().0;
+	let params = request
+		.extract_parts::<Path<HashMap<String, String>>>()
+		.await
+		.unwrap()
+		.0;
+	let hash_str = params.get("file-hash").unwrap();
 
 	match IdType::from_base58(&hash_str) {
 		Ok(id) => request.extensions_mut().insert(id),

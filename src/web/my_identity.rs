@@ -40,18 +40,20 @@ async fn index(State(g): State<Arc<Global>>) -> Response {
 
 	let mut context = Context::new();
 	context.insert("identities", &identities_data);
-	g.render("identity/overview", context)
+	g.render("identity/overview.html.tera", context)
 }
 
-async fn new(State(g): State<Arc<Global>>) -> Response { g.render("identity/new", Context::new()) }
+async fn new(State(g): State<Arc<Global>>) -> Response {
+	g.render("identity/new.html.tera", Context::new())
+}
 
 async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Response {
 	// Collect all data from the multipart post request
 	let mut label_buf = Vec::new();
 	let mut name_buf = Vec::new();
-	let mut avatar_buf = Vec::default();
+	let mut avatar_buf = Vec::new();
 	let mut avatar_mime_type: Option<String> = None;
-	let mut wallpaper_buf = Vec::default();
+	let mut wallpaper_buf = Vec::new();
 	let mut wallpaper_mime_type: Option<String> = None;
 	let mut description_buf = Vec::new();
 	while let Some(field) = multipart.next_field().await.unwrap() {
@@ -76,14 +78,22 @@ async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Res
 	// Construct the multipart data into something useful
 	let label = String::from_utf8_lossy(&label_buf).to_string();
 	let name = String::from_utf8_lossy(&name_buf).to_string();
-	let avatar = avatar_mime_type.map(|mime_type| FileData {
-		mime_type,
-		data: avatar_buf.into(),
-	});
-	let wallpaper = wallpaper_mime_type.map(|mime_type| FileData {
-		mime_type,
-		data: wallpaper_buf.into(),
-	});
+	let avatar = if avatar_buf.len() > 0 {
+		avatar_mime_type.map(|mime_type| FileData {
+			mime_type,
+			data: avatar_buf.into(),
+		})
+	} else {
+		None
+	};
+	let wallpaper = if wallpaper_buf.len() > 0 {
+		wallpaper_mime_type.map(|mime_type| FileData {
+			mime_type,
+			data: wallpaper_buf.into(),
+		})
+	} else {
+		None
+	};
 	let description = if description_buf.len() > 0 {
 		Some(FileData {
 			mime_type: "text/markdown".to_string(),

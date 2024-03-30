@@ -36,7 +36,7 @@
 						<li class="nav-item">
 							<a class="nav-link active" aria-current="page" href="/">Home</a>
 						</li>
-						{% if global.is_local %}
+						{% if server.is_exposed == false %}
 							<li class="nav-item">
 								<a class="nav-link" href="/my-identity">Identities</a>
 							</li>
@@ -51,28 +51,30 @@
 			</div>
 		</nav>
 
-		<nav class="navbar navbar-expand-lg navbar-light">
-					<form action="/" method="post" class="w-100">
-			<div class="container-fluid">
-				<div class="row">
-						<div class="col-md-3"></div>
-						<div class="col-md-3">
-							<label for="">Active identity:</label>
-						</div>
-						<div class="col-md-3">
-							<div class="input-group">
-								<select class="form-select form-select-sm w-50 d-inline" id="identity" name="identity">
-									{% for identity in identities %}
-										<option value="{{identity.address}}">{{identity.label}}</option>
-									{% endfor %}
-								</select>
-								<button class="btn btn-secondary" type="submit">Use</button>
+		{% if server.is_exposed != true %}
+			<nav class="navbar navbar-expand-lg navbar-light">
+						<form action="/" method="post" class="w-100">
+				<div class="container-fluid">
+					<div class="row">
+							<div class="col-md-3"></div>
+							<div class="col-md-3">
+								<label for="">Active identity:</label>
 							</div>
-						</div>
+							<div class="col-md-3">
+								<div class="input-group">
+									<select class="form-select form-select-sm w-50 d-inline" id="identity" name="identity">
+										{% for identity in app.identities %}
+											<option value="{{identity.address}}">{{identity.label}}</option>
+										{% endfor %}
+									</select>
+									<button class="btn btn-secondary" type="submit">Use</button>
+								</div>
+							</div>
+					</div>
 				</div>
-			</div>
-					</form>
-		</nav>
+						</form>
+			</nav>
+		{% endif %}
 
 		<div id="body" class="row">
 			<div class="col col-md-3">

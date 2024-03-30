@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use axum::{extract::*, middleware::*, response::Response, routing::*, *};
 use sea_orm::*;
 
-use self::common::*;
 use crate::{
 	entity::{object, Object},
 	web::*,
@@ -10,14 +11,19 @@ use crate::{
 
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
-		.route("/:hash", get(object_get))
+		.route("/:object-hash", get(object_get))
 		.route_layer(from_fn_with_state(g, object_middleware))
 }
 
 async fn object_middleware(
 	State(g): State<Arc<Global>>, mut request: Request, next: Next,
 ) -> Response {
-	let hash_str = request.extract_parts::<Path<String>>().await.unwrap().0;
+	let params = request
+		.extract_parts::<Path<HashMap<String, String>>>()
+		.await
+		.unwrap()
+		.0;
+	let hash_str = params.get("object-hash").unwrap();
 
 	match IdType::from_base58(&hash_str) {
 		Ok(id) => request.extensions_mut().insert(id),

@@ -1,7 +1,7 @@
 mod file;
 mod object;
 
-use std::{str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use axum::{extract::*, middleware::*, response::Response, routing::*, *};
 use sea_orm::*;
@@ -20,16 +20,21 @@ struct ActorActions {
 
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
-		.route("/:hash", get(actor_get).post(actor_post))
-		.nest("/:hash/file", file::router(g.clone()))
-		.nest("/:hash/object", object::router(g.clone()))
+		.route("/:actor-address", get(actor_get).post(actor_post))
+		.nest("/:actor-address/file", file::router(g.clone()))
+		.nest("/:actor-address/object", object::router(g.clone()))
 		.route_layer(from_fn_with_state(g, actor_middleware))
 }
 
 async fn actor_middleware(
 	State(g): State<Arc<Global>>, mut request: Request, next: Next,
 ) -> Response {
-	let hash = request.extract_parts::<Path<String>>().await.unwrap().0;
+	let params = request
+		.extract_parts::<Path<HashMap<String, String>>>()
+		.await
+		.unwrap()
+		.0;
+	let hash = params.get("actor-address").unwrap();
 
 	match parse_actor_address(&hash) {
 		Err(r) => return r,
@@ -69,7 +74,7 @@ async fn actor_get(
 	context.insert("address", &address.to_string());
 	context.insert("profile", &profile);
 	context.insert("is_following", &is_following);
-	g.render("actor", context)
+	g.render("actor.html.tera", context)
 }
 
 async fn actor_post(

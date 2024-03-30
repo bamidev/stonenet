@@ -29,26 +29,28 @@
 {% endmacro %}
 
 {% macro post_form(title, identities) %}
-	<form method="post" enctype="multipart/form-data">
-		<div class="card bg-dark-subtle text-dark">
-			<div class="card-header">
-				<h5 class="card-title">{{title}}</h5>
+	{% if server.is_exposed != true %}
+		<form method="post" enctype="multipart/form-data">
+			<div class="card bg-dark-subtle text-dark">
+				<div class="card-header">
+					<h5 class="card-title">{{title}}</h5>
+				</div>
+				<div class="card-body">
+					<div id="editor"></div>
+					<textarea class="default-editor" name="message" rows="5" style="width: 100%" placeholder="Write a message..."></textarea>
+					<input name="attachments" type="file" multiple="multiple" />
+				</div>
+				<div class="card-footer">
+					{% if identities %}
+						<button class="btn btn-primary float-end" type="submit">Post</button>
+					{% else %}
+						Unable to post without an identity.
+						<a href="/my-identity/new">Create one</a>. 
+					{% endif %}
+				</div>
 			</div>
-			<div class="card-body">
-				<div id="editor"></div>
-				<textarea class="default-editor" name="message" rows="5" style="width: 100%" placeholder="Write a message..."></textarea>
-				<input name="attachments" type="file" multiple="multiple" />
-			</div>
-			<div class="card-footer">
-				{% if identities %}
-					<button class="btn btn-primary float-end" type="submit">Post</button>
-				{% else %}
-					Unable to post without an identity.
-					<a href="/my-identity/new">Create one</a>. 
-				{% endif %}
-			</div>
-		</div>
-	</form>
+		</form>
+	{% endif %}
 {% endmacro %}
 
 {% macro feed(objects, page) %}

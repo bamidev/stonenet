@@ -301,7 +301,7 @@ async fn main() {
 		// Spawn web servers
 		if config.load_web_interface.unwrap_or(false) {
 			let server_info = web::ServerInfo {
-				is_exposed: false,
+				is_exposed: true,
 				update_message: None,
 			};
 			web::spawn(
@@ -315,7 +315,7 @@ async fn main() {
 		}
 		if config.load_user_interface.unwrap_or(false) {
 			let server_info = web::ServerInfo {
-				is_exposed: true,
+				is_exposed: false,
 				update_message,
 			};
 			web::spawn(

@@ -17,6 +17,7 @@ use tera::{Context, Tera};
 use tokio::time::sleep;
 use tower_http::services::ServeDir;
 
+use self::common::*;
 use crate::{api::Api, common::*, core::*};
 
 
@@ -176,7 +177,7 @@ async fn index_post(
 }*/
 
 pub async fn spawn(
-	stop_flag: Arc<AtomicBool>, port: u16, workers: Option<usize>, api: Api,
+	stop_flag: Arc<AtomicBool>, port: u16, _workers: Option<usize>, api: Api,
 	server_info: ServerInfo,
 ) {
 	let global = Arc::new(Global {
@@ -194,6 +195,7 @@ pub async fn spawn(
 	let addr = SocketAddrV4::new(ip, port);
 
 	let app = Router::new()
+		.route("/", get(home))
 		.nest_service("/static", ServeDir::new("static"))
 		.nest("/actor", actor::router(global.clone()))
 		.nest("/my-identity", my_identity::router(global.clone()))
@@ -209,6 +211,25 @@ pub async fn spawn(
 		})
 		.await
 		.unwrap();
+}
+
+#[derive(Deserialize)]
+struct HomePaginationQuery {
+	page: Option<u64>,
+}
+
+async fn home(State(g): State<Arc<Global>>, Query(query): Query<HomePaginationQuery>) -> Response {
+	let p = query.page.unwrap_or(0);
+	let start = p * 5;
+	let objects: Vec<ObjectDisplayInfo> = match g.api.fetch_home_feed(5, start) {
+		Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
+		Err(e) => return server_error_response(e, "unable to fetch home feed"),
+	};
+
+	let mut context = Context::new();
+	context.insert("objects", &objects);
+	context.insert("page", &p);
+	g.render("home.html.tera", context)
 }
 
 #[derive(Deserialize)]

@@ -3,9 +3,7 @@
 {% block title %}Home{% endblock %}
 
 {% block column_left %}
-	{% if global.is_local %}
-		{{macros::post_form(title="Message", identities=identities)}}
-	{% endif %}
+	{{macros::post_form(title="Message", identities=app.identities)}}
 {% endblock column_left %}
 
 {% block content %}
