@@ -1007,7 +1007,7 @@ impl Connection {
 			FROM profile_object AS po
 			INNER JOIN object AS o ON po.object_id = o.id
 			WHERE o.actor_id = ?
-			ORDER BY po.id DESC LIMIT 1
+			ORDER BY o.id DESC LIMIT 1
 		"#,
 		)?;
 		let mut rows = stat.query([actor_id])?;
