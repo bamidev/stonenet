@@ -9,6 +9,7 @@ pub mod db;
 mod entity;
 pub mod identity;
 pub mod limited_store;
+pub mod migration;
 pub mod net;
 pub mod test;
 mod trace;

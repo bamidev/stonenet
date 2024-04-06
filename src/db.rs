@@ -2599,6 +2599,7 @@ mod tests {
 	use std::sync::Mutex;
 
 	use rand::RngCore;
+	use tokio::{runtime::Runtime, task};
 
 	use super::*;
 	use crate::test;
@@ -2607,8 +2608,12 @@ mod tests {
 
 	#[ctor::ctor]
 	fn initialize() {
-		let path: PathBuf = "/tmp/db777.sqlite".into();
-		*DB.lock().unwrap() = Some(Database::load(path).expect("unable to load database"));
+		let rt = Runtime::new().unwrap();
+		rt.block_on(async {
+			let mut db_lock = DB.lock().unwrap();
+			let (db, _) = test::load_database("db").await;
+			*db_lock = Some(db);
+		});
 	}
 
 	#[ctor::dtor]
