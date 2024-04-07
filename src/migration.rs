@@ -79,6 +79,7 @@ impl Migrations {
 			.values([
 				(Alias::new("major"), version.major.into()),
 				(Alias::new("minor"), version.minor.into()),
+				(Alias::new("patch"), version.patch.into()),
 			])
 			.to_owned();
 		let (sql, values) = q.build(SqliteQueryBuilder);
@@ -138,12 +139,14 @@ impl Version {
 
 impl Display for Version {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "v{}.{}", self.major, self.minor)
+		write!(f, "v{}.{}.{}", self.major, self.minor, self.patch)
 	}
 }
 
 impl PartialEq for Version {
-	fn eq(&self, other: &Self) -> bool { self.major == other.major && self.minor == other.minor }
+	fn eq(&self, other: &Self) -> bool {
+		self.major == other.major && self.minor == other.minor && self.patch == other.patch
+	}
 }
 
 impl PartialOrd for Version {
@@ -152,6 +155,10 @@ impl PartialOrd for Version {
 			Some(core::cmp::Ordering::Equal) => {}
 			ord => return ord,
 		}
-		self.minor.partial_cmp(&other.minor)
+		match self.minor.partial_cmp(&other.minor) {
+			Some(core::cmp::Ordering::Equal) => {}
+			ord => return ord,
+		}
+		self.patch.partial_cmp(&other.patch)
 	}
 }
