@@ -484,6 +484,7 @@ impl Api {
 				identity_id,
 				created,
 				&previous_hash,
+				true,
 				&tags,
 				&files,
 				&hash,

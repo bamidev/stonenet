@@ -150,6 +150,7 @@ impl MigrationTrait for Migration {
 			],
 		)
 		.await?;
+
 		let post_files = crate::entity::prelude::PostFiles;
 		add_id_column(
 			tx,
@@ -159,6 +160,10 @@ impl MigrationTrait for Migration {
 			&["post_id", "hash", "sequence"],
 		)
 		.await?;
+
+		let entity = crate::entity::prelude::PostObject;
+		reset_table(tx, &schema, entity, "post_object").await?;
+
 		let post_tag = crate::entity::prelude::PostTag;
 		add_id_column(tx, &schema, post_tag, "post_tag", &["post_id", "tag"]).await?;
 
@@ -167,8 +172,6 @@ impl MigrationTrait for Migration {
 		reset_table(tx, &schema, entity, "boost_object").await?;
 		let entity = crate::entity::prelude::FileBlocks;
 		reset_table(tx, &schema, entity, "file_blocks").await?;
-		let entity = crate::entity::prelude::PostObject;
-		reset_table(tx, &schema, entity, "post_object").await?;
 		Ok(())
 	}
 }

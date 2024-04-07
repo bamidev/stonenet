@@ -12,20 +12,20 @@ pub struct Model {
 	pub sequence: i32,
 }
 
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+#[derive(Copy, Clone, Debug, DeriveRelation, EnumIter)]
 pub enum Relation {
 	#[sea_orm(
-		belongs_to = "super::post_object::Entity",
+		belongs_to = "super::object::Entity",
 		from = "Column::PostId",
-		to = "super::post_object::Column::ObjectId",
+		to = "super::object::Column::Id",
 		on_update = "NoAction",
 		on_delete = "NoAction"
 	)]
-	PostObject,
+	Object,
 }
 
-impl Related<super::post_object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::PostObject.def() }
+impl Related<super::object::Entity> for Entity {
+	fn to() -> RelationDef { Relation::Object.def() }
 }
 
 impl ActiveModelBehavior for ActiveModel {}

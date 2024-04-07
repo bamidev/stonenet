@@ -19,7 +19,7 @@ pub fn initialize_rng() -> ChaCha8Rng {
 pub async fn load_database(filename: &str) -> (Database, DatabaseConnection) {
 	let temp_file = NamedTempFile::with_prefix(filename).unwrap();
 	let old_db = Database::load(temp_file.path().to_owned()).expect("unable to load database");
-	let orm = sea_orm::Database::connect("sqlite://{}?mode=rwc")
+	let orm = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", temp_file.path().display()))
 		.await
 		.expect("unable to load ORM");
 	let migrations = Migrations::load();

@@ -720,7 +720,7 @@ impl Connection {
 	{
 		let mut stat = this.prepare(
 			r#"
-			SELECT file_count FROM post_object WHERE id = ?
+			SELECT file_count FROM post_object WHERE object_id = ?
 		"#,
 		)?;
 		let mut rows = stat.query([post_id])?;
@@ -806,7 +806,7 @@ impl Connection {
 	) -> Result<Option<PostObjectInfo>> {
 		let mut stat = this.prepare(
 			r#"
-			SELECT po.id, o.sequence, ti.id, ti.address, tpo.id, to_.sequence
+			SELECT o.id, o.sequence, ti.id, ti.address, tpo.object_id, to_.sequence
 			FROM post_object AS po
 			INNER JOIN object AS o ON po.object_id = o.id
 			INNER JOIN identity AS i ON o.actor_id = i.id
@@ -1400,7 +1400,7 @@ impl Connection {
 	}
 
 	pub fn _store_post(
-		tx: &impl DerefConnection, actor_id: i64, created: u64, previous_hash: &IdType,
+		tx: &impl DerefConnection, actor_id: i64, created: u64, previous_hash: &IdType, verified_from_start: bool,
 		tags: &[String], files: &[IdType], hash: &IdType, signature: &ActorSignatureV1,
 		in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> Result<()> {
@@ -1409,9 +1409,9 @@ impl Connection {
 		let mut stat = tx.prepare(
 			r#"
 			INSERT INTO object (
-				actor_id, sequence, previous_hash, hash, signature, created, found, type
+				actor_id, sequence, previous_hash, hash, signature, created, found, type, verified_from_start
 			)
-			VALUES (?,?,?,?,?,?,?,?)
+			VALUES (?,?,?,?,?,?,?,?,?)
 		"#,
 		)?;
 
@@ -1424,6 +1424,7 @@ impl Connection {
 			created,
 			created,
 			OBJECT_TYPE_POST,
+			verified_from_start
 		])?;
 		stat = tx.prepare(
 			r#"
@@ -1594,13 +1595,41 @@ impl Connection {
 	}
 
 	pub fn delete_object(&self, actor_address: &ActorAddress, hash: &IdType) -> Result<bool> {
+		let object_id: i64 = self.0.query_row(r#"
+			SELECT id FROM object WHERE hash = ? AND actor_id = (
+				SELECT id FROM identity WHERE address = ?
+			)"#,
+			params![hash.to_string(), actor_address],
+			|r| r.get(0)
+		)?;
+
+		// Delete all possible foreign references first
+		self.0.execute(r#"
+			DELETE FROM post_files WHERE post_id = ?
+		"#, [object_id]
+		)?;
+		self.0.execute(r#"
+			DELETE FROM post_tag WHERE post_id = ?
+		"#, [object_id]
+		)?;
+		self.0.execute(r#"
+			DELETE FROM post_object WHERE object_id = ?
+		"#, [object_id]
+		)?;
+		self.0.execute(r#"
+			DELETE FROM boost_object WHERE object_id = ?
+		"#, [object_id]
+		)?;
+		self.0.execute(r#"
+			DELETE FROM profile_object WHERE object_id = ?
+		"#, [object_id]
+		)?;
+
 		let affected = self.0.execute(
 			r#"
-			DELETE FROM object WHERE hash = ? AND actor_id = (
-				SELECT id FROM identity WHERE address = ?
-			)
+			DELETE FROM object WHERE id = ?
 		"#,
-			params![hash.to_string(), actor_address],
+			[object_id],
 		)?;
 		Ok(affected > 0)
 	}
@@ -2603,33 +2632,12 @@ mod tests {
 
 	use super::*;
 	use crate::test;
+	#[tokio::test]
+	async fn test_file_data() {
+		let (db, _) = test::load_database("db").await;
 
-	static DB: Mutex<Option<Database>> = Mutex::new(None);
-
-	#[ctor::ctor]
-	fn initialize() {
-		let rt = Runtime::new().unwrap();
-		rt.block_on(async {
-			let mut db_lock = DB.lock().unwrap();
-			let (db, _) = test::load_database("db").await;
-			*db_lock = Some(db);
-		});
-	}
-
-	#[ctor::dtor]
-	fn uninitialize() {
-		let path: PathBuf = "/tmp/db777.sqlite".into();
-		let _ = std::fs::remove_file(&path);
-	}
-
-	#[test]
-	fn test_file_data() {
 		let mut rng = test::initialize_rng();
-		let mut c = DB
-			.lock()
-			.unwrap()
-			.as_ref()
-			.unwrap()
+		let mut c = db
 			.connect()
 			.expect("unable to connect to database");
 
