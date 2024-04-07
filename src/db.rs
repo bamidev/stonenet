@@ -2636,10 +2636,7 @@ pub fn encrypt_block(index: u64, key: &IdType, data: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Mutex;
-
 	use rand::RngCore;
-	use tokio::{runtime::Runtime, task};
 
 	use super::*;
 	use crate::test;
