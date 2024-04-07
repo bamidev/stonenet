@@ -1400,9 +1400,9 @@ impl Connection {
 	}
 
 	pub fn _store_post(
-		tx: &impl DerefConnection, actor_id: i64, created: u64, previous_hash: &IdType, verified_from_start: bool,
-		tags: &[String], files: &[IdType], hash: &IdType, signature: &ActorSignatureV1,
-		in_reply_to: Option<(ActorAddress, IdType)>,
+		tx: &impl DerefConnection, actor_id: i64, created: u64, previous_hash: &IdType,
+		verified_from_start: bool, tags: &[String], files: &[IdType], hash: &IdType,
+		signature: &ActorSignatureV1, in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> Result<()> {
 		// Create post object
 		let next_sequence = Self::_next_object_sequence(tx, actor_id)?;
@@ -1595,34 +1595,45 @@ impl Connection {
 	}
 
 	pub fn delete_object(&self, actor_address: &ActorAddress, hash: &IdType) -> Result<bool> {
-		let object_id: i64 = self.0.query_row(r#"
+		let object_id: i64 = self.0.query_row(
+			r#"
 			SELECT id FROM object WHERE hash = ? AND actor_id = (
 				SELECT id FROM identity WHERE address = ?
 			)"#,
 			params![hash.to_string(), actor_address],
-			|r| r.get(0)
+			|r| r.get(0),
 		)?;
 
 		// Delete all possible foreign references first
-		self.0.execute(r#"
+		self.0.execute(
+			r#"
 			DELETE FROM post_files WHERE post_id = ?
-		"#, [object_id]
+		"#,
+			[object_id],
 		)?;
-		self.0.execute(r#"
+		self.0.execute(
+			r#"
 			DELETE FROM post_tag WHERE post_id = ?
-		"#, [object_id]
+		"#,
+			[object_id],
 		)?;
-		self.0.execute(r#"
+		self.0.execute(
+			r#"
 			DELETE FROM post_object WHERE object_id = ?
-		"#, [object_id]
+		"#,
+			[object_id],
 		)?;
-		self.0.execute(r#"
+		self.0.execute(
+			r#"
 			DELETE FROM boost_object WHERE object_id = ?
-		"#, [object_id]
+		"#,
+			[object_id],
 		)?;
-		self.0.execute(r#"
+		self.0.execute(
+			r#"
 			DELETE FROM profile_object WHERE object_id = ?
-		"#, [object_id]
+		"#,
+			[object_id],
 		)?;
 
 		let affected = self.0.execute(
@@ -2637,9 +2648,7 @@ mod tests {
 		let (db, _) = test::load_database("db").await;
 
 		let mut rng = test::initialize_rng();
-		let mut c = db
-			.connect()
-			.expect("unable to connect to database");
+		let mut c = db.connect().expect("unable to connect to database");
 
 		let mut file_data1 = FileData {
 			mime_type: "image/png".to_string(),

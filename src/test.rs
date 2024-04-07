@@ -7,7 +7,8 @@ use sea_orm::DatabaseConnection;
 use tempfile::NamedTempFile;
 
 use crate::{
-	api::Api, config::Config, db::Database, identity::NodePrivateKey, net::overlay::OverlayNode, migration::Migrations
+	api::Api, config::Config, db::Database, identity::NodePrivateKey, migration::Migrations,
+	net::overlay::OverlayNode,
 };
 
 
@@ -19,9 +20,10 @@ pub fn initialize_rng() -> ChaCha8Rng {
 pub async fn load_database(filename: &str) -> (Database, DatabaseConnection) {
 	let temp_file = NamedTempFile::with_prefix(filename).unwrap();
 	let old_db = Database::load(temp_file.path().to_owned()).expect("unable to load database");
-	let orm = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", temp_file.path().display()))
-		.await
-		.expect("unable to load ORM");
+	let orm =
+		sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", temp_file.path().display()))
+			.await
+			.expect("unable to load ORM");
 	let migrations = Migrations::load();
 	migrations.run(&orm).await.expect("migration issue");
 	// Leak it on purpose so that the temp file may live until the end of all tests
