@@ -509,6 +509,7 @@ impl fmt::Display for ContactOption {
 }
 
 impl NodeContactInfo {
+	#[allow(dead_code)]
 	pub fn update(&mut self, addr: &SocketAddr, for_tcp: bool) {
 		self.contact_info.update(addr, for_tcp);
 	}

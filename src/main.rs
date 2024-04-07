@@ -51,6 +51,7 @@ use toml;
 use crate::migration::Migrations;
 
 
+#[allow(dead_code)]
 async fn check_version() -> Option<String> {
 	info!("Checking version...");
 
@@ -210,16 +211,19 @@ fn load_install_dir() -> io::Result<PathBuf> {
 }
 
 #[cfg(package_manager = "apt")]
+#[allow(dead_code)]
 fn version_message(_version_str: &str) -> String {
 	"Update stonenet with: <code>apt update && update upgrade</code>".to_owned()
 }
 
 #[cfg(package_manager = "homebrew")]
+#[allow(dead_code)]
 fn version_message(_version_str: &str) -> String {
 	"Update stonenet with: <code>brew update</code>".to_owned()
 }
 
 #[cfg(package_manager = "windows-installer")]
+#[allow(dead_code)]
 fn version_message(version_str: &str) -> String {
 	format!(
 		"<a target=\"_blank\" href=\"https://get.stonenet.org/windows/stonenet-installer-{}.exe\">download the update \
@@ -229,6 +233,7 @@ fn version_message(version_str: &str) -> String {
 }
 
 #[cfg(not(package_manager))]
+#[allow(dead_code)]
 fn version_message(_version_str: &str) -> String {
 	"use your package manager to update the stonenet client".to_owned()
 }
