@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use sea_orm::{prelude::*, sea_query::*, DatabaseBackend, DatabaseTransaction, Schema, Statement};
 
-use super::MigrationTrait;
-use crate::trace;
+use crate::{migration::MigrationTrait, trace};
 
 
 pub struct Migration;
@@ -89,10 +88,6 @@ impl MigrationTrait for Migration {
 		// TODO: If any of the following entities change, store the old entity somewhere
 		// else
 		let schema = Schema::new(DatabaseBackend::Sqlite);
-
-		// Drop version patch column
-		tx.execute_unprepared("ALTER TABLE version DROP COLUMN patch")
-			.await?;
 
 		// Drop unused tables
 		tx.execute_unprepared("DROP TABLE move_object").await?;

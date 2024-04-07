@@ -10,11 +10,15 @@ use sea_orm::{
 
 use crate::trace;
 
-mod v0_1;
+mod v0;
 
 
 /// The latest database version.
-pub const LATEST_VERSION: Version = Version { major: 0, minor: 1 };
+pub const LATEST_VERSION: Version = Version {
+	major: 0,
+	minor: 1,
+	patch: 0,
+};
 
 
 type Result<T, E> = trace::Result<T, E>;
@@ -24,6 +28,7 @@ type Result<T, E> = trace::Result<T, E>;
 pub struct Version {
 	major: u32,
 	minor: u32,
+	patch: u32,
 }
 
 pub struct Migrations {
@@ -40,7 +45,7 @@ trait MigrationTrait {
 impl Migrations {
 	pub fn load() -> Self {
 		Self {
-			list: vec![(Version::new(0, 1), Box::new(v0_1::Migration))],
+			list: vec![(Version::new(0, 1, 0), Box::new(v0::v1::v0::Migration))],
 		}
 	}
 
@@ -49,6 +54,7 @@ impl Migrations {
 			.from(Alias::new("version"))
 			.column(Alias::new("major"))
 			.column(Alias::new("minor"))
+			.column(Alias::new("patch"))
 			.to_owned();
 		let (sql, values) = q.build(SqliteQueryBuilder);
 		let r = connection
@@ -61,7 +67,8 @@ impl Migrations {
 		let result = r.expect("no version in the database");
 		let major: u32 = result.try_get_by_index(0)?;
 		let minor: u32 = result.try_get_by_index(1)?;
-		Ok(Version::new(major, minor))
+		let patch: u32 = result.try_get_by_index(2)?;
+		Ok(Version::new(major, minor, patch))
 	}
 
 	async fn store_version(
@@ -120,7 +127,13 @@ impl Migrations {
 }
 
 impl Version {
-	pub fn new(major: u32, minor: u32) -> Self { Self { major, minor } }
+	pub fn new(major: u32, minor: u32, patch: u32) -> Self {
+		Self {
+			major,
+			minor,
+			patch,
+		}
+	}
 }
 
 impl Display for Version {
