@@ -9,15 +9,23 @@ use std::{
 use chrono::*;
 use log::*;
 use rand::rngs::OsRng;
+use sea_orm::{
+	ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, Set,
+	TransactionTrait,
+};
 use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
 	common::*,
 	core::*,
-	db::{self, *},
+	db::{self},
 	identity::*,
 	net::{actor::ActorNode, binserde, message::*, overlay::OverlayNode},
+};
+use crate::{
+	db::{Database, ObjectInfo, ProfileObjectInfo},
+	entity::{identity, object},
 };
 
 /*#[derive(Debug)]
@@ -372,7 +380,7 @@ impl Api {
 	// are being loaded in another thread.
 	pub async fn stream_file(
 		&self, actor_address: ActorAddress, file_hash: IdType,
-	) -> Result<Option<(String, ReceiverStream<db::Result<Vec<u8>>>)>> {
+	) -> db::Result<Option<(String, ReceiverStream<db::Result<Vec<u8>>>)>> {
 		let db = self.old_db.clone();
 		let r: Option<File> = db.perform(|c| c.fetch_file(&file_hash))?;
 
@@ -477,7 +485,7 @@ impl Api {
 				created,
 				&object_payload,
 				&private_key,
-			)?;
+			);
 
 			db::Connection::_store_post(
 				&tx,
@@ -514,17 +522,102 @@ impl Api {
 		Ok(hash)
 	}
 
-	fn publish_share(
-		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: ShareObject,
-	) {
-		//self.orm.
+	async fn find_next_object_sequence(
+		c: &impl ConnectionTrait, identity_id: i64,
+	) -> Result<u64, DbErr> {
+		Ok(object::Entity::find()
+			.filter(object::Column::ActorId.eq(identity_id))
+			.one(c)
+			.await?
+			.map(|r| r.sequence)
+			.unwrap_or(0))
+	}
+
+	async fn find_object_by_sequence(
+		c: &impl ConnectionTrait, identity_id: i64, sequence: u64,
+	) -> Result<Option<object::Model>, DbErr> {
+		object::Entity::find()
+			.filter(object::Column::ActorId.eq(identity_id))
+			.filter(object::Column::Sequence.eq(sequence))
+			.one(c)
+			.await
+	}
+
+	async fn store_share(
+		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, share: &ShareObject,
+	) -> Result<(i64, IdType, Object), DbErr> {
+		let tx = self.orm.begin().await?;
+
+		// Construct fields for the share object
+		let identity_record = identity::Entity::find()
+			.filter(identity::Column::Address.eq(identity))
+			.one(&self.orm)
+			.await?
+			.expect("identity doesn't exist");
+		let next_object_sequence = Self::find_next_object_sequence(&tx, identity_record.id).await?;
+		let object_payload = ObjectPayload::Share(share.clone());
+		let created = Utc::now().timestamp_millis() as u64;
+		let previous_object =
+			Self::find_object_by_sequence(&tx, identity_record.id, next_object_sequence - 1)
+				.await?;
+		let previous_hash = previous_object
+			.map(|o| o.previous_hash)
+			.unwrap_or(IdType::default());
+		let (hash, signature) = Self::sign_object(
+			next_object_sequence,
+			&previous_hash,
+			created,
+			&object_payload,
+			&private_key,
+		);
+
+		let result = object::Entity::insert(object::ActiveModel {
+			id: NotSet,
+			actor_id: Set(identity_record.id),
+			hash: Set(hash.clone()),
+			signature: Set(signature.clone()),
+			sequence: Set(next_object_sequence),
+			previous_hash: Set(previous_hash.clone()),
+			created: Set(created),
+			verified_from_start: Set(true),
+			found: Set(created),
+			r#type: Set(OBJECT_TYPE_SHARE),
+		})
+		.exec(&tx)
+		.await?;
+
+		tx.commit().await?;
+
+		let object = Object {
+			signature,
+			sequence: next_object_sequence,
+			previous_hash,
+			created,
+			payload: ObjectPayload::Share(share.clone()),
+		};
+		Ok((result.last_insert_id, hash, object))
+	}
+
+	async fn publish_share(
+		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: &ShareObject,
+	) -> Result<(), DbErr> {
+		// Store the share object
+		let (_, hash, object) = self.store_share(identity, private_key, object).await?;
+
+		// Publish the object into the network
+		if let Some(actor_node) = self.node.get_actor_node(&identity.as_id()).await {
+			actor_node.publish_object(&self.node, &hash, &object).await;
+		} else {
+			error!("Actor node not found.");
+		}
+		Ok(())
 	}
 
 	/// Calculates the signature of the s
 	fn sign_object(
 		sequence: u64, previous_hash: &IdType, created: u64, payload: &ObjectPayload,
 		private_key: &ActorPrivateKeyV1,
-	) -> db::Result<(IdType, ActorSignatureV1)> {
+	) -> (IdType, ActorSignatureV1) {
 		// Prepare data to be signed
 		let sign_data = ObjectSignData {
 			previous_hash: previous_hash.clone(),
@@ -538,7 +631,7 @@ impl Api {
 		let signature = private_key.sign(&raw_sign_data);
 		let hash = signature.hash();
 
-		Ok((hash, signature))
+		(hash, signature)
 	}
 }
 

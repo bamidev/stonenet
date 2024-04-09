@@ -22,7 +22,7 @@ pub type ActorPublicKeyV1Error = ();
 
 pub struct ActorPrivateKeyV1(ed448::PrivateKey);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ActorSignatureV1(#[serde(with = "BigArray")] [u8; 114]);
 
 #[derive(Debug, PartialEq)]
@@ -96,6 +96,41 @@ impl ActorSignatureV1 {
 	pub fn hash(&self) -> IdType { IdType::hash(self.as_bytes()) }
 
 	pub fn to_bytes(self) -> [u8; ed448::SIG_LENGTH] { self.0 }
+}
+
+impl sea_orm::TryGetableFromJson for ActorSignatureV1 {}
+
+impl Into<sea_orm::Value> for ActorSignatureV1 {
+	fn into(self) -> sea_orm::Value {
+		sea_orm::Value::Bytes(Some(Box::new(self.to_bytes().to_vec())))
+	}
+}
+
+impl sea_orm::sea_query::Nullable for ActorSignatureV1 {
+	fn null() -> sea_orm::Value { sea_orm::Value::Bytes(None) }
+}
+
+impl sea_orm::sea_query::ValueType for ActorSignatureV1 {
+	fn try_from(v: sea_orm::Value) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
+		match v {
+			sea_orm::Value::Bytes(ob) =>
+				if let Some(bytes) = ob {
+					match (*bytes).try_into() {
+						Err(_) => Err(sea_orm::sea_query::ValueTypeErr),
+						Ok(array) => Ok(Self::from_bytes(array)),
+					}
+				} else {
+					Err(sea_orm::sea_query::ValueTypeErr)
+				},
+			_ => Err(sea_orm::sea_query::ValueTypeErr),
+		}
+	}
+
+	fn type_name() -> String { "IdType".to_owned() }
+
+	fn array_type() -> sea_orm::sea_query::ArrayType { sea_orm::sea_query::ArrayType::String }
+
+	fn column_type() -> sea_orm::ColumnType { sea_orm::ColumnType::String(Some(45)) }
 }
 
 impl NodePublicKey {

@@ -452,7 +452,7 @@ impl ActorNode {
 									}
 								},
 						},
-						ObjectPayload::Boost(_) => {}
+						ObjectPayload::Share(_) => {}
 					}
 				}
 			}
@@ -486,7 +486,7 @@ impl ActorNode {
 							}
 						},
 				},
-				ObjectPayload::Boost(_) => {}
+				ObjectPayload::Share(_) => {}
 			}
 			Ok(results)
 		})

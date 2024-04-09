@@ -178,6 +178,42 @@ impl ToBase58 for IdType {
 	fn to_base58(&self) -> String { self.0.to_base58() }
 }
 
+impl sea_orm::TryGetableFromJson for IdType {}
+
+impl Into<sea_orm::Value> for &IdType {
+	fn into(self) -> sea_orm::Value { sea_orm::Value::String(Some(Box::new(self.to_base58()))) }
+}
+
+impl Into<sea_orm::Value> for IdType {
+	fn into(self) -> sea_orm::Value { sea_orm::Value::String(Some(Box::new(self.to_base58()))) }
+}
+
+impl sea_orm::sea_query::Nullable for IdType {
+	fn null() -> sea_orm::Value { IdType::default().into() }
+}
+
+impl sea_orm::sea_query::ValueType for IdType {
+	fn try_from(v: sea_orm::Value) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
+		match v {
+			sea_orm::Value::String(s) => {
+				let id = if let Some(string) = s {
+					IdType::from_base58(&string).map_err(|_| sea_orm::sea_query::ValueTypeErr)?
+				} else {
+					IdType::default()
+				};
+				Ok(id)
+			}
+			_ => Err(sea_orm::sea_query::ValueTypeErr),
+		}
+	}
+
+	fn type_name() -> String { "IdType".to_owned() }
+
+	fn array_type() -> sea_orm::sea_query::ArrayType { sea_orm::sea_query::ArrayType::String }
+
+	fn column_type() -> sea_orm::ColumnType { sea_orm::ColumnType::String(Some(45)) }
+}
+
 impl From<FromBase58Error> for IdFromBase58Error {
 	fn from(other: FromBase58Error) -> Self { Self::FromBase58Error(other) }
 }

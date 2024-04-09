@@ -75,11 +75,6 @@ pub struct FileHeader {
 	pub block_count: u32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct MoveObject {
-	pub new_actor_id: IdType,
-}
-
 #[derive(Debug, Error)]
 pub enum ParseAddressError {
 	#[error("invalid base58")]
@@ -152,14 +147,14 @@ pub struct ObjectSignData<'a> {
 }
 
 pub const OBJECT_TYPE_POST: u8 = 0;
-pub const OBJECT_TYPE_BOOST: u8 = 1;
+pub const OBJECT_TYPE_SHARE: u8 = 1;
 pub const OBJECT_TYPE_PROFILE: u8 = 2;
 pub const OBJECT_TYPE_MOVE: u8 = 3;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ObjectPayload {
 	Post(PostObject),
-	Boost(ShareObject),
+	Share(ShareObject),
 	Profile(ProfileObject),
 }
 
@@ -216,6 +211,10 @@ impl ActorAddress {
 	}
 
 	pub fn version(&self) -> u8 { 0 }
+}
+
+impl Into<sea_orm::Value> for &ActorAddress {
+	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
 }
 
 impl Address {
@@ -322,7 +321,7 @@ impl ObjectPayload {
 	pub fn type_id(&self) -> u8 {
 		match self {
 			Self::Post(_) => 0,
-			Self::Boost(_) => 1,
+			Self::Share(_) => 1,
 			Self::Profile(_) => 2,
 		}
 	}

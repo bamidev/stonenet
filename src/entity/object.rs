@@ -2,21 +2,23 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::{common::*, identity::ActorSignatureV1};
+
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "object")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
-	pub hash: String,
-	pub actor_id: i32,
-	pub sequence: i32,
-	pub previous_hash: Option<String>,
-	pub created: i32,
-	pub found: i32,
-	pub r#type: i32,
+	pub hash: IdType,
+	pub actor_id: i64,
+	pub sequence: u64,
+	pub previous_hash: IdType,
+	pub created: u64,
+	pub found: u64,
+	pub r#type: u8,
 	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
-	pub signature: Vec<u8>,
-	pub verified_from_start: i32,
+	pub signature: ActorSignatureV1,
+	pub verified_from_start: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

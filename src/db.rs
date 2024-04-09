@@ -652,45 +652,6 @@ impl Connection {
 		}
 	}
 
-	fn _fetch_move_object<C>(this: &C, object_id: i64) -> Result<Option<MoveObject>>
-	where
-		C: DerefConnection,
-	{
-		let mut stat = this.prepare(
-			r#"
-			SELECT i.address
-			FROM move_object AS mo
-			LEFT JOIN identity AS i ON mo.new_actor_id = i.id
-			WHERE mo.object_id = ?
-		"#,
-		)?;
-		let mut rows = stat.query([object_id])?;
-		if let Some(row) = rows.next()? {
-			let actor_id: IdType = row.get(0)?;
-
-			Ok(Some(MoveObject {
-				new_actor_id: actor_id,
-			}))
-		} else {
-			Ok(None)
-		}
-	}
-
-	fn _fetch_move_object_info<C>(
-		this: &C, actor_id: i64, sequence: u64,
-	) -> Result<Option<MoveObjectInfo>>
-	where
-		C: DerefConnection,
-	{
-		let result = Self::_fetch_object_id_by_sequence(this, actor_id, sequence)?;
-		if let Some(object_id) = result {
-			let actor_info = Self::_fetch_actor_info(this, object_id)?;
-			Ok(actor_info.map(|a| MoveObjectInfo { new_actor: a }))
-		} else {
-			Ok(None)
-		}
-	}
-
 	fn _fetch_post_files(this: &impl DerefConnection, object_id: i64) -> Result<Vec<IdType>> {
 		// Collect the files
 		let mut files = Vec::new();
@@ -1098,7 +1059,7 @@ impl Connection {
 				0 => Self::_fetch_post_object(tx, object_id)
 					.map(|o| o.map(|p| ObjectPayload::Post(p))),
 				1 => Self::_fetch_boost_object(tx, object_id)
-					.map(|o| o.map(|b| ObjectPayload::Boost(b))),
+					.map(|o| o.map(|b| ObjectPayload::Share(b))),
 				2 => Self::_fetch_profile_object(tx, object_id)
 					.map(|o| o.map(|p| ObjectPayload::Profile(p))),
 				other => Err(Error::InvalidObjectType(other))?,
