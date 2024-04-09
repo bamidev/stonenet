@@ -598,7 +598,7 @@ impl Api {
 		Ok((result.last_insert_id, hash, object))
 	}
 
-	async fn publish_share(
+	pub async fn publish_share(
 		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: &ShareObject,
 	) -> Result<(), DbErr> {
 		// Store the share object

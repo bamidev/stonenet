@@ -130,7 +130,7 @@ pub struct ObjectInfo {
 #[derive(Serialize)]
 pub enum ObjectPayloadInfo {
 	Post(PostObjectInfo),
-	Boost(BoostObjectInfo),
+	Share(BoostObjectInfo),
 	Profile(ProfileObjectInfo),
 }
 
@@ -1101,7 +1101,7 @@ impl Connection {
 				0 => Self::_fetch_post_object_info(tx, actor_id, sequence)
 					.map(|o| o.map(|p| ObjectPayloadInfo::Post(p))),
 				1 => Self::_fetch_boost_object_info(tx, actor_id, sequence)
-					.map(|o| o.map(|b| ObjectPayloadInfo::Boost(b))),
+					.map(|o| o.map(|b| ObjectPayloadInfo::Share(b))),
 				2 => Self::_fetch_profile_object_info(tx, actor_id, sequence)
 					.map(|o| o.map(|p| ObjectPayloadInfo::Profile(p))),
 				other => Err(Error::InvalidObjectType(other))?,
@@ -1478,9 +1478,9 @@ impl Connection {
 		let mut stat = tx.prepare(
 			r#"
 			INSERT INTO object (
-				actor_id, sequence, hash, signature, created, found, type, verified_from_start
+				actor_id, sequence, hash, signature, created, found, type, verified_from_start, previous_hash
 			)
-			VALUES (?,?,?,?,?,?,?,?)
+			VALUES (?,?,?,?,?,?,?,?,?)
 		"#,
 		)?;
 		let object_id = stat.insert(params![
@@ -1491,7 +1491,8 @@ impl Connection {
 			object.created,
 			Utc::now().timestamp_millis(),
 			object.payload.type_id(),
-			true
+			true,
+			IdType::default()
 		])?;
 
 		tx.execute(
