@@ -11,10 +11,10 @@ pub struct Model {
 	pub id: i64,
 	pub hash: IdType,
 	pub actor_id: i64,
-	pub sequence: u64,
+	pub sequence: i64,
 	pub previous_hash: IdType,
-	pub created: u64,
-	pub found: u64,
+	pub created: i64,
+	pub found: i64,
 	pub r#type: u8,
 	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
 	pub signature: ActorSignatureV1,

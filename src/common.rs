@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use base58::*;
 use num::bigint::BigUint;
 use rusqlite::types::*;
+use sea_orm::{DbErr, TryGetError};
 use serde::{Deserialize, Serialize, Serializer};
 use sha3::{Digest, Sha3_256};
 
@@ -178,7 +179,20 @@ impl ToBase58 for IdType {
 	fn to_base58(&self) -> String { self.0.to_base58() }
 }
 
-impl sea_orm::TryGetableFromJson for IdType {}
+impl sea_orm::TryGetable for IdType {
+	fn try_get_by<I: sea_orm::ColIdx>(
+		res: &sea_orm::prelude::QueryResult, index: I,
+	) -> Result<Self, TryGetError> {
+		let string = <String as sea_orm::TryGetable>::try_get_by(res, index)?;
+		Ok(IdType::from_base58(&string).map_err(|e| {
+			TryGetError::DbErr(DbErr::TryIntoErr {
+				from: "String",
+				into: "IdType",
+				source: Box::new(e),
+			})
+		})?)
+	}
+}
 
 impl Into<sea_orm::Value> for &IdType {
 	fn into(self) -> sea_orm::Value { sea_orm::Value::String(Some(Box::new(self.to_base58()))) }

@@ -8,6 +8,7 @@ use ed25519_dalek::{self as ed25519, Signer};
 use ed448_rust as ed448;
 use rand::{prelude::*, rngs::OsRng};
 use rusqlite::{types::*, ToSql};
+use sea_orm::{prelude::*, ColIdx, TryGetError};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 use sha3::{Digest, Sha3_256};
@@ -98,7 +99,21 @@ impl ActorSignatureV1 {
 	pub fn to_bytes(self) -> [u8; ed448::SIG_LENGTH] { self.0 }
 }
 
-impl sea_orm::TryGetableFromJson for ActorSignatureV1 {}
+impl sea_orm::TryGetable for ActorSignatureV1 {
+	fn try_get_by<I: ColIdx>(
+		res: &QueryResult, index: I,
+	) -> Result<Self, TryGetError> {
+		let buffer = <Vec<u8> as sea_orm::TryGetable>::try_get_by(res, index)?;
+		Ok(Self::from_bytes(buffer.try_into().map_err(|b: Vec<u8>| {
+			/*TryGetError::DbErr(DbErr::TryIntoErr {
+				from: "Vec<u8>",
+				into: "ActorSignatureV1",
+				source: Box::new(e),
+			})*/
+			TryGetError::Null(format!("wrong number of bytes: {}, expected: {}", b.len(), ed448::SIG_LENGTH))
+		})?))
+	}
+}
 
 impl Into<sea_orm::Value> for ActorSignatureV1 {
 	fn into(self) -> sea_orm::Value {

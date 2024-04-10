@@ -10,8 +10,8 @@ use chrono::*;
 use log::*;
 use rand::rngs::OsRng;
 use sea_orm::{
-	ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, Set,
-	TransactionTrait,
+	ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseBackend, DbErr, EntityTrait,
+	QueryFilter, QuerySelect, QueryTrait, Set, TransactionTrait,
 };
 use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -525,12 +525,16 @@ impl Api {
 	async fn find_next_object_sequence(
 		c: &impl ConnectionTrait, identity_id: i64,
 	) -> Result<u64, DbErr> {
-		Ok(object::Entity::find()
+		let stat = object::Entity::find()
+			.column_as(object::Column::Sequence.max(), "max")
 			.filter(object::Column::ActorId.eq(identity_id))
-			.one(c)
-			.await?
-			.map(|r| r.sequence)
-			.unwrap_or(0))
+			.build(DatabaseBackend::Sqlite);
+
+		if let Some(result) = c.query_one(stat).await? {
+			Ok(result.try_get_by_index::<i64>(0)? as u64)
+		} else {
+			Ok(0)
+		}
 	}
 
 	async fn find_object_by_sequence(
@@ -551,12 +555,14 @@ impl Api {
 		// Construct fields for the share object
 		let identity_record = identity::Entity::find()
 			.filter(identity::Column::Address.eq(identity))
-			.one(&self.orm)
+			.one(&tx)
 			.await?
 			.expect("identity doesn't exist");
+
 		let next_object_sequence = Self::find_next_object_sequence(&tx, identity_record.id).await?;
 		let object_payload = ObjectPayload::Share(share.clone());
-		let created = Utc::now().timestamp_millis() as u64;
+		let created = Utc::now().timestamp_millis();
+
 		let previous_object =
 			Self::find_object_by_sequence(&tx, identity_record.id, next_object_sequence - 1)
 				.await?;
@@ -566,7 +572,7 @@ impl Api {
 		let (hash, signature) = Self::sign_object(
 			next_object_sequence,
 			&previous_hash,
-			created,
+			created as _,
 			&object_payload,
 			&private_key,
 		);
@@ -576,7 +582,7 @@ impl Api {
 			actor_id: Set(identity_record.id),
 			hash: Set(hash.clone()),
 			signature: Set(signature.clone()),
-			sequence: Set(next_object_sequence),
+			sequence: Set(next_object_sequence as _),
 			previous_hash: Set(previous_hash.clone()),
 			created: Set(created),
 			verified_from_start: Set(true),
@@ -592,7 +598,7 @@ impl Api {
 			signature,
 			sequence: next_object_sequence,
 			previous_hash,
-			created,
+			created: created as _,
 			payload: ObjectPayload::Share(share.clone()),
 		};
 		Ok((result.last_insert_id, hash, object))

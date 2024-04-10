@@ -117,14 +117,14 @@ Hoi ik ben Kees!
 	let first_message = "First post!!!";
 	let second_message = "Second post!!!";
 	let third_message = "Third post!!!";
-	let (_, keypair) = node1
+	let (_, private_key) = node1
 		.fetch_my_identity(&actor_id)
 		.expect("unable to load identity")
 		.expect("missing identity");
 	let first_post_hash = node1
 		.publish_post(
 			&actor_id,
-			&keypair,
+			&private_key,
 			first_message,
 			vec!["first".to_string()],
 			&[],
@@ -135,7 +135,7 @@ Hoi ik ben Kees!
 	let second_post_hash = node1
 		.publish_post(
 			&actor_id,
-			&keypair,
+			&private_key,
 			second_message,
 			vec!["second".to_string()],
 			&[],
@@ -146,7 +146,7 @@ Hoi ik ben Kees!
 	let third_post_hash = node1
 		.publish_post(
 			&actor_id,
-			&keypair,
+			&private_key,
 			third_message,
 			vec!["third".to_string()],
 			&[],
@@ -154,6 +154,15 @@ Hoi ik ben Kees!
 		)
 		.await
 		.expect("unable to publish third post");
+	let share_object = ShareObject {
+		post_actor_address: actor_id.clone(),
+		object_sequence: first_post_hash.clone(),
+	};
+	node1
+		.publish_share(&actor_id, &private_key, &share_object)
+		.await
+		.expect("unable to publish share object");
+
 	// Check if all profile data came through correctly
 	let profile = node2
 		.fetch_profile_info(&actor_id)
@@ -215,7 +224,7 @@ Hoi ik ben Kees!
 	let fourth_post_hash = node1
 		.publish_post(
 			&actor_id,
-			&keypair,
+			&private_key,
 			fourth_message,
 			vec!["fourth".to_string()],
 			&[],
@@ -228,9 +237,9 @@ Hoi ik ben Kees!
 	debug!("Loading home feed.");
 	let home_feed = tokio::task::block_in_place(|| {
 		let mut c = node2.old_db.connect().expect("unable to open database");
-		c.fetch_home_feed(5, 0).expect("unable to fetch home feed")
+		c.fetch_home_feed(6, 0).expect("unable to fetch home feed")
 	});
-	assert_eq!(home_feed.len(), 4 + test_notifications as usize);
+	assert_eq!(home_feed.len(), 5 + test_notifications as usize);
 
 	// Check if we've received all posts no mather in which order.
 	for object in &home_feed {
@@ -258,7 +267,13 @@ Hoi ik ben Kees!
 						fourth_message
 					);
 				},
-			_ => panic!("unknown object type found in home feed"),
+			ObjectPayloadInfo::Share(share) => {
+				assert_eq!(share.original_post.actor_address, actor_id);
+				assert_eq!(
+					share.original_post.message.as_ref().unwrap().1,
+					first_message
+				);
+			}
 		}
 	}
 

@@ -52,7 +52,7 @@ pub struct Block {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ShareObject {
 	pub post_actor_address: ActorAddress,
-	pub object_sequence: u64,
+	pub object_sequence: IdType,
 }
 
 #[derive(Default)]
