@@ -3,7 +3,7 @@
 
 mod install;
 
-use std::{backtrace::Backtrace, cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
+use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
 
 use ::serde::Serialize;
 use chacha20::{

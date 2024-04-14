@@ -18,13 +18,25 @@ use tokio::time::sleep;
 use tower_http::services::ServeDir;
 
 use self::common::*;
-use crate::{api::Api, common::*, core::*};
+use crate::{
+	api::Api,
+	common::*,
+	core::*,
+	db::{self, Database},
+	entity::MyIdentity,
+};
 
+
+#[derive(Clone, Serialize)]
+pub struct IdentityData {
+	label: String,
+	address: String,
+}
 
 #[derive(Clone, Default, Serialize)]
 pub struct AppState {
-	active_identity: Option<String>,
-	identities: Vec<String>,
+	active_identity: Option<(String, ActorAddress)>,
+	identities: Vec<IdentityData>,
 }
 
 #[derive(Clone)]
@@ -41,6 +53,25 @@ pub struct ServerInfo {
 	pub update_message: Option<String>,
 }
 
+
+impl AppState {
+	pub async fn load(db: &Database) -> db::Result<Self> {
+		let identities = db.perform(|c| c.fetch_my_identities())?;
+
+		Ok(Self {
+			active_identity: identities
+				.get(0)
+				.map(|(label, address, ..)| (label.clone(), address.clone())),
+			identities: identities
+				.into_iter()
+				.map(|(label, address, ..)| IdentityData {
+					label,
+					address: address.to_string(),
+				})
+				.collect(),
+		})
+	}
+}
 
 impl Global {
 	pub fn render(&self, template_name: &str, context: Context) -> Response {
@@ -179,9 +210,9 @@ async fn index_post(
 pub async fn spawn(
 	stop_flag: Arc<AtomicBool>, port: u16, _workers: Option<usize>, api: Api,
 	server_info: ServerInfo,
-) {
+) -> db::Result<()> {
 	let global = Arc::new(Global {
-		state: AppState::default(),
+		state: AppState::load(&api.old_db).await?,
 		api,
 		server_info,
 		template_engine: Tera::new("templates/**/*.tera").unwrap(),
@@ -195,7 +226,7 @@ pub async fn spawn(
 	let addr = SocketAddrV4::new(ip, port);
 
 	let app = Router::new()
-		.route("/", get(home))
+		.route("/", get(home).post(post_message))
 		.nest_service("/static", ServeDir::new("static"))
 		.nest("/actor", actor::router(global.clone()))
 		.nest("/my-identity", my_identity::router(global.clone()))
@@ -211,9 +242,10 @@ pub async fn spawn(
 		})
 		.await
 		.unwrap();
+	Ok(())
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct HomePaginationQuery {
 	page: Option<u64>,
 }
@@ -230,6 +262,81 @@ async fn home(State(g): State<Arc<Global>>, Query(query): Query<HomePaginationQu
 	context.insert("objects", &objects);
 	context.insert("page", &p);
 	g.render("home.html.tera", context)
+}
+
+#[derive(Deserialize)]
+struct MessageForm {}
+
+async fn post_message(State(g): State<Arc<Global>>, mut form: Multipart) -> Response {
+	let (keypair, actor_address) = if let Some((_, address)) = &g.state.active_identity {
+		match g.api.fetch_my_identity(&address) {
+			Ok(k) =>
+				if let Some((_, keypair)) = k {
+					(keypair, address)
+				} else {
+					return server_error_response2("unknown identity");
+				},
+			Err(e) => return server_error_response(e, "unable to fetch my identity"),
+		}
+	} else {
+		return server_error_response2(
+			"An identity needs to be selected in order to post something",
+		);
+	};
+
+	let mut message = String::new();
+	let mut attachments = Vec::new();
+
+	// Collect the form fields
+	while let Some(field) = form.next_field().await.unwrap() {
+		let name = field.name().unwrap().to_string();
+
+		match name.as_str() {
+			"message" => {
+				let data = field.bytes().await.unwrap();
+				message = String::from_utf8_lossy(&data).to_string();
+			}
+			"attachments" =>
+				if let Some(content_type) = field.content_type() {
+					let content_type2 = content_type.to_string();
+					let data = field.bytes().await.unwrap();
+					if data.len() == 0 {
+						debug!("Ignoring empty attachment.");
+						continue;
+					}
+					let attachment = FileData {
+						mime_type: content_type2,
+						data: data.to_vec(),
+					};
+					attachments.push(attachment);
+				} else {
+					warn!("Ignoring attachement due to missing content type.");
+				},
+			other => warn!("Unrecognized form field: {}", other),
+		}
+	}
+	// TODO: Parse tags from post
+
+	if message.len() == 0 {
+		return home(State(g), Query(HomePaginationQuery::default())).await;
+	}
+
+	if let Err(e) = g
+		.api
+		.publish_post(
+			&actor_address,
+			&keypair,
+			&message,
+			Vec::new(),
+			&attachments,
+			None,
+		)
+		.await
+	{
+		return server_error_response(e, "unable to publish post");
+	}
+
+	home(State(g), Query(HomePaginationQuery::default())).await
 }
 
 #[derive(Deserialize)]

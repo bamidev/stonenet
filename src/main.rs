@@ -316,7 +316,7 @@ async fn main() {
 				api.clone(),
 				server_info,
 			)
-			.await;
+			.await.unwrap();
 		}
 		if config.load_user_interface.unwrap_or(false) {
 			let server_info = web::ServerInfo {
@@ -330,7 +330,7 @@ async fn main() {
 				api.clone(),
 				server_info,
 			)
-			.await;
+			.await.unwrap();
 		}
 
 		// Run the main loop, until it exits because of a signal
