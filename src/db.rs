@@ -73,7 +73,7 @@ impl<T> DerefConnection for T where T: Deref<Target = rusqlite::Connection> {}
 
 #[derive(Serialize)]
 pub struct TargetedActorInfo {
-	pub address: ActorAddress,
+	pub address: String,
 	pub name: String,
 	pub avatar_id: Option<IdType>,
 	pub wallpaper_id: Option<IdType>,
@@ -88,7 +88,7 @@ pub enum PossiblyKnownFileHeader {
 
 #[derive(Debug, Serialize)]
 pub struct TargetedPostInfo {
-	pub actor_address: ActorAddress,
+	pub actor_address: String,
 	pub actor_name: Option<String>,
 	pub actor_avatar: Option<IdType>,
 	pub sequence: u64,
@@ -320,7 +320,7 @@ impl Connection {
 			let wallpaper_id: Option<IdType> = row.get(3)?;
 
 			Ok(Some(TargetedActorInfo {
-				address,
+				address: address.to_string(),
 				name,
 				avatar_id,
 				wallpaper_id,
@@ -643,7 +643,7 @@ impl Connection {
 				let (message, attachments) =
 					Self::_fetch_post_object_info_files(this, target_object_id)?;
 				boost_object.original_post = Some(TargetedPostInfo {
-					actor_address,
+					actor_address: actor_address.to_string(),
 					actor_name,
 					actor_avatar,
 					sequence,
@@ -802,7 +802,7 @@ impl Connection {
 					let (irt_message_opt, irt_attachments) =
 						Self::_fetch_post_object_info_files(this, irt_object_id)?;
 					Some(TargetedPostInfo {
-						actor_address: irt_actor_address_opt.unwrap(),
+						actor_address: irt_actor_address_opt.unwrap().to_string(),
 						actor_name: irt_actor_name,
 						actor_avatar: irt_actor_avatar_id,
 						sequence: irt_sequence.unwrap(),
@@ -924,7 +924,7 @@ impl Connection {
 			};
 			Ok(Some(ProfileObjectInfo {
 				actor: TargetedActorInfo {
-					address: actor_address,
+					address: actor_address.to_string(),
 					name: actor_name,
 					avatar_id,
 					wallpaper_id,
@@ -2122,7 +2122,7 @@ impl Connection {
 
 			Ok(Some(ProfileObjectInfo {
 				actor: TargetedActorInfo {
-					address,
+					address: address.to_string(),
 					name: actor_name,
 					avatar_id,
 					wallpaper_id,

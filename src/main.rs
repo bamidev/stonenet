@@ -268,8 +268,8 @@ async fn main() {
 		.expect("Error setting Ctrl-C handler");
 
 		// Load database
-		let (old_db, orm) = match load_database(&config, install_dir).await {
-			Ok(db) => db,
+		let (db, orm) = match load_database(&config, install_dir).await {
+			Ok(dbs) => dbs,
 			Err(e) => {
 				error!("Unable to load database: {}", e);
 				return;
@@ -283,10 +283,10 @@ async fn main() {
 		}
 
 		// Load node
-		let node = load_node(stop_flag.clone(), old_db.clone(), &config).await;
+		let node = load_node(stop_flag.clone(), db.clone(), &config).await;
 
 		// Test openness
-		let api = Api { node, old_db, orm };
+		let api = Api { node, db, orm };
 		let new_bootstrap_nodes = test_bootstrap_nodes(&api, &config).await;
 		test_openness(&api, &config, !new_bootstrap_nodes).await;
 
@@ -388,14 +388,13 @@ async fn test_bootstrap_nodes(g: &Api, config: &Config) -> bool {
 	let mut updated = 0;
 	for bootstrap_node in &bootstrap_nodes {
 		if let Some(bootstrap_id) = g.node.obtain_id(&bootstrap_node).await {
-			g.old_db
-				.perform(|mut c| {
-					if c.remember_bootstrap_node_id(&bootstrap_node, &bootstrap_id)? {
-						updated += 1;
-					}
-					Ok(())
-				})
-				.expect("database error");
+			g.db.perform(|mut c| {
+				if c.remember_bootstrap_node_id(&bootstrap_node, &bootstrap_id)? {
+					updated += 1;
+				}
+				Ok(())
+			})
+			.expect("database error");
 		}
 	}
 	updated > 0

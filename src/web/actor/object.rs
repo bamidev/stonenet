@@ -12,6 +12,7 @@ use crate::{
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
 		.route("/:object-hash", get(object_get))
+		.route("/:object-hash/share", post(object_share))
 		.route_layer(from_fn_with_state(g, object_middleware))
 }
 
@@ -59,5 +60,36 @@ async fn object_get(
 	let mut context = Context::new();
 	context.insert("address", &actor_address);
 	context.insert("object", &into_object_display_info(object_info.unwrap()));
-	g.render("actor/object", context)
+	g.render("actor/object.html.tera", context)
+}
+
+async fn object_share(
+	State(g): State<Arc<Global>>, Extension(actor_address): Extension<ActorAddress>,
+	Extension(object_hash): Extension<IdType>,
+) -> Response {
+	println!("OBJECCT_SHAE");
+	let identity = g.state.active_identity.as_ref().unwrap().1.clone();
+	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
+		Ok(r) =>
+			if let Some((_, pk)) = r {
+				pk
+			} else {
+				return server_error_response2("unable to load identity");
+			},
+		Err(e) => return server_error_response(e, "unable to load identity"),
+	};
+
+	let share = ShareObject {
+		actor_address,
+		object_hash,
+	};
+	if let Err(e) = g.api.publish_share(&identity, &private_key, &share).await {
+		return server_error_response(e, "unable to ");
+	}
+
+	Response::builder()
+		.status(303)
+		.header("Location", "/")
+		.body(Body::empty())
+		.unwrap()
 }

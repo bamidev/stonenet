@@ -7,6 +7,6 @@
 		{{macros::object(object=object, footer=false)}}
 	</p>
 	<p>
-		{{macros::post_form(title="Reply", identities=identities)}}
+		{{macros::post_form(title="Reply")}}
 	</p>
 {% endblock content %}

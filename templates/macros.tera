@@ -18,9 +18,9 @@
 					actor=object.actor_address,
 					hash=object.hash
 				)}}
-			{% elif "Boost" in object.payload %}
+			{% elif "Share" in object.payload %}
 				{{macros::compose_object_footer(
-					actor=payload["Boost"].original_post.actor_address,
+					actor=object.payload["Share"].original_post.actor_address,
 					hash=object.hash
 				)}}
 			{% endif %}
@@ -28,7 +28,7 @@
 	</div>
 {% endmacro %}
 
-{% macro post_form(title, identities) %}
+{% macro post_form(title) %}
 	{% if server.is_exposed != true %}
 		<form method="post" enctype="multipart/form-data">
 			<div class="card bg-dark-subtle text-dark">
@@ -103,29 +103,24 @@
 	{% for key, value in payload %}
 		{% if key == "Post" %}
 			{{macros::compose_post_object_payload(index=index, actor_address=actor_address, payload=payload["Post"])}}
-		{% elif key == "Boost" %}
-			{{macros::compose_boost_object_payload(index=index, actor_address=actor_address, payload=payload["Boost"])}}
+		{% elif key == "Share" %}
+			{{macros::compose_share_object_payload(index=index, actor_address=actor_address, payload=payload["Share"])}}
 		{% elif key == "Profile" %}
 			{{macros::compose_profile_object_payload(payload=payload["Profile"])}}
-		{% elif key == "Move" %}
-			{{macros::compose_move_object_payload(payload=payload["Move"])}}
 		{% endif %}
 	{% endfor %}
 {% endmacro compose_object %}
 
-{% macro compose_boost_object_payload(index, actor_address, payload) %}
-	{% set use_markdown = false %}
-	{% if payload.mime_type == 'text/markdown' %}
-		{% set use_markdown = true %}
-	{% endif %}
-
+{% macro compose_share_object_payload(index, actor_address, payload) %}
 	<div class="card-body">
+		<a href="/actor/{{payload.original_post.actor_address}}">{{payload.original_post.actor_name}}</a> wrote:
+
 		{{macros::compose_post_object_body(
 			index=index,
 			actor_address=actor_address,
-			message=payload.message,
-			attachments=payload.attachments,
-			use_markdown=use_markdown
+			message=payload.original_post.message[1],
+			attachments=payload.original_post.attachments,
+			mime_type=payload.original_post.message[0]
 		)}}
 	</div>
 {% endmacro %}

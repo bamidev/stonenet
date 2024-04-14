@@ -212,7 +212,7 @@ pub async fn spawn(
 	server_info: ServerInfo,
 ) -> db::Result<()> {
 	let global = Arc::new(Global {
-		state: AppState::load(&api.old_db).await?,
+		state: AppState::load(&api.db).await?,
 		api,
 		server_info,
 		template_engine: Tera::new("templates/**/*.tera").unwrap(),
