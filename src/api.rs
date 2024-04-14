@@ -566,9 +566,7 @@ impl Api {
 		let previous_object =
 			Self::find_object_by_sequence(&tx, identity_record.id, next_object_sequence - 1)
 				.await?;
-		let previous_hash = previous_object
-			.map(|o| o.hash)
-			.unwrap_or(IdType::default());
+		let previous_hash = previous_object.map(|o| o.hash).unwrap_or(IdType::default());
 		let (hash, signature) = Self::sign_object(
 			next_object_sequence,
 			&previous_hash,
@@ -599,7 +597,9 @@ impl Api {
 			object_id: Set(object_id),
 			actor_address: Set(share.actor_address.clone()),
 			object_hash: Set(share.object_hash.clone()),
-		}).exec(&tx).await?;
+		})
+		.exec(&tx)
+		.await?;
 
 		tx.commit().await?;
 

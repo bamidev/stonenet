@@ -247,7 +247,7 @@ Hoi ik ben Kees!
 			ObjectPayloadInfo::Profile(_) => {}
 			ObjectPayloadInfo::Post(post) =>
 				if object.hash == first_post_hash {
-					assert_eq!( 
+					assert_eq!(
 						post.message.clone().expect("message is missing"),
 						first_message
 					);
@@ -268,10 +268,17 @@ Hoi ik ben Kees!
 					);
 				},
 			ObjectPayloadInfo::Share(share) => {
-				let original_post = share.original_post.as_ref().expect("share is missing original post");
+				let original_post = share
+					.original_post
+					.as_ref()
+					.expect("share is missing original post");
 				assert_eq!(original_post.actor_address, actor_id);
 				assert_eq!(
-					original_post.message.as_ref().expect("message is missing from share").1,
+					original_post
+						.message
+						.as_ref()
+						.expect("message is missing from share")
+						.1,
 					first_message
 				);
 			}

@@ -217,9 +217,7 @@ impl Into<sea_orm::Value> for &ActorAddress {
 }
 
 impl sea_orm::sea_query::Nullable for ActorAddress {
-    fn null() -> sea_orm::Value {
-        sea_orm::Value::Bytes(None)
-    }
+	fn null() -> sea_orm::Value { sea_orm::Value::Bytes(None) }
 }
 
 impl sea_orm::TryGetable for ActorAddress {
@@ -244,13 +242,12 @@ impl Into<sea_orm::Value> for ActorAddress {
 impl sea_orm::sea_query::ValueType for ActorAddress {
 	fn try_from(v: sea_orm::Value) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
 		match v {
-			sea_orm::Value::Bytes(b) => {
+			sea_orm::Value::Bytes(b) =>
 				if let Some(bytes) = b {
 					Ok(Self::from_bytes(&bytes).map_err(|_| sea_orm::sea_query::ValueTypeErr)?)
 				} else {
 					Err(sea_orm::sea_query::ValueTypeErr)
-				}
-			}
+				},
 			_ => Err(sea_orm::sea_query::ValueTypeErr),
 		}
 	}
@@ -259,7 +256,9 @@ impl sea_orm::sea_query::ValueType for ActorAddress {
 
 	fn array_type() -> sea_orm::sea_query::ArrayType { sea_orm::sea_query::ArrayType::Bytes }
 
-	fn column_type() -> sea_orm::ColumnType { sea_orm::ColumnType::Binary(sea_orm::sea_query::BlobSize::Blob(None)) }
+	fn column_type() -> sea_orm::ColumnType {
+		sea_orm::ColumnType::Binary(sea_orm::sea_query::BlobSize::Blob(None))
+	}
 }
 
 impl Address {

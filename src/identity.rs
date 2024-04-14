@@ -100,18 +100,22 @@ impl ActorSignatureV1 {
 }
 
 impl sea_orm::TryGetable for ActorSignatureV1 {
-	fn try_get_by<I: ColIdx>(
-		res: &QueryResult, index: I,
-	) -> Result<Self, TryGetError> {
+	fn try_get_by<I: ColIdx>(res: &QueryResult, index: I) -> Result<Self, TryGetError> {
 		let buffer = <Vec<u8> as sea_orm::TryGetable>::try_get_by(res, index)?;
-		Ok(Self::from_bytes(buffer.try_into().map_err(|b: Vec<u8>| {
-			/*TryGetError::DbErr(DbErr::TryIntoErr {
-				from: "Vec<u8>",
-				into: "ActorSignatureV1",
-				source: Box::new(e),
-			})*/
-			TryGetError::Null(format!("wrong number of bytes: {}, expected: {}", b.len(), ed448::SIG_LENGTH))
-		})?))
+		Ok(Self::from_bytes(buffer.try_into().map_err(
+			|b: Vec<u8>| {
+				/*TryGetError::DbErr(DbErr::TryIntoErr {
+					from: "Vec<u8>",
+					into: "ActorSignatureV1",
+					source: Box::new(e),
+				})*/
+				TryGetError::Null(format!(
+					"wrong number of bytes: {}, expected: {}",
+					b.len(),
+					ed448::SIG_LENGTH
+				))
+			},
+		)?))
 	}
 }
 

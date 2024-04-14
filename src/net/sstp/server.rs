@@ -1,8 +1,4 @@
-use std::{
-	future::Future,
-	pin::Pin,
-	sync::Mutex as StdMutex,
-};
+use std::{future::Future, pin::Pin, sync::Mutex as StdMutex};
 
 use futures::{future::BoxFuture, FutureExt};
 use tokio::{

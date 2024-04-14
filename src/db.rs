@@ -634,12 +634,14 @@ impl Connection {
 
 			let mut boost_object = BoostObjectInfo::default();
 			if let Some(target_object_id) = target_object_id_opt {
-				let (actor_name, actor_avatar) = if let Some(target_actor_id) = target_actor_id_opt {
+				let (actor_name, actor_avatar) = if let Some(target_actor_id) = target_actor_id_opt
+				{
 					Self::_find_profile_limited(this, target_actor_id)?
 				} else {
 					(None, None)
 				};
-				let (message, attachments) = Self::_fetch_post_object_info_files(this, target_object_id)?;
+				let (message, attachments) =
+					Self::_fetch_post_object_info_files(this, target_object_id)?;
 				boost_object.original_post = Some(TargetedPostInfo {
 					actor_address,
 					actor_name,
@@ -1057,7 +1059,7 @@ impl Connection {
 			let object_type = row.get(5)?;
 			let previous_hash: Option<IdType> = row.get(6)?;
 			let verified_from_start: bool = row.get(7)?;
-			
+
 			let payload = match object_type {
 				OBJECT_TYPE_POST => Self::_fetch_post_object(tx, object_id)
 					.map(|o| o.map(|p| ObjectPayload::Post(p))),
@@ -1519,14 +1521,13 @@ impl Connection {
 	fn _store_boost_object_payload(
 		tx: &impl DerefConnection, object_id: i64, payload: &ShareObject,
 	) -> Result<()> {
-		tx.execute(r#"
+		tx.execute(
+			r#"
 			INSERT INTO boost_object (object_id, actor_address, object_hash)
 			VALUES (?,?,?)
-		"#, params![
-			object_id,
-			&payload.actor_address,
-			&payload.object_hash
-		])?;
+		"#,
+			params![object_id, &payload.actor_address, &payload.object_hash],
+		)?;
 		Ok(())
 	}
 

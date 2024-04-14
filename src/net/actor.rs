@@ -2,7 +2,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use axum::extract::rejection::FailedToDeserializeForm;
-use futures::{future::{join_all, BoxFuture}, FutureExt};
+use futures::{
+	future::{join_all, BoxFuture},
+	FutureExt,
+};
 use serde::de::DeserializeOwned;
 use tokio::{spawn, time::sleep};
 
@@ -176,7 +179,8 @@ impl ActorNode {
 	/// Attempts to collect as much files and their blocks on the given
 	/// connection.
 	pub(super) fn collect_object<'a, 'b: 'a>(
-		&'a self, connection: &'b mut Connection, id: IdType, object: Object, verified_from_start: bool,
+		&'a self, connection: &'b mut Connection, id: IdType, object: Object,
+		verified_from_start: bool,
 	) -> BoxFuture<'a, db::Result<bool>> {
 		async move {
 			if !self.store_object(&id, &object, verified_from_start)? {
@@ -210,17 +214,27 @@ impl ActorNode {
 					let mut _temp = None;
 					let mut actor_node = self;
 					if &payload.actor_address != self.actor_address() {
-						_temp = self.base.overlay_node().get_actor_node_or_lurker(&payload.actor_address).await;
+						_temp = self
+							.base
+							.overlay_node()
+							.get_actor_node_or_lurker(&payload.actor_address)
+							.await;
 						if let Some(an) = _temp.as_ref() {
 							actor_node = &**an;
 						} else {
-							error!("Unable to set up actor node to find object {}", &payload.object_hash);
+							error!(
+								"Unable to set up actor node to find object {}",
+								&payload.object_hash
+							);
 							return Ok(false);
 						}
 					};
 
 					if let Some(result) = actor_node.find_object(&payload.object_hash).await {
-						if !actor_node.collect_object(connection, payload.object_hash, result.object, false).await? {
+						if !actor_node
+							.collect_object(connection, payload.object_hash, result.object, false)
+							.await?
+						{
 							return Ok(false);
 						}
 					}
@@ -237,7 +251,8 @@ impl ActorNode {
 				},
 			}
 			Ok(true)
-		}.boxed()
+		}
+		.boxed()
 	}
 
 	fn db(&self) -> &db::Database { &self.base.interface.db }
@@ -1008,7 +1023,7 @@ impl ActorNode {
 			let head_sequence = head.sequence;
 			let mut i = head_sequence as i128;
 			let mut last_object = head;
-			
+
 			while i > 0 && (head_sequence - i as u64) < 10 {
 				i -= 1;
 				if !self.has_object_by_sequence(i as u64) {
@@ -1088,6 +1103,7 @@ impl ActorNode {
 		}
 		Ok(None)
 	}
+
 	pub(super) async fn synchronize_files(&self) -> db::Result<()> {
 		let missing_files = self.investigate_missing_files()?;
 		for hash in missing_files {
@@ -1136,7 +1152,10 @@ impl ActorNode {
 								&object_result.object,
 								true,
 							)?;
-							debug_assert!(stored, "Object already existed even though it couldn't be found.");
+							debug_assert!(
+								stored,
+								"Object already existed even though it couldn't be found."
+							);
 						} else {
 							return Ok(false);
 						}
