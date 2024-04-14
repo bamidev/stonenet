@@ -1,8 +1,16 @@
-use ::serde::Serialize;
-use chrono::*;
+use std::{
+	fmt::{Debug, Display},
+	sync::Arc,
+};
 
-use super::IdType;
+use ::serde::Serialize;
+use axum::{body::Body, extract::Multipart, response::Response};
+use chrono::*;
+use log::*;
+
+use super::{ActorAddress, FileData, Global, IdType};
 use crate::db::{ObjectInfo, ObjectPayloadInfo};
+
 
 #[derive(Serialize)]
 pub struct ObjectDisplayInfo {
@@ -70,4 +78,99 @@ pub fn human_readable_duration(duration: &Duration) -> String {
 			seconds.to_string() + " seconds"
 		}
 	}
+}
+
+pub async fn post_message(
+	g: &Arc<Global>, mut form: Multipart, in_reply_to: Option<(ActorAddress, IdType)>,
+) -> Result<(), Response> {
+	// Load identity + private key
+	let identity = g.state.active_identity.as_ref().unwrap().1.clone();
+	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
+		Ok(r) =>
+			if let Some((_, pk)) = r {
+				pk
+			} else {
+				return Err(server_error_response2("unable to load identity"));
+			},
+		Err(e) => return Err(server_error_response(e, "unable to load identity")),
+	};
+
+	let mut message = String::new();
+	let mut attachments = Vec::new();
+
+	// Collect the form fields
+	while let Some(field) = form.next_field().await.unwrap() {
+		let name = field.name().unwrap().to_string();
+
+		match name.as_str() {
+			"message" => {
+				let data = field.bytes().await.unwrap();
+				message = String::from_utf8_lossy(&data).to_string();
+			}
+			"attachments" =>
+				if let Some(content_type) = field.content_type() {
+					let content_type2 = content_type.to_string();
+					let data = field.bytes().await.unwrap();
+					if data.len() == 0 {
+						debug!("Ignoring empty attachment.");
+						continue;
+					}
+					let attachment = FileData {
+						mime_type: content_type2,
+						data: data.to_vec(),
+					};
+					attachments.push(attachment);
+				} else {
+					warn!("Ignoring attachement due to missing content type.");
+				},
+			other => warn!("Unrecognized form field: {}", other),
+		}
+	}
+	// TODO: Parse tags from post
+
+	if message.len() == 0 {
+		return Ok(());
+	}
+
+	if let Err(e) = g
+		.api
+		.publish_post(
+			&identity,
+			&private_key,
+			&message,
+			Vec::new(),
+			&attachments,
+			in_reply_to,
+		)
+		.await
+	{
+		return Err(server_error_response(e, "unable to publish post"));
+	}
+	Ok(())
+}
+
+pub fn error_response<S>(status_code: u16, message: S) -> Response
+where
+	S: Into<String>,
+{
+	Response::builder()
+		.status(status_code)
+		.header("Content-Type", "text/plain")
+		.body(Body::from(message.into()))
+		.unwrap()
+}
+
+pub fn not_found_error_response(message: &str) -> Response { error_response(404, message) }
+
+pub fn server_error_response<E>(e: E, message: &str) -> Response
+where
+	E: Debug + Display,
+{
+	error!("{}: {:?}", message, e);
+	error_response(500, format!("{}: {}", message, e))
+}
+
+pub fn server_error_response2(message: &str) -> Response {
+	error!("{}", message);
+	error_response(500, format!("{}", message))
 }

@@ -3,7 +3,6 @@ mod common;
 mod my_identity;
 
 use std::{
-	fmt::{Debug, Display},
 	net::*,
 	str::FromStr,
 	sync::{atomic::*, Arc},
@@ -12,7 +11,6 @@ use std::{
 
 use ::serde::*;
 use axum::{body::Body, extract::*, response::Response, routing::get, Router};
-use log::*;
 use tera::{Context, Tera};
 use tokio::time::sleep;
 use tower_http::services::ServeDir;
@@ -23,7 +21,6 @@ use crate::{
 	common::*,
 	core::*,
 	db::{self, Database},
-	entity::MyIdentity,
 };
 
 
@@ -94,32 +91,6 @@ impl Global {
 				.unwrap(),
 		}
 	}
-}
-
-pub fn error_response<S>(status_code: u16, message: S) -> Response
-where
-	S: Into<String>,
-{
-	Response::builder()
-		.status(status_code)
-		.header("Content-Type", "text/plain")
-		.body(Body::from(message.into()))
-		.unwrap()
-}
-
-pub fn not_found_error_response(message: &str) -> Response { error_response(404, message) }
-
-pub fn server_error_response<E>(e: E, message: &str) -> Response
-where
-	E: Debug + Display,
-{
-	error!("{}: {:?}", message, e);
-	error_response(500, format!("{}: {}", message, e))
-}
-
-pub fn server_error_response2(message: &str) -> Response {
-	error!("{}", message);
-	error_response(500, format!("{}", message))
 }
 
 /*async fn index(page: Option<u64>, g: &State<GlobalState>) -> Template {
@@ -226,7 +197,7 @@ pub async fn spawn(
 	let addr = SocketAddrV4::new(ip, port);
 
 	let app = Router::new()
-		.route("/", get(home).post(post_message))
+		.route("/", get(home).post(home_post))
 		.nest_service("/static", ServeDir::new("static"))
 		.nest("/actor", actor::router(global.clone()))
 		.nest("/my-identity", my_identity::router(global.clone()))
@@ -264,76 +235,9 @@ async fn home(State(g): State<Arc<Global>>, Query(query): Query<HomePaginationQu
 	g.render("home.html.tera", context)
 }
 
-#[derive(Deserialize)]
-struct MessageForm {}
-
-async fn post_message(State(g): State<Arc<Global>>, mut form: Multipart) -> Response {
-	let (keypair, actor_address) = if let Some((_, address)) = &g.state.active_identity {
-		match g.api.fetch_my_identity(&address) {
-			Ok(k) =>
-				if let Some((_, keypair)) = k {
-					(keypair, address)
-				} else {
-					return server_error_response2("unknown identity");
-				},
-			Err(e) => return server_error_response(e, "unable to fetch my identity"),
-		}
-	} else {
-		return server_error_response2(
-			"An identity needs to be selected in order to post something",
-		);
-	};
-
-	let mut message = String::new();
-	let mut attachments = Vec::new();
-
-	// Collect the form fields
-	while let Some(field) = form.next_field().await.unwrap() {
-		let name = field.name().unwrap().to_string();
-
-		match name.as_str() {
-			"message" => {
-				let data = field.bytes().await.unwrap();
-				message = String::from_utf8_lossy(&data).to_string();
-			}
-			"attachments" =>
-				if let Some(content_type) = field.content_type() {
-					let content_type2 = content_type.to_string();
-					let data = field.bytes().await.unwrap();
-					if data.len() == 0 {
-						debug!("Ignoring empty attachment.");
-						continue;
-					}
-					let attachment = FileData {
-						mime_type: content_type2,
-						data: data.to_vec(),
-					};
-					attachments.push(attachment);
-				} else {
-					warn!("Ignoring attachement due to missing content type.");
-				},
-			other => warn!("Unrecognized form field: {}", other),
-		}
-	}
-	// TODO: Parse tags from post
-
-	if message.len() == 0 {
-		return home(State(g), Query(HomePaginationQuery::default())).await;
-	}
-
-	if let Err(e) = g
-		.api
-		.publish_post(
-			&actor_address,
-			&keypair,
-			&message,
-			Vec::new(),
-			&attachments,
-			None,
-		)
-		.await
-	{
-		return server_error_response(e, "unable to publish post");
+async fn home_post(State(g): State<Arc<Global>>, form: Multipart) -> Response {
+	if let Err(e) = post_message(&g, form, None).await {
+		return e;
 	}
 
 	home(State(g), Query(HomePaginationQuery::default())).await

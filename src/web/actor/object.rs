@@ -11,7 +11,7 @@ use crate::{
 
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
-		.route("/:object-hash", get(object_get))
+		.route("/:object-hash", get(object_get).post(object_post))
 		.route("/:object-hash/share", post(object_share))
 		.route_layer(from_fn_with_state(g, object_middleware))
 }
@@ -63,11 +63,25 @@ async fn object_get(
 	g.render("actor/object.html.tera", context)
 }
 
+async fn object_post(
+	State(g): State<Arc<Global>>, Extension(actor_address): Extension<ActorAddress>,
+	Extension(object_hash): Extension<IdType>, multipart: Multipart,
+) -> Response {
+	if let Err(e) = post_message(&g, multipart, Some((actor_address, object_hash))).await {
+		return e;
+	}
+
+	Response::builder()
+		.status(303)
+		.header("Location", "/")
+		.body(Body::empty())
+		.unwrap()
+}
+
 async fn object_share(
 	State(g): State<Arc<Global>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(object_hash): Extension<IdType>,
 ) -> Response {
-	println!("OBJECCT_SHAE");
 	let identity = g.state.active_identity.as_ref().unwrap().1.clone();
 	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
 		Ok(r) =>
