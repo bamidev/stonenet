@@ -592,7 +592,7 @@ impl Connection {
 	{
 		let mut stat = this.prepare(
 			r#"
-			SELECT post_actor_address, object_sequence
+			SELECT actor_address, object_hash
 			FROM boost_object
 			WHERE object_id = ?
 		"#,
