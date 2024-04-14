@@ -1,7 +1,7 @@
 use std::{
 	future::Future,
 	pin::Pin,
-	sync::{atomic::AtomicBool, Arc, Mutex as StdMutex},
+	sync::Mutex as StdMutex,
 };
 
 use futures::{future::BoxFuture, FutureExt};

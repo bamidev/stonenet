@@ -16,7 +16,6 @@ pub struct Model {
 	pub created: i64,
 	pub found: i64,
 	pub r#type: u8,
-	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
 	pub signature: ActorSignatureV1,
 	pub verified_from_start: bool,
 }

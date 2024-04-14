@@ -2,16 +2,16 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::{common::IdType, core::ActorAddress, identity::ActorPublicKeyV1};
+
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "identity")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
-	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
-	pub address: Vec<u8>,
-	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))", unique)]
+	pub address: ActorAddress,
 	pub public_key: Vec<u8>,
-	pub first_object: String,
+	pub first_object: IdType,
 	pub r#type: String,
 }
 

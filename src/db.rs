@@ -3,7 +3,7 @@
 
 mod install;
 
-use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
+use std::{backtrace::Backtrace, cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
 
 use ::serde::Serialize;
 use chacha20::{
@@ -63,9 +63,9 @@ pub enum Error {
 	MissingIdentity(ActorAddress),
 }
 
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 pub struct BoostObjectInfo {
-	pub original_post: TargetedPostInfo,
+	pub original_post: Option<TargetedPostInfo>,
 }
 
 pub trait DerefConnection: Deref<Target = rusqlite::Connection> {}
@@ -484,7 +484,7 @@ impl Connection {
 			r#"
 			SELECT o.id, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
 			FROM object AS o
-			INNER JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN identity AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND o.sequence = ?
 		"#,
 		)?;
@@ -586,7 +586,7 @@ impl Connection {
 		Ok(files)
 	}*/
 
-	pub fn _fetch_boost_object<C>(this: &C, object_id: i64) -> Result<Option<ShareObject>>
+	pub fn _fetch_share_object<C>(this: &C, object_id: i64) -> Result<Option<ShareObject>>
 	where
 		C: DerefConnection,
 	{
@@ -603,50 +603,53 @@ impl Connection {
 			let object_sequence = row.get(1)?;
 
 			Ok(Some(ShareObject {
-				post_actor_address,
-				object_sequence,
+				actor_address: post_actor_address,
+				object_hash: object_sequence,
 			}))
 		} else {
 			Ok(None)
 		}
 	}
 
-	pub fn _fetch_boost_object_info<C>(
-		this: &C, _actor_id: i64, sequence: u64,
-	) -> Result<Option<BoostObjectInfo>>
-	where
-		C: DerefConnection,
-	{
+	pub fn _fetch_boost_object_info(
+		this: &impl DerefConnection, actor_id: i64, sequence: u64,
+	) -> Result<Option<BoostObjectInfo>> {
 		let mut stat = this.prepare(
 			r#"
-			SELECT o.id, o.sequence, bo.actor_address, p.name, f.hash
-			FROM boost_object AS bo
-			LEFT JOIN object AS o ON bo.object_id = o.id
+			SELECT bo.actor_address, bi.id, to_.id
+			FROM object AS o
+			LEFT JOIN boost_object AS bo ON bo.object_id = o.id
 			LEFT JOIN identity AS i ON o.actor_id = i.id
-			LEFT JOIN profile AS p ON bo.actor_address = identity.address
-			LEFT JOIN file AS f ON profile.avatar_file_id = af.id
-			WHERE o.actor_id ? AND o.sequence = ?
+			LEFT JOIN identity AS bi ON bo.actor_address = bi.address
+			LEFT JOIN object AS to_ ON to_.hash = bo.object_hash
+			WHERE o.actor_id = ? AND o.sequence = ?
 		"#,
 		)?;
-		let mut rows = stat.query([sequence])?;
-		if let Some(row) = rows.next()? {
-			let object_id = row.get(0)?;
-			let sequence = row.get(1)?;
-			let post_actor_id: ActorAddress = row.get(2)?;
-			let post_actor_name: Option<String> = row.get(3)?;
-			let post_actor_avatar_id: Option<IdType> = row.get(4)?;
+		let mut rows = stat.query(params![actor_id, sequence])?;
 
-			let (message, attachments) = Self::_fetch_post_object_info_files(this, object_id)?;
-			Ok(Some(BoostObjectInfo {
-				original_post: TargetedPostInfo {
-					actor_address: post_actor_id,
-					actor_name: post_actor_name,
-					actor_avatar: post_actor_avatar_id,
+		if let Some(row) = rows.next()? {
+			let actor_address: ActorAddress = row.get(0)?;
+			let target_actor_id_opt: Option<i64> = row.get(1)?;
+			let target_object_id_opt: Option<i64> = row.get(2)?;
+
+			let mut boost_object = BoostObjectInfo::default();
+			if let Some(target_object_id) = target_object_id_opt {
+				let (actor_name, actor_avatar) = if let Some(target_actor_id) = target_actor_id_opt {
+					Self::_find_profile_limited(this, target_actor_id)?
+				} else {
+					(None, None)
+				};
+				let (message, attachments) = Self::_fetch_post_object_info_files(this, target_object_id)?;
+				boost_object.original_post = Some(TargetedPostInfo {
+					actor_address,
+					actor_name,
+					actor_avatar,
 					sequence,
 					message,
 					attachments,
-				},
-			}))
+				});
+			}
+			Ok(Some(boost_object))
 		} else {
 			Ok(None)
 		}
@@ -674,7 +677,7 @@ impl Connection {
 	}
 
 	fn _fetch_post_object_info_files<C>(
-		this: &C, post_id: i64,
+		this: &C, object_id: i64,
 	) -> Result<(Option<(String, String)>, Vec<PossiblyKnownFileHeader>)>
 	where
 		C: DerefConnection,
@@ -684,7 +687,7 @@ impl Connection {
 			SELECT file_count FROM post_object WHERE object_id = ?
 		"#,
 		)?;
-		let mut rows = stat.query([post_id])?;
+		let mut rows = stat.query([object_id])?;
 		if let Some(row) = rows.next()? {
 			let file_count: u64 = row.get(0)?;
 
@@ -698,7 +701,7 @@ impl Connection {
 				ORDER BY pf.sequence ASC
 			"#,
 			)?;
-			let mut rows = stat.query([post_id])?;
+			let mut rows = stat.query([object_id])?;
 			let message_opt: Option<(String, String)> = if let Some(row) = rows.next()? {
 				let file_id_opt: Option<i64> = row.get(0)?;
 				let plain_hash_opt: Option<IdType> = row.get(1)?;
@@ -738,7 +741,7 @@ impl Connection {
 				ORDER BY pf.sequence ASC
 			"#,
 			)?;
-			let mut rows = stat.query([post_id])?;
+			let mut rows = stat.query([object_id])?;
 			while let Some(row) = rows.next()? {
 				let hash: IdType = row.get(0)?;
 				let mime_type_opt: Option<String> = row.get(1)?;
@@ -780,22 +783,22 @@ impl Connection {
 		)?;
 		let mut rows = stat.query(params![actor_id, sequence])?;
 		if let Some(row) = rows.next()? {
-			let post_id = row.get(0)?;
+			let object_id = row.get(0)?;
 			let sequence = row.get(1)?;
 			let irt_actor_rowid: Option<i64> = row.get(2)?;
 			let irt_actor_address_opt: Option<ActorAddress> = row.get(3)?;
-			let irt_post_id_opt: Option<i64> = row.get(4)?;
+			let irt_object_id_opt: Option<i64> = row.get(4)?;
 			let irt_sequence: Option<u64> = row.get(5)?;
 
-			let in_reply_to = match irt_post_id_opt {
+			let in_reply_to = match irt_object_id_opt {
 				None => None,
-				Some(irt_post_id) => {
+				Some(irt_object_id) => {
 					let (irt_actor_name, irt_actor_avatar_id) = match irt_actor_rowid {
 						None => (None, None),
 						Some(id) => Self::_find_profile_limited(this, id)?,
 					};
 					let (irt_message_opt, irt_attachments) =
-						Self::_fetch_post_object_info_files(this, irt_post_id)?;
+						Self::_fetch_post_object_info_files(this, irt_object_id)?;
 					Some(TargetedPostInfo {
 						actor_address: irt_actor_address_opt.unwrap(),
 						actor_name: irt_actor_name,
@@ -806,7 +809,7 @@ impl Connection {
 					})
 				}
 			};
-			let (message_opt, attachments) = Self::_fetch_post_object_info_files(this, post_id)?;
+			let (message_opt, attachments) = Self::_fetch_post_object_info_files(this, object_id)?;
 			Ok(Some(PostObjectInfo {
 				in_reply_to,
 				sequence,
@@ -831,11 +834,10 @@ impl Connection {
 		)?;
 		let mut rows = stat.query([object_id])?;
 		if let Some(row) = rows.next()? {
-			let post_id = object_id;
 			let irt_actor_address: Option<ActorAddress> = row.get(0)?;
 			let irt_object_id: Option<IdType> = row.get(1)?;
-			let tags = Self::_fetch_post_tags(this, post_id)?;
-			let files = Self::_fetch_post_files(this, post_id)?;
+			let tags = Self::_fetch_post_tags(this, object_id)?;
+			let files = Self::_fetch_post_files(this, object_id)?;
 
 			Ok(Some(PostObject {
 				in_reply_to: if irt_actor_address.is_some() && irt_object_id.is_some() {
@@ -959,6 +961,7 @@ impl Connection {
 	}
 
 	/// Finds the name and avatar file hash of an actor.
+	/// Tries to return it's known profile name & avatar.
 	fn _find_profile_limited(
 		tx: &impl DerefConnection, actor_id: i64,
 	) -> Result<(Option<String>, Option<IdType>)> {
@@ -1054,13 +1057,13 @@ impl Connection {
 			let object_type = row.get(5)?;
 			let previous_hash: Option<IdType> = row.get(6)?;
 			let verified_from_start: bool = row.get(7)?;
-
+			
 			let payload = match object_type {
-				0 => Self::_fetch_post_object(tx, object_id)
+				OBJECT_TYPE_POST => Self::_fetch_post_object(tx, object_id)
 					.map(|o| o.map(|p| ObjectPayload::Post(p))),
-				1 => Self::_fetch_boost_object(tx, object_id)
+				OBJECT_TYPE_SHARE => Self::_fetch_share_object(tx, object_id)
 					.map(|o| o.map(|b| ObjectPayload::Share(b))),
-				2 => Self::_fetch_profile_object(tx, object_id)
+				OBJECT_TYPE_PROFILE => Self::_fetch_profile_object(tx, object_id)
 					.map(|o| o.map(|p| ObjectPayload::Profile(p))),
 				other => Err(Error::InvalidObjectType(other))?,
 			};
@@ -1098,11 +1101,11 @@ impl Connection {
 
 			let (actor_name, actor_avatar_id) = Self::_find_profile_limited(tx, actor_id)?;
 			let payload_result = match object_type {
-				0 => Self::_fetch_post_object_info(tx, actor_id, sequence)
+				OBJECT_TYPE_POST => Self::_fetch_post_object_info(tx, actor_id, sequence)
 					.map(|o| o.map(|p| ObjectPayloadInfo::Post(p))),
-				1 => Self::_fetch_boost_object_info(tx, actor_id, sequence)
+				OBJECT_TYPE_SHARE => Self::_fetch_boost_object_info(tx, actor_id, sequence)
 					.map(|o| o.map(|b| ObjectPayloadInfo::Share(b))),
-				2 => Self::_fetch_profile_object_info(tx, actor_id, sequence)
+				OBJECT_TYPE_PROFILE => Self::_fetch_profile_object_info(tx, actor_id, sequence)
 					.map(|o| o.map(|p| ObjectPayloadInfo::Profile(p))),
 				other => Err(Error::InvalidObjectType(other))?,
 			};
@@ -1405,7 +1408,7 @@ impl Connection {
 	}
 
 	fn _store_post_files(
-		tx: &impl DerefConnection, _actor_id: i64, post_id: i64, files: &[IdType],
+		tx: &impl DerefConnection, _actor_id: i64, object_id: i64, files: &[IdType],
 	) -> Result<()> {
 		for i in 0..files.len() {
 			let file = &files[i];
@@ -1415,7 +1418,7 @@ impl Connection {
 				INSERT INTO post_files (post_id, hash, sequence)
 				VALUES (?,?,?)
 			"#,
-				params![post_id, file.to_string(), i],
+				params![object_id, file.to_string(), i],
 			)?;
 		}
 		Ok(())
@@ -1433,26 +1436,27 @@ impl Connection {
 
 		match &payload.data {
 			PostObjectCryptedData::Plain(plain) => {
-				let post_id = stat.insert(params![
+				stat.insert(params![
 					object_id,
 					plain.files.len(),
 					payload.in_reply_to.as_ref().map(|irt| irt.0.to_bytes()),
 					payload.in_reply_to.as_ref().map(|irt| irt.1.to_string())
 				])?;
 
-				Self::_store_post_tags(tx, post_id, &plain.tags)?;
-				Self::_store_post_files(tx, actor_id, post_id, &plain.files)
+				Self::_store_post_tags(tx, object_id, &plain.tags)?;
+				Self::_store_post_files(tx, actor_id, object_id, &plain.files)?;
+				Ok(())
 			}
 		}
 	}
 
-	fn _store_post_tags(tx: &impl DerefConnection, post_id: i64, tags: &[String]) -> Result<()> {
+	fn _store_post_tags(tx: &impl DerefConnection, object_id: i64, tags: &[String]) -> Result<()> {
 		for tag in tags {
 			tx.execute(
 				r#"
 				INSERT INTO post_tag (post_id, tag) VALUES (?, ?)
 			"#,
-				params![post_id, tag],
+				params![object_id, tag],
 			)?;
 		}
 		Ok(())
@@ -1464,8 +1468,8 @@ impl Connection {
 		match payload {
 			ObjectPayload::Post(po) =>
 				Self::_store_post_object_payload(tx, actor_id, object_id, &po),
+			ObjectPayload::Share(po) => Self::_store_boost_object_payload(tx, object_id, &po),
 			ObjectPayload::Profile(po) => Self::_store_profile_object_payload(tx, object_id, &po),
-			_ => panic!("payload type not implemented yet"),
 		}
 	}
 
@@ -1509,6 +1513,20 @@ impl Connection {
 				description_hash.map(|id| id.to_string())
 			],
 		)?;
+		Ok(())
+	}
+
+	fn _store_boost_object_payload(
+		tx: &impl DerefConnection, object_id: i64, payload: &ShareObject,
+	) -> Result<()> {
+		tx.execute(r#"
+			INSERT INTO boost_object (object_id, actor_address, object_hash)
+			VALUES (?,?,?)
+		"#, params![
+			object_id,
+			&payload.actor_address,
+			&payload.object_hash
+		])?;
 		Ok(())
 	}
 
@@ -1865,12 +1883,11 @@ impl Connection {
 		&mut self, actor_address: &ActorAddress, hash: &IdType,
 	) -> Result<Option<(IdType, Object, bool)>> {
 		let tx = self.0.transaction()?;
-
 		let mut stat = tx.prepare(
 			r#"
 			SELECT o.sequence
 			FROM object AS o
-			INNER JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN identity AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND o.hash = ?
 		"#,
 		)?;

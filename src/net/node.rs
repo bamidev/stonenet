@@ -15,7 +15,7 @@ use super::{
 	bucket::Bucket,
 	message::*,
 	overlay::OverlayNode,
-	sstp::{self, Connection, MessageProcessorResult},
+	sstp::{self, MessageProcessorResult},
 	*,
 };
 use crate::{

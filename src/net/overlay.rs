@@ -1,9 +1,7 @@
 use std::{
 	boxed::Box,
-	collections::HashMap,
-	net::SocketAddr,
 	result::Result as StdResult,
-	sync::{atomic::*, Arc, Mutex as StdMutex, OnceLock},
+	sync::{atomic::*, Mutex as StdMutex, OnceLock},
 };
 
 use async_trait::async_trait;
@@ -15,10 +13,9 @@ use tokio::{self, select, spawn, time::sleep};
 use super::{
 	actor::*,
 	actor_store::*,
-	binserde,
 	message::*,
 	node::*,
-	sstp::{self, server::*, MessageWorkToDo, Result, DEFAULT_TIMEOUT},
+	sstp::{server::*, MessageWorkToDo, Result, DEFAULT_TIMEOUT},
 };
 use crate::{
 	common::*,
@@ -665,7 +662,7 @@ impl OverlayNode {
 
 				// Then we can collect all the values related to this identity
 				match node
-					.collect_object(&mut connection, &object_id, &object, false)
+					.collect_object(&mut connection, object_id, object.clone(), false)
 					.await
 				{
 					Ok(done) =>

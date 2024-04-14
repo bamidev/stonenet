@@ -155,10 +155,10 @@ Hoi ik ben Kees!
 		.await
 		.expect("unable to publish third post");
 	let share_object = ShareObject {
-		post_actor_address: actor_id.clone(),
-		object_sequence: first_post_hash.clone(),
+		actor_address: actor_id.clone(),
+		object_hash: first_post_hash.clone(),
 	};
-	node1
+	let _share_hash = node1
 		.publish_share(&actor_id, &private_key, &share_object)
 		.await
 		.expect("unable to publish share object");
@@ -247,7 +247,7 @@ Hoi ik ben Kees!
 			ObjectPayloadInfo::Profile(_) => {}
 			ObjectPayloadInfo::Post(post) =>
 				if object.hash == first_post_hash {
-					assert_eq!(
+					assert_eq!( 
 						post.message.clone().expect("message is missing"),
 						first_message
 					);
@@ -268,9 +268,10 @@ Hoi ik ben Kees!
 					);
 				},
 			ObjectPayloadInfo::Share(share) => {
-				assert_eq!(share.original_post.actor_address, actor_id);
+				let original_post = share.original_post.as_ref().expect("share is missing original post");
+				assert_eq!(original_post.actor_address, actor_id);
 				assert_eq!(
-					share.original_post.message.as_ref().unwrap().1,
+					original_post.message.as_ref().expect("message is missing from share").1,
 					first_message
 				);
 			}

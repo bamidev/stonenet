@@ -1,7 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use futures::future::join_all;
+use axum::extract::rejection::FailedToDeserializeForm;
+use futures::{future::{join_all, BoxFuture}, FutureExt};
 use serde::de::DeserializeOwned;
 use tokio::{spawn, time::sleep};
 
@@ -174,47 +175,69 @@ impl ActorNode {
 
 	/// Attempts to collect as much files and their blocks on the given
 	/// connection.
-	pub(super) async fn collect_object(
-		&self, connection: &mut Connection, id: &IdType, object: &Object, verified_from_start: bool,
-	) -> db::Result<bool> {
-		self.store_object(id, object, verified_from_start)?;
-		match &object.payload {
-			ObjectPayload::Profile(payload) => {
-				if let Some(file_id) = payload.description.as_ref() {
-					if self.needs_file(file_id) {
-						if !self.collect_file(connection, file_id).await? {
-							return Ok(false);
-						}
-					}
-				}
-				if let Some(hash) = payload.avatar.as_ref() {
-					if self.needs_file(&hash) {
-						if !self.collect_file(connection, &hash).await? {
-							return Ok(false);
-						}
-					}
-				}
-				if let Some(hash) = payload.wallpaper.as_ref() {
-					if self.needs_file(&hash) {
-						if !self.collect_file(connection, &hash).await? {
-							return Ok(false);
-						}
-					}
-				}
+	pub(super) fn collect_object<'a, 'b: 'a>(
+		&'a self, connection: &'b mut Connection, id: IdType, object: Object, verified_from_start: bool,
+	) -> BoxFuture<'a, db::Result<bool>> {
+		async move {
+			if !self.store_object(&id, &object, verified_from_start)? {
+				return Ok(false);
 			}
-			ObjectPayload::Post(payload) => match &payload.data {
-				PostObjectCryptedData::Plain(plain) =>
-					for hash in &plain.files {
+			match object.payload {
+				ObjectPayload::Profile(payload) => {
+					if let Some(file_id) = payload.description.as_ref() {
+						if self.needs_file(file_id) {
+							if !self.collect_file(connection, file_id).await? {
+								return Ok(false);
+							}
+						}
+					}
+					if let Some(hash) = payload.avatar.as_ref() {
 						if self.needs_file(&hash) {
 							if !self.collect_file(connection, &hash).await? {
 								return Ok(false);
 							}
 						}
-					},
-			},
-			_ => {}
-		}
-		Ok(true)
+					}
+					if let Some(hash) = payload.wallpaper.as_ref() {
+						if self.needs_file(&hash) {
+							if !self.collect_file(connection, &hash).await? {
+								return Ok(false);
+							}
+						}
+					}
+				}
+				ObjectPayload::Share(payload) => {
+					let mut _temp = None;
+					let mut actor_node = self;
+					if &payload.actor_address != self.actor_address() {
+						_temp = self.base.overlay_node().get_actor_node_or_lurker(&payload.actor_address).await;
+						if let Some(an) = _temp.as_ref() {
+							actor_node = &**an;
+						} else {
+							error!("Unable to set up actor node to find object {}", &payload.object_hash);
+							return Ok(false);
+						}
+					};
+
+					if let Some(result) = actor_node.find_object(&payload.object_hash).await {
+						if !actor_node.collect_object(connection, payload.object_hash, result.object, false).await? {
+							return Ok(false);
+						}
+					}
+				}
+				ObjectPayload::Post(payload) => match &payload.data {
+					PostObjectCryptedData::Plain(plain) =>
+						for hash in &plain.files {
+							if self.needs_file(&hash) {
+								if !self.collect_file(connection, &hash).await? {
+									return Ok(false);
+								}
+							}
+						},
+				},
+			}
+			Ok(true)
+		}.boxed()
 	}
 
 	fn db(&self) -> &db::Database { &self.base.interface.db }
@@ -372,7 +395,6 @@ impl ActorNode {
 				parse_value::<V>,
 			)
 			.await;
-
 		result.map(|p| {
 			let object_result: Box<V> = unsafe { Box::from_raw(p.into_inner() as *mut V) };
 			object_result
@@ -916,13 +938,13 @@ impl ActorNode {
 				if !self
 					.collect_object(
 						connection,
-						id,
-						object,
+						id.clone(),
+						object.clone(),
 						verified_from_start && object.sequence == (our_head.sequence + 1),
 					)
 					.await?
 				{
-					error!("Invalid data received on connection.");
+					error!("Unable to collect object {}.", id);
 					return Ok(false);
 				}
 				Ok(true)
@@ -931,18 +953,18 @@ impl ActorNode {
 			}
 		// If we don't have any objects yet
 		} else {
-			// If first object, we can immediately 'verify it from start'
+			// If it is the first object, we can say it is 'verified it from start'
 			if object.sequence == 0 {
 				if id != &self.base.interface.actor_info.first_object {
-					error!("Invalid first object received on connection");
+					error!("Unable to collect object {}.", id);
 					return Ok(false);
 				}
 			}
 			if !self
-				.collect_object(connection, id, object, object.sequence == 0)
+				.collect_object(connection, id.clone(), object.clone(), object.sequence == 0)
 				.await?
 			{
-				error!("Invalid data received on connection.");
+				error!("Unable to collect object {}.", id);
 				return Ok(false);
 			}
 			Ok(true)
@@ -984,11 +1006,12 @@ impl ActorNode {
 
 		if let Some((head, _)) = result {
 			let head_sequence = head.sequence;
-			let mut i = head_sequence;
+			let mut i = head_sequence as i128;
 			let mut last_object = head;
-			while i > 0 && head_sequence - i < 10 {
+			
+			while i > 0 && (head_sequence - i as u64) < 10 {
 				i -= 1;
-				if !self.has_object_by_sequence(i) {
+				if !self.has_object_by_sequence(i as u64) {
 					match self
 						.exchange_find_value_on_connection_and_parse::<FindObjectResult>(
 							connection,
@@ -1002,8 +1025,8 @@ impl ActorNode {
 							match self
 								.collect_object(
 									connection,
-									&last_object.previous_hash,
-									&result.object,
+									last_object.previous_hash.clone(),
+									result.object.clone(),
 									false,
 								)
 								.await
@@ -1065,7 +1088,6 @@ impl ActorNode {
 		}
 		Ok(None)
 	}
-
 	pub(super) async fn synchronize_files(&self) -> db::Result<()> {
 		let missing_files = self.investigate_missing_files()?;
 		for hash in missing_files {
@@ -1109,11 +1131,12 @@ impl ActorNode {
 							&object_result.object,
 							&self.base.interface.actor_info.public_key,
 						) {
-							self.store_object(
+							let stored = self.store_object(
 								&self.base.interface.actor_info.first_object,
 								&object_result.object,
 								true,
 							)?;
+							debug_assert!(stored, "Object already existed even though it couldn't be found.");
 						} else {
 							return Ok(false);
 						}
@@ -1196,7 +1219,6 @@ impl ActorNode {
 			let this = self.clone();
 			spawn(async move {
 				let result = this.synchronize().await;
-				this.is_synchonizing.store(false, Ordering::Release);
 				if let Err(e) = result {
 					error!(
 						"Error occurred during synchronization for actor {:?}: {:?}",
@@ -1204,6 +1226,7 @@ impl ActorNode {
 						e
 					);
 				}
+				this.is_synchonizing.store(false, Ordering::Release);
 			});
 			true
 		} else {
