@@ -30,7 +30,7 @@ pub async fn load_database(filename: &str) -> (Database, DatabaseConnection) {
 	// FIXME: However, the OS will not clean it up after exit either...
 	Box::into_raw(Box::new(temp_file));
 	(old_db, orm)
-}
+}  
 
 /// Sets up a node usable for testing.
 pub async fn load_test_node(

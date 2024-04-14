@@ -25,7 +25,7 @@ use super::{
 };
 use crate::{
 	db::{Database, ObjectInfo, ProfileObjectInfo},
-	entity::{identity, object},
+	entity::{boost_object, identity, object},
 };
 
 /*#[derive(Debug)]
@@ -567,7 +567,7 @@ impl Api {
 			Self::find_object_by_sequence(&tx, identity_record.id, next_object_sequence - 1)
 				.await?;
 		let previous_hash = previous_object
-			.map(|o| o.previous_hash)
+			.map(|o| o.hash)
 			.unwrap_or(IdType::default());
 		let (hash, signature) = Self::sign_object(
 			next_object_sequence,
@@ -577,6 +577,7 @@ impl Api {
 			&private_key,
 		);
 
+		// Insert the object record
 		let result = object::Entity::insert(object::ActiveModel {
 			id: NotSet,
 			actor_id: Set(identity_record.id),
@@ -591,6 +592,14 @@ impl Api {
 		})
 		.exec(&tx)
 		.await?;
+		let object_id = result.last_insert_id;
+
+		// Insert the share object record
+		boost_object::Entity::insert(boost_object::ActiveModel {
+			object_id: Set(object_id),
+			actor_address: Set(share.actor_address.clone()),
+			object_hash: Set(share.object_hash.clone()),
+		}).exec(&tx).await?;
 
 		tx.commit().await?;
 
@@ -606,7 +615,7 @@ impl Api {
 
 	pub async fn publish_share(
 		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: &ShareObject,
-	) -> Result<(), DbErr> {
+	) -> Result<IdType, DbErr> {
 		// Store the share object
 		let (_, hash, object) = self.store_share(identity, private_key, object).await?;
 
@@ -616,7 +625,7 @@ impl Api {
 		} else {
 			error!("Actor node not found.");
 		}
-		Ok(())
+		Ok(hash)
 	}
 
 	/// Calculates the signature of the s

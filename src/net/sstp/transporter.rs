@@ -8,7 +8,6 @@ use tokio::{
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use super::{server::PACKET_TYPE_CRYPTED, *};
-use crate::trace::{Traceable, Traced};
 
 
 const CRYPTED_PACKET_TYPE_DATA: u8 = 0;

@@ -17,7 +17,7 @@ use crate::net::binserde;
 pub const ACTOR_TYPE_BLOGCHAIN: &str = "blogchain";
 
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ActorAddress {
 	/// The first version of the actor address is a SHA256 hash of ActorInfoV1.
 	V1(IdType),
@@ -51,8 +51,8 @@ pub struct Block {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ShareObject {
-	pub post_actor_address: ActorAddress,
-	pub object_sequence: IdType,
+	pub actor_address: ActorAddress,
+	pub object_hash: IdType,
 }
 
 #[derive(Default)]
@@ -149,7 +149,6 @@ pub struct ObjectSignData<'a> {
 pub const OBJECT_TYPE_POST: u8 = 0;
 pub const OBJECT_TYPE_SHARE: u8 = 1;
 pub const OBJECT_TYPE_PROFILE: u8 = 2;
-pub const OBJECT_TYPE_MOVE: u8 = 3;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ObjectPayload {
@@ -215,6 +214,52 @@ impl ActorAddress {
 
 impl Into<sea_orm::Value> for &ActorAddress {
 	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
+}
+
+impl sea_orm::sea_query::Nullable for ActorAddress {
+    fn null() -> sea_orm::Value {
+        sea_orm::Value::Bytes(None)
+    }
+}
+
+impl sea_orm::TryGetable for ActorAddress {
+	fn try_get_by<I: sea_orm::ColIdx>(
+		res: &sea_orm::QueryResult, index: I,
+	) -> Result<Self, sea_orm::TryGetError> {
+		let bytes = <Vec<u8> as sea_orm::TryGetable>::try_get_by(res, index)?;
+		Ok(Self::from_bytes(&bytes).map_err(|e| {
+			sea_orm::TryGetError::DbErr(sea_orm::DbErr::TryIntoErr {
+				from: "Vec<u8>",
+				into: "ActorAddress",
+				source: Box::new(e),
+			})
+		})?)
+	}
+}
+
+impl Into<sea_orm::Value> for ActorAddress {
+	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
+}
+
+impl sea_orm::sea_query::ValueType for ActorAddress {
+	fn try_from(v: sea_orm::Value) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
+		match v {
+			sea_orm::Value::Bytes(b) => {
+				if let Some(bytes) = b {
+					Ok(Self::from_bytes(&bytes).map_err(|_| sea_orm::sea_query::ValueTypeErr)?)
+				} else {
+					Err(sea_orm::sea_query::ValueTypeErr)
+				}
+			}
+			_ => Err(sea_orm::sea_query::ValueTypeErr),
+		}
+	}
+
+	fn type_name() -> String { "ActorAddress".to_owned() }
+
+	fn array_type() -> sea_orm::sea_query::ArrayType { sea_orm::sea_query::ArrayType::Bytes }
+
+	fn column_type() -> sea_orm::ColumnType { sea_orm::ColumnType::Binary(sea_orm::sea_query::BlobSize::Blob(None)) }
 }
 
 impl Address {
