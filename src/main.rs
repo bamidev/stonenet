@@ -347,7 +347,7 @@ async fn main() {
 }
 
 async fn load_node(stop_flag: Arc<AtomicBool>, db: Database, config: &Config) -> Arc<OverlayNode> {
-	let mut c = db.connect().expect("Unable to connect to database.");
+	let mut c = db.connect_old().expect("Unable to connect to database.");
 	let (node_id, keypair) = c
 		.fetch_node_identity()
 		.expect("Unable to load node identity");

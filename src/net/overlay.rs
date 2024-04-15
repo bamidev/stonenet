@@ -150,7 +150,7 @@ impl NodeInterface for OverlayInterface {
 		// Otherwise, check our database
 		else {
 			let result = tokio::task::block_in_place(|| {
-				let db = self.db.connect()?;
+				let db = self.db.connect_old()?;
 				db.fetch_identity_by_id(id)
 			})?;
 			if result.is_none() {
@@ -648,7 +648,7 @@ impl OverlayNode {
 
 				// We need to store the identity in order for the object to be able to be stored
 				let result = tokio::task::block_in_place(|| {
-					let mut db = self.db().connect()?;
+					let mut db = self.db().connect_old()?;
 					db.store_identity(
 						actor_address,
 						&actor_info.public_key,
@@ -960,7 +960,7 @@ impl OverlayNode {
 			{
 				false => warn!("Bootstrap node {} wasn't available", bootstrap_node),
 				true => {
-					match self.db().connect() {
+					match self.db().connect_old() {
 						Err(e) => {
 							panic!("Unable to connect to database to load actor nodes: {}", e);
 						}
@@ -1650,7 +1650,7 @@ impl OverlayNode {
 
 		// If we have the public key in our own database, show that as well.
 		let actor_info_result = tokio::task::block_in_place(|| {
-			let c = self.db().connect()?;
+			let c = self.db().connect_old()?;
 			c.fetch_identity_by_id(&request.node_id)
 		});
 		match actor_info_result {
@@ -2182,7 +2182,7 @@ impl OverlayNode {
 		// requesting a reversed connection requires it
 		// FIXME: In order to test if this node is actually bidirectional, we
 		// can request a reverse connection without connecting to it first.
-		let mut db = self.db().connect().expect("unable to connect to database");
+		let mut db = self.db().connect_old().expect("unable to connect to database");
 		let (mut bnode1_connection, _) = self.base.connect(&bnode1_contact, None, None).await?;
 		bnode1_connection
 			.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 4)
