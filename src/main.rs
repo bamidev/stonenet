@@ -189,12 +189,12 @@ async fn load_database(
 	db_path.push("Stonenet");
 	let _ = fs::create_dir(&db_path);
 	db_path.push("db.sqlite");
-	let old_db = Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	let old_db = Database::load(db_path.clone()).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &db_path))
+	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &db_path.display()))
 		.await
-		.map_err(|e| io::Error::new(io::ErrorKind::Other, e));
-	(old_db, new_db)
+		.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	Ok((old_db, new_db))
 }
 
 #[cfg(not(target_family = "windows"))]
