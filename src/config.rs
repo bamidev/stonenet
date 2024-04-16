@@ -33,6 +33,7 @@ pub struct Config {
 	pub bucket_size: Option<usize>,
 	pub relay_node: Option<bool>,
 	pub leak_first_request: Option<bool>,
+	pub url_base: Option<String>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -64,6 +65,7 @@ impl Default for Config {
 			web_interface_port: None,
 			load_user_interface: None,
 			user_interface_port: None,
+			url_base: None,
 		}
 	}
 }

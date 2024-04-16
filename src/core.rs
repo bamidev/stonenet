@@ -212,6 +212,13 @@ impl ActorAddress {
 	pub fn version(&self) -> u8 { 0 }
 }
 
+impl Display for ActorAddress {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let addr = Address::Actor(self.clone());
+		f.write_str(&addr.to_base58())
+	}
+}
+
 impl Into<sea_orm::Value> for &ActorAddress {
 	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
 }
@@ -306,13 +313,6 @@ impl Address {
 impl Display for Address {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.write_str(&self.to_base58())
-	}
-}
-
-impl Display for ActorAddress {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let addr = Address::Actor(self.clone());
-		f.write_str(&addr.to_base58())
 	}
 }
 

@@ -2,7 +2,7 @@
 
 use sea_orm::entity::prelude::*;
 
-use crate::{common::IdType, core::ActorAddress, identity::ActorPublicKeyV1};
+use crate::{common::IdType, core::ActorAddress};
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "identity")]

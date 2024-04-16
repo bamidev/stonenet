@@ -21,6 +21,10 @@ struct ActorActions {
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
 		.route("/:actor-address", get(actor_get).post(actor_post))
+		.route(
+			"/:actor-address/activity-pub",
+			get(activity_pub::actor_activitypub),
+		)
 		.nest("/:actor-address/file", file::router(g.clone()))
 		.nest("/:actor-address/object", object::router(g.clone()))
 		.route_layer(from_fn_with_state(g, actor_middleware))

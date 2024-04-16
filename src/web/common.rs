@@ -80,6 +80,15 @@ pub fn human_readable_duration(duration: &Duration) -> String {
 	}
 }
 
+pub fn json_response(json: &impl Serialize) -> Response {
+	Response::builder()
+		.header("Content-Type", "application/json")
+		.body(Body::from(
+			serde_json::to_string(json).expect("json serialization issue"),
+		))
+		.unwrap()
+}
+
 pub async fn post_message(
 	g: &Arc<Global>, mut form: Multipart, in_reply_to: Option<(ActorAddress, IdType)>,
 ) -> Result<(), Response> {

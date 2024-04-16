@@ -1,3 +1,4 @@
+mod activity_pub;
 mod actor;
 mod common;
 mod my_identity;
@@ -47,6 +48,7 @@ pub struct Global {
 #[derive(Clone, Serialize)]
 pub struct ServerInfo {
 	pub is_exposed: bool,
+	pub url_base: String,
 	pub update_message: Option<String>,
 }
 
@@ -202,6 +204,7 @@ pub async fn spawn(
 		.nest("/actor", actor::router(global.clone()))
 		.nest("/my-identity", my_identity::router(global.clone()))
 		.route("/search", get(search))
+		.route("/.well-known/webfinger", get(activity_pub::webfinger))
 		.with_state(global);
 
 	let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

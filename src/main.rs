@@ -189,7 +189,8 @@ async fn load_database(
 	db_path.push("Stonenet");
 	let _ = fs::create_dir(&db_path);
 	db_path.push("db.sqlite");
-	let old_db = Database::load(db_path.clone()).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	let old_db =
+		Database::load(db_path.clone()).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
 	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &db_path.display()))
 		.await
@@ -305,34 +306,29 @@ async fn main() {
 
 		// Spawn web servers
 		if config.load_web_interface.unwrap_or(false) {
+			let port = config.web_interface_port.clone().unwrap_or(80);
 			let server_info = web::ServerInfo {
 				is_exposed: true,
+				url_base: config
+					.url_base
+					.clone()
+					.unwrap_or(format!("http://localhost:{}", port)),
 				update_message: None,
 			};
-			web::spawn(
-				stop_flag.clone(),
-				config.web_interface_port.unwrap_or(80),
-				None,
-				api.clone(),
-				server_info,
-			)
-			.await
-			.unwrap();
+			web::spawn(stop_flag.clone(), port, None, api.clone(), server_info)
+				.await
+				.unwrap();
 		}
 		if config.load_user_interface.unwrap_or(false) {
+			let port = config.user_interface_port.clone().unwrap_or(37338);
 			let server_info = web::ServerInfo {
 				is_exposed: false,
+				url_base: format!("http://localhost:{}", port),
 				update_message,
 			};
-			web::spawn(
-				stop_flag.clone(),
-				config.user_interface_port.unwrap_or(37338),
-				None,
-				api.clone(),
-				server_info,
-			)
-			.await
-			.unwrap();
+			web::spawn(stop_flag.clone(), port, None, api.clone(), server_info)
+				.await
+				.unwrap();
 		}
 
 		// Run the main loop, until it exits because of a signal
