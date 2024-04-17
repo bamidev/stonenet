@@ -2182,7 +2182,10 @@ impl OverlayNode {
 		// requesting a reversed connection requires it
 		// FIXME: In order to test if this node is actually bidirectional, we
 		// can request a reverse connection without connecting to it first.
-		let mut db = self.db().connect_old().expect("unable to connect to database");
+		let mut db = self
+			.db()
+			.connect_old()
+			.expect("unable to connect to database");
 		let (mut bnode1_connection, _) = self.base.connect(&bnode1_contact, None, None).await?;
 		bnode1_connection
 			.set_keep_alive_timeout(sstp::DEFAULT_TIMEOUT * 4)

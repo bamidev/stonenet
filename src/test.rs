@@ -17,19 +17,16 @@ pub fn initialize_rng() -> ChaCha8Rng {
 	ChaCha8Rng::from_seed(seed)
 }
 
-pub async fn load_database(filename: &str) -> (Database, DatabaseConnection) {
+pub async fn load_database(filename: &str) -> Database {
 	let temp_file = NamedTempFile::with_prefix(filename).unwrap();
 	let db = Database::load(temp_file.path().to_owned()).expect("unable to load database");
-	let orm =
-		sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", temp_file.path().display()))
-			.await
-			.expect("unable to load ORM");
+	let connection = db.connect().await.unwrap();
 	let migrations = Migrations::load();
-	migrations.run(&orm).await.expect("migration issue");
+	migrations.run(&connection).await.expect("migration issue");
 	// Leak it on purpose so that the temp file may live until the end of all tests
 	// FIXME: However, the OS will not clean it up after exit either...
 	Box::into_raw(Box::new(temp_file));
-	(db, orm)
+	db
 }
 
 /// Sets up a node usable for testing.
@@ -37,7 +34,7 @@ pub async fn load_test_node(
 	stop_flag: Arc<AtomicBool>, rng: &mut (impl CryptoRng + RngCore), config: &Config,
 	filename: &str,
 ) -> Api {
-	let (db, orm) = load_database(filename).await;
+	let db = load_database(filename).await;
 
 	let private_key = NodePrivateKey::generate_with_rng(rng);
 	let node_id = private_key.public().generate_address();
@@ -52,5 +49,5 @@ pub async fn load_test_node(
 
 	node.join_network(stop_flag).await;
 
-	Api { node, db, orm }
+	Api { node, db }
 }

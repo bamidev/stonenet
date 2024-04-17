@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use axum::{extract::*, middleware::*, response::Response, routing::*, *};
 use sea_orm::*;
 
+use self::db::PersistenceFunc;
 use crate::{
 	entity::{object, Object},
 	web::*,
@@ -31,14 +32,17 @@ async fn object_middleware(
 		Err(e) => return server_error_response(e, "This is not a valid hash string"),
 	};
 
-	match Object::find()
-		.filter(object::Column::Hash.contains(hash_str))
-		.one(&g.api.orm)
-		.await
 	{
-		Err(e) => return server_error_response(e, "Unable to load file"),
-		Ok(actor) => {
-			request.extensions_mut().insert(actor);
+		let connection = g.api.db.connect().await.unwrap();
+		match Object::find()
+			.filter(object::Column::Hash.contains(hash_str))
+			.one(connection.handle())
+			.await
+		{
+			Err(e) => return server_error_response(e, "Unable to load file"),
+			Ok(actor) => {
+				request.extensions_mut().insert(actor);
+			}
 		}
 	}
 

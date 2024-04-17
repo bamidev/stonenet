@@ -8,7 +8,10 @@ use sea_orm::{
 	TransactionTrait,
 };
 
-use crate::trace;
+use crate::{
+	db::{self, PersistenceFunc},
+	trace,
+};
 
 mod v0;
 
@@ -38,7 +41,7 @@ pub struct Migrations {
 
 #[async_trait]
 trait MigrationTrait {
-	async fn run(&self, tx: &DatabaseTransaction) -> Result<(), DbErr>;
+	async fn run(&self, tx: &db::Transaction) -> db::Result<()>;
 }
 
 
@@ -49,7 +52,7 @@ impl Migrations {
 		}
 	}
 
-	async fn load_version(&self, connection: &DatabaseConnection) -> Result<Version, DbErr> {
+	async fn load_version(&self, connection: &db::Connection) -> db::Result<Version> {
 		let q = Query::select()
 			.from(Alias::new("version"))
 			.column(Alias::new("major"))
@@ -58,6 +61,7 @@ impl Migrations {
 			.to_owned();
 		let (sql, values) = q.build(SqliteQueryBuilder);
 		let r = connection
+			.handle()
 			.query_one(Statement::from_sql_and_values(
 				DatabaseBackend::Sqlite,
 				sql,
@@ -71,9 +75,7 @@ impl Migrations {
 		Ok(Version::new(major, minor, patch))
 	}
 
-	async fn store_version(
-		&self, tx: &DatabaseTransaction, version: &Version,
-	) -> Result<(), DbErr> {
+	async fn store_version(&self, tx: &db::Transaction, version: &Version) -> db::Result<()> {
 		let q = Query::update()
 			.table(Alias::new("version"))
 			.values([
@@ -84,6 +86,7 @@ impl Migrations {
 			.to_owned();
 		let (sql, values) = q.build(SqliteQueryBuilder);
 		let _ = tx
+			.handle()
 			.execute(Statement::from_sql_and_values(
 				DatabaseBackend::Sqlite,
 				sql,
@@ -93,9 +96,10 @@ impl Migrations {
 		Ok(())
 	}
 
-	pub async fn run(&self, connection: &DatabaseConnection) -> Result<(), DbErr> {
+	pub async fn run(&self, connection: &db::Connection) -> db::Result<()> {
 		// Stop foreign key errors
 		connection
+			.handle()
 			.execute_unprepared("PRAGMA foreign_keys=off")
 			.await?;
 
@@ -103,7 +107,7 @@ impl Migrations {
 
 		for (new_version, migration) in &self.list {
 			if new_version > &current_version {
-				let tx = connection.begin().await?;
+				let tx = connection.transaction().await?;
 				info!(
 					"Running database migration from {} to {}...",
 					current_version, new_version
@@ -121,6 +125,7 @@ impl Migrations {
 			"not migrated to latest version"
 		);
 		connection
+			.handle()
 			.execute_unprepared("PRAGMA foreign_keys=on")
 			.await?;
 		Ok(())

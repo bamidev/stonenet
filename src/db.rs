@@ -5,8 +5,8 @@ mod install;
 
 use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
 
-use sea_orm::{ActiveValue::*, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseTransaction, DbErr, EntityOrSelect, EntityTrait, QueryFilter, QuerySelect, QueryTrait, TransactionTrait};
 use ::serde::Serialize;
+use async_trait::async_trait;
 use chacha20::{
 	cipher::{KeyIvInit, StreamCipher},
 	ChaCha20,
@@ -20,10 +20,19 @@ use rusqlite::{
 	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Value, ValueRef},
 	Rows, ToSql,
 };
+use sea_orm::{
+	ActiveValue::*, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseTransaction, DbErr,
+	EntityOrSelect, EntityTrait, QueryFilter, QuerySelect, QueryTrait, TransactionTrait,
+};
 use thiserror::Error;
 
 use crate::{
-	common::*, core::*, entity::{boost_object, identity, object}, identity::*, net::binserde, trace::{self, Traceable, Traced}
+	common::*,
+	core::*,
+	entity::{boost_object, identity, object},
+	identity::*,
+	net::binserde,
+	trace::{self, Traceable, Traced},
 };
 
 
@@ -41,8 +50,11 @@ pub struct Connection {
 	// not marked as Send and Sync.
 	old: rusqlite::Connection,
 	inner: Option<sea_orm::DatabaseConnection>,
-	backend: DatabaseBackend
+	backend: DatabaseBackend,
 }
+
+// TODO: Make the sea_orm::DatabaseTransaction inside private
+pub struct Transaction(pub(crate) sea_orm::DatabaseTransaction);
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -136,6 +148,38 @@ pub enum ObjectPayloadInfo {
 }
 
 pub type Result<T> = trace::Result<T, self::Error>;
+
+
+#[async_trait]
+pub trait PersistenceFunc {
+	type Inner: ConnectionTrait;
+
+	fn handle(&self) -> &Self::Inner;
+
+
+	async fn find_next_object_sequence(&self, identity_id: i64) -> Result<u64> {
+		let stat = object::Entity::find()
+			.column_as(object::Column::Sequence.max(), "max")
+			.filter(object::Column::ActorId.eq(identity_id))
+			.build(DatabaseBackend::Sqlite);
+
+		if let Some(result) = self.handle().query_one(stat).await? {
+			Ok(result.try_get_by_index::<i64>(0)? as u64)
+		} else {
+			Ok(0)
+		}
+	}
+
+	async fn find_object_by_sequence(
+		&self, actor_id: &ActorAddress, sequence: u64,
+	) -> Result<Option<object::Model>> {
+		Ok(object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.filter(object::Column::Sequence.eq(sequence))
+			.one(self.handle())
+			.await?)
+	}
+}
 
 
 impl FromSql for ActorAddress {
@@ -263,7 +307,7 @@ impl Database {
 	}
 
 	pub async fn connect(&self) -> self::Result<Connection> {
-		Connection::open(&self.path)
+		Ok(Connection::open(&self.path).await?)
 	}
 
 	fn install(conn: &Connection) -> Result<()> { Ok(conn.execute_batch(install::QUERY)?) }
@@ -480,22 +524,6 @@ impl Connection {
 		)?;
 		let mut rows = stat.query(params![hash.to_string()])?;
 		Self::_parse_object(this, &mut rows)
-	}
-
-	fn _fetch_object_by_sequence(
-		&self, tx: &impl ConnectionTrait, actor_id: &ActorAddress, sequence: u64,
-	) -> Result<Option<(IdType, Object, bool)>> {
-		object::Entity.select()
-			.column(object::Column::Id)
-			.column(object::Column::Sequence)
-			.column(object::Column::Created)
-			.column(object::Column::Signature)
-			.column(object::Column::Hash)
-			.column(object::Column::Type)
-			.column(object::Column::PreviousHash)
-			.column(object::Column::VerifiedFromStart)
-			.left_join(identity::Entity)
-			.
 	}
 
 	fn _fetch_object_by_sequence_old(
@@ -1008,7 +1036,9 @@ impl Connection {
 	}
 
 	/// Returns the lastest object sequence for an actor if available.
-	async fn _max_object_sequence(&self, tx: &impl ConnectionTrait, actor_id: i64) -> self::Result<Option<u64>> {
+	async fn _max_object_sequence(
+		&self, tx: &impl ConnectionTrait, actor_id: i64,
+	) -> self::Result<Option<u64>> {
 		let stat = object::Entity::find()
 			.column_as(object::Column::Sequence.max(), "max")
 			.filter(object::Column::ActorId.eq(actor_id))
@@ -1061,7 +1091,9 @@ impl Connection {
 	}
 
 	/// Returns the sequence that the next object would use.
-	pub(crate) async fn _next_object_sequence(&self, tx: &impl ConnectionTrait, actor_id: i64) -> Result<u64> {
+	pub(crate) async fn _next_object_sequence(
+		&self, tx: &impl ConnectionTrait, actor_id: i64,
+	) -> Result<u64> {
 		match self._max_object_sequence(tx, actor_id).await? {
 			None => Ok(0),
 			Some(s) => Ok(s + 1),
@@ -2312,39 +2344,6 @@ impl Connection {
 		Ok(rows.next()?.is_some())
 	}
 
-	/*pub fn load_file<'a>(
-		&'a mut self, hash: &IdType,
-	) -> Result<Option<(String, FileLoader<'a>)>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT f.rowid, f.mime_type, f.block_count
-			FROM file AS f
-			WHERE f.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query([hash])?;
-		if let Some(row) = rows.next()? {
-			let file_id: i64 = row.get(0)?;
-			let mime_type = row.get(1)?;
-			let block_count = row.get(2)?;
-
-			let stat = Box::pin(self.prepare(
-				r#"
-				SELECT fb.sequence, b.size, b.data
-				FROM file AS f
-				LEFT JOIN file_blocks AS fb ON fb.file_id = f.rowid
-				LEFT JOIN block AS b ON fb.block_hash = b.hash
-				WHERE f.rowid = ?
-			"#,
-			)?);
-			let fl = FileLoader::new(stat, file_id, block_count)?;
-
-			Ok(Some((mime_type, fl)))
-		} else {
-			Ok(None)
-		}
-	}*/
-
 	/// Returns the lastest object sequence for an actor if available.
 	pub fn max_object_sequence(&self, actor_id: i64) -> Result<Option<u64>> {
 		let mut stat = self.old.prepare(
@@ -2359,10 +2358,6 @@ impl Connection {
 		}
 	}
 
-	fn new(&self) -> sea_orm::DatabaseConnection {
-		self.inner.expect("new ORM connection is required; use connect() instead of connect_old()")
-	}
-
 	/// Returns the sequence that the next object would use.
 	pub fn next_object_sequence(&self, actor_id: i64) -> Result<u64> {
 		match self.max_object_sequence(actor_id)? {
@@ -2373,12 +2368,14 @@ impl Connection {
 
 	pub async fn open(path: &Path) -> self::Result<Self> {
 		let old_connection = rusqlite::Connection::open(&path)?;
-		let new_connection = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", path.display()))
-			.await
-			.map_err(|e| self::Error::OrmError(e))?;
+		let new_connection =
+			sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", path.display()))
+				.await
+				.map_err(|e| self::Error::OrmError(e))?;
 		Ok(Self {
 			old: old_connection,
-			inner: Some(new_connection)
+			inner: Some(new_connection),
+			backend: DatabaseBackend::Sqlite,
 		})
 	}
 
@@ -2391,7 +2388,7 @@ impl Connection {
 		Ok(Self {
 			old: c,
 			inner: None,
-			backend: DatabaseBackend::Sqlite
+			backend: DatabaseBackend::Sqlite,
 		})
 	}
 
@@ -2503,72 +2500,6 @@ impl Connection {
 		Ok(true)
 	}
 
-	pub async fn store_share(
-		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, share: &ShareObject,
-	) -> self::Result<(i64, IdType, Object)> {
-		let tx = self.new().begin().await?;
-
-		// Construct fields for the share object
-		let identity_record = identity::Entity::find()
-			.filter(identity::Column::Address.eq(identity))
-			.one(&tx)
-			.await?
-			.expect("identity doesn't exist");
-
-		let next_object_sequence = self._next_object_sequence(&tx, identity_record.id).await?;
-		let object_payload = ObjectPayload::Share(share.clone());
-		let created = Utc::now().timestamp_millis();
-
-		let previous_object =
-			self._fetch_object_by_sequence(&tx, identity_record.id, next_object_sequence - 1)
-				.await?;
-		let previous_hash = previous_object.map(|o| o.hash).unwrap_or(IdType::default());
-		let (hash, signature) = Self::sign_object(
-			next_object_sequence,
-			&previous_hash,
-			created as _,
-			&object_payload,
-			&private_key,
-		);
-
-		// Insert the object record
-		let result = object::Entity::insert(object::ActiveModel {
-			id: NotSet,
-			actor_id: Set(identity_record.id),
-			hash: Set(hash.clone()),
-			signature: Set(signature.clone()),
-			sequence: Set(next_object_sequence as _),
-			previous_hash: Set(previous_hash.clone()),
-			created: Set(created),
-			verified_from_start: Set(true),
-			found: Set(created),
-			r#type: Set(OBJECT_TYPE_SHARE),
-		})
-		.exec(&tx)
-		.await?;
-		let object_id = result.last_insert_id;
-
-		// Insert the share object record
-		boost_object::Entity::insert(boost_object::ActiveModel {
-			object_id: Set(object_id),
-			actor_address: Set(share.actor_address.clone()),
-			object_hash: Set(share.object_hash.clone()),
-		})
-		.exec(&tx)
-		.await?;
-
-		tx.commit().await?;
-
-		let object = Object {
-			signature,
-			sequence: next_object_sequence,
-			previous_hash,
-			created: created as _,
-			payload: ObjectPayload::Share(share.clone()),
-		};
-		Ok((result.last_insert_id, hash, object))
-	}
-
 	pub fn fetch_bootstrap_node_id(&mut self, address: &SocketAddr) -> Result<Option<IdType>> {
 		let mut stat = self.old.prepare(
 			r#"
@@ -2628,6 +2559,15 @@ impl Connection {
 		Ok(())
 	}
 
+	pub async fn transaction(&self) -> Result<Transaction> {
+		let tx = self.inner.as_ref().unwrap().begin().await?;
+		Ok(Transaction(tx))
+	}
+
+	pub fn transaction_old(&mut self) -> Result<rusqlite::Transaction<'_>> {
+		Ok(self.old.transaction()?)
+	}
+
 	pub fn unfollow(&mut self, actor_id: &ActorAddress) -> Result<bool> {
 		let affected = self.old.execute(
 			r#"
@@ -2654,6 +2594,18 @@ impl Connection {
 		)?;
 		Ok(())
 	}
+}
+
+impl PersistenceFunc for Connection {
+	type Inner = sea_orm::DatabaseConnection;
+
+	fn handle(&self) -> &Self::Inner { self.inner.as_ref().unwrap() }
+}
+
+impl PersistenceFunc for Transaction {
+	type Inner = sea_orm::DatabaseTransaction;
+
+	fn handle(&self) -> &Self::Inner { &self.0 }
 }
 
 impl Deref for Connection {
@@ -2730,6 +2682,13 @@ impl IdFromBase58Error {
 	fn to_db(self) -> Error { Error::InvalidHash(self) }
 }
 
+impl Transaction {
+	pub async fn commit(self) -> Result<()> {
+		self.0.commit().await?;
+		Ok(())
+	}
+}
+
 
 pub fn decrypt_block(index: u64, key: &IdType, data: &mut [u8]) { encrypt_block(index, key, data) }
 
@@ -2755,7 +2714,7 @@ mod tests {
 	use crate::test;
 	#[tokio::test]
 	async fn test_file_data() {
-		let (db, _) = test::load_database("db").await;
+		let db = test::load_database("db").await;
 
 		let mut rng = test::initialize_rng();
 		let mut c = db.connect_old().expect("unable to connect to database");

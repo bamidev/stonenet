@@ -9,17 +9,14 @@ use std::{
 use chrono::*;
 use log::*;
 use rand::rngs::OsRng;
-use sea_orm::{
-	ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseBackend, DbErr, EntityTrait,
-	QueryFilter, QuerySelect, QueryTrait, Set, TransactionTrait,
-};
+use sea_orm::{ActiveValue::NotSet, ColumnTrait, EntityTrait, QueryFilter, Set};
 use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
 	common::*,
 	core::*,
-	db::{self},
+	db::{self, PersistenceFunc},
 	identity::*,
 	net::{actor::ActorNode, binserde, message::*, overlay::OverlayNode},
 };
@@ -38,7 +35,6 @@ pub enum Error {
 pub struct Api {
 	pub node: Arc<OverlayNode>,
 	pub db: Database,
-	pub orm: sea_orm::DatabaseConnection,
 }
 
 //pub type Result<T> = std::result::Result<T, self::Error>;
@@ -120,6 +116,73 @@ impl Api {
 
 			Ok((actor_address, actor_info))
 		})
+	}
+
+	pub async fn create_share(
+		&self, connection: &db::Connection, identity: &ActorAddress,
+		private_key: &ActorPrivateKeyV1, share: &ShareObject,
+	) -> db::Result<(i64, IdType, Object)> {
+		let tx = connection.transaction().await?;
+
+		// Construct fields for the share object
+		let identity_record = identity::Entity::find()
+			.filter(identity::Column::Address.eq(identity))
+			.one(&tx.0)
+			.await?
+			.expect("identity doesn't exist");
+
+		let next_object_sequence = tx.find_next_object_sequence(identity_record.id).await?;
+		let object_payload = ObjectPayload::Share(share.clone());
+		let created = Utc::now().timestamp_millis();
+
+		let previous_object = tx
+			.find_object_by_sequence(identity, next_object_sequence - 1)
+			.await?;
+		let previous_hash = previous_object.map(|o| o.hash).unwrap_or(IdType::default());
+		let (hash, signature) = Self::sign_object(
+			next_object_sequence,
+			&previous_hash,
+			created as _,
+			&object_payload,
+			&private_key,
+		);
+
+		// Insert the object record
+		let result = object::Entity::insert(object::ActiveModel {
+			id: NotSet,
+			actor_id: Set(identity_record.id),
+			hash: Set(hash.clone()),
+			signature: Set(signature.clone()),
+			sequence: Set(next_object_sequence as _),
+			previous_hash: Set(previous_hash.clone()),
+			created: Set(created),
+			verified_from_start: Set(true),
+			found: Set(created),
+			r#type: Set(OBJECT_TYPE_SHARE),
+		})
+		.exec(&tx.0)
+		.await?;
+		let object_id = result.last_insert_id;
+
+		// Insert the share object record
+		boost_object::Entity::insert(boost_object::ActiveModel {
+			object_id: Set(object_id),
+			actor_address: Set(share.actor_address.clone()),
+			object_hash: Set(share.object_hash.clone()),
+		})
+		.exec(&tx.0)
+		.await?;
+
+		tx.commit().await?;
+
+		let object = Object {
+			signature,
+			sequence: next_object_sequence,
+			previous_hash,
+			created: created as _,
+			payload: ObjectPayload::Share(share.clone()),
+		};
+		Ok((result.last_insert_id, hash, object))
 	}
 
 	pub async fn find_block(
@@ -450,7 +513,7 @@ impl Api {
 		tags: Vec<String>, attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> db::Result<IdType> {
 		let (hash, object) = self.db.perform(|mut c| {
-			let tx = c.transaction()?;
+			let tx = c.transaction_old()?;
 			let identity_id =
 				db::Connection::_find_identity(&tx, identity)?.expect("unknown identity");
 
@@ -522,36 +585,15 @@ impl Api {
 		Ok(hash)
 	}
 
-	async fn find_next_object_sequence(
-		c: &impl ConnectionTrait, identity_id: i64,
-	) -> Result<u64, DbErr> {
-		let stat = object::Entity::find()
-			.column_as(object::Column::Sequence.max(), "max")
-			.filter(object::Column::ActorId.eq(identity_id))
-			.build(DatabaseBackend::Sqlite);
-
-		if let Some(result) = c.query_one(stat).await? {
-			Ok(result.try_get_by_index::<i64>(0)? as u64)
-		} else {
-			Ok(0)
-		}
-	}
-
-	async fn find_object_by_sequence(
-		c: &impl ConnectionTrait, identity_id: i64, sequence: u64,
-	) -> Result<Option<object::Model>, DbErr> {
-		object::Entity::find()
-			.filter(object::Column::ActorId.eq(identity_id))
-			.filter(object::Column::Sequence.eq(sequence))
-			.one(c)
-			.await
-	}
-
 	pub async fn publish_share(
 		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: &ShareObject,
-	) -> Result<IdType, DbErr> {
+	) -> db::Result<IdType> {
 		// Store the share object
-		let (_, hash, object) = self.store_share(identity, private_key, object).await?;
+		let (_, hash, object) = {
+			let connection = self.db.connect().await?;
+			self.create_share(&connection, identity, private_key, object)
+				.await?
+		};
 
 		// Publish the object into the network
 		if let Some(actor_node) = self.node.get_actor_node(&identity.as_id()).await {

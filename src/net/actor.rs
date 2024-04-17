@@ -568,7 +568,10 @@ impl ActorNode {
 	#[allow(dead_code)]
 	fn load_public_key(&self) -> ActorPublicKeyV1 {
 		let actor_info = tokio::task::block_in_place(|| {
-			let c = self.db().connect_old().expect("unable to connect to database");
+			let c = self
+				.db()
+				.connect_old()
+				.expect("unable to connect to database");
 			c.fetch_identity(self.actor_address())
 				.expect("unable to load identity for actor node")
 				.expect("no identity for actor node")

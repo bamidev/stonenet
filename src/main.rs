@@ -165,20 +165,13 @@ where
 }
 
 #[cfg(not(target_family = "windows"))]
-async fn load_database(
-	config: &Config, _install_dir: PathBuf,
-) -> io::Result<(Database, sea_orm::DatabaseConnection)> {
-	let old_db = Database::load(
+async fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Database> {
+	let db = Database::load(
 		PathBuf::from_str(&config.database_path)
 			.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
 	)
 	.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &config.database_path))
-		.await
-		.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-	Ok((old_db, new_db))
+	Ok(db)
 }
 
 #[cfg(target_family = "windows")]
@@ -189,12 +182,8 @@ async fn load_database(
 	db_path.push("Stonenet");
 	let _ = fs::create_dir(&db_path);
 	db_path.push("db.sqlite");
-	let old_db = Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-	let new_db = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", &db_path))
-		.await
-		.map_err(|e| io::Error::new(io::ErrorKind::Other, e));
-	(old_db, new_db)
+	let db = Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	Ok(db)
 }
 
 #[cfg(not(target_family = "windows"))]
@@ -268,8 +257,8 @@ async fn main() {
 		.expect("Error setting Ctrl-C handler");
 
 		// Load database
-		let (db, orm) = match load_database(&config, install_dir).await {
-			Ok(dbs) => dbs,
+		let db = match load_database(&config, install_dir).await {
+			Ok(db) => db,
 			Err(e) => {
 				error!("Unable to load database: {}", e);
 				return;
@@ -279,14 +268,15 @@ async fn main() {
 		// Run migrations (does nothing if there is nothing to migrate)
 		{
 			let migrations = Migrations::load();
-			migrations.run(&orm).await.expect("migration issue");
+			let connection = db.connect().await.expect("database connection issue");
+			migrations.run(&connection).await.expect("migration issue");
 		}
 
 		// Load node
 		let node = load_node(stop_flag.clone(), db.clone(), &config).await;
 
 		// Test openness
-		let api = Api { node, db, orm };
+		let api = Api { node, db };
 		let new_bootstrap_nodes = test_bootstrap_nodes(&api, &config).await;
 		test_openness(&api, &config, !new_bootstrap_nodes).await;
 
