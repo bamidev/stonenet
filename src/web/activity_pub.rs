@@ -58,6 +58,17 @@ yKNOge1KpLZ2M6dMVrhqvE0=
 
 
 #[derive(Serialize)]
+struct Activity {
+	#[serde(rename(serialize = "@context"), default)]
+	context: ActivityPubDocumentContext,
+	r#type: CreateActivityType,
+	id: String,
+	actor: String,
+	object: serde_json::Value,
+	published: String,
+}
+
+#[derive(Serialize)]
 struct ActivityPubDocumentContext(pub &'static [&'static str]);
 
 #[allow(non_snake_case)]
@@ -92,9 +103,46 @@ struct ActorDocumentPublicKey {
 	publicKeyPem: String,
 }
 
+struct CreateActivityType;
+
 #[derive(Serialize)]
+struct ObjectDocument {
+    #[serde(rename(serialize = "@context"), default)]
+	context: ActivityPubDocumentContext,
+    r#type: &'static str,
+    id: String,
+    actor: String,
+    object: ObjectDocumentObject,
+	published: String,
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize)]
+struct ObjectDocumentObject {
+    id: String,
+    r#type: &'static str,
+    published: String,
+    attributedTo: String,
+    inReplyTo: String,
+    content: String,
+    to: &'static str
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize)]
+struct OrderedCollection {
+	#[serde(rename(serialize = "@context"), default)]
+	context: ActivityPubDocumentContext,
+	summary: String,
+	r#type: &'static str,
+	totalItems: usize,
+	orderedItems: Vec<serde_json::Value>
+}
+
+#[derive(Serialize)]	
 struct WebFingerDocument {
 	subject: String,
+    aliases: Vec<String>,
 	links: Vec<WebFingerDocumentLink>,
 }
 
@@ -114,6 +162,9 @@ impl WebFingerDocument {
 	fn new(url_base: &str, type_: &str, address: &Address) -> Self {
 		Self {
 			subject: format!("acct:{}", address),
+            aliases: vec![
+                format!("{}/{}/{}", url_base, type_, address)
+            ],
 			links: vec![
 				WebFingerDocumentLink {
 					rel: "self",
@@ -139,21 +190,21 @@ impl ActorDocument {
 		Self {
 			context: DEFAULT_CONTEXT,
 			id: id.clone(),
+			url: id.clone(),
 			r#type: "Person",
 			name,
 			preferredUsername: address.to_string(),
 			inbox: format!("{}/inbox", url_base),
-			outbox: format!("{}/actor/{}/activity-pub/feed", url_base, address),
+			outbox: format!("{}/actor/{}/activity-pub/outbox", url_base, address),
 			publicKey: ActorDocumentPublicKey {
 				id: format!("{}#main-key", &id),
-				owner: id,
+				owner: id.clone(),
 				publicKeyPem: PUBLIC_KEY.replace("\n", "\\n"),
 			},
 			summary,
-			url: format!("{}/actor/{}", url_base, address),
 			icon: avatar_hash.map(|h| ActorDocumentIcon {
 				r#type: "Image",
-				url: format!("{}/actor/{}/file/{}", url_base, address, h),
+				url: format!("{}/file/{}", &id, h),
 			}),
 		}
 	}
@@ -164,6 +215,8 @@ pub async fn webfinger(
 	State(g): State<Arc<Global>>, Query(params): Query<HashMap<String, String>>,
 ) -> Response {
 	if let Some(resource) = params.get("resource") {
+        // TODO: Parse resource string from the form of: acct:hash@domain.name
+
 		let address = match Address::from_str(resource) {
 			Err(e) => return server_error_response(e, "invalid address"),
 			Ok(a) => a,
@@ -210,5 +263,24 @@ pub async fn actor_activitypub(
 		profile.actor.avatar_id.as_ref(),
 		description,
 	);
-	json_response(&actor)
+	json_response(&actor, Some("application/activity+json"))
+}
+
+pub async fn actor_activitypub_outbox(
+	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
+) -> Response {
+	let profile = match g.api.db.connect() {
+		Err(e) => return server_error_response(e, "DB issue"),
+		Ok(c) => c.fetch_actor_feed(10, 0),
+	};
+
+	let description = profile.description.clone().unwrap_or_default();
+	let actor = ActorDocument::new(
+		&g.server_info.url_base,
+		&address,
+		profile.actor.name,
+		profile.actor.avatar_id.as_ref(),
+		description,
+	);
+	json_response(&actor, Some("application/activity+json"))
 }

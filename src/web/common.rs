@@ -80,9 +80,9 @@ pub fn human_readable_duration(duration: &Duration) -> String {
 	}
 }
 
-pub fn json_response(json: &impl Serialize) -> Response {
+pub fn json_response(json: &impl Serialize, content_type: Option<&str>) -> Response {
 	Response::builder()
-		.header("Content-Type", "application/json")
+		.header("Content-Type", content_type.unwrap_or("application/json"))
 		.body(Body::from(
 			serde_json::to_string(json).expect("json serialization issue"),
 		))
