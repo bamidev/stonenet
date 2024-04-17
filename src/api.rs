@@ -9,17 +9,14 @@ use std::{
 use chrono::*;
 use log::*;
 use rand::rngs::OsRng;
-use sea_orm::{
-	ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseBackend, DbErr, EntityTrait,
-	QueryFilter, QuerySelect, QueryTrait, Set, TransactionTrait,
-};
+use sea_orm::{ActiveValue::NotSet, ColumnTrait, EntityTrait, QueryFilter, Set};
 use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
 	common::*,
 	core::*,
-	db::{self},
+	db::{self, PersistenceFunc},
 	identity::*,
 	net::{actor::ActorNode, binserde, message::*, overlay::OverlayNode},
 };
@@ -38,7 +35,6 @@ pub enum Error {
 pub struct Api {
 	pub node: Arc<OverlayNode>,
 	pub db: Database,
-	pub orm: sea_orm::DatabaseConnection,
 }
 
 //pub type Result<T> = std::result::Result<T, self::Error>;
@@ -122,11 +118,78 @@ impl Api {
 		})
 	}
 
+	pub async fn create_share(
+		&self, connection: &db::Connection, identity: &ActorAddress,
+		private_key: &ActorPrivateKeyV1, share: &ShareObject,
+	) -> db::Result<(i64, IdType, Object)> {
+		let tx = connection.transaction().await?;
+
+		// Construct fields for the share object
+		let identity_record = identity::Entity::find()
+			.filter(identity::Column::Address.eq(identity))
+			.one(&tx.0)
+			.await?
+			.expect("identity doesn't exist");
+
+		let next_object_sequence = tx.find_next_object_sequence(identity_record.id).await?;
+		let object_payload = ObjectPayload::Share(share.clone());
+		let created = Utc::now().timestamp_millis();
+
+		let previous_object = tx
+			.find_object_by_sequence(identity, next_object_sequence - 1)
+			.await?;
+		let previous_hash = previous_object.map(|o| o.hash).unwrap_or(IdType::default());
+		let (hash, signature) = Self::sign_object(
+			next_object_sequence,
+			&previous_hash,
+			created as _,
+			&object_payload,
+			&private_key,
+		);
+
+		// Insert the object record
+		let result = object::Entity::insert(object::ActiveModel {
+			id: NotSet,
+			actor_id: Set(identity_record.id),
+			hash: Set(hash.clone()),
+			signature: Set(signature.clone()),
+			sequence: Set(next_object_sequence as _),
+			previous_hash: Set(previous_hash.clone()),
+			created: Set(created),
+			verified_from_start: Set(true),
+			found: Set(created),
+			r#type: Set(OBJECT_TYPE_SHARE),
+		})
+		.exec(&tx.0)
+		.await?;
+		let object_id = result.last_insert_id;
+
+		// Insert the share object record
+		boost_object::Entity::insert(boost_object::ActiveModel {
+			object_id: Set(object_id),
+			actor_address: Set(share.actor_address.clone()),
+			object_hash: Set(share.object_hash.clone()),
+		})
+		.exec(&tx.0)
+		.await?;
+
+		tx.commit().await?;
+
+		let object = Object {
+			signature,
+			sequence: next_object_sequence,
+			previous_hash,
+			created: created as _,
+			payload: ObjectPayload::Share(share.clone()),
+		};
+		Ok((result.last_insert_id, hash, object))
+	}
+
 	pub async fn find_block(
 		&self, actor_node: &ActorNode, id: &IdType,
 	) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.fetch_block(id)
 		})?;
 
@@ -138,7 +201,7 @@ impl Api {
 
 	pub async fn find_file(&self, actor_node: &ActorNode, id: &IdType) -> db::Result<Option<File>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.fetch_file(id)
 		})?;
 
@@ -152,7 +215,7 @@ impl Api {
 		&self, actor_node: &ActorNode, id: &IdType,
 	) -> db::Result<Option<FileData>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.fetch_file_data(id)
 		})?;
 
@@ -184,7 +247,7 @@ impl Api {
 		&self, actor_node: &ActorNode, id: &IdType,
 	) -> db::Result<Option<FindObjectResult>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.fetch_object(id)
 		})?;
 
@@ -197,7 +260,7 @@ impl Api {
 	pub fn fetch_home_feed(&self, count: u64, offset: u64) -> db::Result<Vec<ObjectInfo>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
-			let mut c = this.db.connect()?;
+			let mut c = this.db.connect_old()?;
 			c.fetch_home_feed(count, offset)
 		})
 	}
@@ -207,7 +270,7 @@ impl Api {
 	) -> db::Result<Option<(String, ActorPrivateKeyV1)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
-			let c = this.db.connect()?;
+			let c = this.db.connect_old()?;
 			c.fetch_my_identity(address)
 		})
 	}
@@ -217,7 +280,7 @@ impl Api {
 	) -> db::Result<Option<(ActorAddress, ActorPrivateKeyV1)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
-			let c = this.db.connect()?;
+			let c = this.db.connect_old()?;
 			c.fetch_my_identity_by_label(label)
 		})
 	}
@@ -227,7 +290,7 @@ impl Api {
 	) -> db::Result<Vec<(String, ActorAddress, IdType, String, ActorPrivateKeyV1)>> {
 		let this = self.clone();
 		tokio::task::block_in_place(|| {
-			let c = this.db.connect()?;
+			let c = this.db.connect_old()?;
 			c.fetch_my_identities()
 		})
 	}
@@ -270,7 +333,7 @@ impl Api {
 		&self, actor_address: &ActorAddress, hash: &IdType,
 	) -> db::Result<Option<ObjectInfo>> {
 		tokio::task::block_in_place(|| {
-			let mut c = self.db.connect()?;
+			let mut c = self.db.connect_old()?;
 			c.fetch_object_info(actor_address, hash)
 		})
 	}
@@ -288,7 +351,7 @@ impl Api {
 			let objects2 = objects.clone();
 			futs.append(async move {
 				let result = tokio::task::block_in_place(|| {
-					let mut c = self.db.connect()?;
+					let mut c = self.db.connect_old()?;
 					c.fetch_object_by_sequence(node.actor_id(), post_sequence)
 				})?;
 				let final_result = match result.0 {
@@ -309,7 +372,7 @@ impl Api {
 		&self, actor_id: &ActorAddress,
 	) -> db::Result<Option<ProfileObjectInfo>> {
 		let profile = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.fetch_profile_info(actor_id)
 		})?;
 		if profile.is_some() {
@@ -319,7 +382,7 @@ impl Api {
 		// Try to get the profile from the actor network
 		if let Some(_) = self.node.find_actor_profile_info(actor_id).await {
 			let profile = tokio::task::block_in_place(|| {
-				let c = self.db.connect()?;
+				let c = self.db.connect_old()?;
 				c.fetch_profile_info(actor_id)
 			})?;
 			return Ok(profile);
@@ -329,7 +392,7 @@ impl Api {
 
 	pub async fn follow(&self, address: &ActorAddress, join_network: bool) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.fetch_identity(address)
 		})?;
 		let actor_info = match result {
@@ -341,7 +404,7 @@ impl Api {
 		};
 
 		let _private_key = tokio::task::block_in_place(|| {
-			let mut c = self.db.connect()?;
+			let mut c = self.db.connect_old()?;
 			c.follow(address, &actor_info)
 		})?;
 
@@ -359,7 +422,7 @@ impl Api {
 
 	pub async fn unfollow(&self, actor_id: &ActorAddress) -> db::Result<bool> {
 		let success = tokio::task::block_in_place(|| {
-			let mut c = self.db.connect()?;
+			let mut c = self.db.connect_old()?;
 			c.unfollow(actor_id)
 		})?;
 
@@ -371,7 +434,7 @@ impl Api {
 
 	pub fn is_following(&self, actor_id: &ActorAddress) -> db::Result<bool> {
 		tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.is_following(actor_id)
 		})
 	}
@@ -450,7 +513,7 @@ impl Api {
 		tags: Vec<String>, attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> db::Result<IdType> {
 		let (hash, object) = self.db.perform(|mut c| {
-			let tx = c.transaction()?;
+			let tx = c.transaction_old()?;
 			let identity_id =
 				db::Connection::_find_identity(&tx, identity)?.expect("unknown identity");
 
@@ -465,7 +528,7 @@ impl Api {
 			}
 
 			// Sign the post
-			let next_object_sequence = db::Connection::_next_object_sequence(&tx, identity_id)?;
+			let next_object_sequence = db::Connection::_next_object_sequence_old(&tx, identity_id)?;
 			let object_payload = ObjectPayload::Post(PostObject {
 				in_reply_to: in_reply_to.clone(),
 				data: PostObjectCryptedData::Plain(PostObjectDataPlain {
@@ -522,102 +585,15 @@ impl Api {
 		Ok(hash)
 	}
 
-	async fn find_next_object_sequence(
-		c: &impl ConnectionTrait, identity_id: i64,
-	) -> Result<u64, DbErr> {
-		let stat = object::Entity::find()
-			.column_as(object::Column::Sequence.max(), "max")
-			.filter(object::Column::ActorId.eq(identity_id))
-			.build(DatabaseBackend::Sqlite);
-
-		if let Some(result) = c.query_one(stat).await? {
-			Ok(result.try_get_by_index::<i64>(0)? as u64)
-		} else {
-			Ok(0)
-		}
-	}
-
-	async fn find_object_by_sequence(
-		c: &impl ConnectionTrait, identity_id: i64, sequence: u64,
-	) -> Result<Option<object::Model>, DbErr> {
-		object::Entity::find()
-			.filter(object::Column::ActorId.eq(identity_id))
-			.filter(object::Column::Sequence.eq(sequence))
-			.one(c)
-			.await
-	}
-
-	async fn store_share(
-		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, share: &ShareObject,
-	) -> Result<(i64, IdType, Object), DbErr> {
-		let tx = self.orm.begin().await?;
-
-		// Construct fields for the share object
-		let identity_record = identity::Entity::find()
-			.filter(identity::Column::Address.eq(identity))
-			.one(&tx)
-			.await?
-			.expect("identity doesn't exist");
-
-		let next_object_sequence = Self::find_next_object_sequence(&tx, identity_record.id).await?;
-		let object_payload = ObjectPayload::Share(share.clone());
-		let created = Utc::now().timestamp_millis();
-
-		let previous_object =
-			Self::find_object_by_sequence(&tx, identity_record.id, next_object_sequence - 1)
-				.await?;
-		let previous_hash = previous_object.map(|o| o.hash).unwrap_or(IdType::default());
-		let (hash, signature) = Self::sign_object(
-			next_object_sequence,
-			&previous_hash,
-			created as _,
-			&object_payload,
-			&private_key,
-		);
-
-		// Insert the object record
-		let result = object::Entity::insert(object::ActiveModel {
-			id: NotSet,
-			actor_id: Set(identity_record.id),
-			hash: Set(hash.clone()),
-			signature: Set(signature.clone()),
-			sequence: Set(next_object_sequence as _),
-			previous_hash: Set(previous_hash.clone()),
-			created: Set(created),
-			verified_from_start: Set(true),
-			found: Set(created),
-			r#type: Set(OBJECT_TYPE_SHARE),
-		})
-		.exec(&tx)
-		.await?;
-		let object_id = result.last_insert_id;
-
-		// Insert the share object record
-		boost_object::Entity::insert(boost_object::ActiveModel {
-			object_id: Set(object_id),
-			actor_address: Set(share.actor_address.clone()),
-			object_hash: Set(share.object_hash.clone()),
-		})
-		.exec(&tx)
-		.await?;
-
-		tx.commit().await?;
-
-		let object = Object {
-			signature,
-			sequence: next_object_sequence,
-			previous_hash,
-			created: created as _,
-			payload: ObjectPayload::Share(share.clone()),
-		};
-		Ok((result.last_insert_id, hash, object))
-	}
-
 	pub async fn publish_share(
 		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: &ShareObject,
-	) -> Result<IdType, DbErr> {
+	) -> db::Result<IdType> {
 		// Store the share object
-		let (_, hash, object) = self.store_share(identity, private_key, object).await?;
+		let (_, hash, object) = {
+			let connection = self.db.connect().await?;
+			self.create_share(&connection, identity, private_key, object)
+				.await?
+		};
 
 		// Publish the object into the network
 		if let Some(actor_node) = self.node.get_actor_node(&identity.as_id()).await {

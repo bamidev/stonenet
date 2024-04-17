@@ -56,7 +56,7 @@ struct PublishObjectToDo {
 impl ActorInterface {
 	async fn find_block(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.fetch_block(id)
 		})?;
 		if let Some(data) = result {
@@ -69,7 +69,7 @@ impl ActorInterface {
 
 	async fn find_file(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.fetch_file(id)
 		})?;
 		Ok(result.map(|file| binserde::serialize(&file).unwrap()))
@@ -77,7 +77,7 @@ impl ActorInterface {
 
 	async fn find_object(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect()?;
+			let c = self.db.connect_old()?;
 			c.fetch_object(id)
 		})?;
 		Ok(result.map(|(object, _)| binserde::serialize(&FindObjectResult { object }).unwrap()))
@@ -85,7 +85,7 @@ impl ActorInterface {
 
 	async fn find_next_object(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
-			let mut c = self.db.connect()?;
+			let mut c = self.db.connect_old()?;
 			c.fetch_next_object(&self.actor_address, id)
 		})?;
 		Ok(result.map(|(hash, object, _)| {
@@ -417,7 +417,7 @@ impl ActorNode {
 
 	fn has_object_by_sequence(&self, sequence: u64) -> bool {
 		tokio::task::block_in_place(|| {
-			let c = self.db().connect().expect("unable to open database");
+			let c = self.db().connect_old().expect("unable to open database");
 			c.has_object_sequence(self.actor_address(), sequence)
 				.expect("unable to read object from database")
 		})
@@ -446,7 +446,7 @@ impl ActorNode {
 	/// Returns a list of block hashes that we'd like to have.
 	fn investigate_missing_blocks(&self) -> db::Result<Vec<IdType>> {
 		tokio::task::block_in_place(|| {
-			let c = self.db().connect()?;
+			let c = self.db().connect_old()?;
 			c.fetch_missing_file_blocks()
 		})
 	}
@@ -455,7 +455,7 @@ impl ActorNode {
 	/// missing.
 	fn investigate_missing_files(&self) -> db::Result<Vec<IdType>> {
 		tokio::task::block_in_place(|| {
-			let c = self.db().connect()?;
+			let c = self.db().connect_old()?;
 			let (_, head, ..) = if let Some(h) = c.fetch_head(self.actor_address())? {
 				h
 			} else {
@@ -499,7 +499,7 @@ impl ActorNode {
 	#[allow(dead_code)]
 	fn investigate_missing_object_files(&self, object: &Object) -> db::Result<Vec<IdType>> {
 		tokio::task::block_in_place(|| {
-			let c = self.db().connect()?;
+			let c = self.db().connect_old()?;
 			let mut results = Vec::new();
 			match &object.payload {
 				ObjectPayload::Profile(payload) => {
@@ -568,7 +568,10 @@ impl ActorNode {
 	#[allow(dead_code)]
 	fn load_public_key(&self) -> ActorPublicKeyV1 {
 		let actor_info = tokio::task::block_in_place(|| {
-			let c = self.db().connect().expect("unable to connect to database");
+			let c = self
+				.db()
+				.connect_old()
+				.expect("unable to connect to database");
 			c.fetch_identity(self.actor_address())
 				.expect("unable to load identity for actor node")
 				.expect("no identity for actor node")
@@ -615,7 +618,7 @@ impl ActorNode {
 		};
 
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db().connect()?;
+			let c = self.db().connect_old()?;
 			c.fetch_profile_object(&self.base.interface.actor_address)
 		});
 		let object = match result {
@@ -661,7 +664,7 @@ impl ActorNode {
 		}
 
 		let head_result = tokio::task::block_in_place(|| {
-			let c = match self.db().connect() {
+			let c = match self.db().connect_old() {
 				Ok(c) => c,
 				Err(e) => {
 					error!("Unable to connect to database to check block: {}", e);
@@ -738,7 +741,7 @@ impl ActorNode {
 
 	fn needs_object(&self, actor_address: &ActorAddress, id: &IdType) -> bool {
 		tokio::task::block_in_place(|| {
-			let c = match self.db().connect() {
+			let c = match self.db().connect_old() {
 				Ok(c) => c,
 				Err(e) => {
 					error!("Unable to connect to database to check object: {}", e);
@@ -758,7 +761,7 @@ impl ActorNode {
 
 	fn needs_file(&self, id: &IdType) -> bool {
 		tokio::task::block_in_place(|| {
-			let c = match self.db().connect() {
+			let c = match self.db().connect_old() {
 				Ok(c) => c,
 				Err(e) => {
 					error!("Unable to connect to database to check file: {}", e);
@@ -778,7 +781,7 @@ impl ActorNode {
 
 	fn needs_block(&self, id: &IdType) -> bool {
 		tokio::task::block_in_place(|| {
-			let c = match self.db().connect() {
+			let c = match self.db().connect_old() {
 				Ok(c) => c,
 				Err(e) => {
 					error!("Unable to connect to database to check block: {}", e);
@@ -941,7 +944,7 @@ impl ActorNode {
 		&self, connection: &mut Connection, id: &IdType, object: &Object,
 	) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db().connect()?;
+			let c = self.db().connect_old()?;
 			c.fetch_head(self.actor_address())
 		})?;
 
@@ -1070,7 +1073,7 @@ impl ActorNode {
 		for hash in missing_blocks {
 			if let Some(result) = self.find_block(&hash).await {
 				tokio::task::block_in_place(|| {
-					let mut c = self.db().connect()?;
+					let mut c = self.db().connect_old()?;
 					c.store_block(&hash, &result.data)
 				})?;
 			}
@@ -1108,7 +1111,7 @@ impl ActorNode {
 		for hash in missing_files {
 			if let Some(result) = self.find_file(&hash).await {
 				tokio::task::block_in_place(|| {
-					let mut c = self.db().connect()?;
+					let mut c = self.db().connect_old()?;
 					c.store_file(&hash, &result.file)
 				})?;
 			}
@@ -1130,7 +1133,7 @@ impl ActorNode {
 	/// Iteratively search the network for object meta data.
 	async fn synchronize_objects(&self) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
-			let c = self.db().connect()?;
+			let c = self.db().connect_old()?;
 			c.fetch_last_verified_object(self.actor_address())
 		})?;
 		let (mut last_known_object_id, mut last_known_object_sequence) = match result {
@@ -1192,7 +1195,7 @@ impl ActorNode {
 					// verified.
 					loop {
 						let to_break: db::Result<bool> = tokio::task::block_in_place(|| {
-							let mut c = self.db().connect()?;
+							let mut c = self.db().connect_old()?;
 							let result = c.fetch_object_by_sequence(
 								self.actor_address(),
 								last_known_object_sequence + 1,

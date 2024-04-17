@@ -9,7 +9,10 @@ use serde::Deserialize;
 use tera::Context;
 
 use super::*;
-use crate::entity::{identity, Identity};
+use crate::{
+	db::PersistenceFunc,
+	entity::{identity, Identity},
+};
 
 
 #[derive(Deserialize)]
@@ -47,14 +50,17 @@ async fn actor_middleware(
 		}
 	}
 
-	match Identity::find()
-		.filter(identity::Column::Address.contains(hash))
-		.one(&g.api.orm)
-		.await
 	{
-		Err(e) => return server_error_response(e, "Unable to load actor"),
-		Ok(actor) => {
-			request.extensions_mut().insert(actor);
+		let connection = g.api.db.connect().await.unwrap();
+		match Identity::find()
+			.filter(identity::Column::Address.contains(hash))
+			.one(connection.handle())
+			.await
+		{
+			Err(e) => return server_error_response(e, "Unable to load actor"),
+			Ok(actor) => {
+				request.extensions_mut().insert(actor);
+			}
 		}
 	}
 

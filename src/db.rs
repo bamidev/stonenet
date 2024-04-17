@@ -6,6 +6,7 @@ mod install;
 use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
 
 use ::serde::Serialize;
+use async_trait::async_trait;
 use chacha20::{
 	cipher::{KeyIvInit, StreamCipher},
 	ChaCha20,
@@ -19,15 +20,21 @@ use rusqlite::{
 	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Value, ValueRef},
 	Rows, ToSql,
 };
+use sea_orm::{
+	ActiveValue::*, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseTransaction, DbErr,
+	EntityOrSelect, EntityTrait, QueryFilter, QuerySelect, QueryTrait, TransactionTrait,
+};
 use thiserror::Error;
 
 use crate::{
 	common::*,
 	core::*,
+	entity::{boost_object, identity, object},
 	identity::*,
 	net::binserde,
 	trace::{self, Traceable, Traced},
 };
+
 
 const DATABASE_VERSION: (u8, u16, u16) = (0, 0, 0);
 pub(crate) const BLOCK_SIZE: usize = 0x100000; // 1 MiB
@@ -37,17 +44,23 @@ pub struct Database {
 	path: PathBuf,
 }
 
-pub struct Connection(
+pub struct Connection {
 	// The documentation of rusqlite mentions that the Connection struct does
 	// not need a mutex, that it is already thread-safe. For some reason it was
 	// not marked as Send and Sync.
-	rusqlite::Connection,
-);
+	old: rusqlite::Connection,
+	inner: Option<sea_orm::DatabaseConnection>,
+	backend: DatabaseBackend,
+}
+
+// TODO: Make the sea_orm::DatabaseTransaction inside private
+pub struct Transaction(pub(crate) sea_orm::DatabaseTransaction);
 
 #[derive(Debug, Error)]
 pub enum Error {
 	/// Sqlite error
 	SqliteError(rusqlite::Error),
+	OrmError(sea_orm::DbErr),
 	ActorAddress(FromBytesAddressError),
 	InvalidObjectType(u8),
 	/// An invalid hash has been found in the database
@@ -135,6 +148,38 @@ pub enum ObjectPayloadInfo {
 }
 
 pub type Result<T> = trace::Result<T, self::Error>;
+
+
+#[async_trait]
+pub trait PersistenceFunc {
+	type Inner: ConnectionTrait;
+
+	fn handle(&self) -> &Self::Inner;
+
+
+	async fn find_next_object_sequence(&self, identity_id: i64) -> Result<u64> {
+		let stat = object::Entity::find()
+			.column_as(object::Column::Sequence.max(), "max")
+			.filter(object::Column::ActorId.eq(identity_id))
+			.build(DatabaseBackend::Sqlite);
+
+		if let Some(result) = self.handle().query_one(stat).await? {
+			Ok(result.try_get_by_index::<i64>(0)? as u64)
+		} else {
+			Ok(0)
+		}
+	}
+
+	async fn find_object_by_sequence(
+		&self, actor_id: &ActorAddress, sequence: u64,
+	) -> Result<Option<object::Model>> {
+		Ok(object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.filter(object::Column::Sequence.eq(sequence))
+			.one(self.handle())
+			.await?)
+	}
+}
 
 
 impl FromSql for ActorAddress {
@@ -250,15 +295,19 @@ impl FromSql for NodePublicKey {
 }
 
 impl Database {
-	pub fn connect(&self) -> self::Result<Connection> { Ok(Connection::open(&self.path)?) }
+	pub fn connect_old(&self) -> self::Result<Connection> { Ok(Connection::open_old(&self.path)?) }
 
 	/// Runs the given closure, which pauzes the task that runs it, but doesn't
 	/// block the runtime.
 	pub fn perform<T>(&self, task: impl FnOnce(Connection) -> Result<T>) -> Result<T> {
 		tokio::task::block_in_place(move || {
-			let connection = self.connect()?;
+			let connection = self.connect_old()?;
 			task(connection)
 		})
+	}
+
+	pub async fn connect(&self) -> self::Result<Connection> {
+		Ok(Connection::open(&self.path).await?)
 	}
 
 	fn install(conn: &Connection) -> Result<()> { Ok(conn.execute_batch(install::QUERY)?) }
@@ -268,7 +317,7 @@ impl Database {
 	}
 
 	pub fn load(path: PathBuf) -> Result<Self> {
-		let connection = Connection::open(&path).map_err(|e| Error::SqliteError(e))?;
+		let connection = Connection::open_old(&path).map_err(|e| Error::SqliteError(e))?;
 
 		match connection.prepare("SELECT major, minor FROM version") {
 			Ok(mut stat) => {
@@ -477,7 +526,7 @@ impl Connection {
 		Self::_parse_object(this, &mut rows)
 	}
 
-	fn _fetch_object_by_sequence(
+	fn _fetch_object_by_sequence_old(
 		this: &impl DerefConnection, actor_id: &ActorAddress, sequence: u64,
 	) -> Result<Option<(IdType, Object, bool)>> {
 		let mut stat = this.prepare(
@@ -567,7 +616,7 @@ impl Connection {
 	}
 
 	/*pub fn _fetch_post_files(&self, post_id: i64) -> Result<Vec<FileHeader>> {
-		let mut stat = self.0.prepare(
+		let mut stat = self.old.prepare(
 			r#"
 			SELECT hash, mime_type, block_count FROM file WHERE post_id = ?
 		"#,
@@ -987,7 +1036,23 @@ impl Connection {
 	}
 
 	/// Returns the lastest object sequence for an actor if available.
-	fn _max_object_sequence<C>(tx: &C, actor_id: i64) -> rusqlite::Result<Option<u64>>
+	async fn _max_object_sequence(
+		&self, tx: &impl ConnectionTrait, actor_id: i64,
+	) -> self::Result<Option<u64>> {
+		let stat = object::Entity::find()
+			.column_as(object::Column::Sequence.max(), "max")
+			.filter(object::Column::ActorId.eq(actor_id))
+			.build(self.backend);
+
+		if let Some(result) = tx.query_one(stat).await? {
+			Ok(Some(result.try_get_by_index::<i64>(0)? as u64))
+		} else {
+			Ok(None)
+		}
+	}
+
+	/// Returns the lastest object sequence for an actor if available.
+	fn _max_object_sequence_old<C>(tx: &C, actor_id: i64) -> rusqlite::Result<Option<u64>>
 	where
 		C: DerefConnection,
 	{
@@ -1026,11 +1091,21 @@ impl Connection {
 	}
 
 	/// Returns the sequence that the next object would use.
-	pub(crate) fn _next_object_sequence<C>(tx: &C, actor_id: i64) -> Result<u64>
+	pub(crate) async fn _next_object_sequence(
+		&self, tx: &impl ConnectionTrait, actor_id: i64,
+	) -> Result<u64> {
+		match self._max_object_sequence(tx, actor_id).await? {
+			None => Ok(0),
+			Some(s) => Ok(s + 1),
+		}
+	}
+
+	/// Returns the sequence that the next object would use.
+	pub(crate) fn _next_object_sequence_old<C>(tx: &C, actor_id: i64) -> Result<u64>
 	where
 		C: DerefConnection,
 	{
-		match Self::_max_object_sequence(tx, actor_id)? {
+		match Self::_max_object_sequence_old(tx, actor_id)? {
 			None => Ok(0),
 			Some(s) => Ok(s + 1),
 		}
@@ -1371,7 +1446,7 @@ impl Connection {
 		signature: &ActorSignatureV1, in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> Result<()> {
 		// Create post object
-		let next_sequence = Self::_next_object_sequence(tx, actor_id)?;
+		let next_sequence = Self::_next_object_sequence_old(tx, actor_id)?;
 		let mut stat = tx.prepare(
 			r#"
 			INSERT INTO object (
@@ -1576,7 +1651,7 @@ impl Connection {
 	}
 
 	pub fn delete_object(&self, actor_address: &ActorAddress, hash: &IdType) -> Result<bool> {
-		let object_id: i64 = self.0.query_row(
+		let object_id: i64 = self.old.query_row(
 			r#"
 			SELECT id FROM object WHERE hash = ? AND actor_id = (
 				SELECT id FROM identity WHERE address = ?
@@ -1586,38 +1661,38 @@ impl Connection {
 		)?;
 
 		// Delete all possible foreign references first
-		self.0.execute(
+		self.old.execute(
 			r#"
 			DELETE FROM post_files WHERE post_id = ?
 		"#,
 			[object_id],
 		)?;
-		self.0.execute(
+		self.old.execute(
 			r#"
 			DELETE FROM post_tag WHERE post_id = ?
 		"#,
 			[object_id],
 		)?;
-		self.0.execute(
+		self.old.execute(
 			r#"
 			DELETE FROM post_object WHERE object_id = ?
 		"#,
 			[object_id],
 		)?;
-		self.0.execute(
+		self.old.execute(
 			r#"
 			DELETE FROM boost_object WHERE object_id = ?
 		"#,
 			[object_id],
 		)?;
-		self.0.execute(
+		self.old.execute(
 			r#"
 			DELETE FROM profile_object WHERE object_id = ?
 		"#,
 			[object_id],
 		)?;
 
-		let affected = self.0.execute(
+		let affected = self.old.execute(
 			r#"
 			DELETE FROM object WHERE id = ?
 		"#,
@@ -1631,7 +1706,7 @@ impl Connection {
 		count: usize,
 		offset: usize
 	) -> Result<Vec<PostObject>> {
-		let mut stat = self.0.prepare(r#"
+		let mut stat = self.old.prepare(r#"
 			SELECT rowid FROM post_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.rowid
 			WHERE actor_id = (SELECT rowid FROM identity WHERE address = ?)
@@ -1802,7 +1877,7 @@ impl Connection {
 	pub fn fetch_object_info(
 		&mut self, actor_address: &ActorAddress, hash: &IdType,
 	) -> Result<Option<ObjectInfo>> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 		let mut stat = tx.prepare(
 			r#"
 			SELECT o.actor_id, o.hash, o.sequence, o.created, o.found, o.type, i.address
@@ -1816,7 +1891,7 @@ impl Connection {
 	}
 
 	pub fn fetch_home_feed(&mut self, count: u64, offset: u64) -> Result<Vec<ObjectInfo>> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 
 		let mut stat = tx.prepare(
 			r#"
@@ -1851,13 +1926,13 @@ impl Connection {
 	pub fn fetch_object_by_sequence(
 		&self, actor_id: &ActorAddress, sequence: u64,
 	) -> Result<Option<(IdType, Object, bool)>> {
-		Self::_fetch_object_by_sequence(self, actor_id, sequence)
+		Self::_fetch_object_by_sequence_old(self, actor_id, sequence)
 	}
 
 	pub fn fetch_previous_object(
 		&mut self, actor_id: &ActorAddress, hash: &IdType,
 	) -> Result<Option<(IdType, Object, bool)>> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 
 		let mut stat = tx.prepare(
 			r#"
@@ -1871,7 +1946,7 @@ impl Connection {
 		if let Some(row) = rows.next()? {
 			let sequence: u64 = row.get(0)?;
 			if sequence > 0 {
-				Self::_fetch_object_by_sequence(&tx, actor_id, sequence - 1)
+				Self::_fetch_object_by_sequence_old(&tx, actor_id, sequence - 1)
 			} else {
 				Ok(None)
 			}
@@ -1883,7 +1958,7 @@ impl Connection {
 	pub fn fetch_next_object(
 		&mut self, actor_address: &ActorAddress, hash: &IdType,
 	) -> Result<Option<(IdType, Object, bool)>> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 		let mut stat = tx.prepare(
 			r#"
 			SELECT o.sequence
@@ -1897,7 +1972,7 @@ impl Connection {
 			let sequence: u64 = row.get(0)?;
 			if sequence < u64::MAX {
 				if let Some((hash, object, verified_from_start)) =
-					Self::_fetch_object_by_sequence(&tx, actor_address, sequence + 1)?
+					Self::_fetch_object_by_sequence_old(&tx, actor_address, sequence + 1)?
 				{
 					Ok(Some((hash, object, verified_from_start)))
 				} else {
@@ -1972,7 +2047,7 @@ impl Connection {
 	pub fn fetch_my_identity(
 		&self, address: &ActorAddress,
 	) -> Result<Option<(String, ActorPrivateKeyV1)>> {
-		let mut stat = self.0.prepare(
+		let mut stat = self.old.prepare(
 			r#"
 			SELECT label, private_key FROM my_identity AS mi LEFT JOIN identity AS i
 			WHERE i.address = ?
@@ -1992,7 +2067,7 @@ impl Connection {
 	pub fn fetch_my_identity_by_label(
 		&self, label: &str,
 	) -> Result<Option<(ActorAddress, ActorPrivateKeyV1)>> {
-		let mut stat = self.0.prepare(
+		let mut stat = self.old.prepare(
 			r#"
 			SELECT i.address, mi.private_key
 			FROM my_identity AS mi LEFT JOIN identity AS i ON mi.identity_id = i.id
@@ -2013,7 +2088,7 @@ impl Connection {
 	pub fn fetch_my_identities(
 		&self,
 	) -> Result<Vec<(String, ActorAddress, IdType, String, ActorPrivateKeyV1)>> {
-		let mut stat = self.0.prepare(
+		let mut stat = self.old.prepare(
 			r#"
 			SELECT label, i.address, i.first_object, i.type, mi.private_key
 			FROM my_identity AS mi
@@ -2034,7 +2109,7 @@ impl Connection {
 	}
 
 	pub fn fetch_node_identity(&mut self) -> Result<(IdType, NodePrivateKey)> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 
 		let result = {
 			let mut stat = tx.prepare(
@@ -2150,7 +2225,7 @@ impl Connection {
 	}
 
 	pub fn follow(&mut self, actor_id: &ActorAddress, actor_info: &ActorInfo) -> Result<()> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 
 		let identity_id = {
 			let mut stat = tx.prepare(
@@ -2242,7 +2317,7 @@ impl Connection {
 	}
 
 	pub fn is_identity_available(&self, address: &ActorAddress) -> rusqlite::Result<bool> {
-		let mut stat = self.0.prepare(
+		let mut stat = self.old.prepare(
 			r#"
 			SELECT address FROM identity AS i
 			WHERE address = ? AND id IN (
@@ -2269,42 +2344,9 @@ impl Connection {
 		Ok(rows.next()?.is_some())
 	}
 
-	/*pub fn load_file<'a>(
-		&'a mut self, hash: &IdType,
-	) -> Result<Option<(String, FileLoader<'a>)>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT f.rowid, f.mime_type, f.block_count
-			FROM file AS f
-			WHERE f.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query([hash])?;
-		if let Some(row) = rows.next()? {
-			let file_id: i64 = row.get(0)?;
-			let mime_type = row.get(1)?;
-			let block_count = row.get(2)?;
-
-			let stat = Box::pin(self.prepare(
-				r#"
-				SELECT fb.sequence, b.size, b.data
-				FROM file AS f
-				LEFT JOIN file_blocks AS fb ON fb.file_id = f.rowid
-				LEFT JOIN block AS b ON fb.block_hash = b.hash
-				WHERE f.rowid = ?
-			"#,
-			)?);
-			let fl = FileLoader::new(stat, file_id, block_count)?;
-
-			Ok(Some((mime_type, fl)))
-		} else {
-			Ok(None)
-		}
-	}*/
-
 	/// Returns the lastest object sequence for an actor if available.
 	pub fn max_object_sequence(&self, actor_id: i64) -> Result<Option<u64>> {
-		let mut stat = self.0.prepare(
+		let mut stat = self.old.prepare(
 			r#"
 			SELECT MAX(sequence) FROM object WHERE actor_id = ?
 		"#,
@@ -2324,13 +2366,30 @@ impl Connection {
 		}
 	}
 
-	pub fn open(path: &Path) -> rusqlite::Result<Self> {
-		let x = rusqlite::Connection::open(&path)?;
+	pub async fn open(path: &Path) -> self::Result<Self> {
+		let old_connection = rusqlite::Connection::open(&path)?;
+		let new_connection =
+			sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", path.display()))
+				.await
+				.map_err(|e| self::Error::OrmError(e))?;
+		Ok(Self {
+			old: old_connection,
+			inner: Some(new_connection),
+			backend: DatabaseBackend::Sqlite,
+		})
+	}
+
+	pub fn open_old(path: &Path) -> rusqlite::Result<Self> {
+		let c = rusqlite::Connection::open(&path)?;
 		// For some reason foreign key checks are not working properly on windows, so
 		// disable it for now.
 		#[cfg(target_family = "windows")]
-		x.pragma_update(None, "foreign_keys", false)?;
-		Ok(Self(x))
+		c.pragma_update(None, "foreign_keys", false)?;
+		Ok(Self {
+			old: c,
+			inner: None,
+			backend: DatabaseBackend::Sqlite,
+		})
 	}
 
 	pub fn store_block(&mut self, hash: &IdType, data: &[u8]) -> Result<()> {
@@ -2381,7 +2440,7 @@ impl Connection {
 		&mut self, label: &str, address: &IdType, private_key: &NodePrivateKey,
 		first_object: &IdType,
 	) -> rusqlite::Result<()> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 
 		let mut stat = tx.prepare(
 			r#"
@@ -2420,7 +2479,7 @@ impl Connection {
 	pub fn store_object(
 		&mut self, actor_id: &ActorAddress, id: &IdType, object: &Object, verified_from_start: bool,
 	) -> self::Result<bool> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 		let _object_id = match Self::_store_object(&tx, actor_id, id, object, verified_from_start) {
 			Ok(id) => id,
 			// Just return false if the object already existed
@@ -2442,7 +2501,7 @@ impl Connection {
 	}
 
 	pub fn fetch_bootstrap_node_id(&mut self, address: &SocketAddr) -> Result<Option<IdType>> {
-		let mut stat = self.0.prepare(
+		let mut stat = self.old.prepare(
 			r#"
 			SELECT node_id FROM bootstrap_id WHERE address = ?
 		"#,
@@ -2459,7 +2518,7 @@ impl Connection {
 	pub fn remember_bootstrap_node_id(
 		&mut self, address: &SocketAddr, node_id: &IdType,
 	) -> Result<bool> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 		let updated = tx.execute(
 			"UPDATE bootstrap_id SET node_id = ? WHERE address = ?",
 			params![node_id, address.to_string()],
@@ -2475,7 +2534,7 @@ impl Connection {
 	}
 
 	pub fn remember_node(&mut self, address: &SocketAddr, node_id: &IdType) -> Result<()> {
-		let tx = self.0.transaction()?;
+		let tx = self.old.transaction()?;
 
 		let mut stat = tx.prepare(
 			r#"
@@ -2500,8 +2559,17 @@ impl Connection {
 		Ok(())
 	}
 
+	pub async fn transaction(&self) -> Result<Transaction> {
+		let tx = self.inner.as_ref().unwrap().begin().await?;
+		Ok(Transaction(tx))
+	}
+
+	pub fn transaction_old(&mut self) -> Result<rusqlite::Transaction<'_>> {
+		Ok(self.old.transaction()?)
+	}
+
 	pub fn unfollow(&mut self, actor_id: &ActorAddress) -> Result<bool> {
-		let affected = self.0.execute(
+		let affected = self.old.execute(
 			r#"
 			DELETE FROM following WHERE identity_id = (
 				SELECT id FROM identity WHERE address = ?
@@ -2515,7 +2583,7 @@ impl Connection {
 	pub fn update_object_verified(
 		&mut self, actor_address: &ActorAddress, object_id: &IdType,
 	) -> Result<()> {
-		self.0.execute(
+		self.old.execute(
 			r#"
 			UPDATE object SET verified_from_start = 1
 			WHERE hash = ? AND identity_id = (
@@ -2528,20 +2596,33 @@ impl Connection {
 	}
 }
 
+impl PersistenceFunc for Connection {
+	type Inner = sea_orm::DatabaseConnection;
+
+	fn handle(&self) -> &Self::Inner { self.inner.as_ref().unwrap() }
+}
+
+impl PersistenceFunc for Transaction {
+	type Inner = sea_orm::DatabaseTransaction;
+
+	fn handle(&self) -> &Self::Inner { &self.0 }
+}
+
 impl Deref for Connection {
 	type Target = rusqlite::Connection;
 
-	fn deref(&self) -> &Self::Target { &self.0 }
+	fn deref(&self) -> &Self::Target { &self.old }
 }
 
 impl DerefMut for Connection {
-	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.old }
 }
 
 impl fmt::Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
 			Self::SqliteError(e) => write!(f, "{}", e),
+			Self::OrmError(e) => write!(f, "{}", e),
 			Self::ActorAddress(e) => write!(f, "invalid actor address format: {}", e),
 			Self::InvalidHash(e) => {
 				write!(f, "hash not a valid base58-encoded 32-byte address {}", e)
@@ -2581,6 +2662,10 @@ impl From<rusqlite::Error> for Traced<Error> {
 	fn from(other: rusqlite::Error) -> Self { Error::SqliteError(other).trace() }
 }
 
+impl From<sea_orm::DbErr> for Traced<Error> {
+	fn from(other: sea_orm::DbErr) -> Self { Error::OrmError(other).trace() }
+}
+
 impl From<NodeSignatureError> for Error {
 	fn from(other: NodeSignatureError) -> Self { Self::InvalidSignature(other) }
 }
@@ -2595,6 +2680,13 @@ impl From<NodePublicKeyError> for Error {
 
 impl IdFromBase58Error {
 	fn to_db(self) -> Error { Error::InvalidHash(self) }
+}
+
+impl Transaction {
+	pub async fn commit(self) -> Result<()> {
+		self.0.commit().await?;
+		Ok(())
+	}
 }
 
 
@@ -2622,10 +2714,10 @@ mod tests {
 	use crate::test;
 	#[tokio::test]
 	async fn test_file_data() {
-		let (db, _) = test::load_database("db").await;
+		let db = test::load_database("db").await;
 
 		let mut rng = test::initialize_rng();
-		let mut c = db.connect().expect("unable to connect to database");
+		let mut c = db.connect_old().expect("unable to connect to database");
 
 		let mut file_data1 = FileData {
 			mime_type: "image/png".to_string(),
