@@ -236,7 +236,7 @@ Hoi ik ben Kees!
 	// Load posts
 	debug!("Loading home feed.");
 	let home_feed = tokio::task::block_in_place(|| {
-		let mut c = node2.old_db.connect().expect("unable to open database");
+		let mut c = node2.db.connect_old().expect("unable to open database");
 		c.fetch_home_feed(6, 0).expect("unable to fetch home feed")
 	});
 	assert_eq!(home_feed.len(), 5 + test_notifications as usize);
@@ -272,7 +272,7 @@ Hoi ik ben Kees!
 					.original_post
 					.as_ref()
 					.expect("share is missing original post");
-				assert_eq!(original_post.actor_address, actor_id);
+				assert_eq!(original_post.actor_address, actor_id.to_string());
 				assert_eq!(
 					original_post
 						.message

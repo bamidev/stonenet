@@ -3,13 +3,10 @@ use std::fmt::Display;
 
 use async_trait::async_trait;
 use log::info;
-use sea_orm::{
-	prelude::*, sea_query::*, DatabaseBackend, DatabaseConnection, DatabaseTransaction, Statement,
-	TransactionTrait,
-};
+use sea_orm::{prelude::*, sea_query::*, DatabaseBackend, Statement};
 
 use crate::{
-	db::{self, PersistenceFunc},
+	db::{self, PersistenceHandle},
 	trace,
 };
 

@@ -107,25 +107,25 @@ struct CreateActivityType;
 
 #[derive(Serialize)]
 struct ObjectDocument {
-    #[serde(rename(serialize = "@context"), default)]
+	#[serde(rename(serialize = "@context"), default)]
 	context: ActivityPubDocumentContext,
-    r#type: &'static str,
-    id: String,
-    actor: String,
-    object: ObjectDocumentObject,
+	r#type: &'static str,
+	id: String,
+	actor: String,
+	object: ObjectDocumentObject,
 	published: String,
 }
 
 #[allow(non_snake_case)]
 #[derive(Serialize)]
 struct ObjectDocumentObject {
-    id: String,
-    r#type: &'static str,
-    published: String,
-    attributedTo: String,
-    inReplyTo: String,
-    content: String,
-    to: &'static str
+	id: String,
+	r#type: &'static str,
+	published: String,
+	attributedTo: String,
+	inReplyTo: String,
+	content: String,
+	to: &'static str,
 }
 
 #[allow(non_snake_case)]
@@ -136,13 +136,13 @@ struct OrderedCollection {
 	summary: String,
 	r#type: &'static str,
 	totalItems: usize,
-	orderedItems: Vec<serde_json::Value>
+	orderedItems: Vec<serde_json::Value>,
 }
 
-#[derive(Serialize)]	
+#[derive(Serialize)]
 struct WebFingerDocument {
 	subject: String,
-    aliases: Vec<String>,
+	aliases: Vec<String>,
 	links: Vec<WebFingerDocumentLink>,
 }
 
@@ -162,9 +162,7 @@ impl WebFingerDocument {
 	fn new(url_base: &str, type_: &str, address: &Address) -> Self {
 		Self {
 			subject: format!("acct:{}", address),
-            aliases: vec![
-                format!("{}/{}/{}", url_base, type_, address)
-            ],
+			aliases: vec![format!("{}/{}/{}", url_base, type_, address)],
 			links: vec![
 				WebFingerDocumentLink {
 					rel: "self",
@@ -210,12 +208,21 @@ impl ActorDocument {
 	}
 }
 
+impl Serialize for CreateActivityType {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		serializer.serialize_str("Create")
+	}
+}
+
 
 pub async fn webfinger(
 	State(g): State<Arc<Global>>, Query(params): Query<HashMap<String, String>>,
 ) -> Response {
 	if let Some(resource) = params.get("resource") {
-        // TODO: Parse resource string from the form of: acct:hash@domain.name
+		// TODO: Parse resource string from the form of: acct:hash@domain.name
 
 		let address = match Address::from_str(resource) {
 			Err(e) => return server_error_response(e, "invalid address"),
@@ -223,7 +230,7 @@ pub async fn webfinger(
 		};
 
 		let webfinger = match &address {
-			Address::Actor(actor_address) => match g.api.db.connect() {
+			Address::Actor(actor_address) => match g.api.db.connect_old() {
 				Err(e) => return server_error_response(e, "DB issue"),
 				Ok(c) => {
 					let result = match c.fetch_identity(actor_address) {
@@ -241,7 +248,7 @@ pub async fn webfinger(
 			Address::Node(_) => WebFingerDocument::new(&g.server_info.url_base, "node", &address),
 		};
 
-		json_response(&webfinger)
+		json_response(&webfinger, Some("application/activity+json"))
 	} else {
 		server_error_response2("Missing parameter \"resource\".")
 	}
@@ -250,7 +257,7 @@ pub async fn webfinger(
 pub async fn actor_activitypub(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
-	let profile = match g.api.db.connect() {
+	let profile = match g.api.db.connect_old() {
 		Err(e) => return server_error_response(e, "DB issue"),
 		Ok(c) => c.fetch_profile_info(&address).unwrap().unwrap(),
 	};

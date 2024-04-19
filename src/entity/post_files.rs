@@ -22,6 +22,14 @@ pub enum Relation {
 		on_delete = "NoAction"
 	)]
 	Object,
+	#[sea_orm(
+		belongs_to = "super::file::Entity",
+		from = "Column::Hash",
+		to = "super::file::Column::Hash",
+		on_update = "NoAction",
+		on_delete = "NoAction"
+	)]
+	File,
 }
 
 impl Related<super::object::Entity> for Entity {

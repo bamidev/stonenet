@@ -16,7 +16,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::{
 	common::*,
 	core::*,
-	db::{self, PersistenceFunc},
+	db::{self, PersistenceHandle},
 	identity::*,
 	net::{actor::ActorNode, binserde, message::*, overlay::OverlayNode},
 };
@@ -135,6 +135,7 @@ impl Api {
 		let object_payload = ObjectPayload::Share(share.clone());
 		let created = Utc::now().timestamp_millis();
 
+		// TODO: Create a seperate db function that merely finds the hash of the object, not the whole object.
 		let previous_object = tx
 			.find_object_by_sequence(identity, next_object_sequence - 1)
 			.await?;
@@ -148,6 +149,7 @@ impl Api {
 		);
 
 		// Insert the object record
+		// TODO: Move this into module `db`:
 		let result = object::Entity::insert(object::ActiveModel {
 			id: NotSet,
 			actor_id: Set(identity_record.id),

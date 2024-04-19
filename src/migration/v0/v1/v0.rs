@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sea_orm::{prelude::*, sea_query::*, DatabaseBackend, DatabaseTransaction, Schema, Statement};
 
 use crate::{
-	db::{self, PersistenceFunc},
+	db::{self, PersistenceHandle},
 	migration::MigrationTrait,
 	trace,
 };

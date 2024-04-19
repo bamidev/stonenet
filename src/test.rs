@@ -3,7 +3,6 @@ use std::sync::{atomic::AtomicBool, Arc};
 use log::*;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use sea_orm::DatabaseConnection;
 use tempfile::NamedTempFile;
 
 use crate::{

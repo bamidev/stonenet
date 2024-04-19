@@ -34,6 +34,8 @@ pub enum Relation {
 	Identity,
 	#[sea_orm(has_many = "super::post_object::Entity")]
 	PostObject,
+	#[sea_orm(has_many = "super::profile_object::Entity")]
+	ProfileObject,
 }
 
 impl Related<super::boost_object::Entity> for Entity {

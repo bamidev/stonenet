@@ -21,15 +21,19 @@ use rusqlite::{
 	Rows, ToSql,
 };
 use sea_orm::{
-	ActiveValue::*, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseTransaction, DbErr,
-	EntityOrSelect, EntityTrait, QueryFilter, QuerySelect, QueryTrait, TransactionTrait,
+	prelude::*, sea_query::*, ColumnTrait, Condition, ConnectionTrait, DatabaseBackend, EntityName,
+	EntityTrait, JoinType, QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait,
+	Statement, TransactionTrait,
 };
 use thiserror::Error;
 
 use crate::{
 	common::*,
 	core::*,
-	entity::{boost_object, identity, object},
+	entity::{
+		block, file, file_blocks, following, identity, my_identity, object, post_files,
+		post_object, profile_object,
+	},
 	identity::*,
 	net::binserde,
 	trace::{self, Traceable, Traced},
@@ -77,7 +81,7 @@ pub enum Error {
 }
 
 #[derive(Default, Serialize)]
-pub struct BoostObjectInfo {
+pub struct ShareObjectInfo {
 	pub original_post: Option<TargetedPostInfo>,
 }
 
@@ -104,7 +108,7 @@ pub struct TargetedPostInfo {
 	pub actor_address: String,
 	pub actor_name: Option<String>,
 	pub actor_avatar: Option<IdType>,
-	pub sequence: u64,
+	//pub sequence: u64,
 	pub message: Option<(String, String)>,
 	pub attachments: Vec<PossiblyKnownFileHeader>,
 }
@@ -143,7 +147,7 @@ pub struct ObjectInfo {
 #[derive(Serialize)]
 pub enum ObjectPayloadInfo {
 	Post(PostObjectInfo),
-	Share(BoostObjectInfo),
+	Share(ShareObjectInfo),
 	Profile(ProfileObjectInfo),
 }
 
@@ -151,11 +155,137 @@ pub type Result<T> = trace::Result<T, self::Error>;
 
 
 #[async_trait]
-pub trait PersistenceFunc {
+pub trait PersistenceHandle {
 	type Inner: ConnectionTrait;
 
 	fn handle(&self) -> &Self::Inner;
 
+	async fn find_home_feed(&self, limit: u64, offset: u64) -> Result<Vec<ObjectInfo>> {
+		let query = object::Entity::find()
+			.join(JoinType::LeftJoin, object::Relation::Identity.def())
+			.filter(
+				Condition::any()
+					.add(
+						object::Column::ActorId.in_subquery(
+							Query::select()
+								.columns([my_identity::Column::IdentityId])
+								.from(Alias::new(my_identity::Entity::default().table_name()))
+								.take(),
+						),
+					)
+					.add(
+						object::Column::ActorId.in_subquery(
+							Query::select()
+								.columns([my_identity::Column::IdentityId])
+								.from(Alias::new(following::Entity::default().table_name()))
+								.take(),
+						),
+					),
+			)
+			.build(self.handle().get_database_backend());
+
+		let results = self.handle().query_all(query).await?;
+		let objects = Vec::with_capacity(limit as _);
+		for result in &results {
+			if let Some(object) = self._load_object_info_from_result(result).await? {
+				objects.push(object);
+			}
+		}
+		Ok(objects)
+	}
+
+	async fn find_actor_feed(
+		&self, identity_id: i64, limit: u64, offset: u64,
+	) -> Result<Vec<ObjectInfo>> {
+		let query = object::Entity::find()
+			.column(object::Column::Id)
+			.column(object::Column::Type)
+			.column(object::Column::ActorId)
+			.column(object::Column::Hash)
+			.column(object::Column::Created)
+			.column(object::Column::Found)
+			.column(identity::Column::Address)
+			.join(JoinType::LeftJoin, object::Relation::Identity.def())
+			.filter(object::Column::ActorId.eq(identity_id))
+			.order_by(object::Column::Sequence, Order::Desc)
+			.limit(limit)
+			.offset(offset)
+			.build(self.handle().get_database_backend());
+
+		let results = self.handle().query_all(query).await?;
+		let objects = Vec::with_capacity(limit as _);
+		for result in &results {
+			if let Some(object) = self._load_object_info_from_result(result).await? {
+				objects.push(object);
+			}
+		}
+		Ok(objects)
+	}
+
+	async fn find_file_data(
+		&self, file_id: i64, plain_hash: &IdType, block_count: u64,
+	) -> Result<Option<Vec<u8>>> {
+		let query = file_blocks::Entity::find()
+			.column(file_blocks::Column::BlockHash)
+			.column(file_blocks::Column::Sequence)
+			.column(block::Column::Id)
+			.column(block::Column::Size)
+			.column(block::Column::Data)
+			.join(
+				JoinType::LeftJoin,
+				file_blocks::Entity::belongs_to(block::Entity)
+					.from(file_blocks::Column::BlockHash)
+					.to(block::Column::Hash)
+					.into(),
+			)
+			.filter(file_blocks::Column::FileId.eq(file_id))
+			.order_by(file_blocks::Column::Sequence, Order::Asc)
+			.build(self.handle().get_database_backend());
+
+		let results = self.handle().query_all(query).await?;
+		if results.len() == 0 {
+			return Ok(None);
+		}
+
+		let capacity = if block_count == 1 {
+			0
+		} else {
+			block_count as usize * BLOCK_SIZE
+		};
+		let mut buffer = Vec::with_capacity(capacity);
+		let mut i = 0;
+		for r in results {
+			let sequence: i64 = r.try_get_by_index(1)?;
+			if sequence != i {
+				Err(Error::FileMissingBlock(file_id, sequence as _))?;
+			}
+			let block_id_opt: Option<i64> = r.try_get_by_index(2)?;
+			if let Some(block_id) = block_id_opt {
+				let size: i64 = r.try_get_by_index(3)?;
+				let data: Vec<u8> = r.try_get_by_index(4)?;
+
+				data.resize(size as _, 0);
+				if (data.len() as i64) < size {
+					Err(Error::BlockDataCorrupt(block_id))?;
+				} else if (data.len() as i64) > size {
+					warn!(
+						"Block {} has more data than its size: {} > {}",
+						block_id,
+						data.len(),
+						size
+					);
+				}
+
+				decrypt_block(i as _, plain_hash, &mut data);
+				buffer.extend(&data);
+				i += 1;
+			} else {
+				Err(Error::FileMissingBlock(file_id, sequence as _))?;
+			}
+		}
+
+		Ok(Some(buffer))
+	}
 
 	async fn find_next_object_sequence(&self, identity_id: i64) -> Result<u64> {
 		let stat = object::Entity::find()
@@ -178,6 +308,342 @@ pub trait PersistenceFunc {
 			.filter(object::Column::Sequence.eq(sequence))
 			.one(self.handle())
 			.await?)
+	}
+
+	async fn find_object_payload_info(
+		&self, object_id: i64, object_type: u8,
+	) -> Result<Option<ObjectPayloadInfo>> {
+		Ok(match object_type {
+			OBJECT_TYPE_POST => self
+				.find_post_object_info(object_id)
+				.await?
+				.map(|r| ObjectPayloadInfo::Post(r)),
+			OBJECT_TYPE_SHARE => self
+				.find_share_object_info(object_id)
+				.await?
+				.map(|r| ObjectPayloadInfo::Share(r)),
+			OBJECT_TYPE_PROFILE => self
+				.find_profile_object_info(object_id)
+				.await?
+				.map(|r| ObjectPayloadInfo::Profile(r)),
+		})
+	}
+
+	async fn find_profile_object_info(&self, object_id: i64) -> Result<Option<ProfileObjectInfo>> {
+		let result = self
+			.handle()
+			.query_one(Statement::from_sql_and_values(
+				self.handle().get_database_backend(),
+				r#"
+			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
+			       df.plain_hash, df.block_count
+			FROM profile_object AS po
+			LEFT JOIN object AS o ON po.object_id = o.id
+			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN file AS df ON po.description_file_hash = df.hash
+			WHERE o.id = ?
+		"#,
+				[object_id.into()],
+			))
+			.await?;
+
+		if let Some(row) = result {
+			let actor_address: ActorAddress = row.try_get_by_index(0)?;
+			let actor_name: String = row.try_get_by_index(1)?;
+			let avatar_id: Option<IdType> = row.try_get_by_index(2)?;
+			let wallpaper_id: Option<IdType> = row.try_get_by_index(3)?;
+			let description_id: Option<i64> = row.try_get_by_index(4)?;
+			let description_plain_hash: Option<IdType> = row.try_get_by_index(5)?;
+			let description_block_count: Option<i64> = row.try_get_by_index(6)?;
+
+			let description = if let Some(file_id) = description_id {
+				self.find_file_data(
+					file_id,
+					&description_plain_hash.unwrap(),
+					description_block_count.unwrap() as _,
+				)
+				.await?
+			} else {
+				None
+			};
+			Ok(Some(ProfileObjectInfo {
+				actor: TargetedActorInfo {
+					address: actor_address.to_string(),
+					name: actor_name,
+					avatar_id,
+					wallpaper_id,
+				},
+				description: description.map(|b| String::from_utf8_lossy(&b).to_string()),
+			}))
+		} else {
+			Ok(None)
+		}
+	}
+
+	async fn find_share_object_info(&self, object_id: i64) -> Result<Option<ShareObjectInfo>> {
+		let result = self
+			.handle()
+			.query_one(Statement::from_sql_and_values(
+				self.handle().get_database_backend(),
+				r#"
+			SELECT bo.actor_address, bi.id, to_.id
+			FROM object AS o
+			LEFT JOIN boost_object AS bo ON bo.object_id = o.id
+			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN identity AS bi ON bo.actor_address = bi.address
+			LEFT JOIN object AS to_ ON to_.hash = bo.object_hash
+			WHERE o.id = ?
+		"#,
+				[object_id.into()],
+			))
+			.await?;
+
+		if let Some(row) = result {
+			let actor_address: ActorAddress = row.try_get_by_index(0)?;
+			let target_actor_id_opt: Option<i64> = row.try_get_by_index(1)?;
+			let target_object_id_opt: Option<i64> = row.try_get_by_index(2)?;
+
+			if let Some(target_object_id) = target_object_id_opt {
+				let (actor_name, actor_avatar) = if let Some(target_actor_id) = target_actor_id_opt
+				{
+					self.find_profile_limited(target_actor_id).await?
+				} else {
+					(None, None)
+				};
+				let mut share_object = ShareObjectInfo::default();
+				if let Some((mime_type, body, attachments)) =
+					self.find_post_object_info_files(target_object_id).await?
+				{
+					share_object.original_post = Some(TargetedPostInfo {
+						actor_address: actor_address.to_string(),
+						actor_name,
+						actor_avatar,
+						message: Some((mime_type, body)),
+						attachments,
+					})
+				} else {
+					share_object.original_post = Some(TargetedPostInfo {
+						actor_address: actor_address.to_string(),
+						actor_name,
+						actor_avatar,
+						message: None,
+						attachments: Vec::new(),
+					})
+				};
+				Ok(Some(share_object))
+			} else {
+				Ok(None)
+			}
+		} else {
+			Ok(None)
+		}
+	}
+
+	/// Finds the mime-type, text content & attachments for the given post
+	/// object respectively.
+	async fn find_post_object_info_files(
+		&self, object_id: i64,
+	) -> Result<Option<(String, String, Vec<PossiblyKnownFileHeader>)>> {
+		fn file_query<F>(backend: DatabaseBackend, object_id: i64, condition: F) -> Statement
+		where
+			F: IntoCondition,
+		{
+			file::Entity::find()
+				.column(post_files::Column::Hash)
+				.column(file::Column::Id)
+				.column(file::Column::PlainHash)
+				.column(file::Column::MimeType)
+				.column(file::Column::BlockCount)
+				.join(
+					JoinType::LeftJoin,
+					post_files::Entity::belongs_to(file::Entity)
+						.from(post_files::Column::Hash)
+						.to(file::Column::Hash)
+						.into(),
+				)
+				.filter(post_files::Column::PostId.eq(object_id))
+				.filter(condition)
+				.order_by(post_files::Column::Sequence, Order::Asc)
+				.build(backend)
+		}
+
+		let query = post_object::Entity::find()
+			.column(post_object::Column::FileCount)
+			.filter(post_object::Column::ObjectId.eq(object_id))
+			.build(self.handle().get_database_backend());
+		let result = self.handle().query_one(query).await?;
+
+		if let Some(r) = result {
+			let file_count: i64 = r.try_get_by_index(0)?;
+
+			let query = file_query(
+				self.handle().get_database_backend(),
+				object_id,
+				post_files::Column::Sequence.eq(0),
+			);
+			if let Some(row) = self.handle().query_one(query).await? {
+				let file_hash: IdType = row.try_get_by_index(0)?;
+				let file_id_opt: Option<i64> = row.try_get_by_index(1)?;
+				if let Some(file_id) = file_id_opt {
+					let plain_hash: IdType = row.try_get_by_index(2)?;
+					let mime_type: String = row.try_get_by_index(3)?;
+					let block_count: u64 = row.try_get_by_index(4)?;
+
+					let body_opt =
+						match self.find_file_data(file_id, &plain_hash, block_count).await {
+							Ok(message_data_opt) =>
+								message_data_opt.map(|md| String::from_utf8_lossy(&md).to_string()),
+							Err(e) => match &*e {
+								// If a block is still missing from the message data file, don't
+								// actually raise an error, just leave the message data unset.
+								Error::FileMissingBlock(..) => None,
+								_ => return Err(e),
+							},
+						};
+
+					if let Some(body) = body_opt {
+						// Collect the files
+						let mut attachments = Vec::with_capacity(file_count as _);
+						let query = file_query(
+							self.handle().get_database_backend(),
+							object_id,
+							post_files::Column::Sequence.gt(0),
+						);
+						let results = self.handle().query_all(query).await?;
+						for row in results {
+							let hash: IdType = row.try_get_by_index(0)?;
+							let mime_type_opt: Option<String> = row.try_get_by_index(3)?;
+							let attachment = if let Some(mime_type) = mime_type_opt {
+								let block_count: u32 = row.try_get_by_index(4)?;
+
+								PossiblyKnownFileHeader::Known(FileHeader {
+									hash,
+									mime_type,
+									block_count,
+								})
+							} else {
+								PossiblyKnownFileHeader::Unknown(hash)
+							};
+							attachments.push(attachment);
+						}
+
+						return Ok(Some((mime_type, body, attachments)));
+					}
+				}
+			}
+		}
+		Ok(None)
+	}
+
+	/// Finds `PostObjectInfo` for the given `object_id`.
+	async fn find_post_object_info(&self, object_id: i64) -> Result<Option<PostObjectInfo>> {
+		let result = self
+			.handle()
+			.query_one(Statement::from_sql_and_values(
+				self.handle().get_database_backend(),
+				r#"
+			SELECT o.actor_id, o.sequence, ti.id, ti.address, tpo.object_id,
+			FROM post_object AS po
+			INNER JOIN object AS o ON po.object_id = o.id
+			INNER JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN identity AS ti ON po.in_reply_to_actor_address = ti.address
+			LEFT JOIN object AS to_ ON to_.actor_id = ti.id
+				AND to_.hash = po.in_reply_to_object_hash
+			LEFT JOIN post_object as tpo ON tpo.object_id = to_.id
+			WHERE po.object_id = ?
+		"#,
+				[object_id.into()],
+			))
+			.await?;
+
+		if let Some(r) = result {
+			let actor_id: i64 = r.try_get_by_index(0)?;
+			let object_sequence: i64 = r.try_get_by_index(1)?;
+			let irt_actor_rowid: Option<i64> = r.try_get_by_index(2)?;
+			let irt_actor_address_opt: Option<ActorAddress> = r.try_get_by_index(3)?;
+			let irt_object_id_opt: Option<i64> = r.try_get_by_index(4)?;
+
+			let in_reply_to = match irt_object_id_opt {
+				None => None,
+				Some(irt_object_id) => {
+					let (irt_actor_name, irt_actor_avatar_id) = match irt_actor_rowid {
+						None => (None, None),
+						Some(id) => self.find_profile_limited(object_id).await?,
+					};
+					let irt_message_opt = self.find_post_object_info_files(irt_object_id).await?;
+					Some(TargetedPostInfo {
+						actor_address: irt_actor_address_opt.unwrap().to_string(),
+						actor_name: irt_actor_name,
+						actor_avatar: irt_actor_avatar_id,
+						message: irt_message_opt.map(|(mt, b, _)| (mt, b)),
+						attachments: irt_message_opt.map(|(_, _, a)| a).unwrap_or(Vec::new()),
+					})
+				}
+			};
+
+			let message_opt = self.find_post_object_info_files(object_id).await?;
+			Ok(Some(PostObjectInfo {
+				in_reply_to,
+				sequence: object_sequence as _,
+				mime_type: message_opt.as_ref().map(|o| o.0.clone()),
+				message: message_opt.as_ref().map(|(_, b, _)| b.clone()),
+				attachments: message_opt.map(|(_, _, a)| a).unwrap_or(Vec::new()),
+			}))
+		} else {
+			Ok(None)
+		}
+	}
+
+	/// Finds the mime-type and avatar file hash of the latest known profile
+	/// object for the given `actor_id`.
+	async fn find_profile_limited(
+		&self, actor_id: i64,
+	) -> Result<(Option<String>, Option<IdType>)> {
+		let query = profile_object::Entity::find()
+			.column(profile_object::Column::Name)
+			.column(profile_object::Column::AvatarFileHash)
+			.join(JoinType::InnerJoin, profile_object::Relation::Object.def())
+			.filter(object::Column::ActorId.eq(actor_id))
+			.order_by(profile_object::Column::ObjectId, Order::Desc)
+			.limit(1)
+			.build(self.handle().get_database_backend());
+
+		let result = self.handle().query_one(query).await?;
+		let values = if let Some(r) = result {
+			let name: String = r.try_get_by_index(0)?;
+			let avatar_id: Option<IdType> = r.try_get_by_index(1)?;
+			(Some(name), avatar_id)
+		} else {
+			(None, None)
+		};
+		Ok(values)
+	}
+
+	async fn _load_object_info_from_result(
+		&self, result: &sea_orm::QueryResult,
+	) -> Result<Option<ObjectInfo>> {
+		let object_id: i64 = result.try_get_by_index(0)?;
+		let object_type: u8 = result.try_get_by_index(1)?;
+		let actor_id: i64 = result.try_get_by_index(2)?;
+		let payload_result = self
+			.find_object_payload_info(object_id, object_type)
+			.await?;
+
+		if let Some(payload) = payload_result {
+			let (actor_name, actor_avatar) = self.find_profile_limited(actor_id).await?;
+
+			Ok(Some(ObjectInfo {
+				hash: result.try_get_by_index(3)?,
+				created: result.try_get_by_index(4)?,
+				found: result.try_get_by_index(5)?,
+				actor_address: result.try_get_by_index(6)?,
+				actor_name,
+				actor_avatar,
+				payload,
+			}))
+		} else {
+			Ok(None)
+		}
 	}
 }
 
@@ -662,7 +1128,7 @@ impl Connection {
 
 	pub fn _fetch_boost_object_info(
 		this: &impl DerefConnection, actor_id: i64, sequence: u64,
-	) -> Result<Option<BoostObjectInfo>> {
+	) -> Result<Option<ShareObjectInfo>> {
 		let mut stat = this.prepare(
 			r#"
 			SELECT bo.actor_address, bi.id, to_.id
@@ -681,7 +1147,7 @@ impl Connection {
 			let target_actor_id_opt: Option<i64> = row.get(1)?;
 			let target_object_id_opt: Option<i64> = row.get(2)?;
 
-			let mut boost_object = BoostObjectInfo::default();
+			let mut boost_object = ShareObjectInfo::default();
 			if let Some(target_object_id) = target_object_id_opt {
 				let (actor_name, actor_avatar) = if let Some(target_actor_id) = target_actor_id_opt
 				{
@@ -695,7 +1161,6 @@ impl Connection {
 					actor_address: actor_address.to_string(),
 					actor_name,
 					actor_avatar,
-					sequence,
 					message,
 					attachments,
 				});
@@ -839,7 +1304,7 @@ impl Connection {
 			let irt_actor_rowid: Option<i64> = row.get(2)?;
 			let irt_actor_address_opt: Option<ActorAddress> = row.get(3)?;
 			let irt_object_id_opt: Option<i64> = row.get(4)?;
-			let irt_sequence: Option<u64> = row.get(5)?;
+			//let irt_sequence: Option<u64> = row.get(5)?;
 
 			let in_reply_to = match irt_object_id_opt {
 				None => None,
@@ -854,7 +1319,6 @@ impl Connection {
 						actor_address: irt_actor_address_opt.unwrap().to_string(),
 						actor_name: irt_actor_name,
 						actor_avatar: irt_actor_avatar_id,
-						sequence: irt_sequence.unwrap(),
 						message: irt_message_opt,
 						attachments: irt_attachments,
 					})
@@ -2596,13 +3060,13 @@ impl Connection {
 	}
 }
 
-impl PersistenceFunc for Connection {
+impl PersistenceHandle for Connection {
 	type Inner = sea_orm::DatabaseConnection;
 
 	fn handle(&self) -> &Self::Inner { self.inner.as_ref().unwrap() }
 }
 
-impl PersistenceFunc for Transaction {
+impl PersistenceHandle for Transaction {
 	type Inner = sea_orm::DatabaseTransaction;
 
 	fn handle(&self) -> &Self::Inner { &self.0 }

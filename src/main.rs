@@ -297,6 +297,7 @@ async fn main() {
 		if config.load_web_interface.unwrap_or(false) {
 			let server_info = web::ServerInfo {
 				is_exposed: true,
+				url_base: config.url_base.clone().unwrap_or(String::new()),
 				update_message: None,
 			};
 			web::spawn(
@@ -310,19 +311,18 @@ async fn main() {
 			.unwrap();
 		}
 		if config.load_user_interface.unwrap_or(false) {
+			let port = config.user_interface_port.unwrap_or(37338);
 			let server_info = web::ServerInfo {
 				is_exposed: false,
+				url_base: config
+					.url_base
+					.clone()
+					.unwrap_or(format!("http://localhost:{}", port)),
 				update_message,
 			};
-			web::spawn(
-				stop_flag.clone(),
-				config.user_interface_port.unwrap_or(37338),
-				None,
-				api.clone(),
-				server_info,
-			)
-			.await
-			.unwrap();
+			web::spawn(stop_flag.clone(), port, None, api.clone(), server_info)
+				.await
+				.unwrap();
 		}
 
 		// Run the main loop, until it exits because of a signal
