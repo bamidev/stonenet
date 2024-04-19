@@ -301,13 +301,21 @@ pub trait PersistenceHandle {
 	}
 
 	async fn find_object_by_sequence(
-		&self, actor_id: &ActorAddress, sequence: u64,
+		&self, actor_address: &ActorAddress, sequence: u64,
 	) -> Result<Option<object::Model>> {
-		Ok(object::Entity::find()
-			.filter(object::Column::ActorId.eq(actor_id))
-			.filter(object::Column::Sequence.eq(sequence))
+		if let Some(actor) = identity::Entity::find()
+			.filter(identity::Column::Address.eq(actor_address))
 			.one(self.handle())
-			.await?)
+			.await?
+		{
+			Ok(object::Entity::find()
+				.filter(object::Column::ActorId.eq(actor.id))
+				.filter(object::Column::Sequence.eq(sequence))
+				.one(self.handle())
+				.await?)
+		} else {
+			Ok(None)
+		}
 	}
 
 	async fn find_object_payload_info(
