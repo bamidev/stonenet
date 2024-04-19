@@ -28,6 +28,14 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 			"/:actor-address/activity-pub",
 			get(activity_pub::actor_activitypub),
 		)
+		/*.route(
+			"/:actor-address/activity-pub/inbox",
+			get(activity_pub::actor_activitypub_inbox),
+		)*/
+		.route(
+			"/:actor-address/activity-pub/outbox",
+			get(activity_pub::actor_activitypub_outbox),
+		)
 		.nest("/:actor-address/file", file::router(g.clone()))
 		.nest("/:actor-address/object", object::router(g.clone()))
 		.route_layer(from_fn_with_state(g, actor_middleware))

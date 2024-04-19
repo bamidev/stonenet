@@ -3,7 +3,7 @@
 
 mod install;
 
-use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, sync::{Mutex, MutexGuard}};
+use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
 
 use ::serde::Serialize;
 use async_trait::async_trait;
@@ -196,7 +196,7 @@ pub trait PersistenceHandle {
 	}
 
 	async fn load_actor_feed(
-		&self, identity_id: i64, limit: u64, offset: u64,
+		&self, actor: &ActorAddress, limit: u64, offset: u64,
 	) -> Result<Vec<ObjectInfo>> {
 		let query = object::Entity::find()
 			.column(object::Column::Id)
@@ -205,9 +205,8 @@ pub trait PersistenceHandle {
 			.column(object::Column::Hash)
 			.column(object::Column::Created)
 			.column(object::Column::Found)
-			.column(identity::Column::Address)
 			.join(JoinType::LeftJoin, object::Relation::Identity.def())
-			.filter(object::Column::ActorId.eq(identity_id))
+			.filter(identity::Column::Address.eq(actor))
 			.order_by(object::Column::Sequence, Order::Desc)
 			.limit(limit)
 			.offset(offset)
@@ -327,7 +326,7 @@ pub trait PersistenceHandle {
 				.find_profile_object_info(object_id)
 				.await?
 				.map(|r| ObjectPayloadInfo::Profile(r)),
-			other => panic!("unknown object type")
+			other => panic!("unknown object type"),
 		})
 	}
 
@@ -1746,8 +1745,8 @@ impl Connection {
 	}
 
 	pub(crate) fn _store_file(
-		tx: &impl Deref<Target = rusqlite::Connection>, id: &IdType, plain_hash: &IdType, mime_type: &str,
-		blocks: &[IdType],
+		tx: &impl Deref<Target = rusqlite::Connection>, id: &IdType, plain_hash: &IdType,
+		mime_type: &str, blocks: &[IdType],
 	) -> Result<i64> {
 		debug_assert!(blocks.len() <= u32::MAX as usize, "too many blocks");
 		debug_assert!(blocks.len() > 0, "file must have at least one block");
@@ -2832,13 +2831,9 @@ impl Connection {
 		}
 	}
 
-	pub fn old(&self) -> &rusqlite::Connection {
-		&self.old.0
-	}
+	pub fn old(&self) -> &rusqlite::Connection { &self.old.0 }
 
-	pub fn old_mut(&mut self) -> &mut rusqlite::Connection {
-		&mut self.old.0
-	}
+	pub fn old_mut(&mut self) -> &mut rusqlite::Connection { &mut self.old.0 }
 
 	pub async fn open(path: &Path) -> self::Result<Self> {
 		let old_connection = rusqlite::Connection::open(&path)?;
@@ -2860,7 +2855,7 @@ impl Connection {
 		#[cfg(target_family = "windows")]
 		c.pragma_update(None, "foreign_keys", false)?;
 		Ok(Self {
-			old: c,
+			old: UnsafeSendSync::new(c),
 			inner: None,
 			backend: DatabaseBackend::Sqlite,
 		})

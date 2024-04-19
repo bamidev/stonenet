@@ -135,7 +135,8 @@ impl Api {
 		let object_payload = ObjectPayload::Share(share.clone());
 		let created = Utc::now().timestamp_millis();
 
-		// TODO: Create a seperate db function that merely finds the hash of the object, not the whole object.
+		// TODO: Create a seperate db function that merely finds the hash of the object,
+		// not the whole object.
 		let previous_object = tx
 			.find_object_by_sequence(identity, next_object_sequence - 1)
 			.await?;

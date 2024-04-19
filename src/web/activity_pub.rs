@@ -64,7 +64,7 @@ struct Activity {
 	r#type: CreateActivityType,
 	id: String,
 	actor: String,
-	object: serde_json::Value,
+	object: String,
 	published: String,
 }
 
@@ -133,11 +133,13 @@ struct ObjectDocumentObject {
 struct OrderedCollection {
 	#[serde(rename(serialize = "@context"), default)]
 	context: ActivityPubDocumentContext,
-	summary: String,
-	r#type: &'static str,
+	summary: &'static str,
+	r#type: OrderedCollectionType,
 	totalItems: usize,
 	orderedItems: Vec<serde_json::Value>,
 }
+
+struct OrderedCollectionType;
 
 #[derive(Serialize)]
 struct WebFingerDocument {
@@ -158,23 +160,21 @@ impl Default for ActivityPubDocumentContext {
 	fn default() -> Self { DEFAULT_CONTEXT }
 }
 
-impl WebFingerDocument {
-	fn new(url_base: &str, type_: &str, address: &Address) -> Self {
+impl Activity {
+	pub fn new(url_base: &str, actor: &ActorAddress, object_hash: &IdType, created: u64) -> Self {
 		Self {
-			subject: format!("acct:{}", address),
-			aliases: vec![format!("{}/{}/{}", url_base, type_, address)],
-			links: vec![
-				WebFingerDocumentLink {
-					rel: "self",
-					r#type: "application/activity+json",
-					href: format!("{}/{}/{}/activity-pub", url_base, type_, address),
-				},
-				WebFingerDocumentLink {
-					rel: "http://webfinger.net/rel/profile-page",
-					r#type: "text/html",
-					href: format!("{}/{}/{}", url_base, type_, address),
-				},
-			],
+			context: ActivityPubDocumentContext::default(),
+			r#type: CreateActivityType,
+			id: format!(
+				"{}/actor/{}/object/{}/activity-pub/activity",
+				url_base, &actor, &object_hash
+			),
+			actor: format!("{}/actor/{}/activity-pub", url_base, &actor),
+			object: format!(
+				"{}/actor/{}/object/{}/activity-pub",
+				url_base, &actor, &object_hash
+			),
+			published: created.to_string(),
 		}
 	}
 }
@@ -192,7 +192,7 @@ impl ActorDocument {
 			r#type: "Person",
 			name,
 			preferredUsername: address.to_string(),
-			inbox: format!("{}/inbox", url_base),
+			inbox: format!("{}/actor/{}/activity-pub/inbox", url_base, address),
 			outbox: format!("{}/actor/{}/activity-pub/outbox", url_base, address),
 			publicKey: ActorDocumentPublicKey {
 				id: format!("{}#main-key", &id),
@@ -214,6 +214,36 @@ impl Serialize for CreateActivityType {
 		S: Serializer,
 	{
 		serializer.serialize_str("Create")
+	}
+}
+
+impl Serialize for OrderedCollectionType {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		serializer.serialize_str("OrderedCollection")
+	}
+}
+
+impl WebFingerDocument {
+	fn new(url_base: &str, type_: &str, address: &Address) -> Self {
+		Self {
+			subject: format!("acct:{}", address),
+			aliases: vec![format!("{}/{}/{}", url_base, type_, address)],
+			links: vec![
+				WebFingerDocumentLink {
+					rel: "self",
+					r#type: "application/activity+json",
+					href: format!("{}/{}/{}/activity-pub", url_base, type_, address),
+				},
+				WebFingerDocumentLink {
+					rel: "http://webfinger.net/rel/profile-page",
+					r#type: "text/html",
+					href: format!("{}/{}/{}", url_base, type_, address),
+				},
+			],
+		}
 	}
 }
 
@@ -276,18 +306,28 @@ pub async fn actor_activitypub(
 pub async fn actor_activitypub_outbox(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
-	let profile = match g.api.db.connect().await {
+	let objects = match g.api.db.connect().await {
 		Err(e) => return server_error_response(e, "DB issue"),
-		Ok(c) => c.load_actor_feed(10, 0).await.unwrap(),
+		Ok(c) => c.load_actor_feed(&address, 10, 0).await.unwrap(),
 	};
 
-	let description = profile.description.clone().unwrap_or_default();
-	let actor = ActorDocument::new(
-		&g.server_info.url_base,
-		&address,
-		profile.actor.name,
-		profile.actor.avatar_id.as_ref(),
-		description,
-	);
-	json_response(&actor, Some("application/activity+json"))
+	let feed = OrderedCollection {
+		context: ActivityPubDocumentContext::default(),
+		summary: "Actor Feed",
+		r#type: OrderedCollectionType,
+		totalItems: objects.len(),
+		orderedItems: objects
+			.iter()
+			.map(|object| {
+				serde_json::to_value(Activity::new(
+					&g.server_info.url_base,
+					&address,
+					&object.hash,
+					object.created,
+				))
+				.unwrap()
+			})
+			.collect(),
+	};
+	json_response(&feed, Some("application/activity+json"))
 }
