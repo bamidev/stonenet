@@ -3,7 +3,7 @@
 
 mod install;
 
-use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
+use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, sync::{Mutex, MutexGuard}};
 
 use ::serde::Serialize;
 use async_trait::async_trait;
@@ -26,6 +26,7 @@ use sea_orm::{
 	Statement, TransactionTrait,
 };
 use thiserror::Error;
+use unsafe_send_sync::UnsafeSendSync;
 
 use crate::{
 	common::*,
@@ -52,7 +53,7 @@ pub struct Connection {
 	// The documentation of rusqlite mentions that the Connection struct does
 	// not need a mutex, that it is already thread-safe. For some reason it was
 	// not marked as Send and Sync.
-	old: rusqlite::Connection,
+	old: UnsafeSendSync<rusqlite::Connection>,
 	inner: Option<sea_orm::DatabaseConnection>,
 	backend: DatabaseBackend,
 }
@@ -97,7 +98,7 @@ pub struct TargetedActorInfo {
 }
 
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub enum PossiblyKnownFileHeader {
 	Unknown(IdType),
 	Known(FileHeader),
@@ -185,7 +186,7 @@ pub trait PersistenceHandle {
 			.build(self.handle().get_database_backend());
 
 		let results = self.handle().query_all(query).await?;
-		let objects = Vec::with_capacity(limit as _);
+		let mut objects = Vec::with_capacity(limit as _);
 		for result in &results {
 			if let Some(object) = self._load_object_info_from_result(result).await? {
 				objects.push(object);
@@ -194,7 +195,7 @@ pub trait PersistenceHandle {
 		Ok(objects)
 	}
 
-	async fn find_actor_feed(
+	async fn load_actor_feed(
 		&self, identity_id: i64, limit: u64, offset: u64,
 	) -> Result<Vec<ObjectInfo>> {
 		let query = object::Entity::find()
@@ -213,7 +214,7 @@ pub trait PersistenceHandle {
 			.build(self.handle().get_database_backend());
 
 		let results = self.handle().query_all(query).await?;
-		let objects = Vec::with_capacity(limit as _);
+		let mut objects = Vec::with_capacity(limit as _);
 		for result in &results {
 			if let Some(object) = self._load_object_info_from_result(result).await? {
 				objects.push(object);
@@ -262,7 +263,7 @@ pub trait PersistenceHandle {
 			let block_id_opt: Option<i64> = r.try_get_by_index(2)?;
 			if let Some(block_id) = block_id_opt {
 				let size: i64 = r.try_get_by_index(3)?;
-				let data: Vec<u8> = r.try_get_by_index(4)?;
+				let mut data: Vec<u8> = r.try_get_by_index(4)?;
 
 				data.resize(size as _, 0);
 				if (data.len() as i64) < size {
@@ -326,6 +327,7 @@ pub trait PersistenceHandle {
 				.find_profile_object_info(object_id)
 				.await?
 				.map(|r| ObjectPayloadInfo::Profile(r)),
+			other => panic!("unknown object type")
 		})
 	}
 
@@ -575,7 +577,7 @@ pub trait PersistenceHandle {
 						actor_address: irt_actor_address_opt.unwrap().to_string(),
 						actor_name: irt_actor_name,
 						actor_avatar: irt_actor_avatar_id,
-						message: irt_message_opt.map(|(mt, b, _)| (mt, b)),
+						message: irt_message_opt.clone().map(|(mt, b, _)| (mt, b)),
 						attachments: irt_message_opt.map(|(_, _, a)| a).unwrap_or(Vec::new()),
 					})
 				}
@@ -1082,7 +1084,7 @@ impl Connection {
 	}
 
 	/*pub fn _fetch_post_files(&self, post_id: i64) -> Result<Vec<FileHeader>> {
-		let mut stat = self.old.prepare(
+		let mut stat = self.old().prepare(
 			r#"
 			SELECT hash, mime_type, block_count FROM file WHERE post_id = ?
 		"#,
@@ -1744,7 +1746,7 @@ impl Connection {
 	}
 
 	pub(crate) fn _store_file(
-		tx: &impl DerefConnection, id: &IdType, plain_hash: &IdType, mime_type: &str,
+		tx: &impl Deref<Target = rusqlite::Connection>, id: &IdType, plain_hash: &IdType, mime_type: &str,
 		blocks: &[IdType],
 	) -> Result<i64> {
 		debug_assert!(blocks.len() <= u32::MAX as usize, "too many blocks");
@@ -2830,6 +2832,14 @@ impl Connection {
 		}
 	}
 
+	pub fn old(&self) -> &rusqlite::Connection {
+		&self.old.0
+	}
+
+	pub fn old_mut(&mut self) -> &mut rusqlite::Connection {
+		&mut self.old.0
+	}
+
 	pub async fn open(path: &Path) -> self::Result<Self> {
 		let old_connection = rusqlite::Connection::open(&path)?;
 		let new_connection =
@@ -2837,7 +2847,7 @@ impl Connection {
 				.await
 				.map_err(|e| self::Error::OrmError(e))?;
 		Ok(Self {
-			old: old_connection,
+			old: UnsafeSendSync::new(old_connection),
 			inner: Some(new_connection),
 			backend: DatabaseBackend::Sqlite,
 		})
@@ -3075,11 +3085,11 @@ impl PersistenceHandle for Transaction {
 impl Deref for Connection {
 	type Target = rusqlite::Connection;
 
-	fn deref(&self) -> &Self::Target { &self.old }
+	fn deref(&self) -> &Self::Target { self.old() }
 }
 
 impl DerefMut for Connection {
-	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.old }
+	fn deref_mut(&mut self) -> &mut Self::Target { self.old_mut() }
 }
 
 impl fmt::Display for Error {

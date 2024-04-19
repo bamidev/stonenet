@@ -10,7 +10,7 @@ use tera::Context;
 
 use super::*;
 use crate::{
-	db::PersistenceFunc,
+	db::PersistenceHandle,
 	entity::{identity, Identity},
 };
 

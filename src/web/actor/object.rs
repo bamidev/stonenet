@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{extract::*, middleware::*, response::Response, routing::*, *};
 use sea_orm::*;
 
-use self::db::PersistenceFunc;
+use self::db::PersistenceHandle;
 use crate::{
 	entity::{object, Object},
 	web::*,

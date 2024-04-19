@@ -8,7 +8,7 @@ use axum::{
 use serde::*;
 
 use super::{common::*, ActorAddress, Address, IdType};
-use crate::web::Global;
+use crate::{db::PersistenceHandle, web::Global};
 
 
 const DEFAULT_CONTEXT: ActivityPubDocumentContext = ActivityPubDocumentContext(&[
@@ -276,9 +276,9 @@ pub async fn actor_activitypub(
 pub async fn actor_activitypub_outbox(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
-	let profile = match g.api.db.connect() {
+	let profile = match g.api.db.connect().await {
 		Err(e) => return server_error_response(e, "DB issue"),
-		Ok(c) => c.fetch_actor_feed(10, 0),
+		Ok(c) => c.load_actor_feed(10, 0).await.unwrap(),
 	};
 
 	let description = profile.description.clone().unwrap_or_default();
