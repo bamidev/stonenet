@@ -1,7 +1,7 @@
 pub mod block;
 pub mod boost_object;
-pub mod file_blocks;
 pub mod file;
+pub mod file_blocks;
 pub mod identity;
 pub mod object;
 pub mod post_files;

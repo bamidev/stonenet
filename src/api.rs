@@ -119,8 +119,8 @@ impl Api {
 	}
 
 	pub async fn create_share(
-		&self, connection: &db::Connection, identity: &ActorAddress,
-		private_key: &ActorPrivateKeyV1, share: &ShareObject,
+		&self, connection: &db::Database, identity: &ActorAddress, private_key: &ActorPrivateKeyV1,
+		share: &ShareObject,
 	) -> db::Result<(i64, IdType, Object)> {
 		let tx = connection.transaction().await?;
 
@@ -593,8 +593,7 @@ impl Api {
 	) -> db::Result<IdType> {
 		// Store the share object
 		let (_, hash, object) = {
-			let connection = self.db.connect().await?;
-			self.create_share(&connection, identity, private_key, object)
+			self.create_share(&self.db, identity, private_key, object)
 				.await?
 		};
 

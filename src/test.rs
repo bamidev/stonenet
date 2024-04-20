@@ -18,10 +18,11 @@ pub fn initialize_rng() -> ChaCha8Rng {
 
 pub async fn load_database(filename: &str) -> Database {
 	let temp_file = NamedTempFile::with_prefix(filename).unwrap();
-	let db = Database::load(temp_file.path().to_owned()).expect("unable to load database");
-	let connection = db.connect().await.unwrap();
+	let db = Database::load(temp_file.path().to_owned())
+		.await
+		.expect("unable to load database");
 	let migrations = Migrations::load();
-	migrations.run(&connection).await.expect("migration issue");
+	migrations.run(&db).await.expect("migration issue");
 	// Leak it on purpose so that the temp file may live until the end of all tests
 	// FIXME: However, the OS will not clean it up after exit either...
 	Box::into_raw(Box::new(temp_file));

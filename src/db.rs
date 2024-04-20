@@ -21,9 +21,8 @@ use rusqlite::{
 	Rows, ToSql,
 };
 use sea_orm::{
-	prelude::*, sea_query::*, ColumnTrait, ConnectionTrait, DatabaseBackend,
-	EntityTrait, JoinType, QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait,
-	Statement, TransactionTrait,
+	prelude::*, sea_query::*, ColumnTrait, ConnectionTrait, DatabaseBackend, EntityTrait, JoinType,
+	QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait, Statement, TransactionTrait,
 };
 use thiserror::Error;
 use unsafe_send_sync::UnsafeSendSync;
@@ -31,10 +30,7 @@ use unsafe_send_sync::UnsafeSendSync;
 use crate::{
 	common::*,
 	core::*,
-	entity::{
-		block, file, file_blocks, identity, object, post_files,
-		post_object, profile_object,
-	},
+	entity::{block, file, file_blocks, identity, object, post_files, post_object, profile_object},
 	identity::*,
 	net::binserde,
 	trace::{self, Traceable, Traced},
@@ -47,14 +43,15 @@ pub(crate) const BLOCK_SIZE: usize = 0x100000; // 1 MiB
 #[derive(Clone)]
 pub struct Database {
 	path: PathBuf,
+	orm: DatabaseConnection,
 }
 
+#[deprecated]
 pub struct Connection {
 	// The documentation of rusqlite mentions that the Connection struct does
 	// not need a mutex, that it is already thread-safe. For some reason it was
 	// not marked as Send and Sync.
 	old: UnsafeSendSync<rusqlite::Connection>,
-	inner: Option<sea_orm::DatabaseConnection>,
 	backend: DatabaseBackend,
 }
 
@@ -159,9 +156,9 @@ pub type Result<T> = trace::Result<T, self::Error>;
 pub trait PersistenceHandle {
 	type Inner: ConnectionTrait;
 
-	fn handle(&self) -> &Self::Inner;
+	fn inner(&self) -> &Self::Inner;
 
-	fn backend(&self) -> DatabaseBackend { self.handle().get_database_backend() }
+	fn backend(&self) -> DatabaseBackend { self.inner().get_database_backend() }
 
 	/*async fn find_home_feed(&self, limit: u64, offset: u64) -> Result<Vec<ObjectInfo>> {
 		let query = object::Entity::find()
@@ -208,15 +205,19 @@ pub trait PersistenceHandle {
 			.column(object::Column::Created)
 			.column(object::Column::Found)
 			.from(object::Entity)
-			.inner_join(identity::Entity, Expr::col((object::Entity, object::Column::ActorId)).equals((identity::Entity, identity::Column::Id)))
+			.inner_join(
+				identity::Entity,
+				Expr::col((object::Entity, object::Column::ActorId))
+					.equals((identity::Entity, identity::Column::Id)),
+			)
 			.and_where(identity::Column::Address.eq(actor))
 			.order_by(object::Column::Sequence, Order::Desc)
 			.limit(limit)
 			.offset(offset)
 			.take();
-		let stat = self.handle().get_database_backend().build(&query);
+		let stat = self.inner().get_database_backend().build(&query);
 
-		let results = self.handle().query_all(stat).await?;
+		let results = self.inner().query_all(stat).await?;
 		let mut objects = Vec::with_capacity(limit as _);
 		for result in &results {
 			if let Some(object) = self._load_object_info_from_result(actor, result).await? {
@@ -227,11 +228,9 @@ pub trait PersistenceHandle {
 	}
 
 	async fn find_file_data(
-		&self, file_id: i64, plain_hash: &IdType, block_count: u64,
+		&self, file_id: i64, plain_hash: &IdType, block_count: u32,
 	) -> Result<Option<Vec<u8>>> {
 		let query = file_blocks::Entity::find()
-			.column(file_blocks::Column::BlockHash)
-			.column(file_blocks::Column::Sequence)
 			.column(block::Column::Id)
 			.column(block::Column::Size)
 			.column(block::Column::Data)
@@ -244,9 +243,9 @@ pub trait PersistenceHandle {
 			)
 			.filter(file_blocks::Column::FileId.eq(file_id))
 			.order_by(file_blocks::Column::Sequence, Order::Asc)
-			.build(self.handle().get_database_backend());
+			.build(self.inner().get_database_backend());
 
-		let results = self.handle().query_all(query).await?;
+		let results = self.inner().query_all(query).await?;
 		if results.len() == 0 {
 			return Ok(None);
 		}
@@ -259,14 +258,14 @@ pub trait PersistenceHandle {
 		let mut buffer = Vec::with_capacity(capacity);
 		let mut i = 0;
 		for r in results {
-			let sequence: i64 = r.try_get_by_index(1)?;
+			let sequence: i64 = r.try_get_by(file_blocks::Column::Sequence.as_str())?;
 			if sequence != i {
 				Err(Error::FileMissingBlock(file_id, sequence as _))?;
 			}
-			let block_id_opt: Option<i64> = r.try_get_by_index(2)?;
+			let block_id_opt: Option<i64> = r.try_get_by(block::Column::Id.as_str())?;
 			if let Some(block_id) = block_id_opt {
-				let size: i64 = r.try_get_by_index(3)?;
-				let mut data: Vec<u8> = r.try_get_by_index(4)?;
+				let size: i64 = r.try_get_by(block::Column::Size.as_str())?;
+				let mut data: Vec<u8> = r.try_get_by(block::Column::Data.as_str())?;
 
 				data.resize(size as _, 0);
 				if (data.len() as i64) < size {
@@ -297,7 +296,7 @@ pub trait PersistenceHandle {
 			.filter(object::Column::ActorId.eq(identity_id))
 			.build(DatabaseBackend::Sqlite);
 
-		if let Some(result) = self.handle().query_one(stat).await? {
+		if let Some(result) = self.inner().query_one(stat).await? {
 			Ok(result.try_get_by_index::<i64>(0)? as u64)
 		} else {
 			Ok(0)
@@ -309,13 +308,13 @@ pub trait PersistenceHandle {
 	) -> Result<Option<object::Model>> {
 		if let Some(actor) = identity::Entity::find()
 			.filter(identity::Column::Address.eq(actor_address))
-			.one(self.handle())
+			.one(self.inner())
 			.await?
 		{
 			Ok(object::Entity::find()
 				.filter(object::Column::ActorId.eq(actor.id))
 				.filter(object::Column::Sequence.eq(sequence))
-				.one(self.handle())
+				.one(self.inner())
 				.await?)
 		} else {
 			Ok(None)
@@ -344,9 +343,9 @@ pub trait PersistenceHandle {
 
 	async fn find_profile_object_info(&self, object_id: i64) -> Result<Option<ProfileObjectInfo>> {
 		let result = self
-			.handle()
+			.inner()
 			.query_one(Statement::from_sql_and_values(
-				self.handle().get_database_backend(),
+				self.inner().get_database_backend(),
 				r#"
 			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
 			       df.plain_hash, df.block_count
@@ -395,9 +394,9 @@ pub trait PersistenceHandle {
 
 	async fn find_share_object_info(&self, object_id: i64) -> Result<Option<ShareObjectInfo>> {
 		let result = self
-			.handle()
+			.inner()
 			.query_one(Statement::from_sql_and_values(
-				self.handle().get_database_backend(),
+				self.inner().get_database_backend(),
 				r#"
 			SELECT bo.actor_address, bi.id, to_.id
 			FROM object AS o
@@ -483,24 +482,25 @@ pub trait PersistenceHandle {
 
 		let query = post_object::Entity::find()
 			.filter(post_object::Column::ObjectId.eq(object_id))
-			.build(self.handle().get_database_backend());
-		let result = self.handle().query_one(query).await?;
+			.build(self.inner().get_database_backend());
+		let result = self.inner().query_one(query).await?;
 
 		if let Some(r) = result {
 			let file_count: i64 = r.try_get_by("file_count")?;
 
 			let query = file_query(
-				self.handle().get_database_backend(),
+				self.inner().get_database_backend(),
 				object_id,
 				post_files::Column::Sequence.eq(0),
-			); panic!("XXX {}", file::Column::Id.as_str());
-			if let Some(row) = self.handle().query_one(query).await? {
+			);
+			if let Some(row) = self.inner().query_one(query).await? {
 				let file_hash: IdType = row.try_get_by(file::Column::Hash.as_str())?;
-				let file_id_opt: Option<i64> = row.try_get_by(post_files::Column::ObjectId.as_str())?;
+				let file_id_opt: Option<i64> =
+					row.try_get_by(post_files::Column::ObjectId.as_str())?;
 				if let Some(file_id) = file_id_opt {
 					let plain_hash: IdType = row.try_get_by(file::Column::PlainHash.as_str())?;
 					let mime_type: String = row.try_get_by(file::Column::MimeType.as_str())?;
-					let block_count: u64 = row.try_get_by(file::Column::BlockCount.as_str())?;
+					let block_count: u32 = row.try_get_by(file::Column::BlockCount.as_str())?;
 
 					let body_opt =
 						match self.find_file_data(file_id, &plain_hash, block_count).await {
@@ -518,11 +518,11 @@ pub trait PersistenceHandle {
 						// Collect the files
 						let mut attachments = Vec::with_capacity(file_count as _);
 						let query = file_query(
-							self.handle().get_database_backend(),
+							self.inner().get_database_backend(),
 							object_id,
 							post_files::Column::Sequence.gt(0),
 						);
-						let results = self.handle().query_all(query).await?;
+						let results = self.inner().query_all(query).await?;
 						for row in results {
 							let hash: IdType = row.try_get_by_index(0)?;
 							let mime_type_opt: Option<String> = row.try_get_by_index(3)?;
@@ -551,9 +551,9 @@ pub trait PersistenceHandle {
 	/// Finds `PostObjectInfo` for the given `object_id`.
 	async fn find_post_object_info(&self, object_id: i64) -> Result<Option<PostObjectInfo>> {
 		let result = self
-			.handle()
+			.inner()
 			.query_one(Statement::from_sql_and_values(
-				self.handle().get_database_backend(),
+				self.inner().get_database_backend(),
 				r#"
 			SELECT o.actor_id, o.sequence, ti.id, ti.address, tpo.object_id
 			FROM post_object AS po
@@ -617,12 +617,13 @@ pub trait PersistenceHandle {
 			.filter(object::Column::ActorId.eq(actor_id))
 			.order_by(profile_object::Column::ObjectId, Order::Desc)
 			.limit(1)
-			.build(self.handle().get_database_backend());
+			.build(self.inner().get_database_backend());
 
-		let result = self.handle().query_one(query).await?;
+		let result = self.inner().query_one(query).await?;
 		let values = if let Some(r) = result {
 			let name: String = r.try_get_by(profile_object::Column::Name.as_str())?;
-			let avatar_hash: Option<IdType> = r.try_get_by(profile_object::Column::AvatarFileHash.as_str())?;
+			let avatar_hash: Option<IdType> =
+				r.try_get_by(profile_object::Column::AvatarFileHash.as_str())?;
 			(Some(name), avatar_hash)
 		} else {
 			(None, None)
@@ -643,10 +644,12 @@ pub trait PersistenceHandle {
 		if let Some(payload) = payload_result {
 			let (actor_name, actor_avatar) = self.find_profile_limited(actor_id).await?;
 
+			let created: i64 = result.try_get_by("created")?;
+			let found: i64 = result.try_get_by("found")?;
 			Ok(Some(ObjectInfo {
 				hash: result.try_get_by("hash")?,
-				created: result.try_get_by("created")?,
-				found: result.try_get_by("found")?,
+				created: created as _,
+				found: found as _,
 				actor_address: actor_address.clone(),
 				actor_name,
 				actor_avatar,
@@ -783,17 +786,13 @@ impl Database {
 		})
 	}
 
-	pub async fn connect(&self) -> self::Result<Connection> {
-		Ok(Connection::open(&self.path).await?)
-	}
-
 	fn install(conn: &Connection) -> Result<()> { Ok(conn.execute_batch(install::QUERY)?) }
 
 	fn is_outdated(major: u8, minor: u16, patch: u16) -> bool {
 		major < DATABASE_VERSION.0 || minor < DATABASE_VERSION.1 || patch < DATABASE_VERSION.2
 	}
 
-	pub fn load(path: PathBuf) -> Result<Self> {
+	pub async fn load(path: PathBuf) -> Result<Self> {
 		let connection = Connection::open_old(&path).map_err(|e| Error::SqliteError(e))?;
 
 		match connection.prepare("SELECT major, minor FROM version") {
@@ -815,7 +814,16 @@ impl Database {
 			},
 		}
 
-		Ok(Self { path })
+		let orm = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", path.display()))
+			.await
+			.map_err(|e| self::Error::OrmError(e))?;
+
+		Ok(Self { path, orm })
+	}
+
+	pub async fn transaction(&self) -> Result<Transaction> {
+		let tx = self.orm.begin().await?;
+		Ok(Transaction(tx))
 	}
 
 	fn upgrade(_conn: &rusqlite::Connection) {
@@ -2847,13 +2855,8 @@ impl Connection {
 
 	pub async fn open(path: &Path) -> self::Result<Self> {
 		let old_connection = rusqlite::Connection::open(&path)?;
-		let new_connection =
-			sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", path.display()))
-				.await
-				.map_err(|e| self::Error::OrmError(e))?;
 		Ok(Self {
 			old: UnsafeSendSync::new(old_connection),
-			inner: Some(new_connection),
 			backend: DatabaseBackend::Sqlite,
 		})
 	}
@@ -2866,7 +2869,6 @@ impl Connection {
 		c.pragma_update(None, "foreign_keys", false)?;
 		Ok(Self {
 			old: UnsafeSendSync::new(c),
-			inner: None,
 			backend: DatabaseBackend::Sqlite,
 		})
 	}
@@ -3038,11 +3040,6 @@ impl Connection {
 		Ok(())
 	}
 
-	pub async fn transaction(&self) -> Result<Transaction> {
-		let tx = self.inner.as_ref().unwrap().begin().await?;
-		Ok(Transaction(tx))
-	}
-
 	pub fn transaction_old(&mut self) -> Result<rusqlite::Transaction<'_>> {
 		Ok(self.old.transaction()?)
 	}
@@ -3075,16 +3072,16 @@ impl Connection {
 	}
 }
 
-impl PersistenceHandle for Connection {
+impl PersistenceHandle for Database {
 	type Inner = sea_orm::DatabaseConnection;
 
-	fn handle(&self) -> &Self::Inner { self.inner.as_ref().unwrap() }
+	fn inner(&self) -> &Self::Inner { &self.orm }
 }
 
 impl PersistenceHandle for Transaction {
 	type Inner = sea_orm::DatabaseTransaction;
 
-	fn handle(&self) -> &Self::Inner { &self.0 }
+	fn inner(&self) -> &Self::Inner { &self.0 }
 }
 
 impl Deref for Connection {

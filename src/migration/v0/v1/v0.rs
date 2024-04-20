@@ -6,7 +6,7 @@ use sea_orm::{prelude::*, sea_query::*, Schema};
 
 use crate::{
 	db::{self, PersistenceHandle},
-	migration::{MigrationTrait, util::*},
+	migration::{util::*, MigrationTrait},
 };
 
 
@@ -21,21 +21,21 @@ impl MigrationTrait for Migration {
 		let schema = Schema::new(tx.backend());
 
 		// Drop unused tables
-		tx.handle()
+		tx.inner()
 			.execute_unprepared("DROP TABLE move_object")
 			.await?;
-		tx.handle()
+		tx.inner()
 			.execute_unprepared("DROP TABLE remembered_actor_nodes")
 			.await?;
 
 		// Point the post_id columns to the object id now
-		tx.handle()
+		tx.inner()
 			.execute_unprepared(
 				"UPDATE post_files SET post_id = (SELECT object_id FROM post_object WHERE rowid = \
 				 post_files.post_id)",
 			)
 			.await?;
-		tx.handle()
+		tx.inner()
 			.execute_unprepared(
 				"UPDATE post_tag SET post_id = (SELECT object_id FROM post_object WHERE rowid = \
 				 post_tag.post_id)",

@@ -48,12 +48,12 @@ impl Migrations {
 		Self {
 			list: vec![
 				(Version::new(0, 1, 0), Box::new(v0::v1::v0::Migration)),
-				(Version::new(0, 2, 0), Box::new(v0::v2::v0::Migration))
+				(Version::new(0, 2, 0), Box::new(v0::v2::v0::Migration)),
 			],
 		}
 	}
 
-	async fn load_version(&self, connection: &db::Connection) -> db::Result<Version> {
+	async fn load_version(&self, connection: &db::Database) -> db::Result<Version> {
 		let q = Query::select()
 			.from(Alias::new("version"))
 			.column(Alias::new("major"))
@@ -62,7 +62,7 @@ impl Migrations {
 			.to_owned();
 		let (sql, values) = q.build(SqliteQueryBuilder);
 		let r = connection
-			.handle()
+			.inner()
 			.query_one(Statement::from_sql_and_values(
 				DatabaseBackend::Sqlite,
 				sql,
@@ -76,7 +76,9 @@ impl Migrations {
 		Ok(Version::new(major, minor, patch))
 	}
 
-	async fn store_version(&self, tx: &db::Transaction, version: &Version) -> db::Result<()> {
+	async fn store_version(
+		&self, tx: &impl PersistenceHandle, version: &Version,
+	) -> db::Result<()> {
 		let q = Query::update()
 			.table(Alias::new("version"))
 			.values([
@@ -87,7 +89,7 @@ impl Migrations {
 			.to_owned();
 		let (sql, values) = q.build(SqliteQueryBuilder);
 		let _ = tx
-			.handle()
+			.inner()
 			.execute(Statement::from_sql_and_values(
 				DatabaseBackend::Sqlite,
 				sql,
@@ -97,10 +99,10 @@ impl Migrations {
 		Ok(())
 	}
 
-	pub async fn run(&self, connection: &db::Connection) -> db::Result<()> {
+	pub async fn run(&self, connection: &db::Database) -> db::Result<()> {
 		// Stop foreign key errors
 		connection
-			.handle()
+			.inner()
 			.execute_unprepared("PRAGMA foreign_keys=off")
 			.await?;
 
@@ -126,7 +128,7 @@ impl Migrations {
 			"not migrated to latest version"
 		);
 		connection
-			.handle()
+			.inner()
 			.execute_unprepared("PRAGMA foreign_keys=on")
 			.await?;
 		Ok(())

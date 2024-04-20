@@ -170,6 +170,7 @@ async fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Dat
 		PathBuf::from_str(&config.database_path)
 			.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
 	)
+	.await
 	.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 	Ok(db)
 }
@@ -268,8 +269,7 @@ async fn main() {
 		// Run migrations (does nothing if there is nothing to migrate)
 		{
 			let migrations = Migrations::load();
-			let connection = db.connect().await.expect("database connection issue");
-			migrations.run(&connection).await.expect("migration issue");
+			migrations.run(&db).await.expect("migration issue");
 		}
 
 		// Load node
