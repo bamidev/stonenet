@@ -9,10 +9,7 @@ use serde::Deserialize;
 use tera::Context;
 
 use super::*;
-use crate::{
-	db::PersistenceHandle,
-	entity::identity,
-};
+use crate::{db::PersistenceHandle, entity::identity};
 
 
 #[derive(Deserialize)]
@@ -26,7 +23,7 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 		.route("/:actor-address", get(actor_get).post(actor_post))
 		.route(
 			"/:actor-address/activity-pub",
-			get(activity_pub::actor_activitypub),
+			get(activity_pub::actor),
 		)
 		/*.route(
 			"/:actor-address/activity-pub/inbox",
@@ -34,7 +31,7 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 		)*/
 		.route(
 			"/:actor-address/activity-pub/outbox",
-			get(activity_pub::actor_activitypub_outbox),
+			get(activity_pub::actor_outbox),
 		)
 		.nest("/:actor-address/file", file::router(g.clone()))
 		.nest("/:actor-address/object", object::router(g.clone()))
@@ -59,10 +56,9 @@ async fn actor_middleware(
 	}
 
 	{
-		let connection = g.api.db.connect().await.unwrap();
 		match identity::Entity::find()
 			.filter(identity::Column::Address.contains(hash))
-			.one(connection.handle())
+			.one(g.api.db.inner())
 			.await
 		{
 			Err(e) => return server_error_response(e, "Unable to load actor"),

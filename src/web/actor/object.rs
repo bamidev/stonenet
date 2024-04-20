@@ -4,10 +4,7 @@ use axum::{extract::*, middleware::*, response::Response, routing::*, *};
 use sea_orm::*;
 
 use self::db::PersistenceHandle;
-use crate::{
-	entity::object,
-	web::*,
-};
+use crate::{entity::object, web::*};
 
 
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
@@ -33,10 +30,9 @@ async fn object_middleware(
 	};
 
 	{
-		let connection = g.api.db.connect().await.unwrap();
 		match object::Entity::find()
 			.filter(object::Column::Hash.contains(hash_str))
-			.one(connection.handle())
+			.one(g.api.db.inner())
 			.await
 		{
 			Err(e) => return server_error_response(e, "Unable to load file"),

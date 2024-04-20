@@ -16,7 +16,7 @@ async-recursion = "1"
 async-trait = "0"
 base58 = "0"
 bincode = "1"
-chrono = { version = "0", features = ["clock"] }
+chrono = { version = "0", features = ["alloc", "clock"] }
 ctrlc = "3"
 curve25519-dalek = "4.1.1"
 dirs = "4"

@@ -78,7 +78,7 @@ pub enum Error {
 	MissingIdentity(ActorAddress),
 }
 
-#[derive(Default, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct ShareObjectInfo {
 	pub original_post: Option<TargetedPostInfo>,
 }
@@ -86,7 +86,7 @@ pub struct ShareObjectInfo {
 pub trait DerefConnection: Deref<Target = rusqlite::Connection> {}
 impl<T> DerefConnection for T where T: Deref<Target = rusqlite::Connection> {}
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct TargetedActorInfo {
 	pub address: String,
 	pub name: String,
@@ -120,15 +120,10 @@ pub struct PostObjectInfo {
 	pub attachments: Vec<PossiblyKnownFileHeader>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ProfileObjectInfo {
 	pub actor: TargetedActorInfo,
 	pub description: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct MoveObjectInfo {
-	pub new_actor: TargetedActorInfo,
 }
 
 #[derive(Serialize)]
@@ -142,7 +137,7 @@ pub struct ObjectInfo {
 	pub payload: ObjectPayloadInfo,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub enum ObjectPayloadInfo {
 	Post(PostObjectInfo),
 	Share(ShareObjectInfo),
@@ -215,7 +210,7 @@ pub trait PersistenceHandle {
 			.limit(limit)
 			.offset(offset)
 			.take();
-		let stat = self.inner().get_database_backend().build(&query);
+		let stat = self.backend().build(&query);
 
 		let results = self.inner().query_all(stat).await?;
 		let mut objects = Vec::with_capacity(limit as _);
@@ -300,6 +295,37 @@ pub trait PersistenceHandle {
 			Ok(result.try_get_by_index::<i64>(0)? as u64)
 		} else {
 			Ok(0)
+		}
+	}
+
+	async fn find_object_info(
+		&self, actor_address: &ActorAddress, hash: &IdType,
+	) -> Result<Option<ObjectInfo>> {
+		let query = Query::select()
+			.column((object::Entity, object::Column::Id))
+			.column((object::Entity, object::Column::Type))
+			.column(object::Column::ActorId)
+			.column(object::Column::Hash)
+			.column(object::Column::Created)
+			.column(object::Column::Found)
+			.from(object::Entity)
+			.inner_join(
+				identity::Entity,
+				Expr::col((object::Entity, object::Column::ActorId))
+					.equals((identity::Entity, identity::Column::Id)),
+			)
+			.and_where(identity::Column::Address.eq(actor_address))
+			.and_where(object::Column::Hash.eq(hash))
+			.take();
+		let stat = self.backend().build(&query);
+
+		if let Some(result) = self.inner().query_one(stat).await? {
+			let object_opt = self
+				._load_object_info_from_result(actor_address, &result)
+				.await?;
+			Ok(object_opt)
+		} else {
+			Ok(None)
 		}
 	}
 
@@ -461,12 +487,6 @@ pub trait PersistenceHandle {
 			F: IntoCondition,
 		{
 			file::Entity::find()
-				/*.column(post_files::Column::Hash)
-				.column(file::Column::Id)
-				.column(file::Column::PlainHash)
-				.column(file::Column::MimeType)
-				.column(file::Column::BlockCount)
-				.from(file::Entity)*/
 				.join(
 					JoinType::LeftJoin,
 					file::Entity::belongs_to(post_files::Entity)
@@ -494,9 +514,8 @@ pub trait PersistenceHandle {
 				post_files::Column::Sequence.eq(0),
 			);
 			if let Some(row) = self.inner().query_one(query).await? {
-				let file_hash: IdType = row.try_get_by(file::Column::Hash.as_str())?;
-				let file_id_opt: Option<i64> =
-					row.try_get_by(post_files::Column::ObjectId.as_str())?;
+				//let file_hash: IdType = row.try_get_by(file::Column::Hash.as_str())?;
+				let file_id_opt: Option<i64> = row.try_get_by(file::Column::Id.as_str())?;
 				if let Some(file_id) = file_id_opt {
 					let plain_hash: IdType = row.try_get_by(file::Column::PlainHash.as_str())?;
 					let mime_type: String = row.try_get_by(file::Column::MimeType.as_str())?;
@@ -570,7 +589,6 @@ pub trait PersistenceHandle {
 			.await?;
 
 		if let Some(r) = result {
-			let actor_id: i64 = r.try_get_by_index(0)?;
 			let object_sequence: i64 = r.try_get_by_index(1)?;
 			let irt_actor_rowid: Option<i64> = r.try_get_by_index(2)?;
 			let irt_actor_address_opt: Option<ActorAddress> = r.try_get_by_index(3)?;
@@ -581,7 +599,7 @@ pub trait PersistenceHandle {
 				Some(irt_object_id) => {
 					let (irt_actor_name, irt_actor_avatar_id) = match irt_actor_rowid {
 						None => (None, None),
-						Some(id) => self.find_profile_limited(object_id).await?,
+						Some(id) => self.find_profile_limited(id).await?,
 					};
 					let irt_message_opt = self.find_post_object_info_files(irt_object_id).await?;
 					Some(TargetedPostInfo {

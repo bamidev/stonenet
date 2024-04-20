@@ -5,10 +5,14 @@ use axum::{
 	response::Response,
 	Extension,
 };
+use chrono::SecondsFormat;
 use serde::*;
 
 use super::{common::*, ActorAddress, Address, IdType};
-use crate::{db::PersistenceHandle, web::Global};
+use crate::{
+	db::{ObjectPayloadInfo, PersistenceHandle},
+	web::Global,
+};
 
 
 const DEFAULT_CONTEXT: ActivityPubDocumentContext = ActivityPubDocumentContext(&[
@@ -58,14 +62,17 @@ yKNOge1KpLZ2M6dMVrhqvE0=
 
 
 #[derive(Serialize)]
-struct Activity {
-	#[serde(rename(serialize = "@context"), default)]
-	context: ActivityPubDocumentContext,
-	r#type: CreateActivityType,
+enum ActivityObjectType {
+	Note,
+}
+
+#[derive(Serialize)]
+struct ActivityObject {
 	id: String,
-	actor: String,
-	object: String,
-	published: String,
+	r#type: ActivityObjectType,
+	content: String,
+	source: ActivityObjectSource,
+	published: DateTime,
 }
 
 #[derive(Serialize)]
@@ -105,27 +112,29 @@ struct ActorDocumentPublicKey {
 
 struct CreateActivityType;
 
-#[derive(Serialize)]
-struct ObjectDocument {
-	#[serde(rename(serialize = "@context"), default)]
-	context: ActivityPubDocumentContext,
-	r#type: &'static str,
-	id: String,
-	actor: String,
-	object: ObjectDocumentObject,
-	published: String,
-}
+struct DateTime(u64);
+
 
 #[allow(non_snake_case)]
 #[derive(Serialize)]
-struct ObjectDocumentObject {
-	id: String,
-	r#type: &'static str,
-	published: String,
-	attributedTo: String,
-	inReplyTo: String,
+struct ActivityObjectSource {
 	content: String,
-	to: &'static str,
+	mediaType: MediaType,
+}
+
+#[derive(Serialize)]
+struct CreateActivity {
+	#[serde(rename(serialize = "@context"), default)]
+	context: ActivityPubDocumentContext,
+	r#type: CreateActivityType,
+	id: String,
+	actor: String,
+	object: ActivityObject,
+	published: DateTime,
+}
+
+enum MediaType {
+	Markdown,
 }
 
 #[allow(non_snake_case)]
@@ -156,12 +165,31 @@ struct WebFingerDocumentLink {
 }
 
 
+impl ActivityObject {
+	pub fn new(
+		url_base: &str, actor: &ActorAddress, object_hash: &IdType, created: u64, content: String,
+	) -> Self {
+		Self {
+			id: format!("{}/actor/{}/object/{}", url_base, actor, object_hash),
+			r#type: ActivityObjectType::Note,
+			content: content.clone(),
+			source: ActivityObjectSource {
+				content,
+				mediaType: MediaType::Markdown,
+			},
+			published: DateTime(created),
+		}
+	}
+}
+
 impl Default for ActivityPubDocumentContext {
 	fn default() -> Self { DEFAULT_CONTEXT }
 }
 
-impl Activity {
-	pub fn new(url_base: &str, actor: &ActorAddress, object_hash: &IdType, created: u64) -> Self {
+impl CreateActivity {
+	pub fn new(
+		url_base: &str, actor: &ActorAddress, object_hash: &IdType, created: u64, content: String,
+	) -> Self {
 		Self {
 			context: ActivityPubDocumentContext::default(),
 			r#type: CreateActivityType,
@@ -170,11 +198,8 @@ impl Activity {
 				url_base, &actor, &object_hash
 			),
 			actor: format!("{}/actor/{}/activity-pub", url_base, &actor),
-			object: format!(
-				"{}/actor/{}/object/{}/activity-pub",
-				url_base, &actor, &object_hash
-			),
-			published: created.to_string(),
+			object: ActivityObject::new(url_base, actor, object_hash, created, content),
+			published: DateTime(created),
 		}
 	}
 }
@@ -217,6 +242,27 @@ impl Serialize for CreateActivityType {
 	}
 }
 
+impl Serialize for DateTime {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		let dt = chrono::DateTime::from_timestamp_millis(self.0 as _).unwrap();
+		serializer.serialize_str(&dt.to_rfc3339_opts(SecondsFormat::Millis, true))
+	}
+}
+
+impl Serialize for MediaType {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		match self {
+			Self::Markdown => serializer.serialize_str("text/markdown"),
+		}
+	}
+}
+
 impl Serialize for OrderedCollectionType {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
 	where
@@ -243,6 +289,50 @@ impl WebFingerDocument {
 					href: format!("{}/{}/{}", url_base, type_, address),
 				},
 			],
+		}
+	}
+}
+
+
+fn compose_object_payload(payload: &ObjectPayloadInfo) -> String {
+	match payload {
+		ObjectPayloadInfo::Post(post) => {
+			let mut content = String::new();
+			if let Some(irt) = &post.in_reply_to {
+				let actor_name: &str = if let Some(name) = irt.actor_name.as_ref() {
+					name
+				} else {
+					"Someone"
+				};
+				content = format!("{} wrote:\n\n", actor_name);
+			}
+
+			if let Some(message) = &post.message {
+				content += message;
+			}
+			content
+		}
+		ObjectPayloadInfo::Share(share) =>
+			if let Some(original_post) = &share.original_post {
+				let actor_name: &str = if let Some(name) = &original_post.actor_name {
+					name
+				} else {
+					"Someone"
+				};
+				format!(
+					"{} wrote:\n\n{}",
+					actor_name,
+					original_post
+						.message
+						.as_ref()
+						.map(|(_, m)| m)
+						.unwrap_or(&"[Unable to load post message]".to_string())
+				)
+			} else {
+				"[Unable to load shared post]".to_string()
+			},
+		ObjectPayloadInfo::Profile(_) => {
+			format!("[Updated my profile]")
 		}
 	}
 }
@@ -284,7 +374,7 @@ pub async fn webfinger(
 	}
 }
 
-pub async fn actor_activitypub(
+pub async fn actor(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
 	let profile = match g.api.db.connect_old() {
@@ -303,12 +393,12 @@ pub async fn actor_activitypub(
 	json_response(&actor, Some("application/activity+json"))
 }
 
-pub async fn actor_activitypub_outbox(
+pub async fn actor_outbox(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
-	let objects = match g.api.db.connect().await {
+	let objects = match g.api.db.load_actor_feed(&address, 10, 0).await {
 		Err(e) => return server_error_response(e, "DB issue"),
-		Ok(c) => c.load_actor_feed(&address, 10, 0).await.unwrap(),
+		Ok(r) => r,
 	};
 
 	let feed = OrderedCollection {
@@ -319,11 +409,12 @@ pub async fn actor_activitypub_outbox(
 		orderedItems: objects
 			.iter()
 			.map(|object| {
-				serde_json::to_value(Activity::new(
+				serde_json::to_value(CreateActivity::new(
 					&g.server_info.url_base,
 					&address,
 					&object.hash,
 					object.created,
+					compose_object_payload(&object.payload),
 				))
 				.unwrap()
 			})
