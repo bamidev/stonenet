@@ -21,7 +21,7 @@ use crate::{
 	common::*,
 	config::*,
 	core::*,
-	db::{self, Database},
+	db::{self, Database, PersistenceHandle},
 	identity::*,
 	limited_store::LimitedVec,
 	net::*,
@@ -83,6 +83,7 @@ pub struct OverlayNode {
 	pub(super) expected_connections:
 		Arc<Mutex<HashMap<IdType, oneshot::Sender<Box<sstp::Connection>>>>>,
 	pub(super) is_relay_node: bool,
+	pub(crate) tracked_actors: Vec<ActorAddress>,
 	relay_nodes: Mutex<LimitedVec<NodeContactInfo>>,
 }
 
@@ -389,6 +390,7 @@ impl OverlayNode {
 			expected_connections: Arc::new(Mutex::new(HashMap::new())),
 			is_relay_node: config.relay_node.unwrap_or(false),
 			relay_nodes: Mutex::new(LimitedVec::new(100)),
+			tracked_actors: config.parse_tracked_actors(),
 		});
 		let _is_set = this.base.interface.node.set(Some(this.clone())).is_ok();
 		debug_assert!(_is_set);
@@ -967,7 +969,7 @@ impl OverlayNode {
 						Ok(c) => {
 							// Load actor nodes for both your own actors and the
 							// ones you are following.
-							let actor_node_infos = tokio::task::block_in_place(|| {
+							let mut actor_node_infos = tokio::task::block_in_place(|| {
 								let mut list = self.load_following_actor_nodes(&c);
 								list.extend(self.load_my_actor_nodes(&c).into_iter().map(
 									|(id, first_object, actor_type, private_key)| {
@@ -984,6 +986,12 @@ impl OverlayNode {
 								));
 								list
 							});
+							actor_node_infos.extend(
+								self.db()
+									.find_actors(&self.tracked_actors)
+									.await
+									.expect("db error"),
+							);
 
 							// Open and maintain a connection to a bidirectional node
 							// TODO: Do the same thing for IPv6

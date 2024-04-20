@@ -30,7 +30,10 @@ use unsafe_send_sync::UnsafeSendSync;
 use crate::{
 	common::*,
 	core::*,
-	entity::{block, file, file_blocks, identity, object, post_files, post_object, profile_object},
+	entity::{
+		block, file, file_blocks, following, identity, my_identity, object, post_files,
+		post_object, profile_object,
+	},
 	identity::*,
 	net::binserde,
 	trace::{self, Traceable, Traced},
@@ -155,15 +158,37 @@ pub trait PersistenceHandle {
 
 	fn backend(&self) -> DatabaseBackend { self.inner().get_database_backend() }
 
-	/*async fn find_home_feed(&self, limit: u64, offset: u64) -> Result<Vec<ObjectInfo>> {
+	async fn load_home_feed(
+		&self, limit: u64, offset: u64, track: &[ActorAddress],
+	) -> Result<Vec<ObjectInfo>> {
+		// Build up the part of the query that includes the id's to track additionally
+		let mut tuples: Vec<(i64, &ActorAddress)> = Vec::with_capacity(track.len());
+		for i in 0..track.len() {
+			tuples.push((i as i64, &track[i]));
+		}
+
+		// The query
 		let query = object::Entity::find()
+			.column(identity::Column::Address)
 			.join(JoinType::LeftJoin, object::Relation::Identity.def())
 			.filter(
 				Condition::any()
 					.add(
 						object::Column::ActorId.in_subquery(
 							Query::select()
-								.columns([my_identity::Column::IdentityId])
+								.column(identity::Column::Id)
+								.from(Alias::new(identity::Entity::default().table_name()))
+								.and_where(
+									Expr::col((identity::Entity, identity::Column::Address))
+										.in_tuples(tuples),
+								)
+								.take(),
+						),
+					)
+					.add(
+						object::Column::ActorId.in_subquery(
+							Query::select()
+								.column(my_identity::Column::IdentityId)
 								.from(Alias::new(my_identity::Entity::default().table_name()))
 								.take(),
 						),
@@ -171,23 +196,29 @@ pub trait PersistenceHandle {
 					.add(
 						object::Column::ActorId.in_subquery(
 							Query::select()
-								.columns([my_identity::Column::IdentityId])
+								.column(following::Column::IdentityId)
 								.from(Alias::new(following::Entity::default().table_name()))
 								.take(),
 						),
 					),
 			)
-			.build(self.handle().get_database_backend());
+			.build(self.backend());
 
-		let results = self.handle().query_all(query).await?;
+		// Process results
+		let results = self.inner().query_all(query).await?;
 		let mut objects = Vec::with_capacity(limit as _);
 		for result in &results {
-			if let Some(object) = self._load_object_info_from_result(result).await? {
+			let actor_address: ActorAddress =
+				result.try_get_by(identity::Column::Address.as_str())?;
+			if let Some(object) = self
+				._load_object_info_from_result(&actor_address, result)
+				.await?
+			{
 				objects.push(object);
 			}
 		}
 		Ok(objects)
-	}*/
+	}
 
 	async fn load_actor_feed(
 		&self, actor: &ActorAddress, limit: u64, offset: u64,
@@ -283,6 +314,36 @@ pub trait PersistenceHandle {
 		}
 
 		Ok(Some(buffer))
+	}
+
+	async fn find_actor(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
+		let result = identity::Entity::find()
+			.filter(identity::Column::Address.eq(address))
+			.one(self.inner())
+			.await?;
+
+		let actor_info_opt = if let Some(identity) = result {
+			Some(ActorInfo::V1(ActorInfoV1 {
+				flags: 0,
+				public_key: ActorPublicKeyV1::from_bytes(identity.public_key.try_into().unwrap())
+					.unwrap(),
+				first_object: identity.first_object,
+				actor_type: identity.r#type,
+			}))
+		} else {
+			None
+		};
+		Ok(actor_info_opt)
+	}
+
+	async fn find_actors(&self, actors: &[ActorAddress]) -> Result<Vec<(ActorAddress, ActorInfo)>> {
+		let mut results = Vec::with_capacity(actors.len());
+		for actor_address in actors {
+			if let Some(actor_info) = self.find_actor(actor_address).await? {
+				results.push((actor_address.clone(), actor_info));
+			}
+		}
+		Ok(results)
 	}
 
 	async fn find_next_object_sequence(&self, identity_id: i64) -> Result<u64> {

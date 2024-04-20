@@ -260,14 +260,6 @@ impl Api {
 		})
 	}
 
-	pub fn fetch_home_feed(&self, count: u64, offset: u64) -> db::Result<Vec<ObjectInfo>> {
-		let this = self.clone();
-		tokio::task::block_in_place(|| {
-			let mut c = this.db.connect_old()?;
-			c.fetch_home_feed(count, offset)
-		})
-	}
-
 	pub fn fetch_my_identity(
 		&self, address: &ActorAddress,
 	) -> db::Result<Option<(String, ActorPrivateKeyV1)>> {
@@ -440,6 +432,12 @@ impl Api {
 			let c = self.db.connect_old()?;
 			c.is_following(actor_id)
 		})
+	}
+
+	pub async fn load_home_feed(&self, count: u64, offset: u64) -> db::Result<Vec<ObjectInfo>> {
+		self.db
+			.load_home_feed(count, offset, &self.node.tracked_actors)
+			.await
 	}
 
 	// Like `load_file`, but return an async stream that catches all the blocks that

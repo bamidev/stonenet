@@ -1,6 +1,11 @@
+use std::str::FromStr;
+
 use lazy_static::lazy_static;
+use log::*;
 use once_cell::sync::OnceCell;
 use serde::*;
+
+use crate::{common::IdType, core::*};
 
 
 /// The file path of the configuration file
@@ -34,6 +39,8 @@ pub struct Config {
 	pub relay_node: Option<bool>,
 	pub leak_first_request: Option<bool>,
 	pub url_base: Option<String>,
+
+	pub track: Option<Vec<String>>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -41,6 +48,30 @@ pub struct Settings {
 	pub default_space_allocation: u32,
 }
 
+
+impl Config {
+	pub fn parse_tracked_actors(&self) -> Vec<ActorAddress> {
+		let mut addrs = Vec::new();
+		if let Some(tracked) = &self.track {
+			for string in tracked {
+				match Address::from_str(string) {
+					Ok(addr) => match addr {
+						Address::Actor(aa) => addrs.push(aa),
+						_ => error!(
+							"Address in track config parameter is not an actor address: {}",
+							string
+						),
+					},
+					Err(_) => error!(
+						"Invalid actor address in track config parameter: {}",
+						string
+					),
+				}
+			}
+		}
+		addrs
+	}
+}
 
 impl Default for Config {
 	fn default() -> Self {
@@ -66,6 +97,7 @@ impl Default for Config {
 			load_user_interface: None,
 			user_interface_port: None,
 			url_base: None,
+			track: None,
 		}
 	}
 }

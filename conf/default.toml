@@ -81,3 +81,7 @@ bucket_size = 4
 # However, as a super node you could run the risk of being complicit in sharing
 # illegal data. So only set this to true at your own risk!
 relay_node = false
+
+# Set up this node to track certain actors. This is similar as 'following' said
+# actor.
+track = []

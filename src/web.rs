@@ -227,7 +227,7 @@ struct HomePaginationQuery {
 async fn home(State(g): State<Arc<Global>>, Query(query): Query<HomePaginationQuery>) -> Response {
 	let p = query.page.unwrap_or(0);
 	let start = p * 5;
-	let objects: Vec<ObjectDisplayInfo> = match g.api.fetch_home_feed(5, start) {
+	let objects: Vec<ObjectDisplayInfo> = match g.api.load_home_feed(5, start).await {
 		Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
 		Err(e) => return server_error_response(e, "unable to fetch home feed"),
 	};
