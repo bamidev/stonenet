@@ -5,7 +5,7 @@ use sea_orm::*;
 
 use self::db::PersistenceHandle;
 use crate::{
-	entity::{object, Object},
+	entity::object,
 	web::*,
 };
 
@@ -34,7 +34,7 @@ async fn object_middleware(
 
 	{
 		let connection = g.api.db.connect().await.unwrap();
-		match Object::find()
+		match object::Entity::find()
 			.filter(object::Column::Hash.contains(hash_str))
 			.one(connection.handle())
 			.await

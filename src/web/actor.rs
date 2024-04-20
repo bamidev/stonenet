@@ -11,7 +11,7 @@ use tera::Context;
 use super::*;
 use crate::{
 	db::PersistenceHandle,
-	entity::{identity, Identity},
+	entity::identity,
 };
 
 
@@ -60,7 +60,7 @@ async fn actor_middleware(
 
 	{
 		let connection = g.api.db.connect().await.unwrap();
-		match Identity::find()
+		match identity::Entity::find()
 			.filter(identity::Column::Address.contains(hash))
 			.one(connection.handle())
 			.await

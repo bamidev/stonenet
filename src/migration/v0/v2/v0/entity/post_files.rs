@@ -3,27 +3,28 @@
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "post_tag")]
+#[sea_orm(table_name = "post_files")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = false)]
 	pub object_id: i64,
-	pub tag: String,
+	pub hash: String,
+	pub sequence: i32,
 }
 
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+#[derive(Copy, Clone, Debug, DeriveRelation, EnumIter)]
 pub enum Relation {
 	#[sea_orm(
-		belongs_to = "super::post_object::Entity",
+		belongs_to = "crate::entity::object::Entity",
 		from = "Column::ObjectId",
-		to = "super::post_object::Column::ObjectId",
+		to = "crate::entity::object::Column::Id",
 		on_update = "NoAction",
 		on_delete = "NoAction"
 	)]
-	PostObject,
+	Object,
 }
 
-impl Related<super::post_object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::PostObject.def() }
+impl Related<crate::entity::object::Entity> for Entity {
+	fn to() -> RelationDef { Relation::Object.def() }
 }
 
 impl ActiveModelBehavior for ActiveModel {}

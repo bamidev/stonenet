@@ -5,8 +5,9 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "post_files")]
 pub struct Model {
-	#[sea_orm(primary_key, auto_increment = false)]
-	pub object_id: i64,
+	#[sea_orm(primary_key, auto_increment = true)]
+	pub id: i64,
+	pub post_id: i64,
 	pub hash: String,
 	pub sequence: i32,
 }
@@ -15,7 +16,7 @@ pub struct Model {
 pub enum Relation {
 	#[sea_orm(
 		belongs_to = "super::object::Entity",
-		from = "Column::ObjectId",
+		from = "Column::PostId",
 		to = "super::object::Column::Id",
 		on_update = "NoAction",
 		on_delete = "NoAction"

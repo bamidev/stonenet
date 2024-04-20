@@ -21,7 +21,7 @@ use rusqlite::{
 	Rows, ToSql,
 };
 use sea_orm::{
-	prelude::*, sea_query::*, ColumnTrait, Condition, ConnectionTrait, DatabaseBackend, EntityName,
+	prelude::*, sea_query::*, ColumnTrait, ConnectionTrait, DatabaseBackend,
 	EntityTrait, JoinType, QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait,
 	Statement, TransactionTrait,
 };
@@ -32,7 +32,7 @@ use crate::{
 	common::*,
 	core::*,
 	entity::{
-		block, file, file_blocks, following, identity, my_identity, object, post_files,
+		block, file, file_blocks, identity, object, post_files,
 		post_object, profile_object,
 	},
 	identity::*,
@@ -161,7 +161,9 @@ pub trait PersistenceHandle {
 
 	fn handle(&self) -> &Self::Inner;
 
-	async fn find_home_feed(&self, limit: u64, offset: u64) -> Result<Vec<ObjectInfo>> {
+	fn backend(&self) -> DatabaseBackend { self.handle().get_database_backend() }
+
+	/*async fn find_home_feed(&self, limit: u64, offset: u64) -> Result<Vec<ObjectInfo>> {
 		let query = object::Entity::find()
 			.join(JoinType::LeftJoin, object::Relation::Identity.def())
 			.filter(
@@ -193,29 +195,31 @@ pub trait PersistenceHandle {
 			}
 		}
 		Ok(objects)
-	}
+	}*/
 
 	async fn load_actor_feed(
 		&self, actor: &ActorAddress, limit: u64, offset: u64,
 	) -> Result<Vec<ObjectInfo>> {
-		let query = object::Entity::find()
-			.column(object::Column::Id)
-			.column(object::Column::Type)
+		let query = Query::select()
+			.column((object::Entity, object::Column::Id))
+			.column((object::Entity, object::Column::Type))
 			.column(object::Column::ActorId)
 			.column(object::Column::Hash)
 			.column(object::Column::Created)
 			.column(object::Column::Found)
-			.join(JoinType::LeftJoin, object::Relation::Identity.def())
-			.filter(identity::Column::Address.eq(actor))
+			.from(object::Entity)
+			.inner_join(identity::Entity, Expr::col((object::Entity, object::Column::ActorId)).equals((identity::Entity, identity::Column::Id)))
+			.and_where(identity::Column::Address.eq(actor))
 			.order_by(object::Column::Sequence, Order::Desc)
 			.limit(limit)
 			.offset(offset)
-			.build(self.handle().get_database_backend());
+			.take();
+		let stat = self.handle().get_database_backend().build(&query);
 
-		let results = self.handle().query_all(query).await?;
+		let results = self.handle().query_all(stat).await?;
 		let mut objects = Vec::with_capacity(limit as _);
 		for result in &results {
-			if let Some(object) = self._load_object_info_from_result(result).await? {
+			if let Some(object) = self._load_object_info_from_result(actor, result).await? {
 				objects.push(object);
 			}
 		}
@@ -458,45 +462,45 @@ pub trait PersistenceHandle {
 			F: IntoCondition,
 		{
 			file::Entity::find()
-				.column(post_files::Column::Hash)
+				/*.column(post_files::Column::Hash)
 				.column(file::Column::Id)
 				.column(file::Column::PlainHash)
 				.column(file::Column::MimeType)
 				.column(file::Column::BlockCount)
+				.from(file::Entity)*/
 				.join(
 					JoinType::LeftJoin,
-					post_files::Entity::belongs_to(file::Entity)
-						.from(post_files::Column::Hash)
-						.to(file::Column::Hash)
+					file::Entity::belongs_to(post_files::Entity)
+						.from(file::Column::Hash)
+						.to(post_files::Column::Hash)
 						.into(),
 				)
-				.filter(post_files::Column::PostId.eq(object_id))
+				.filter(post_files::Column::ObjectId.eq(object_id))
 				.filter(condition)
 				.order_by(post_files::Column::Sequence, Order::Asc)
 				.build(backend)
 		}
 
 		let query = post_object::Entity::find()
-			.column(post_object::Column::FileCount)
 			.filter(post_object::Column::ObjectId.eq(object_id))
 			.build(self.handle().get_database_backend());
 		let result = self.handle().query_one(query).await?;
 
 		if let Some(r) = result {
-			let file_count: i64 = r.try_get_by_index(0)?;
+			let file_count: i64 = r.try_get_by("file_count")?;
 
 			let query = file_query(
 				self.handle().get_database_backend(),
 				object_id,
 				post_files::Column::Sequence.eq(0),
-			);
+			); panic!("XXX {}", file::Column::Id.as_str());
 			if let Some(row) = self.handle().query_one(query).await? {
-				let file_hash: IdType = row.try_get_by_index(0)?;
-				let file_id_opt: Option<i64> = row.try_get_by_index(1)?;
+				let file_hash: IdType = row.try_get_by(file::Column::Hash.as_str())?;
+				let file_id_opt: Option<i64> = row.try_get_by(post_files::Column::ObjectId.as_str())?;
 				if let Some(file_id) = file_id_opt {
-					let plain_hash: IdType = row.try_get_by_index(2)?;
-					let mime_type: String = row.try_get_by_index(3)?;
-					let block_count: u64 = row.try_get_by_index(4)?;
+					let plain_hash: IdType = row.try_get_by(file::Column::PlainHash.as_str())?;
+					let mime_type: String = row.try_get_by(file::Column::MimeType.as_str())?;
+					let block_count: u64 = row.try_get_by(file::Column::BlockCount.as_str())?;
 
 					let body_opt =
 						match self.find_file_data(file_id, &plain_hash, block_count).await {
@@ -551,7 +555,7 @@ pub trait PersistenceHandle {
 			.query_one(Statement::from_sql_and_values(
 				self.handle().get_database_backend(),
 				r#"
-			SELECT o.actor_id, o.sequence, ti.id, ti.address, tpo.object_id,
+			SELECT o.actor_id, o.sequence, ti.id, ti.address, tpo.object_id
 			FROM post_object AS po
 			INNER JOIN object AS o ON po.object_id = o.id
 			INNER JOIN identity AS i ON o.actor_id = i.id
@@ -609,8 +613,6 @@ pub trait PersistenceHandle {
 		&self, actor_id: i64,
 	) -> Result<(Option<String>, Option<IdType>)> {
 		let query = profile_object::Entity::find()
-			.column(profile_object::Column::Name)
-			.column(profile_object::Column::AvatarFileHash)
 			.join(JoinType::InnerJoin, profile_object::Relation::Object.def())
 			.filter(object::Column::ActorId.eq(actor_id))
 			.order_by(profile_object::Column::ObjectId, Order::Desc)
@@ -619,9 +621,9 @@ pub trait PersistenceHandle {
 
 		let result = self.handle().query_one(query).await?;
 		let values = if let Some(r) = result {
-			let name: String = r.try_get_by_index(0)?;
-			let avatar_id: Option<IdType> = r.try_get_by_index(1)?;
-			(Some(name), avatar_id)
+			let name: String = r.try_get_by(profile_object::Column::Name.as_str())?;
+			let avatar_hash: Option<IdType> = r.try_get_by(profile_object::Column::AvatarFileHash.as_str())?;
+			(Some(name), avatar_hash)
 		} else {
 			(None, None)
 		};
@@ -629,11 +631,11 @@ pub trait PersistenceHandle {
 	}
 
 	async fn _load_object_info_from_result(
-		&self, result: &sea_orm::QueryResult,
+		&self, actor_address: &ActorAddress, result: &sea_orm::QueryResult,
 	) -> Result<Option<ObjectInfo>> {
-		let object_id: i64 = result.try_get_by_index(0)?;
-		let object_type: u8 = result.try_get_by_index(1)?;
-		let actor_id: i64 = result.try_get_by_index(2)?;
+		let object_id: i64 = result.try_get_by("id")?;
+		let object_type: u8 = result.try_get_by("type")?;
+		let actor_id: i64 = result.try_get_by("actor_id")?;
 		let payload_result = self
 			.find_object_payload_info(object_id, object_type)
 			.await?;
@@ -642,10 +644,10 @@ pub trait PersistenceHandle {
 			let (actor_name, actor_avatar) = self.find_profile_limited(actor_id).await?;
 
 			Ok(Some(ObjectInfo {
-				hash: result.try_get_by_index(3)?,
-				created: result.try_get_by_index(4)?,
-				found: result.try_get_by_index(5)?,
-				actor_address: result.try_get_by_index(6)?,
+				hash: result.try_get_by("hash")?,
+				created: result.try_get_by("created")?,
+				found: result.try_get_by("found")?,
+				actor_address: actor_address.clone(),
 				actor_name,
 				actor_avatar,
 				payload,
@@ -1187,7 +1189,7 @@ impl Connection {
 			r#"
 			SELECT hash
 			FROM post_files
-			WHERE post_id = ?
+			WHERE object_id = ?
 			ORDER BY sequence ASC
 		"#,
 		)?;
@@ -1222,7 +1224,7 @@ impl Connection {
 				SELECT f.id, f.plain_hash, f.mime_type, f.block_count
 				FROM post_files AS pf
 				LEFT JOIN file AS f ON pf.hash = f.hash
-				WHERE pf.post_id = ? AND pf.sequence = 0
+				WHERE pf.object_id = ? AND pf.sequence = 0
 				ORDER BY pf.sequence ASC
 			"#,
 			)?;
@@ -1262,7 +1264,7 @@ impl Connection {
 				SELECT pf.hash, f.mime_type, f.block_count
 				FROM post_files AS pf
 				LEFT JOIN file AS f ON f.hash = pf.hash
-				WHERE pf.post_id = ? AND pf.sequence > 0
+				WHERE pf.object_id = ? AND pf.sequence > 0
 				ORDER BY pf.sequence ASC
 			"#,
 			)?;
@@ -1461,7 +1463,7 @@ impl Connection {
 	pub fn _fetch_post_tags(tx: &impl DerefConnection, object_id: i64) -> Result<Vec<String>> {
 		let mut stat = tx.prepare(
 			r#"
-			SELECT tag FROM post_tag WHERE post_id = ?
+			SELECT tag FROM post_tag WHERE object_id = ?
 		"#,
 		)?;
 		let rows = stat.query([object_id])?;
@@ -1965,7 +1967,7 @@ impl Connection {
 
 			tx.execute(
 				r#"
-				INSERT INTO post_files (post_id, hash, sequence)
+				INSERT INTO post_files (object_id, hash, sequence)
 				VALUES (?,?,?)
 			"#,
 				params![object_id, file.to_string(), i],
@@ -2004,7 +2006,7 @@ impl Connection {
 		for tag in tags {
 			tx.execute(
 				r#"
-				INSERT INTO post_tag (post_id, tag) VALUES (?, ?)
+				INSERT INTO post_tag (object_id, tag) VALUES (?, ?)
 			"#,
 				params![object_id, tag],
 			)?;
@@ -2136,13 +2138,13 @@ impl Connection {
 		// Delete all possible foreign references first
 		self.old.execute(
 			r#"
-			DELETE FROM post_files WHERE post_id = ?
+			DELETE FROM post_files WHERE object_id = ?
 		"#,
 			[object_id],
 		)?;
 		self.old.execute(
 			r#"
-			DELETE FROM post_tag WHERE post_id = ?
+			DELETE FROM post_tag WHERE object_id = ?
 		"#,
 			[object_id],
 		)?;

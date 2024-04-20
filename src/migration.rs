@@ -1,4 +1,7 @@
 //! The module for migrating the database.
+mod util;
+mod v0;
+
 use std::fmt::Display;
 
 use async_trait::async_trait;
@@ -10,13 +13,11 @@ use crate::{
 	trace,
 };
 
-mod v0;
-
 
 /// The latest database version.
 pub const LATEST_VERSION: Version = Version {
 	major: 0,
-	minor: 1,
+	minor: 2,
 	patch: 0,
 };
 
@@ -45,7 +46,10 @@ trait MigrationTrait {
 impl Migrations {
 	pub fn load() -> Self {
 		Self {
-			list: vec![(Version::new(0, 1, 0), Box::new(v0::v1::v0::Migration))],
+			list: vec![
+				(Version::new(0, 1, 0), Box::new(v0::v1::v0::Migration)),
+				(Version::new(0, 2, 0), Box::new(v0::v2::v0::Migration))
+			],
 		}
 	}
 

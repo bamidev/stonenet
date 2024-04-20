@@ -1,94 +1,16 @@
+mod entity;
+
+
 use async_trait::async_trait;
-use sea_orm::{prelude::*, sea_query::*, DatabaseBackend, Schema, Statement};
+use sea_orm::{prelude::*, sea_query::*, Schema};
 
 use crate::{
 	db::{self, PersistenceHandle},
-	migration::MigrationTrait,
+	migration::{MigrationTrait, util::*},
 };
 
 
 pub struct Migration;
-
-
-/// Recreates the table that needs to have a new `id` field as the primary key,
-/// instead of using its ROWID.
-async fn add_id_column<'c, E>(
-	tx: &db::Transaction, schema: &Schema, entity: E, table_name: &str, columns: &[&str],
-) -> db::Result<()>
-where
-	E: EntityTrait,
-{
-	// First, rename the table
-	let old_table_name = "old_".to_string() + table_name;
-	let stat = Table::rename()
-		.table(Alias::new(table_name), Alias::new(&old_table_name))
-		.to_owned();
-	tx.handle()
-		.execute_unprepared(&stat.build(SqliteQueryBuilder))
-		.await?;
-
-	// Then, create the new table of for the entity
-	let stat = schema.create_table_from_entity(entity);
-	tx.handle()
-		.execute_unprepared(&stat.build(SqliteQueryBuilder))
-		.await?;
-
-	// Copy over all data from old table to new
-	let columns_joined = columns.join(", ");
-	let query = format!(
-		"INSERT INTO {} (id, {}) SELECT rowid, {} FROM {}",
-		table_name, &columns_joined, columns_joined, &old_table_name
-	);
-	let stat = Statement::from_sql_and_values(DatabaseBackend::Sqlite, query, []);
-	tx.handle().execute(stat).await?;
-
-	// Delete old table
-	let stat = Table::drop().table(Alias::new(old_table_name)).to_owned();
-	tx.handle()
-		.execute_unprepared(&stat.build(SqliteQueryBuilder))
-		.await?;
-
-	Ok(())
-}
-
-/// Recreates the table so that all foreign keys are pointing to the correct
-/// table again.
-async fn reset_table<'c, E>(
-	tx: &db::Transaction, schema: &Schema, entity: E, table_name: &str,
-) -> db::Result<()>
-where
-	E: EntityTrait,
-{
-	// First, rename the table
-	let old_table_name = "old_".to_string() + table_name;
-	let stat = Table::rename()
-		.table(Alias::new(table_name), Alias::new(&old_table_name))
-		.to_owned();
-	tx.handle()
-		.execute_unprepared(&stat.build(SqliteQueryBuilder))
-		.await?;
-
-	// Then, create the new table of for the entity
-	let stat = schema.create_table_from_entity(entity);
-	tx.handle()
-		.execute_unprepared(&stat.build(SqliteQueryBuilder))
-		.await?;
-
-	// Then, copy everything over to the new table
-	let query = format!(
-		"INSERT INTO {} SELECT * FROM {}",
-		table_name, &old_table_name
-	);
-	let stat = Statement::from_sql_and_values(DatabaseBackend::Sqlite, query, []);
-	tx.handle().execute(stat).await?;
-
-	// Delete old table
-	let stat = Table::drop().table(Alias::new(old_table_name)).to_owned();
-	tx.handle()
-		.execute_unprepared(&stat.build(SqliteQueryBuilder))
-		.await?;
-	Ok(())
-}
 
 
 #[async_trait]
@@ -96,7 +18,7 @@ impl MigrationTrait for Migration {
 	async fn run(&self, tx: &db::Transaction) -> db::Result<()> {
 		// TODO: If any of the following entities change, store the old entity somewhere
 		// else
-		let schema = Schema::new(DatabaseBackend::Sqlite);
+		let schema = Schema::new(tx.backend());
 
 		// Drop unused tables
 		tx.handle()
@@ -121,9 +43,9 @@ impl MigrationTrait for Migration {
 			.await?;
 
 		// Add a new id column to some entities
-		let block = crate::entity::prelude::Block;
+		let block = self::entity::block::Entity;
 		add_id_column(tx, &schema, block, "block", &["hash", "size", "data"]).await?;
-		let file = crate::entity::prelude::File;
+		let file = self::entity::file::Entity;
 		add_id_column(
 			tx,
 			&schema,
@@ -132,7 +54,7 @@ impl MigrationTrait for Migration {
 			&["hash", "mime_type", "block_count", "plain_hash"],
 		)
 		.await?;
-		let identity = crate::entity::prelude::Identity;
+		let identity = self::entity::identity::Entity;
 		add_id_column(
 			tx,
 			&schema,
@@ -141,7 +63,7 @@ impl MigrationTrait for Migration {
 			&["address", "public_key", "first_object, type"],
 		)
 		.await?;
-		let object = crate::entity::prelude::Object;
+		let object = self::entity::object::Entity;
 		add_id_column(
 			tx,
 			&schema,
@@ -160,7 +82,7 @@ impl MigrationTrait for Migration {
 		)
 		.await?;
 
-		let post_files = crate::entity::prelude::PostFiles;
+		let post_files = self::entity::post_files::Entity;
 		add_id_column(
 			tx,
 			&schema,
@@ -170,16 +92,16 @@ impl MigrationTrait for Migration {
 		)
 		.await?;
 
-		let entity = crate::entity::prelude::PostObject;
+		let entity = self::entity::post_object::Entity;
 		reset_table(tx, &schema, entity, "post_object").await?;
 
-		let post_tag = crate::entity::prelude::PostTag;
+		let post_tag = self::entity::post_tag::Entity;
 		add_id_column(tx, &schema, post_tag, "post_tag", &["post_id", "tag"]).await?;
 
 		// Reset foreign keys on some tables
-		let entity = crate::entity::prelude::BoostObject;
+		let entity = self::entity::boost_object::Entity;
 		reset_table(tx, &schema, entity, "boost_object").await?;
-		let entity = crate::entity::prelude::FileBlocks;
+		let entity = self::entity::file_blocks::Entity;
 		reset_table(tx, &schema, entity, "file_blocks").await?;
 		Ok(())
 	}
