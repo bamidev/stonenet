@@ -2,7 +2,7 @@ mod entity;
 
 
 use async_trait::async_trait;
-use sea_orm::{prelude::*, sea_query::*, Schema};
+use sea_orm::{prelude::*, Schema};
 
 use crate::{
 	db::{self, PersistenceHandle},

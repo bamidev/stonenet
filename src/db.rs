@@ -206,6 +206,8 @@ pub trait PersistenceHandle {
 						),
 					),
 			)
+			.offset(offset)
+			.limit(limit)
 			.build(self.backend());
 
 		// Process results

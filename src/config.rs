@@ -5,7 +5,7 @@ use log::*;
 use once_cell::sync::OnceCell;
 use serde::*;
 
-use crate::{common::IdType, core::*};
+use crate::{core::*};
 
 
 /// The file path of the configuration file

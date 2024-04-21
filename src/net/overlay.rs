@@ -2296,7 +2296,7 @@ impl OverlayNode {
 				let this = self.clone();
 				spawn(async move {
 					sleep(Duration::from_secs(3600)).await;
-					this.maintain_tracked_actor(address);
+					this.maintain_tracked_actor(address).await;
 				});
 			}
 		}
