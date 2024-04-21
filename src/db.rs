@@ -164,10 +164,10 @@ pub trait PersistenceHandle {
 	) -> Result<Vec<ObjectInfo>> {
 		// Build up the part of the query that includes the id's to track additionally
 		let cap = track.size_hint().1.unwrap_or(track.size_hint().0);
-		let mut tuples: Vec<(i64, &ActorAddress)> = Vec::with_capacity(cap);
+		let mut tuples: Vec<&ActorAddress> = Vec::with_capacity(cap);
 		let mut i = 0i64;
 		for t in track {
-			tuples.push((i as i64, t));
+			tuples.push(t);
 			i += 1;
 		}
 
