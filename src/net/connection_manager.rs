@@ -2,7 +2,6 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::Mutex;
 
-use super::sstp;
 use crate::{common::*, net::*};
 
 

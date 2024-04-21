@@ -350,14 +350,6 @@ impl From<binserde::Error> for Traced<Error> {
 
 #[cfg(test)]
 mod tests {
-	use std::{
-		net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-		sync::{atomic::AtomicBool, Arc},
-	};
-
-	use rand::RngCore;
-	use sstp::ContactOption;
-
 	use crate::{config::*, net::sstp::*, test};
 
 

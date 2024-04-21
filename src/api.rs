@@ -1,5 +1,6 @@
 // FIXME: Remove when going stable:
 #![allow(dead_code)]
+#![allow(deprecated)]
 
 use std::{
 	sync::Arc,
@@ -435,8 +436,9 @@ impl Api {
 	}
 
 	pub async fn load_home_feed(&self, count: u64, offset: u64) -> db::Result<Vec<ObjectInfo>> {
+		let tracked_actors = self.node.tracked_actors.lock().await;
 		self.db
-			.load_home_feed(count, offset, &self.node.tracked_actors)
+			.load_home_feed(count, offset, tracked_actors.keys())
 			.await
 	}
 

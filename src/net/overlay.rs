@@ -1,5 +1,6 @@
+#![allow(deprecated)]
+
 use std::{
-	boxed::Box,
 	result::Result as StdResult,
 	sync::{atomic::*, Mutex as StdMutex, OnceLock},
 };
@@ -8,7 +9,7 @@ use async_trait::async_trait;
 use futures::{channel::oneshot, future::join_all};
 use log::*;
 use rand::{rngs::OsRng, Rng};
-use tokio::{self, select, spawn, time::sleep};
+use tokio::{select, spawn, time::sleep};
 
 use super::{
 	actor::*,
@@ -83,7 +84,7 @@ pub struct OverlayNode {
 	pub(super) expected_connections:
 		Arc<Mutex<HashMap<IdType, oneshot::Sender<Box<sstp::Connection>>>>>,
 	pub(super) is_relay_node: bool,
-	pub(crate) tracked_actors: Vec<ActorAddress>,
+	pub(crate) tracked_actors: Mutex<HashMap<ActorAddress, Option<ActorInfo>>>,
 	relay_nodes: Mutex<LimitedVec<NodeContactInfo>>,
 }
 
@@ -390,7 +391,12 @@ impl OverlayNode {
 			expected_connections: Arc::new(Mutex::new(HashMap::new())),
 			is_relay_node: config.relay_node.unwrap_or(false),
 			relay_nodes: Mutex::new(LimitedVec::new(100)),
-			tracked_actors: config.parse_tracked_actors(),
+			tracked_actors: Mutex::new(HashMap::from_iter(
+				config
+					.parse_tracked_actors()
+					.into_iter()
+					.map(|aa| (aa, None)),
+			)),
 		});
 		let _is_set = this.base.interface.node.set(Some(this.clone())).is_ok();
 		debug_assert!(_is_set);
@@ -893,7 +899,7 @@ impl OverlayNode {
 			}
 		};
 
-		// Try to find a node on the actor network first
+		// Try to find a node on the overlay network first
 		let mut iter = self.connect_actor_iter(actor_id).await;
 		loop {
 			if let Some((connection, _)) = iter.next().await {
@@ -942,6 +948,7 @@ impl OverlayNode {
 				}
 			}
 		});
+
 		join_all(futs).await;
 	}
 
@@ -969,7 +976,8 @@ impl OverlayNode {
 						Ok(c) => {
 							// Load actor nodes for both your own actors and the
 							// ones you are following.
-							let mut actor_node_infos = tokio::task::block_in_place(|| {
+							self.maintain_tracked_actors().await;
+							let actor_node_infos = tokio::task::block_in_place(|| {
 								let mut list = self.load_following_actor_nodes(&c);
 								list.extend(self.load_my_actor_nodes(&c).into_iter().map(
 									|(id, first_object, actor_type, private_key)| {
@@ -986,12 +994,6 @@ impl OverlayNode {
 								));
 								list
 							});
-							actor_node_infos.extend(
-								self.db()
-									.find_actors(&self.tracked_actors)
-									.await
-									.expect("db error"),
-							);
 
 							// Open and maintain a connection to a bidirectional node
 							// TODO: Do the same thing for IPv6
@@ -2250,6 +2252,72 @@ impl OverlayNode {
 			return Some(Openness::Unidirectional);
 		}
 	}
+
+	/// Makes an attempt to update the actor info for a tracked actor. If not
+	/// able to, it will try again in an hour.
+	async fn maintain_tracked_actor(self: &Arc<Self>, address: ActorAddress) {
+		fn join(this: Arc<OverlayNode>, address: ActorAddress, actor_info: ActorInfo) {
+			spawn(async move {
+				if let Some(node) = this.join_actor_network(&address, &actor_info).await {
+					{
+						let mut map = this.tracked_actors.lock().await;
+						map.insert(address.clone(), Some(actor_info));
+					}
+					this.base
+						.interface
+						.actor_nodes
+						.lock()
+						.await
+						.insert(address.to_id(), node);
+				}
+			});
+		}
+
+
+		// If the data is in our own DB, use it then join the network
+		let result = match self.db().find_actor(&address).await {
+			Ok(r) => r,
+			Err(e) => {
+				error!("Database issue when trying to find actor: {}", e);
+				return;
+			}
+		};
+		if let Some(actor_info) = result {
+			join(self.clone(), address.clone(), actor_info);
+		}
+		// If not, we need fetch it from the network itself.
+		else {
+			if let Some(result) = self.find_actor(&address, 100, true).await {
+				let actor_info = result.0;
+				join(self.clone(), address.clone(), actor_info);
+			}
+			// If failed to obtain actor info from anywhere, wait an hour and then try again
+			else if self.base.is_running() {
+				let this = self.clone();
+				spawn(async move {
+					sleep(Duration::from_secs(3600)).await;
+					this.maintain_tracked_actor(address);
+				});
+			}
+		}
+	}
+
+	/// Will start to update the `tracked_actors` map with some actor info, if
+	/// that can be found. Tasks will be spawned to retry after an hour, if the
+	/// address has failed to be found.
+	async fn maintain_tracked_actors(self: &Arc<Self>) {
+		// TODO: Improve effeciency
+		let tracked_actors = self.tracked_actors.lock().await;
+		for (address, actor_info_opt) in tracked_actors.iter() {
+			if actor_info_opt.is_none() {
+				let this = self.clone();
+				let address2 = address.clone();
+				spawn(async move {
+					this.maintain_tracked_actor(address2).await;
+				});
+			}
+		}
+	}
 }
 
 #[async_trait]
@@ -2437,8 +2505,6 @@ pub(super) async fn process_request_message(
 
 #[cfg(test)]
 mod tests {
-
-	use std::sync::{atomic::AtomicBool, Arc};
 
 	use crate::{net::overlay::*, test};
 

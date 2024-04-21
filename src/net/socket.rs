@@ -1,7 +1,7 @@
 use std::{io, marker::PhantomData, mem, net::*, str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use tokio::{self, io::*, select, sync::Mutex, time::sleep};
+use tokio::{io::*, select, sync::Mutex, time::sleep};
 use unsafe_send_sync::*;
 
 

@@ -17,7 +17,7 @@ use crate::net::binserde;
 pub const ACTOR_TYPE_BLOGCHAIN: &str = "blogchain";
 
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, Serialize)]
 pub enum ActorAddress {
 	/// The first version of the actor address is a SHA256 hash of ActorInfoV1.
 	V1(IdType),

@@ -1,5 +1,6 @@
 // FIXME: Remove when going stable:
 #![allow(dead_code)]
+#![allow(deprecated)]
 
 mod install;
 
@@ -159,12 +160,15 @@ pub trait PersistenceHandle {
 	fn backend(&self) -> DatabaseBackend { self.inner().get_database_backend() }
 
 	async fn load_home_feed(
-		&self, limit: u64, offset: u64, track: &[ActorAddress],
+		&self, limit: u64, offset: u64, track: impl Iterator<Item = &ActorAddress> + Send,
 	) -> Result<Vec<ObjectInfo>> {
 		// Build up the part of the query that includes the id's to track additionally
-		let mut tuples: Vec<(i64, &ActorAddress)> = Vec::with_capacity(track.len());
-		for i in 0..track.len() {
-			tuples.push((i as i64, &track[i]));
+		let cap = track.size_hint().1.unwrap_or(track.size_hint().0);
+		let mut tuples: Vec<(i64, &ActorAddress)> = Vec::with_capacity(cap);
+		let mut i = 0i64;
+		for t in track {
+			tuples.push((i as i64, t));
+			i += 1;
 		}
 
 		// The query
@@ -336,16 +340,6 @@ pub trait PersistenceHandle {
 		Ok(actor_info_opt)
 	}
 
-	async fn find_actors(&self, actors: &[ActorAddress]) -> Result<Vec<(ActorAddress, ActorInfo)>> {
-		let mut results = Vec::with_capacity(actors.len());
-		for actor_address in actors {
-			if let Some(actor_info) = self.find_actor(actor_address).await? {
-				results.push((actor_address.clone(), actor_info));
-			}
-		}
-		Ok(results)
-	}
-
 	async fn find_next_object_sequence(&self, identity_id: i64) -> Result<u64> {
 		let stat = object::Entity::find()
 			.column_as(object::Column::Sequence.max(), "max")
@@ -424,7 +418,7 @@ pub trait PersistenceHandle {
 				.find_profile_object_info(object_id)
 				.await?
 				.map(|r| ObjectPayloadInfo::Profile(r)),
-			other => panic!("unknown object type"),
+			other => panic!("unknown object type: {}", other),
 		})
 	}
 

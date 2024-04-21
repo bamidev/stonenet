@@ -293,7 +293,6 @@ impl Serialize for NodePublicKey {
 #[cfg(test)]
 mod tests {
 	use ed25519_dalek::{PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
-	use rand::RngCore;
 
 	use super::*;
 	use crate::{net::binserde, test};

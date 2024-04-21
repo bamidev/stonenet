@@ -1,23 +1,12 @@
-use std::{
-	collections::VecDeque,
-	sync::{atomic::*, Arc},
-	time::SystemTime,
-};
+use std::{collections::VecDeque, sync::atomic::*};
 
 use async_trait::async_trait;
 use futures::future::join_all;
 use log::*;
-use num::BigUint;
 use serde::de::DeserializeOwned;
 use tokio::{sync::Mutex as EternalMutex, time::sleep};
 
-use super::{
-	bucket::Bucket,
-	message::*,
-	overlay::OverlayNode,
-	sstp::{self, MessageProcessorResult},
-	*,
-};
+use super::{bucket::Bucket, message::*, overlay::OverlayNode, sstp::MessageProcessorResult, *};
 use crate::{
 	common::*,
 	db,
@@ -984,6 +973,8 @@ where
 		}
 		candidates.push_back((distance, finger.0.clone(), finger.1.clone()));
 	}
+
+	pub fn is_running(&self) -> bool { !self.stop_flag.load(Ordering::Relaxed) }
 
 	/// Joins the network via a peer. If pinging that peer fails, returns an I/O
 	/// error.
