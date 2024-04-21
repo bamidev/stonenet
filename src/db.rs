@@ -214,13 +214,15 @@ pub trait PersistenceHandle {
 		let results = self.inner().query_all(query).await?;
 		let mut objects = Vec::with_capacity(limit as _);
 		for result in &results {
-			let actor_address: ActorAddress =
+			let actor_address_opt: Option<ActorAddress> =
 				result.try_get_by(identity::Column::Address.as_str())?;
-			if let Some(object) = self
-				._load_object_info_from_result(&actor_address, result)
-				.await?
-			{
-				objects.push(object);
+			if let Some(actor_address) = actor_address_opt {
+				if let Some(object) = self
+					._load_object_info_from_result(&actor_address, result)
+					.await?
+				{
+					objects.push(object);
+				}
 			}
 		}
 		Ok(objects)

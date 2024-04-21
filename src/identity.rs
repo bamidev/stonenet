@@ -248,6 +248,7 @@ impl NodeSignature {
 
 	pub fn from_bytes(bytes: [u8; 64]) -> Self { Self(ed25519::Signature::from_bytes(&bytes)) }
 
+	#[allow(unused)]
 	pub fn hash(&self) -> IdType { IdType::hash(&self.to_bytes()) }
 }
 
