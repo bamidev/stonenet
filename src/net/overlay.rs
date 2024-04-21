@@ -6,7 +6,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::{channel::oneshot, future::join_all};
+use futures::{
+	channel::oneshot,
+	future::{join_all, BoxFuture},
+};
 use log::*;
 use rand::{rngs::OsRng, Rng};
 use tokio::{select, spawn, time::sleep};
@@ -2255,7 +2258,7 @@ impl OverlayNode {
 
 	/// Makes an attempt to update the actor info for a tracked actor. If not
 	/// able to, it will try again in an hour.
-	async fn maintain_tracked_actor(self: &Arc<Self>, address: ActorAddress) {
+	fn maintain_tracked_actor(self: Arc<Self>, address: ActorAddress) -> BoxFuture<'static, ()> {
 		fn join(this: Arc<OverlayNode>, address: ActorAddress, actor_info: ActorInfo) {
 			spawn(async move {
 				if let Some(node) = this.join_actor_network(&address, &actor_info).await {
@@ -2273,33 +2276,33 @@ impl OverlayNode {
 			});
 		}
 
-
-		// If the data is in our own DB, use it then join the network
-		let result = match self.db().find_actor(&address).await {
-			Ok(r) => r,
-			Err(e) => {
-				error!("Database issue when trying to find actor: {}", e);
-				return;
-			}
-		};
-		if let Some(actor_info) = result {
-			join(self.clone(), address.clone(), actor_info);
-		}
-		// If not, we need fetch it from the network itself.
-		else {
-			if let Some(result) = self.find_actor(&address, 100, true).await {
-				let actor_info = result.0;
+		Box::pin(async move {
+			// If the data is in our own DB, use it then join the network
+			let result = match self.db().find_actor(&address).await {
+				Ok(r) => r,
+				Err(e) => {
+					error!("Database issue when trying to find actor: {}", e);
+					return;
+				}
+			};
+			if let Some(actor_info) = result {
 				join(self.clone(), address.clone(), actor_info);
 			}
-			// If failed to obtain actor info from anywhere, wait an hour and then try again
-			else if self.base.is_running() {
-				let this = self.clone();
-				spawn(async move {
-					sleep(Duration::from_secs(3600)).await;
-					this.maintain_tracked_actor(address).await;
-				});
+			// If not, we need fetch it from the network itself.
+			else {
+				if let Some(result) = self.find_actor(&address, 100, true).await {
+					let actor_info = result.0;
+					join(self.clone(), address.clone(), actor_info);
+				}
+				// If failed to obtain actor info from anywhere, wait an hour and then try again
+				else if self.base.is_running() {
+					spawn(async move {
+						sleep(Duration::from_secs(3600)).await;
+						self.maintain_tracked_actor(address).await;
+					});
+				}
 			}
-		}
+		})
 	}
 
 	/// Will start to update the `tracked_actors` map with some actor info, if
