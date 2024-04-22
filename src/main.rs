@@ -45,7 +45,7 @@ use net::{overlay::OverlayNode, *};
 use semver::Version;
 use signal_hook::flag;
 use simple_logging;
-use tokio::{self};
+use tokio::{self, spawn};
 use toml;
 
 use crate::migration::Migrations;
@@ -320,9 +320,13 @@ async fn main() {
 					.unwrap_or(format!("http://localhost:{}", port)),
 				update_message,
 			};
-			web::spawn(stop_flag.clone(), port, None, api.clone(), server_info)
-				.await
-				.unwrap();
+			let stop_flag2 = stop_flag.clone();
+			let api2 = api.clone();
+			spawn(async move {
+				web::spawn(stop_flag2, port, None, api2, server_info)
+					.await
+					.unwrap();
+			});
 		}
 
 		// Run the main loop, until it exits because of a signal
