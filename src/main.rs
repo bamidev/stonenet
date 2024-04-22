@@ -178,12 +178,12 @@ async fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Dat
 #[cfg(target_family = "windows")]
 async fn load_database(
 	_config: &Config, install_dir: PathBuf,
-) -> io::Result<(Database, sea_orm::DatabaseConnection)> {
+) -> io::Result<Database> {
 	let mut db_path = PathBuf::from(env::var_os("APPDATA").expect("Unable to read %APPDATA%."));
 	db_path.push("Stonenet");
 	let _ = fs::create_dir(&db_path);
 	db_path.push("db.sqlite");
-	let db = Database::load(db_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	let db = Database::load(db_path).await.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 	Ok(db)
 }
 
