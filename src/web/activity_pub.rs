@@ -337,14 +337,28 @@ fn compose_object_payload(payload: &ObjectPayloadInfo) -> String {
 	}
 }
 
+fn parse_account_name(resource: &str) -> Option<&str> {
+	if !resource.starts_with("acct:") {
+		return None;
+	}
+
+	if let Some(i) = resource.find('@') {
+		return Some(&resource[5..i]);
+	}
+	None
+}
 
 pub async fn webfinger(
 	State(g): State<Arc<Global>>, Query(params): Query<HashMap<String, String>>,
 ) -> Response {
 	if let Some(resource) = params.get("resource") {
 		// TODO: Parse resource string from the form of: acct:hash@domain.name
+		let account_name = match parse_account_name(resource) {
+			Some(n) => n,
+			None => return server_error_response2("invalid resource syntax"),
+		};
 
-		let address = match Address::from_str(resource) {
+		let address = match Address::from_str(account_name) {
 			Err(e) => return server_error_response(e, "invalid address"),
 			Ok(a) => a,
 		};
