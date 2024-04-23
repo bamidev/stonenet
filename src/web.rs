@@ -180,7 +180,7 @@ async fn index_post(
 	Ok(index(None, g).await)
 }*/
 
-pub async fn spawn(
+pub async fn serve(
 	stop_flag: Arc<AtomicBool>, port: u16, _workers: Option<usize>, api: Api,
 	server_info: ServerInfo,
 ) -> db::Result<()> {

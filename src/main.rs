@@ -176,14 +176,14 @@ async fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Dat
 }
 
 #[cfg(target_family = "windows")]
-async fn load_database(
-	_config: &Config, install_dir: PathBuf,
-) -> io::Result<Database> {
+async fn load_database(_config: &Config, install_dir: PathBuf) -> io::Result<Database> {
 	let mut db_path = PathBuf::from(env::var_os("APPDATA").expect("Unable to read %APPDATA%."));
 	db_path.push("Stonenet");
 	let _ = fs::create_dir(&db_path);
 	db_path.push("db.sqlite");
-	let db = Database::load(db_path).await.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	let db = Database::load(db_path)
+		.await
+		.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 	Ok(db)
 }
 
@@ -300,15 +300,19 @@ async fn main() {
 				url_base: config.url_base.clone().unwrap_or(String::new()),
 				update_message: None,
 			};
-			web::spawn(
-				stop_flag.clone(),
-				config.web_interface_port.unwrap_or(80),
-				None,
-				api.clone(),
-				server_info,
-			)
-			.await
-			.unwrap();
+			let stop_flag2 = stop_flag.clone();
+			let api2 = api.clone();
+			spawn(async move {
+				web::serve(
+					stop_flag2,
+					config.web_interface_port.unwrap_or(80),
+					None,
+					api2,
+					server_info,
+				)
+				.await
+				.unwrap();
+			});
 		}
 		if config.load_user_interface.unwrap_or(false) {
 			let port = config.user_interface_port.unwrap_or(37338);
@@ -323,7 +327,7 @@ async fn main() {
 			let stop_flag2 = stop_flag.clone();
 			let api2 = api.clone();
 			spawn(async move {
-				web::spawn(stop_flag2, port, None, api2, server_info)
+				web::serve(stop_flag2, port, None, api2, server_info)
 					.await
 					.unwrap();
 			});
