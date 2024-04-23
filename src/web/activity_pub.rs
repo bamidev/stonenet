@@ -6,11 +6,13 @@ use axum::{
 	Extension,
 };
 use chrono::SecondsFormat;
+use sea_orm::prelude::*;
 use serde::*;
 
 use super::{common::*, ActorAddress, Address, IdType};
 use crate::{
 	db::{ObjectPayloadInfo, PersistenceHandle},
+	entity::file,
 	web::Global,
 };
 
@@ -96,9 +98,11 @@ struct ActorDocument {
 	icon: Option<ActorDocumentIcon>,
 }
 
+#[allow(non_snake_case)]
 #[derive(Serialize)]
 struct ActorDocumentIcon {
 	r#type: &'static str,
+	mediaType: String,
 	url: String,
 }
 
@@ -206,8 +210,8 @@ impl CreateActivity {
 
 impl ActorDocument {
 	fn new(
-		url_base: &str, address: &ActorAddress, name: String, avatar_hash: Option<&IdType>,
-		summary: String,
+		url_base: &str, address: &ActorAddress, name: String,
+		avatar_hash: Option<(&IdType, String)>, summary: String,
 	) -> Self {
 		let id = format!("{}/actor/{}", url_base, address);
 		Self {
@@ -225,9 +229,10 @@ impl ActorDocument {
 				publicKeyPem: PUBLIC_KEY.replace("\n", "\\n"),
 			},
 			summary,
-			icon: avatar_hash.map(|h| ActorDocumentIcon {
+			icon: avatar_hash.map(|(hash, mime_type)| ActorDocumentIcon {
 				r#type: "Image",
-				url: format!("{}/file/{}", &id, h),
+				mediaType: mime_type,
+				url: format!("{}/file/{}", &id, hash),
 			}),
 		}
 	}
@@ -396,12 +401,30 @@ pub async fn actor(
 		Ok(c) => c.fetch_profile_info(&address).unwrap().unwrap(),
 	};
 
+	// Load avatar file mime-type if available
+	let avatar_mime_type = if let Some(hash) = &profile.actor.avatar_id {
+		match file::Entity::find()
+			.filter(file::Column::Hash.eq(hash))
+			.one(g.api.db.inner())
+			.await
+		{
+			Err(e) => return server_error_response(e, "unable to load file"),
+			Ok(r) => r.map(|file| file.mime_type),
+		}
+	} else {
+		None
+	};
+
 	let description = profile.description.clone().unwrap_or_default();
 	let actor = ActorDocument::new(
 		&g.server_info.url_base,
 		&address,
 		profile.actor.name,
-		profile.actor.avatar_id.as_ref(),
+		profile
+			.actor
+			.avatar_id
+			.as_ref()
+			.map(|hash| (hash, avatar_mime_type.unwrap())),
 		description,
 	);
 	json_response(&actor, Some("application/activity+json"))
