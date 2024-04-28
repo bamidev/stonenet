@@ -34,6 +34,8 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 			get(activity_pub::actor_outbox),
 		)
 		.nest("/:actor-address/file", file::router(g.clone()))
+		// A workaround for Mastodon's behavior:
+		.nest("/:actor-address/activity-pub/file", file::router(g.clone()))
 		.nest("/:actor-address/object", object::router(g.clone()))
 		.route_layer(from_fn_with_state(g, actor_middleware))
 }
