@@ -18,7 +18,7 @@ use crate::{
 pub const LATEST_VERSION: Version = Version {
 	major: 0,
 	minor: 2,
-	patch: 0,
+	patch: 1,
 };
 
 
@@ -49,6 +49,7 @@ impl Migrations {
 			list: vec![
 				(Version::new(0, 1, 0), Box::new(v0::v1::v0::Migration)),
 				(Version::new(0, 2, 0), Box::new(v0::v2::v0::Migration)),
+				(Version::new(0, 2, 1), Box::new(v0::v2::v1::Migration)),
 			],
 		}
 	}

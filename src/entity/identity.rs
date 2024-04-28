@@ -9,6 +9,7 @@ use crate::{common::IdType, core::ActorAddress};
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
+	#[sea_orm(unique)]
 	pub address: ActorAddress,
 	pub public_key: Vec<u8>,
 	pub first_object: IdType,
