@@ -19,8 +19,13 @@ struct ActorActions {
 
 
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
+	let mut actor_methods = get(actor_get);
+	if !g.server_info.is_exposed {
+		actor_methods = actor_methods.post(actor_post);
+	}
+
 	Router::new()
-		.route("/:actor-address", get(actor_get).post(actor_post))
+		.route("/:actor-address", actor_methods)
 		.route(
 			"/:actor-address/activity-pub",
 			get(activity_pub::actor),

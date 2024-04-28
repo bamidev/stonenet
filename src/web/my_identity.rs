@@ -15,10 +15,15 @@ struct IdentityData {
 }
 
 
-pub fn router(_g: Arc<Global>) -> Router<Arc<Global>> {
+pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
+	let mut new_methods = get(new);
+	if !g.server_info.is_exposed {
+		new_methods = new_methods.post(new_post);
+	}
+
 	Router::new()
 		.route("/", get(index))
-		.route("/new", get(new).post(new_post))
+		.route("/new", new_methods)
 }
 
 

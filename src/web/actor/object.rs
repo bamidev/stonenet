@@ -8,10 +8,17 @@ use crate::{entity::object, web::*};
 
 
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
-	Router::new()
-		.route("/:object-hash", get(object_get).post(object_post))
-		.route("/:object-hash/share", post(object_share))
-		.route_layer(from_fn_with_state(g, object_middleware))
+	let mut object_methods = get(object_get);
+	if !g.server_info.is_exposed {
+		object_methods = object_methods.post(object_post);
+	}
+
+	let mut router = Router::new().route("/:object-hash", object_methods);
+	if !g.server_info.is_exposed {
+		router = router.route("/:object-hash/share", post(object_share));
+	}
+
+	router.route_layer(from_fn_with_state(g, object_middleware))
 }
 
 async fn object_middleware(
