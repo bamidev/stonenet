@@ -90,7 +90,7 @@ struct ActorDocument {
 	name: String,
 	preferredUsername: String,
 	url: String,
-	inbox: String,
+	//inbox: String,
 	outbox: String,
 	summary: String,
 
@@ -221,7 +221,7 @@ impl ActorDocument {
 			r#type: "Person",
 			name,
 			preferredUsername: address.to_string(),
-			inbox: format!("{}/actor/{}/activity-pub/inbox", url_base, address),
+			//inbox: format!("{}/actor/{}/activity-pub/inbox", url_base, address),
 			outbox: format!("{}/actor/{}/activity-pub/outbox", url_base, address),
 			publicKey: ActorDocumentPublicKey {
 				id: format!("{}#main-key", &id),
