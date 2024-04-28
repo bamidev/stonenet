@@ -38,7 +38,8 @@ pub struct Config {
 	pub bucket_size: Option<usize>,
 	pub relay_node: Option<bool>,
 	pub leak_first_request: Option<bool>,
-	pub url_base: Option<String>,
+	pub federation_domain: Option<String>,
+	pub web_url_base: Option<String>,
 
 	pub track: Option<Vec<String>>,
 }
@@ -96,8 +97,9 @@ impl Default for Config {
 			web_interface_port: None,
 			load_user_interface: None,
 			user_interface_port: None,
-			url_base: None,
+			web_url_base: None,
 			track: None,
+			federation_domain: None,
 		}
 	}
 }

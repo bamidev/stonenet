@@ -278,9 +278,9 @@ impl Serialize for OrderedCollectionType {
 }
 
 impl WebFingerDocument {
-	fn new(url_base: &str, type_: &str, address: &Address) -> Self {
+	fn new(domain: &str, url_base: &str, type_: &str, address: &Address) -> Self {
 		Self {
-			subject: format!("acct:{}", address),
+			subject: format!("acct:{}@{}", address, domain),
 			aliases: vec![format!("{}/{}/{}", url_base, type_, address)],
 			links: vec![
 				WebFingerDocumentLink {
@@ -357,7 +357,6 @@ pub async fn webfinger(
 	State(g): State<Arc<Global>>, Query(params): Query<HashMap<String, String>>,
 ) -> Response {
 	if let Some(resource) = params.get("resource") {
-		// TODO: Parse resource string from the form of: acct:hash@domain.name
 		let account_name = match parse_account_name(resource) {
 			Some(n) => n,
 			None => return server_error_response2("invalid resource syntax"),
@@ -378,13 +377,23 @@ pub async fn webfinger(
 					};
 
 					if result.is_some() {
-						WebFingerDocument::new(&g.server_info.url_base, "actor", &address)
+						WebFingerDocument::new(
+							&g.server_info.federation_domain,
+							&g.server_info.url_base,
+							"actor",
+							&address,
+						)
 					} else {
 						return not_found_error_response("actor doesn't exist");
 					}
 				}
 			},
-			Address::Node(_) => WebFingerDocument::new(&g.server_info.url_base, "node", &address),
+			Address::Node(_) => WebFingerDocument::new(
+				&g.server_info.federation_domain,
+				&g.server_info.url_base,
+				"node",
+				&address,
+			),
 		};
 
 		json_response(&webfinger, Some("application/activity+json"))

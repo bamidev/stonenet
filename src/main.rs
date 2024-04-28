@@ -46,7 +46,6 @@ use semver::Version;
 use signal_hook::flag;
 use simple_logging;
 use tokio::{self, spawn};
-use toml;
 
 use crate::migration::Migrations;
 
@@ -297,7 +296,11 @@ async fn main() {
 		if config.load_web_interface.unwrap_or(false) {
 			let server_info = web::ServerInfo {
 				is_exposed: true,
-				url_base: config.url_base.clone().unwrap_or(String::new()),
+				federation_domain: config
+					.federation_domain
+					.clone()
+					.unwrap_or("localhost".to_string()),
+				url_base: config.web_url_base.clone().unwrap_or(String::new()),
 				update_message: None,
 			};
 			let stop_flag2 = stop_flag.clone();
@@ -318,8 +321,12 @@ async fn main() {
 			let port = config.user_interface_port.unwrap_or(37338);
 			let server_info = web::ServerInfo {
 				is_exposed: false,
+				federation_domain: config
+					.federation_domain
+					.clone()
+					.unwrap_or("localhost".to_string()),
 				url_base: config
-					.url_base
+					.web_url_base
 					.clone()
 					.unwrap_or(format!("http://localhost:{}", port)),
 				update_message,

@@ -46,6 +46,8 @@ ipv6_tcp_port = 37339
 load_web_interface = false
 web_interface_port = 80
 
+#web_url_base = "https://example.com"
+
 # If set to true, will run a local web server for the user interface. This
 # will be bound to IP 127.0.0.1 .
 load_user_interface = true
@@ -85,3 +87,11 @@ relay_node = false
 # Set up this node to track certain actors. This is similar as 'following' said
 # actor.
 track = []
+
+# If you want activitypub support, a domain needs to be configured.
+# Also, keep in mind that if the `web_url_base` parameter has a path in it, like:
+# https://example.com/my/path
+# Then your reverse proxy needs to be set up to serve
+# https://example/.well-known/webfinger as
+# https://example.com/my/path/.well-known/webfinger
+#activitypub_domain = "example.com"
