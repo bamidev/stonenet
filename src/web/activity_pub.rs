@@ -287,7 +287,7 @@ impl WebFingerDocument {
 			links: vec![
 				WebFingerDocumentLink {
 					rel: "self",
-					r#type: "application/ld+json",
+					r#type: "application/activity+json",
 					href: format!("{}/{}/{}/activity-pub", url_base, type_, address),
 				},
 				WebFingerDocumentLink {
@@ -416,7 +416,9 @@ pub async fn actor(
 	// the actor to redirecting to the actor's profile page.
 	if let Some(accept) = headers.get("Accept") {
 		if let Ok(accept_string) = accept.to_str() {
-			if !accept_string.contains("application/ld+json") {
+			if !accept_string.contains("application/ld+json")
+				&& !accept_string.contains("application/activity+json")
+			{
 				return Response::builder()
 					.status(303)
 					.header("Location", format!("/actor/{}", address))
