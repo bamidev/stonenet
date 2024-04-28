@@ -1,7 +1,9 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use axum::{
+	body::Body,
 	extract::{Query, State},
+	http::HeaderMap,
 	response::Response,
 	Extension,
 };
@@ -403,12 +405,26 @@ pub async fn webfinger(
 }
 
 pub async fn actor(
-	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
+	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>, headers: HeaderMap,
 ) -> Response {
 	let profile = match g.api.db.connect_old() {
 		Err(e) => return server_error_response(e, "DB issue"),
 		Ok(c) => c.fetch_profile_info(&address).unwrap().unwrap(),
 	};
+
+	// Workaround for Mastodon, because they don't use the `id` or `url` params of
+	// the actor to redirecting to the actor's profile page.
+	if let Some(accept) = headers.get("Accept") {
+		if let Ok(accept_string) = accept.to_str() {
+			if !accept_string.contains("application/ld+json") {
+				return Response::builder()
+					.status(303)
+					.header("Location", format!("/actor/{}", address))
+					.body(Body::empty())
+					.unwrap();
+			}
+		}
+	}
 
 	// Load avatar file mime-type if available
 	let avatar_mime_type = if let Some(hash) = &profile.actor.avatar_id {
