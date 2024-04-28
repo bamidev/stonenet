@@ -1,4 +1,5 @@
 {% extends "base.tera" %}
+{% import "macros.tera" as macros %}
 {% block title %}Profile{% endblock %}
 
 {% block content %}
@@ -22,6 +23,7 @@
 		}
 	</style>
 
+	<p>
 	<div class="card bg-dark-subtle text-dark">
 		<div class="card-header background">
 			<h2 class="card-title text-center">
@@ -61,4 +63,10 @@
 			{% endif %}
 		</div>
 	</div>
+	</p>
+
+	<h2>Activity</h2>
+	<p>
+		{{macros::feed(objects=objects, page=page)}}
+	</p>
 {% endblock content %}

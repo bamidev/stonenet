@@ -75,6 +75,7 @@ async fn actor_middleware(
 
 async fn actor_get(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
+	Query(query): Query<PaginationQuery>,
 ) -> Response {
 	let profile = match g.api.fetch_profile_info(&address).await {
 		Ok(p) => p,
@@ -86,10 +87,19 @@ async fn actor_get(
 	};
 	// TODO: Check if public key is available, if so, following is still possible.
 
+	let p = query.page.unwrap_or(0);
+	let start = p * 5;
+	let objects: Vec<ObjectDisplayInfo> = match g.api.db.load_actor_feed(&address, 5, start).await {
+		Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
+		Err(e) => return server_error_response(e, "unable to fetch home feed"),
+	};
+
 	let mut context = Context::new();
 	context.insert("address", &address.to_string());
 	context.insert("profile", &profile);
 	context.insert("is_following", &is_following);
+	context.insert("page", &p);
+	context.insert("objects", &objects);
 	g.render("actor.html.tera", context)
 }
 
@@ -118,7 +128,12 @@ async fn actor_post(
 		}
 	}
 
-	actor_get(State(g), Extension(address)).await
+	actor_get(
+		State(g),
+		Extension(address),
+		Query(PaginationQuery::default()),
+	)
+	.await
 }
 
 pub fn parse_actor_address(string: &str) -> Result<ActorAddress, Response> {

@@ -221,11 +221,11 @@ pub async fn serve(
 }
 
 #[derive(Default, Deserialize)]
-struct HomePaginationQuery {
+struct PaginationQuery {
 	page: Option<u64>,
 }
 
-async fn home(State(g): State<Arc<Global>>, Query(query): Query<HomePaginationQuery>) -> Response {
+async fn home(State(g): State<Arc<Global>>, Query(query): Query<PaginationQuery>) -> Response {
 	let p = query.page.unwrap_or(0);
 	let start = p * 5;
 	let objects: Vec<ObjectDisplayInfo> = match g.api.load_home_feed(5, start).await {
@@ -244,7 +244,7 @@ async fn home_post(State(g): State<Arc<Global>>, form: Multipart) -> Response {
 		return e;
 	}
 
-	home(State(g), Query(HomePaginationQuery::default())).await
+	home(State(g), Query(PaginationQuery::default())).await
 }
 
 #[derive(Deserialize)]

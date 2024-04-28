@@ -64,9 +64,9 @@
 				{% if page == 0 %}
 					<li class="page-item disabled"><a class="page-link" href="/">Next</a></li>
 				{% else %}
-					<li class="page-item"><a class="page-link" href="/?page={{page-1}}">Next</a></li>
+					<li class="page-item"><a class="page-link" href="?page={{page-1}}">Next</a></li>
 				{% endif %}
-				<li class="page-item"><a class="page-link" href="/?page={{page+1}}">Previous</a></li>
+				<li class="page-item"><a class="page-link" href="?page={{page+1}}">Previous</a></li>
 			</ul>
 		  </nav>
 	</div>
