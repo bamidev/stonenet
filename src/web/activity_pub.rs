@@ -458,7 +458,7 @@ pub async fn actor(
 pub async fn actor_outbox(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
-	let objects = match g.api.db.load_actor_feed(&address, 10, 0).await {
+	let objects = match g.api.db.load_actor_feed(&address, 1000, 0).await {
 		Err(e) => return server_error_response(e, "DB issue"),
 		Ok(r) => r,
 	};
