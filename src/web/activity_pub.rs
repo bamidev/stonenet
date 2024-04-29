@@ -461,6 +461,23 @@ pub async fn actor(
 	)
 }
 
+pub async fn actor_inbox(
+	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
+) -> Response {
+	let id = 777;
+	return Response::builder()
+		.status(201)
+		.header(
+			"Location",
+			format!(
+				"{}/actor/{}/inbox/{}",
+				&g.server_info.url_base, &address, id
+			),
+		)
+		.body(Body::empty())
+		.unwrap();
+}
+
 pub async fn actor_outbox(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {

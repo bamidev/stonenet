@@ -30,10 +30,10 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 			"/:actor-address/activity-pub",
 			get(activity_pub::actor),
 		)
-		/*.route(
+		.route(
 			"/:actor-address/activity-pub/inbox",
-			get(activity_pub::actor_activitypub_inbox),
-		)*/
+			post(activity_pub::actor_inbox),
+		)
 		.route(
 			"/:actor-address/activity-pub/outbox",
 			get(activity_pub::actor_outbox),
