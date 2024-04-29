@@ -287,7 +287,8 @@ impl WebFingerDocument {
 			links: vec![
 				WebFingerDocumentLink {
 					rel: "self",
-					r#type: "application/activity+json",
+					r#type:
+						"application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
 					href: format!("{}/{}/{}/activity-pub", url_base, type_, address),
 				},
 				WebFingerDocumentLink {
@@ -398,7 +399,7 @@ pub async fn webfinger(
 			),
 		};
 
-		json_response(&webfinger, Some("application/ld+json"))
+		json_response(&webfinger, Some("application/jrd+json"))
 	} else {
 		server_error_response2("Missing parameter \"resource\".")
 	}
@@ -454,7 +455,10 @@ pub async fn actor(
 			.map(|hash| (hash, avatar_mime_type.unwrap())),
 		description,
 	);
-	json_response(&actor, Some("application/ld+json"))
+	json_response(
+		&actor,
+		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
+	)
 }
 
 pub async fn actor_outbox(
@@ -484,5 +488,8 @@ pub async fn actor_outbox(
 			})
 			.collect(),
 	};
-	json_response(&feed, Some("application/ld+json"))
+	json_response(
+		&feed,
+		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
+	)
 }
