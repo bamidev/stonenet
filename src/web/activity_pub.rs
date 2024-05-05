@@ -760,6 +760,7 @@ async fn populate_send_queue_from_new_object(
 
 	// Mark object as 'published on the fediverse'.
 	let mut record = <object::ActiveModel as std::default::Default>::default();
+	record.id = Set(object.id);
 	record.published_on_fediverse = Set(true);
 	object::Entity::update(record).exec(tx.inner()).await?;
 
@@ -894,10 +895,10 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
 		// TODO: Make the rate limit configurable
 		let next_iteration = last_iteration + 10000;
 		let now = current_timestamp();
-		if now > next_iteration {
-			sleep(Duration::from_millis(now - next_iteration)).await;
+		if now < next_iteration {
+			sleep(Duration::from_millis(next_iteration - now)).await;
 		}
-		last_iteration = current_timestamp();
+		last_iteration = now;
 
 		// Get the first 100 queue items that have not already failed somewhere in the
 		// last hour TODO: Get the actor address in this query as well
