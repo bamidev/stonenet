@@ -765,44 +765,43 @@ async fn populate_send_queue_from_new_object(
 }
 
 async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db::Result<()> {
-	// TODO: Fetch list of objects with `published_on_fediverse` set to false.
 	let mut objects = object::Entity::find()
 		.join(JoinType::InnerJoin, object::Relation::Identity.def())
 		.filter(object::Column::PublishedOnFediverse.eq(false))
+		.filter(object::Column::Type.ne(OBJECT_TYPE_PROFILE))
 		.order_by_asc(object::Column::Id)
 		.all(g.api.db.inner())
 		.await?;
+	// FIXME: If a lot of objects remain incomplete (without their main content
+	// downloaded too), then this could load many objects into memory which will not
+	// be used. It is better to add another column (e.g. has_main_content) to the
+	// object model so that we don't have to load them into memory and then execute
+	// another query just to find out if the object can be published on the
+	// fediverse.
 
 	let mut i = 0;
 	for object in objects {
 		// Ignore profile update objects
-		if object.r#type < OBJECT_TYPE_PROFILE {
-			if let Some(payload_info) = g
-				.api
-				.db
-				.load_object_payload_info(object.id, object.r#type)
-				.await?
-			{
-				// Ignore objects that don't have enough info on them yet to display them yet
-				if payload_info.has_main_content() {
-					// TODO: Don't query for the address for each object.
-					if let Some(actor) = identity::Entity::find_by_id(object.actor_id)
-						.one(g.api.db.inner())
-						.await?
-					{
-						populate_send_queue_from_new_object(
-							g,
-							&actor.address,
-							object,
-							payload_info,
-						)
+		if let Some(payload_info) = g
+			.api
+			.db
+			.load_object_payload_info(object.id, object.r#type)
+			.await?
+		{
+			// Ignore objects that don't have enough info on them yet to display them yet
+			if payload_info.has_main_content() {
+				// TODO: Don't query for the address for each object.
+				if let Some(actor) = identity::Entity::find_by_id(object.actor_id)
+					.one(g.api.db.inner())
+					.await?
+				{
+					populate_send_queue_from_new_object(g, &actor.address, object, payload_info)
 						.await?;
 
-						// Enforce max limit on number of objects being put in the send queue
-						i += 1;
-						if i >= limit {
-							break;
-						}
+					// Enforce max limit on number of objects being put in the send queue
+					i += 1;
+					if i >= limit {
+						break;
 					}
 				}
 			}
@@ -814,8 +813,8 @@ async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db::Res
 
 /// Queues the given ActivitySteams object to be sent to the recipient at
 /// somewhere in the future.
-/// If `recipient_path` is `None`, the activity will be send to the server's shared inbox,
-/// otherwise it will be send to the actor's inbox.
+/// If `recipient_path` is `None`, the activity will be send to the server's
+/// shared inbox, otherwise it will be send to the actor's inbox.
 async fn queue_activity(
 	g: &Global, actor_id: i64, recipient_server: String, recipient_path: Option<String>,
 	object: &impl Serialize,
