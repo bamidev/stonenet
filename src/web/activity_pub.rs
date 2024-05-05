@@ -17,7 +17,6 @@ use axum::{
 };
 use base64::prelude::*;
 use chrono::{Local, SecondsFormat};
-use futures::StreamExt;
 use lazy_static::lazy_static;
 use log::{error, warn};
 use rand::rngs::OsRng;
@@ -33,7 +32,7 @@ use sea_orm::{
 	prelude::*,
 	sea_query::{self, Alias},
 	ActiveValue::NotSet,
-	JoinType, Order, QueryOrder, QuerySelect, QueryTrait, Set, Statement,
+	JoinType, Order, QueryOrder, QuerySelect, Set, Statement,
 };
 use serde::*;
 use stonenetd::core::OBJECT_TYPE_PROFILE;
@@ -614,7 +613,7 @@ async fn actor_inbox_register_follow(
 				let record = activity_pub_follow::ActiveModel {
 					id: NotSet,
 					actor_id: Set(actor.id),
-					path: Set(path),
+					path: Set(path.clone()),
 					server: Set(server.clone()),
 				};
 				activity_pub_follow::Entity::insert(record)
@@ -629,7 +628,7 @@ async fn actor_inbox_register_follow(
 					to: vec![follower_string.clone()],
 					object,
 				};
-				queue_activity(g, actor.id, server, &accept_activity).await?;
+				queue_activity(g, actor.id, server, Some(path), &accept_activity).await?;
 			}
 		};
 
@@ -752,17 +751,7 @@ async fn populate_send_queue_from_new_object(
 	let tx = g.api.db.transaction().await?;
 
 	for server in follower_servers {
-		let queue_item = activity_pub_send_queue::ActiveModel {
-			id: NotSet,
-			actor_id: Set(object.actor_id),
-			recipient_server: Set(server),
-			object: Set(activity_json.to_string()),
-			last_fail: NotSet,
-			failures: Set(0),
-		};
-		activity_pub_send_queue::Entity::insert(queue_item)
-			.exec(tx.inner())
-			.await?;
+		queue_activity(g, object.actor_id, server, None, &activity_json).await?;
 	}
 
 	// Mark object as 'published on the fediverse'.
@@ -824,9 +813,12 @@ async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db::Res
 
 
 /// Queues the given ActivitySteams object to be sent to the recipient at
-/// somewhere in the future
+/// somewhere in the future.
+/// If `recipient_path` is `None`, the activity will be send to the server's shared inbox,
+/// otherwise it will be send to the actor's inbox.
 async fn queue_activity(
-	g: &Global, actor_id: i64, recipient_server: String, object: &impl Serialize,
+	g: &Global, actor_id: i64, recipient_server: String, recipient_path: Option<String>,
+	object: &impl Serialize,
 ) -> db::Result<bool> {
 	// FIXME: Check if the queue is over capacity, in which case nothing will be
 	// done.
@@ -859,6 +851,7 @@ async fn queue_activity(
 			id: NotSet,
 			actor_id: Set(actor_id),
 			recipient_server: Set(recipient_server),
+			recipient_path: Set(recipient_path),
 			object: Set(serde_json::to_string(object).unwrap()),
 			last_fail: Set(None),
 			failures: Set(0),
@@ -957,6 +950,7 @@ async fn process_next_send_queue_item(
 			g,
 			&actor_address,
 			&record.recipient_server,
+			record.recipient_path.as_ref().map(|p| p.as_str()),
 			record.object.clone(),
 		)
 		.await
@@ -988,6 +982,7 @@ async fn process_next_send_queue_item(
 				actor_id: NotSet,
 				object: NotSet,
 				recipient_server: NotSet,
+				recipient_path: NotSet,
 				last_fail: Set(Some(current_timestamp() as _)),
 				failures: Set(record.failures + 1),
 			};
@@ -1051,19 +1046,30 @@ async fn fetch_actor(
 	Ok(response_json)
 }
 
-// Tries to find the shared inbox of an ActivityPub server.
-// I
-async fn find_shared_inbox(g: &Global, recipient_server: &str) -> db::Result<Option<String>> {
+// Tries to find the relevant inbox
+async fn find_inbox(
+	g: &Global, recipient_server: &str, recipient_path: Option<&str>,
+) -> db::Result<Option<String>> {
 	// Check if we know it already
-	let result = activity_pub_shared_inbox::Entity::find_by_id(recipient_server)
-		.one(g.api.db.inner())
-		.await?;
-	if let Some(record) = result {
-		return Ok(record.shared_inbox);
+	if let Some(path) = recipient_path {
+		let result = activity_pub_actor_inbox::Entity::find()
+			.filter(activity_pub_actor_inbox::Column::Server.eq(recipient_server))
+			.filter(activity_pub_actor_inbox::Column::Server.eq(path))
+			.one(g.api.db.inner())
+			.await?;
+		if let Some(record) = result {
+			return Ok(Some(record.inbox));
+		}
+	} else {
+		let result = activity_pub_shared_inbox::Entity::find_by_id(recipient_server)
+			.one(g.api.db.inner())
+			.await?;
+		if let Some(record) = result {
+			return Ok(record.shared_inbox);
+		}
 	}
 
-	// Otherwise, find an ActivityPub actor to query the relevant sharedInbox
-	// parameter from.
+	// Otherwise, find the relevant inbox from the actor
 	let result = activity_pub_follow::Entity::find()
 		.filter(activity_pub_follow::Column::Server.eq(recipient_server))
 		.one(g.api.db.inner())
@@ -1081,26 +1087,30 @@ async fn find_shared_inbox(g: &Global, recipient_server: &str) -> db::Result<Opt
 		};
 		if let Some(json) = result2 {
 			// Parse inbox URLs
-			let _actor_inbox = if let Some(v) = json.get("inbox") {
-				match v {
-					serde_json::Value::String(url) => Some(url),
-					_ => None,
-				}
-			} else {
-				None
-			};
-			if let Some(e) = json.get("endpoints") {
-				if let Some(v) = e.get("sharedInbox") {
+			let inbox = if recipient_path.is_some() {
+				if let Some(v) = json.get("inbox") {
 					match v {
-						serde_json::Value::String(url) => Ok(Some(url.clone())),
-						_ => Ok(None),
+						serde_json::Value::String(url) => Some(url.clone()),
+						_ => None,
 					}
 				} else {
-					Ok(None)
+					None
 				}
 			} else {
-				Ok(None)
-			}
+				if let Some(e) = json.get("endpoints") {
+					if let Some(v) = e.get("sharedInbox") {
+						match v {
+							serde_json::Value::String(url) => Some(url.clone()),
+							_ => None,
+						}
+					} else {
+						None
+					}
+				} else {
+					None
+				}
+			};
+			Ok(inbox)
 		} else {
 			Ok(None)
 		}
@@ -1133,23 +1143,24 @@ fn sign_activity(shared_inbox_url: &Url, date_header: &str) -> String {
 }
 
 async fn send_activity(
-	g: &Global, actor_address: &ActorAddress, recipient_server: &str, activity: String,
+	g: &Global, actor_address: &ActorAddress, recipient_server: &str, recipient_path: Option<&str>,
+	activity: String,
 ) -> db::Result<ActivitySendState> {
 	// Get & parse the shared inbox url
-	let shared_inbox_url_raw = if let Some(si) = find_shared_inbox(g, recipient_server).await? {
+	let (inbox_url_raw) = if let Some(si) = find_inbox(g, recipient_server, recipient_path).await? {
 		si
 	} else {
 		return Ok(ActivitySendState::Impossible);
 	};
-	let shared_inbox_url = match Url::parse(&shared_inbox_url_raw) {
+	let inbox_url = match Url::parse(&inbox_url_raw) {
 		Ok(r) => r,
 		Err(e) => {
-			warn!("Invalid shared inbox URL {}: {}", &shared_inbox_url_raw, e);
+			warn!("Invalid shared inbox URL {}: {}", &inbox_url_raw, e);
 			return Ok(ActivitySendState::Impossible);
 		}
 	};
-	if shared_inbox_url.domain().is_none() {
-		warn!("No domain in shared inbox URL {}", &shared_inbox_url_raw);
+	if inbox_url.domain().is_none() {
+		warn!("No domain in shared inbox URL {}", &inbox_url_raw);
 		return Ok(ActivitySendState::Impossible);
 	}
 
@@ -1157,7 +1168,7 @@ async fn send_activity(
 	let date_header = Local::now().to_rfc2822();
 	let body_digest = hash_activity(&activity);
 	let digest_header = format!("sha-256={}", BASE64_STANDARD.encode(&body_digest));
-	let signature = sign_activity(&shared_inbox_url, &date_header);
+	let signature = sign_activity(&inbox_url, &date_header);
 	let signature_header = format!(
 		"keyId=\"{}/actor/{}#main-key\",headers=\"(request-target) host date \
 		 digest\",signature=\"{}\"",
@@ -1166,7 +1177,7 @@ async fn send_activity(
 
 	// Exchange request/response
 	let result = HTTP_CLIENT
-		.post(shared_inbox_url)
+		.post(inbox_url)
 		.header(
 			"Content-Type",
 			"application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
@@ -1182,7 +1193,7 @@ async fn send_activity(
 		Err(e) => {
 			warn!(
 				"Unable to post activity object at {}: {}",
-				&shared_inbox_url_raw, e
+				&inbox_url_raw, e
 			);
 			return Ok(ActivitySendState::Failed);
 		}
@@ -1193,7 +1204,7 @@ async fn send_activity(
 	}
 	warn!(
 		"Unable to post activity object at {}: response status {}",
-		shared_inbox_url_raw,
+		inbox_url_raw,
 		response.status()
 	);
 	Ok(ActivitySendState::Failed)

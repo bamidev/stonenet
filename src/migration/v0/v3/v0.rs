@@ -18,6 +18,12 @@ impl MigrationTrait for Migration {
 		tx.inner()
 			.execute_unprepared(
 				r#"
+			CREATE TABLE "activity_pub_actor_inbox" (
+				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+				"server" text NOT NULL,
+				"path" text NOT NULL,
+				"inbox" text NOT NULL
+			);
 			CREATE TABLE "activity_pub_follow" (
 				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
 				"actor_id" bigint NOT NULL,
@@ -33,6 +39,7 @@ impl MigrationTrait for Migration {
 				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
 				"actor_id" bigint NOT NULL,
 				"recipient_server" text NOT NULL,
+				"recipient_path" text,
 				"object" text NOT NULL,
 				"last_fail" bigint,
 				"failures" integer NOT NULL

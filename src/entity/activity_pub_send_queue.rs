@@ -7,6 +7,7 @@ pub struct Model {
 	pub id: i64,
 	pub actor_id: i64,
 	pub recipient_server: String,
+	pub recipient_path: Option<String>,
 	pub object: String,
 	pub last_fail: Option<i64>,
 	pub failures: u8,

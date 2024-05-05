@@ -1,3 +1,4 @@
+pub mod activity_pub_actor_inbox;
 pub mod activity_pub_follow;
 pub mod activity_pub_object;
 pub mod activity_pub_send_queue;
