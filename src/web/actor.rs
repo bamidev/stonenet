@@ -55,25 +55,20 @@ async fn actor_middleware(
 		.0;
 	let hash = params.get("actor-address").unwrap();
 
-	match parse_actor_address(&hash) {
+	let address = match parse_actor_address(&hash) {
 		Err(r) => return r,
-		Ok(address) => {
-			request.extensions_mut().insert(address);
-		}
-	}
-
+		Ok(a) => a,
+	};
+	let actor = match identity::Entity::find()
+		.filter(identity::Column::Address.eq(&address))
+		.one(g.api.db.inner())
+		.await
 	{
-		match identity::Entity::find()
-			.filter(identity::Column::Address.contains(hash))
-			.one(g.api.db.inner())
-			.await
-		{
-			Err(e) => return server_error_response(e, "Unable to load actor"),
-			Ok(actor) => {
-				request.extensions_mut().insert(actor);
-			}
-		}
-	}
+		Err(e) => return server_error_response(e, "Unable to load actor"),
+		Ok(a) => a,
+	};
+	request.extensions_mut().insert(address);
+	request.extensions_mut().insert(actor);
 
 	next.run(request).await
 }
