@@ -1016,7 +1016,7 @@ async fn fetch_actor(
 	server: &str, actor_path: &str,
 ) -> Result<Option<serde_json::Value>, reqwest::Error> {
 	let actor_url = server.to_string() + actor_path;
-	let response = HTTP_CLIENT.get(actor_path).send().await?;
+	let response = HTTP_CLIENT.get(actor_url).send().await?;
 
 	// Test content type
 	let content_type = if let Some(value) = response.headers().get("content-type") {
@@ -1034,7 +1034,7 @@ async fn fetch_actor(
 		return Ok(None);
 	};
 	if !content_type.starts_with("application/ld+json")
-		&& content_type != "application/activity+json"
+		&& !content_type.starts_with("application/activity+json")
 	{
 		warn!(
 			"Unexpected Content-Type header received for {}: {}",
@@ -1077,7 +1077,7 @@ async fn find_shared_inbox(g: &Global, recipient_server: &str) -> db::Result<Opt
 			Ok(r) => r,
 			Err(e) => {
 				warn!(
-					"Unable to fetch actor {}/{}: {}",
+					"Unable to fetch actor {}{}: {}",
 					recipient_server, &record.path, e
 				);
 				return Ok(None);
