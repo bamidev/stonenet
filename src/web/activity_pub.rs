@@ -494,22 +494,6 @@ pub async fn actor(
 		Ok(c) => c.fetch_profile_info(&address).unwrap().unwrap(),
 	};
 
-	// Workaround for Mastodon, because they don't use the `id` or `url` params of
-	// the actor to redirecting to the actor's profile page.
-	if let Some(accept) = headers.get("Accept") {
-		if let Ok(accept_string) = accept.to_str() {
-			if !accept_string.contains("application/ld+json")
-				&& !accept_string.contains("application/activity+json")
-			{
-				return Response::builder()
-					.status(303)
-					.header("Location", format!("/actor/{}", address))
-					.body(Body::empty())
-					.unwrap();
-			}
-		}
-	}
-
 	// Load avatar file mime-type if available
 	let avatar_mime_type = if let Some(hash) = &profile.actor.avatar_id {
 		match file::Entity::find()
