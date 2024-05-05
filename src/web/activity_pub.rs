@@ -895,13 +895,13 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
 		let next_iteration = last_iteration + 10000;
 		let now = current_timestamp();
 		if now > next_iteration {
-			sleep(Duration::from_millis(next_iteration - now)).await;
+			sleep(Duration::from_millis(now - next_iteration)).await;
 		}
 		last_iteration = current_timestamp();
 
 		// Get the first 100 queue items that have not already failed somewhere in the
 		// last hour TODO: Get the actor address in this query as well
-		let results =
+		let mut results =
 			activity_pub_send_queue::Entity::find()
 				.filter(activity_pub_send_queue::Column::LastFail.is_null().or(
 					activity_pub_send_queue::Column::LastFail.lt(current_timestamp() - 3600000),
@@ -909,30 +909,28 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
 				.order_by_asc(activity_pub_send_queue::Column::Id)
 				.limit(100)
 				.stream(g.api.db.inner())
-				.await?;
+				.await
+				.unwrap();
 		while let Some(result) = results.next().await {
 			match result {
 				Err(e) => error!(
 					"Database error while trying to query the ActivityPub send-queue: {:?}",
 					e
 				),
-				Ok(records) => {
-					for record in records {
-						// Only sent out 10 queue items per second, to limit bandwith use.
-						sleep(Duration::from_millis(100)).await;
-						let g2 = g.clone();
-						spawn(async move {
-							let item_id = record.id;
-							if let Err(e) = process_next_send_queue_item(&g2, record).await {
-								error!(
-									"Unable to process ActivityPub send-queue activity {}: {:?}",
-									item_id, e
-								);
-							}
-						});
-					}
+				Ok(record) => {
+					let g2 = g.clone();
+					spawn(async move {
+						let item_id = record.id;
+						if let Err(e) = process_next_send_queue_item(&g2, record).await {
+							error!(
+								"Unable to process ActivityPub send-queue activity {}: {:?}",
+								item_id, e
+							);
+						}
+					});
 				}
 			}
+			sleep(Duration::from_millis(100)).await;
 		}
 
 		join_handle.await;
