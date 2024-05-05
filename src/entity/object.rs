@@ -17,7 +17,6 @@ pub struct Model {
 	pub found: i64,
 	pub r#type: u8,
 	pub signature: ActorSignatureV1,
-	#[sea_orm(default_value = false)]
 	pub verified_from_start: bool,
 	#[sea_orm(default_value = false)]
 	pub published_on_fediverse: bool,

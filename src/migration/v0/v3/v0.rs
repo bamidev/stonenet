@@ -6,8 +6,6 @@ use crate::{
 	migration::MigrationTrait,
 };
 
-mod entity;
-
 
 pub struct Migration;
 
@@ -17,9 +15,36 @@ impl MigrationTrait for Migration {
 	async fn run(&self, tx: &db::Transaction) -> db::Result<()> {
 		let schema = Schema::new(tx.backend());
 
-		// TODO: Add column published_on_fediverse on table object
-        // TODO: Make column verified_from_start have the default value false
-        // TODO: Create tables activity_pub_follow, activity_pub_object & activity_pub_send_queue.
+		tx.inner()
+			.execute_unprepared(
+				r#"
+			CREATE TABLE "activity_pub_follow" (
+				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+				"actor_id" bigint NOT NULL,
+				"path" text NOT NULL,
+				"server" text NOT NULL
+			);
+			CREATE TABLE "activity_pub_object" (
+				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+				"actor_id" bigint NOT NULL,
+				"data" text NOT NULL
+			);
+			CREATE TABLE "activity_pub_send_queue" (
+				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+				"actor_id" bigint NOT NULL,
+				"recipient_server" text NOT NULL,
+				"object" text NOT NULL,
+				"last_fail" bigint,
+				"failures" integer NOT NULL
+			);
+			CREATE TABLE "activity_pub_shared_inbox" (
+				"server" text NOT NULL PRIMARY KEY,
+				"shared_inbox" text
+			);
+			ALTER TABLE object ADD COLUMN "published_on_fediverse" boolean NOT NULL DEFAULT FALSE;
+		"#,
+			)
+			.await?;
 		Ok(())
 	}
 }

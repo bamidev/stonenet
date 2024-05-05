@@ -17,8 +17,8 @@ use crate::{
 /// The latest database version.
 pub const LATEST_VERSION: Version = Version {
 	major: 0,
-	minor: 2,
-	patch: 1,
+	minor: 3,
+	patch: 0,
 };
 
 
@@ -50,6 +50,7 @@ impl Migrations {
 				(Version::new(0, 1, 0), Box::new(v0::v1::v0::Migration)),
 				(Version::new(0, 2, 0), Box::new(v0::v2::v0::Migration)),
 				(Version::new(0, 2, 1), Box::new(v0::v2::v1::Migration)),
+				(Version::new(0, 3, 0), Box::new(v0::v3::v0::Migration)),
 			],
 		}
 	}
