@@ -547,7 +547,7 @@ pub async fn actor_inbox_post(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 	Extension(actor_opt): Extension<Option<identity::Model>>, body: String,
 ) -> Response {
-	if body.len() > 2048 {
+	if body.len() > 20480 {
 		return error_response(406, "JSON object too big.");
 	}
 	let actor = if let Some(a) = actor_opt {
@@ -589,11 +589,7 @@ async fn actor_inbox_register_follow(
 	if let Some(follower) = object.get("actor") {
 		let follower_string = match follower {
 			serde_json::Value::String(s) => s,
-			_ =>
-				return Ok(Some(error_response(
-					400,
-					"Actor field not a string",
-				))),
+			_ => return Ok(Some(error_response(400, "Actor field not a string"))),
 		};
 
 		// Store follower
@@ -1016,7 +1012,7 @@ async fn fetch_actor(
 	server: &str, actor_path: &str,
 ) -> Result<Option<serde_json::Value>, reqwest::Error> {
 	let actor_url = server.to_string() + actor_path;
-	let response = HTTP_CLIENT.get(actor_url).send().await?;
+	let response = HTTP_CLIENT.get(&actor_url).send().await?;
 
 	// Test content type
 	let content_type = if let Some(value) = response.headers().get("content-type") {
@@ -1093,10 +1089,14 @@ async fn find_shared_inbox(g: &Global, recipient_server: &str) -> db::Result<Opt
 			} else {
 				None
 			};
-			if let Some(v) = json.get("sharedInbox") {
-				match v {
-					serde_json::Value::String(url) => Ok(Some(url.clone())),
-					_ => Ok(None),
+			if let Some(e) = json.get("endpoints") {
+				if let Some(v) = e.get("sharedInbox") {
+					match v {
+						serde_json::Value::String(url) => Ok(Some(url.clone())),
+						_ => Ok(None),
+					}
+				} else {
+					Ok(None)
 				}
 			} else {
 				Ok(None)
