@@ -558,7 +558,11 @@ pub async fn actor_inbox_post(
 
 	let object_json = serde_json::Value::from_str(&body).unwrap();
 	let result = if let Some(object_type) = object_json.get("type") {
-		match object_type.to_string().as_str() {
+		let type_string = match object_type {
+			serde_json::Value::String(s) => s,
+			_ => return error_response(406, "Activity object type field has invalid type"),
+		};
+		match type_string.as_str() {
 			"Create" => actor_inbox_store_object(&g, &address, &actor, object_json).await,
 			"Like" => actor_inbox_store_object(&g, &address, &actor, object_json).await,
 			"Follow" => actor_inbox_register_follow(&g, &actor, object_json).await,
