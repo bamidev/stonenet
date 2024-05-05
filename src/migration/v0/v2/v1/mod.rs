@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sea_orm::{prelude::*, Schema};
+use sea_orm::prelude::*;
 
 use crate::{
 	db::{self, PersistenceHandle},

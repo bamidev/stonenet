@@ -32,7 +32,7 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 		)
 		.route(
 			"/:actor-address/activity-pub/inbox",
-			post(activity_pub::actor_inbox),
+			post(activity_pub::actor_inbox_post),
 		)
 		.route(
 			"/:actor-address/activity-pub/outbox",

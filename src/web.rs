@@ -13,13 +13,14 @@ use std::{
 use ::serde::*;
 use axum::{body::Body, extract::*, response::Response, routing::get, Router};
 use tera::{Context, Tera};
-use tokio::time::sleep;
+use tokio::{spawn, time::sleep};
 use tower_http::services::ServeDir;
 
 use self::common::*;
 use crate::{
 	api::Api,
 	common::*,
+	config::Config,
 	core::*,
 	db::{self, Database},
 };
@@ -39,6 +40,7 @@ pub struct AppState {
 
 #[derive(Clone)]
 pub struct Global {
+	pub config: Config,
 	pub state: AppState,
 	pub server_info: ServerInfo,
 	pub api: Api,
@@ -183,14 +185,23 @@ async fn index_post(
 
 pub async fn serve(
 	stop_flag: Arc<AtomicBool>, port: u16, _workers: Option<usize>, api: Api,
-	server_info: ServerInfo,
+	server_info: ServerInfo, config: Config,
 ) -> db::Result<()> {
 	let global = Arc::new(Global {
 		state: AppState::load(&api.db).await?,
 		api,
 		server_info,
 		template_engine: Tera::new("templates/**/*.tera").unwrap(),
+		config,
 	});
+
+	// TODO: Only turn this on via a config option that is off by default.
+	if global.server_info.is_exposed {
+		spawn(activity_pub::loop_send_queue(
+			stop_flag.clone(),
+			global.clone(),
+		));
+	}
 
 	let ip = if global.server_info.is_exposed {
 		Ipv4Addr::LOCALHOST

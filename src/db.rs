@@ -32,8 +32,8 @@ use crate::{
 	common::*,
 	core::*,
 	entity::{
-		block, file, file_blocks, following, identity, my_identity, object, post_files,
-		post_object, profile_object,
+		activity_pub_follow, block, file, file_blocks, following, identity, my_identity, object,
+		post_files, post_object, profile_object,
 	},
 	identity::*,
 	net::binserde,
@@ -158,6 +158,26 @@ pub trait PersistenceHandle {
 	fn inner(&self) -> &Self::Inner;
 
 	fn backend(&self) -> DatabaseBackend { self.inner().get_database_backend() }
+
+
+	async fn load_activity_pub_follower_servers(&self, actor_id: i64) -> Result<Vec<String>> {
+		let (query, vals) = Query::select()
+			.distinct_on([activity_pub_follow::Column::Server])
+			.and_where(activity_pub_follow::Column::ActorId.eq(actor_id))
+			.from(activity_pub_follow::Entity)
+			.build_any(&*self.backend().get_query_builder());
+
+		let results = self
+			.inner()
+			.query_all(Statement::from_sql_and_values(self.backend(), query, vals))
+			.await?;
+		let mut servers = Vec::with_capacity(results.len());
+		for result in results {
+			let server: String = result.try_get_by_index(0)?;
+			servers.push(server);
+		}
+		Ok(servers)
+	}
 
 	async fn load_home_feed(
 		&self, limit: u64, offset: u64, track: impl Iterator<Item = &ActorAddress> + Send,
@@ -324,7 +344,7 @@ pub trait PersistenceHandle {
 		Ok(Some(buffer))
 	}
 
-	async fn find_actor(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
+	async fn find_actor_info(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
 		let result = identity::Entity::find()
 			.filter(identity::Column::Address.eq(address))
 			.one(self.inner())
@@ -406,7 +426,7 @@ pub trait PersistenceHandle {
 		}
 	}
 
-	async fn find_object_payload_info(
+	async fn load_object_payload_info(
 		&self, object_id: i64, object_type: u8,
 	) -> Result<Option<ObjectPayloadInfo>> {
 		Ok(match object_type {
@@ -715,7 +735,7 @@ pub trait PersistenceHandle {
 		let object_type: u8 = result.try_get_by("type")?;
 		let actor_id: i64 = result.try_get_by("actor_id")?;
 		let payload_result = self
-			.find_object_payload_info(object_id, object_type)
+			.load_object_payload_info(object_id, object_type)
 			.await?;
 
 		if let Some(payload) = payload_result {
@@ -3297,5 +3317,22 @@ mod tests {
 			"corrupted mime type"
 		);
 		assert_eq!(fetched_file2.data, file_data2.data, "corrupted file data");
+	}
+}
+
+impl ObjectPayloadInfo {
+	// Returns true if the payload contains enough information to at least show the
+	// main content.
+	pub fn has_main_content(&self) -> bool {
+		match self {
+			Self::Post(post) => post.message.is_some() && post.mime_type.is_some(),
+			Self::Share(share) =>
+				if let Some(op) = &share.original_post {
+					op.message.is_some() && op.actor_name.is_some()
+				} else {
+					false
+				},
+			Self::Profile(profile) => profile.description.is_some(),
+		}
 	}
 }

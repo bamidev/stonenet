@@ -163,6 +163,7 @@ impl Api {
 			verified_from_start: Set(true),
 			found: Set(created),
 			r#type: Set(OBJECT_TYPE_SHARE),
+			published_on_fediverse: Set(false),
 		})
 		.exec(&tx.0)
 		.await?;

@@ -42,6 +42,10 @@ pub struct Config {
 	pub web_url_base: Option<String>,
 
 	pub track: Option<Vec<String>>,
+
+	pub activity_pub_proactive: Option<bool>,
+	pub activity_pub_inbox_size: Option<u32>,
+	pub activity_pub_send_queue_capacity: Option<u64>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -100,6 +104,9 @@ impl Default for Config {
 			web_url_base: None,
 			track: None,
 			federation_domain: None,
+			activity_pub_inbox_size: None,
+			activity_pub_proactive: None,
+			activity_pub_send_queue_capacity: None,
 		}
 	}
 }

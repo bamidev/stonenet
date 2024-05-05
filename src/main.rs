@@ -305,6 +305,7 @@ async fn main() {
 			};
 			let stop_flag2 = stop_flag.clone();
 			let api2 = api.clone();
+			let config2 = config.clone();
 			spawn(async move {
 				web::serve(
 					stop_flag2,
@@ -312,6 +313,7 @@ async fn main() {
 					None,
 					api2,
 					server_info,
+					config2,
 				)
 				.await
 				.unwrap();
@@ -333,8 +335,9 @@ async fn main() {
 			};
 			let stop_flag2 = stop_flag.clone();
 			let api2 = api.clone();
+			let config2 = config.clone();
 			spawn(async move {
-				web::serve(stop_flag2, port, None, api2, server_info)
+				web::serve(stop_flag2, port, None, api2, server_info, config2)
 					.await
 					.unwrap();
 			});

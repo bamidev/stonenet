@@ -2278,7 +2278,7 @@ impl OverlayNode {
 
 		Box::pin(async move {
 			// If the data is in our own DB, use it then join the network
-			let result = match self.db().find_actor(&address).await {
+			let result = match self.db().find_actor_info(&address).await {
 				Ok(r) => r,
 				Err(e) => {
 					error!("Database issue when trying to find actor: {}", e);
