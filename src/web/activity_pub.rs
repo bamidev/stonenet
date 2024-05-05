@@ -877,7 +877,7 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
 	while !stop_flag.load(Ordering::Relaxed) {
 		// Generate queue items for any new objects not published on the fediverse yet.
 		let g2 = g.clone();
-		spawn(async move {
+		let join_handle = spawn(async move {
 			match populate_send_queue_from_new_objects(&g2, 100).await {
 				Ok(()) => {}
 				Err(e) => {
@@ -934,6 +934,8 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
 				}
 			}
 		}
+
+		join_handle.await;
 	}
 }
 
