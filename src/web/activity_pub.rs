@@ -587,14 +587,21 @@ async fn actor_inbox_register_follow(
 	g: &Global, actor: &identity::Model, object: serde_json::Value,
 ) -> db::Result<Option<Response>> {
 	if let Some(follower) = object.get("actor") {
-		let follower_string = follower.to_string();
+		let follower_string = match follower {
+			serde_json::Value::String(s) => s,
+			_ =>
+				return Ok(Some(error_response(
+					400,
+					"Actor field not a string",
+				))),
+		};
 
 		// Store follower
 		match Url::parse(&follower_string) {
 			Err(e) =>
 				return Ok(Some(error_response(
 					400,
-					&format!("Invalid URL for follower: {}", e),
+					&format!("Invalid URL for follower {}: {}", &follower_string, e),
 				))),
 			Ok(url) => {
 				let domain = if let Some(d) = url.domain() {
@@ -623,7 +630,7 @@ async fn actor_inbox_register_follow(
 					context: ActivityPubDocumentContext::default(),
 					r#type: AcceptActivityType,
 					actor: format!("{}/actor/{}", &g.server_info.url_base, &actor.address),
-					to: vec![follower_string],
+					to: vec![follower_string.clone()],
 					object,
 				};
 				queue_activity(g, actor.id, server, &accept_activity).await?;
