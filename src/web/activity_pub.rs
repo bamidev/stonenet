@@ -23,11 +23,11 @@ use log::*;
 use rand::rngs::OsRng;
 use reqwest::Url;
 use rsa::{
-	pkcs1v15::SigningKey,
-	pkcs8::DecodePrivateKey,
+	pkcs1v15::{SigningKey, VerifyingKey},
+	pkcs8::{DecodePrivateKey, DecodePublicKey},
 	sha2::{Digest, Sha256},
-	signature::{RandomizedSigner, SignatureEncoding},
-	RsaPrivateKey,
+	signature::{RandomizedSigner, SignatureEncoding, Verifier},
+	RsaPrivateKey, RsaPublicKey,
 };
 use sea_orm::{
 	prelude::*,
@@ -1306,6 +1306,10 @@ fn sign_activity(shared_inbox_url: &Url, date_header: &str, digest_header: &str)
 	let private_key = RsaPrivateKey::from_pkcs8_pem(PRIVATE_KEY).unwrap();
 	let signing_key = SigningKey::<Sha256>::new(private_key);
 	let signature = signing_key.sign_with_rng(&mut OsRng, sign_data.as_bytes());
+
+	let verifying_key = VerifyingKey::<Sha256>::from_public_key_pem(PUBLIC_KEY).unwrap();
+	verifying_key.verify(sign_data.as_bytes(), &signature).expect("signature error");
+	
 	BASE64_STANDARD.encode(&signature.to_bytes())
 }
 
