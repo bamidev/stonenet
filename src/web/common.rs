@@ -162,10 +162,14 @@ pub fn error_response<S>(status_code: u16, message: S) -> Response
 where
 	S: Into<String>,
 {
+	let string: String = message.into();
+	if status_code >= 400 {
+		warn!("HTTP {} error: {}", status_code, &string);
+	}
 	Response::builder()
 		.status(status_code)
 		.header("Content-Type", "text/plain")
-		.body(Body::from(message.into()))
+		.body(Body::from(string))
 		.unwrap()
 }
 
