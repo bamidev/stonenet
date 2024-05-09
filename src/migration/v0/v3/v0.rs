@@ -13,22 +13,22 @@ pub struct Migration;
 #[async_trait]
 impl MigrationTrait for Migration {
 	async fn run(&self, tx: &db::Transaction) -> db::Result<()> {
-		let schema = Schema::new(tx.backend());
-
-		tx.inner()
+			tx.inner()
 			.execute_unprepared(
 				r#"
 			CREATE TABLE "activity_pub_actor_inbox" (
 				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
 				"server" text NOT NULL,
 				"path" text NOT NULL,
-				"inbox" text NOT NULL
+				"inbox" text NOT NULL,
+				UNIQUE(server, path)
 			);
 			CREATE TABLE "activity_pub_follow" (
 				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
 				"actor_id" bigint NOT NULL,
+				"server" text NOT NULL,
 				"path" text NOT NULL,
-				"server" text NOT NULL
+				UNIQUE(actor_id, path, server)
 			);
 			CREATE TABLE "activity_pub_object" (
 				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,

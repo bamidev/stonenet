@@ -13,7 +13,8 @@ use axum::{
 	extract::{Query, State},
 	http::HeaderMap,
 	response::Response,
-	Extension,
+	routing::*,
+	*,
 };
 use base64::prelude::*;
 use chrono::{Local, SecondsFormat};
@@ -130,7 +131,7 @@ enum ActivitySendState {
 
 #[allow(non_snake_case)]
 #[derive(Serialize)]
-struct ActorDocument {
+struct ActorObject {
 	#[serde(rename(serialize = "@context"), default)]
 	context: ActivityPubDocumentContext,
 	id: String,
@@ -143,14 +144,13 @@ struct ActorDocument {
 	summary: String,
 
 	publicKey: ActorDocumentPublicKey,
-	icon: Option<ActorDocumentIcon>,
+	icon: Option<ActorObjectIcon>,
 }
 
 #[allow(non_snake_case)]
 #[derive(Serialize)]
-struct ActorDocumentIcon {
+struct ActorObjectIcon {
 	r#type: &'static str,
-	mediaType: String,
 	url: String,
 }
 
@@ -241,7 +241,10 @@ impl ActivityObject {
 		url_base: &str, actor: &ActorAddress, object_hash: &IdType, created: u64, content: String,
 	) -> Self {
 		Self {
-			id: format!("{}/actor/{}/object/{}", url_base, actor, object_hash),
+			id: format!(
+				"{}/actor/{}/object/{}/activity-pub",
+				url_base, actor, object_hash
+			),
 			r#type: ActivityObjectType::Note,
 			content: content.clone(),
 			source: ActivityObjectSource {
@@ -265,7 +268,7 @@ impl CreateActivity {
 			context: ActivityPubDocumentContext::default(),
 			r#type: CreateActivityType,
 			id: format!(
-				"{}/actor/{}/object/{}/activity-pub/activity",
+				"{}/actor/{}/object/{}/activity-pub",
 				url_base, &actor, &object_hash
 			),
 			actor: format!("{}/actor/{}/activity-pub", url_base, &actor),
@@ -282,12 +285,12 @@ impl CreateActivity {
 	}
 }
 
-impl ActorDocument {
+impl ActorObject {
 	fn new(
-		url_base: &str, address: &ActorAddress, name: String,
-		avatar_hash: Option<(&IdType, String)>, summary: String,
+		url_base: &str, address: &ActorAddress, name: String, avatar_hash: Option<&IdType>,
+		summary: String,
 	) -> Self {
-		let id = format!("{}/actor/{}", url_base, address);
+		let id = format!("{}/actor/{}/activity-pub", url_base, address);
 		Self {
 			context: DEFAULT_CONTEXT,
 			id: id.clone(),
@@ -303,9 +306,8 @@ impl ActorDocument {
 				publicKeyPem: PUBLIC_KEY.replace("\n", "\\n"),
 			},
 			summary,
-			icon: avatar_hash.map(|(hash, mime_type)| ActorDocumentIcon {
+			icon: avatar_hash.map(|hash| ActorObjectIcon {
 				r#type: "Image",
-				mediaType: mime_type,
 				url: format!("{}/file/{}", &id, hash),
 			}),
 		}
@@ -487,37 +489,19 @@ pub async fn webfinger(
 }
 
 pub async fn actor(
-	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>, headers: HeaderMap,
+	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
 	let profile = match g.api.db.connect_old() {
 		Err(e) => return server_error_response(e, "DB issue"),
 		Ok(c) => c.fetch_profile_info(&address).unwrap().unwrap(),
 	};
 
-	// Load avatar file mime-type if available
-	let avatar_mime_type = if let Some(hash) = &profile.actor.avatar_id {
-		match file::Entity::find()
-			.filter(file::Column::Hash.eq(hash))
-			.one(g.api.db.inner())
-			.await
-		{
-			Err(e) => return server_error_response(e, "unable to load file"),
-			Ok(r) => r.map(|file| file.mime_type),
-		}
-	} else {
-		None
-	};
-
 	let description = profile.description.clone().unwrap_or_default();
-	let actor = ActorDocument::new(
+	let actor = ActorObject::new(
 		&g.server_info.url_base,
 		&address,
 		profile.actor.name,
-		profile
-			.actor
-			.avatar_id
-			.as_ref()
-			.map(|hash| (hash, avatar_mime_type.unwrap())),
+		profile.actor.avatar_id.as_ref(),
 		description,
 	);
 	json_response(
@@ -526,18 +510,41 @@ pub async fn actor(
 	)
 }
 
+pub async fn actor_inbox(
+	State(g): State<Arc<Global>>, Extension(actor): Extension<identity::Model>,
+) -> Response {
+	let objects = match activity_pub_object::Entity::find()
+		.filter(activity_pub_object::Column::ActorId.eq(actor.id))
+		.all(g.api.db.inner())
+		.await
+	{
+		Ok(o) => o,
+		Err(e) => return server_error_response(e, "Database issue"),
+	};
+
+	let feed = OrderedCollection {
+		context: ActivityPubDocumentContext::default(),
+		summary: "Actor Inbox",
+		r#type: OrderedCollectionType,
+		totalItems: objects.len(),
+		orderedItems: objects
+			.iter()
+			.map(|record| serde_json::to_value(&record.data).unwrap())
+			.collect(),
+	};
+	json_response(
+		&feed,
+		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
+	)
+}
+
 pub async fn actor_inbox_post(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
-	Extension(actor_opt): Extension<Option<identity::Model>>, body: String,
+	Extension(actor): Extension<identity::Model>, body: String,
 ) -> Response {
 	if body.len() > 20480 {
 		return error_response(406, "JSON object too big.");
 	}
-	let actor = if let Some(a) = actor_opt {
-		a
-	} else {
-		return error_response(404, "Actor not found");
-	};
 
 	let object_json = serde_json::Value::from_str(&body).unwrap();
 	let result = if let Some(object_type) = object_json.get("type") {
@@ -749,7 +756,7 @@ async fn populate_send_queue_from_new_object(
 }
 
 async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db::Result<()> {
-	let mut objects = object::Entity::find()
+	let objects = object::Entity::find()
 		.join(JoinType::InnerJoin, object::Relation::Identity.def())
 		.filter(object::Column::PublishedOnFediverse.eq(false))
 		.filter(object::Column::Type.ne(OBJECT_TYPE_PROFILE))
@@ -885,7 +892,7 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
 
 		// Get the first 100 queue items that have not already failed somewhere in the
 		// last hour TODO: Get the actor address in this query as well
-		let mut result =
+		let result =
 			activity_pub_send_queue::Entity::find()
 				.filter(activity_pub_send_queue::Column::LastFail.is_null().or(
 					activity_pub_send_queue::Column::LastFail.lt(current_timestamp() - 3600000),
@@ -915,7 +922,9 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
 				},
 		}
 
-		join_handle.await;
+		if let Err(e) = join_handle.await {
+			error!("Send queue join error: {}", e);
+		}
 	}
 }
 
@@ -1109,6 +1118,12 @@ fn hash_activity(activity: &str) -> String {
 	BASE64_STANDARD.encode(&hash)
 }
 
+pub fn router(_: Arc<Global>) -> Router<Arc<Global>> {
+	Router::new()
+		.route("/inbox", get(actor_inbox).post(actor_inbox_post))
+		.route("/outbox", get(actor_outbox))
+}
+
 fn sign_activity(shared_inbox_url: &Url, date_header: &str) -> String {
 	// Prepare sign data
 	let sign_data = format!(
@@ -1130,7 +1145,7 @@ async fn send_activity(
 	activity: String,
 ) -> db::Result<ActivitySendState> {
 	// Get & parse the shared inbox url
-	let (inbox_url_raw) = if let Some(si) = find_inbox(g, recipient_server, recipient_path).await? {
+	let inbox_url_raw = if let Some(si) = find_inbox(g, recipient_server, recipient_path).await? {
 		si
 	} else {
 		return Ok(ActivitySendState::Impossible);

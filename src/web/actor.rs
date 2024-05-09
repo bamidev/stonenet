@@ -26,18 +26,8 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 
 	Router::new()
 		.route("/:actor-address", actor_methods)
-		.route(
-			"/:actor-address/activity-pub",
-			get(activity_pub::actor),
-		)
-		.route(
-			"/:actor-address/activity-pub/inbox",
-			post(activity_pub::actor_inbox_post),
-		)
-		.route(
-			"/:actor-address/activity-pub/outbox",
-			get(activity_pub::actor_outbox),
-		)
+		.route("/:actor-address/activity-pub", get(activity_pub::actor))
+		.nest("/:actor-address/activity-pub", activity_pub::router(g.clone()))
 		.nest("/:actor-address/file", file::router(g.clone()))
 		// A workaround for Mastodon's behavior:
 		.nest("/:actor-address/activity-pub/file", file::router(g.clone()))
@@ -59,7 +49,7 @@ async fn actor_middleware(
 		Err(r) => return r,
 		Ok(a) => a,
 	};
-	let actor = match identity::Entity::find()
+	let actor_opt = match identity::Entity::find()
 		.filter(identity::Column::Address.eq(&address))
 		.one(g.api.db.inner())
 		.await
@@ -67,8 +57,13 @@ async fn actor_middleware(
 		Err(e) => return server_error_response(e, "Unable to load actor"),
 		Ok(a) => a,
 	};
-	request.extensions_mut().insert(address);
-	request.extensions_mut().insert(actor);
+
+	if let Some(actor) = actor_opt {
+		request.extensions_mut().insert(address);
+		request.extensions_mut().insert(actor);
+	} else {
+		return error_response(404, "Unknown actor");
+	}
 
 	next.run(request).await
 }

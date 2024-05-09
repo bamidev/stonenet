@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use axum::{extract::*, middleware::*, response::Response, routing::*, *};
+use axum::{extract::*, middleware::*, routing::*, *};
 
 use crate::web::*;
 
