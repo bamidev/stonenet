@@ -1101,7 +1101,7 @@ async fn process_next_send_queue_item(
 			.exec(g.api.db.inner())
 			.await?;
 	} else {
-		if record.failures < 24 {
+		if record.failures < 7 * 24 {
 			warn!(
 				"Failed to sent ActivityPub activity {} (attempt {}).",
 				record.id,
@@ -1126,6 +1126,17 @@ async fn process_next_send_queue_item(
 				record.id
 			);
 			activity_pub_send_queue::Entity::delete_by_id(record.id)
+				.exec(g.api.db.inner())
+				.await?;
+			// Delete all followers of the recipient server, because the server is deemed to
+			// be unresponsive after not responding for a week.
+			let d = activity_pub_follow::ActiveModel {
+				id: NotSet,
+				actor_id: Set(record.actor_id),
+				path: NotSet,
+				server: Set(record.recipient_server),
+			};
+			activity_pub_follow::Entity::delete(d)
 				.exec(g.api.db.inner())
 				.await?;
 		}
