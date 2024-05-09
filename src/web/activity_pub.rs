@@ -145,6 +145,8 @@ struct ActorObject {
 
 	publicKey: ActorDocumentPublicKey,
 	icon: Option<ActorObjectIcon>,
+
+	nodeInfo2Url: String,
 }
 
 #[allow(non_snake_case)]
@@ -190,6 +192,51 @@ struct CreateActivity {
 enum MediaType {
 	Markdown,
 }
+
+#[allow(non_snake_case)]
+#[derive(Serialize)]
+struct NodeInfo2 {
+	version: NodeInfoVersion,
+	server: NodeInfoServer,
+	organization: NodeInfoOrganization,
+	protocols: Vec<String>,
+	openRegistrations: bool,
+	usage: NodeInfoUsage,
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize)]
+struct NodeInfoOrganization {
+	name: Option<String>,
+	contact: Option<String>,
+	account: Option<String>,
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize)]
+struct NodeInfoServer {
+	baseUrl: String,
+	name: String,
+	software: &'static str,
+	version: String,
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize)]
+struct NodeInfoUsage {
+	users: NodeInfoUsageUsers,
+	//totalPosts: u64,
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize)]
+struct NodeInfoUsageUsers {
+	total: u64,
+	//activeHalfyear: u64,
+	//activeWeek: u64,
+}
+
+struct NodeInfoVersion;
 
 #[allow(non_snake_case)]
 #[derive(Serialize)]
@@ -294,6 +341,7 @@ impl ActorObject {
 		Self {
 			context: DEFAULT_CONTEXT,
 			id: id.clone(),
+			nodeInfo2Url: format!("{}/.well-known/x-nodeinfo2", url_base),
 			url: id.clone(),
 			r#type: "Person",
 			name,
@@ -350,6 +398,15 @@ impl Serialize for MediaType {
 		match self {
 			Self::Markdown => serializer.serialize_str("text/markdown"),
 		}
+	}
+}
+
+impl Serialize for NodeInfoVersion {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		serializer.serialize_str("1.0")
 	}
 }
 
@@ -437,6 +494,40 @@ fn parse_account_name(resource: &str) -> Option<&str> {
 		return Some(&resource[5..i]);
 	}
 	None
+}
+
+
+pub async fn nodeinfo(State(g): State<Arc<Global>>) -> Response {
+	let info = NodeInfo2 {
+		version: NodeInfoVersion,
+		server: NodeInfoServer {
+			baseUrl: g.server_info.url_base.clone(),
+			name: g
+				.config
+				.federation_server_name
+				.clone()
+				.unwrap_or("Just another Stonenet bridge".to_string()),
+			software: "stonenet",
+			version: env!("CARGO_PKG_VERSION").to_string(),
+		},
+		organization: NodeInfoOrganization {
+			name: g.config.federation_organization.clone(),
+			contact: g.config.federation_contact_info.clone(),
+			account: g.config.federation_server_account.clone(),
+		},
+		protocols: vec!["activitypub".to_string()],
+		openRegistrations: false,
+		// TODO: Compute the following information:
+		usage: NodeInfoUsage {
+			users: NodeInfoUsageUsers {
+				total: g.config.track.as_ref().map(|t| t.len()).unwrap_or(0) as _,
+				//activeHalfyear: todo!(),
+				//activeWeek: todo!(),
+			},
+			//totalPosts:
+		},
+	};
+	json_response(&info, Some("application/json"))
 }
 
 pub async fn webfinger(

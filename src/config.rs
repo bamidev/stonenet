@@ -38,10 +38,15 @@ pub struct Config {
 	pub bucket_size: Option<usize>,
 	pub relay_node: Option<bool>,
 	pub leak_first_request: Option<bool>,
-	pub federation_domain: Option<String>,
 	pub web_url_base: Option<String>,
 
 	pub track: Option<Vec<String>>,
+
+	pub federation_contact_info: Option<String>,
+	pub federation_domain: Option<String>,
+	pub federation_organization: Option<String>,
+	pub federation_server_account: Option<String>,
+	pub federation_server_name: Option<String>,
 
 	pub activity_pub_proactive: Option<bool>,
 	pub activity_pub_inbox_size: Option<u32>,
@@ -104,6 +109,10 @@ impl Default for Config {
 			web_url_base: None,
 			track: None,
 			federation_domain: None,
+			federation_contact_info: None,
+			federation_organization: None,
+			federation_server_account: None,
+			federation_server_name: None,
 			activity_pub_inbox_size: None,
 			activity_pub_proactive: None,
 			activity_pub_send_queue_capacity: None,

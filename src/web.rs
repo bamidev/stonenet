@@ -217,6 +217,7 @@ pub async fn serve(
 		.nest("/my-identity", my_identity::router(global.clone()))
 		.route("/search", get(search))
 		.route("/.well-known/webfinger", get(activity_pub::webfinger))
+		.route("/.well-known/x-nodeinfo2", get(activity_pub::nodeinfo))
 		.with_state(global);
 
 	let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
