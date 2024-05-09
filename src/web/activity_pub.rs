@@ -165,6 +165,16 @@ struct ActorPublicKey {
 	publicKeyPem: String,
 }
 
+#[allow(non_snake_case)]
+#[derive(Serialize)]
+struct ActorPublicKeyWithContext {
+	#[serde(rename(serialize = "@context"), default)]
+	context: ActivityPubDocumentContext,
+	id: String,
+	owner: String,
+	publicKeyPem: String,
+}
+
 struct CreateActivityType;
 
 struct DateTime(u64);
@@ -610,7 +620,8 @@ pub async fn actor_public_key(
 		"{}/actor/{}/activity-pub",
 		&g.server_info.url_base, &address
 	);
-	let key = ActorPublicKey {
+	let key = ActorPublicKeyWithContext {
+		context: DEFAULT_CONTEXT,
 		id: format!("{}/public-key", &actor_id),
 		owner: actor_id,
 		publicKeyPem: PUBLIC_KEY.to_string(),
@@ -712,7 +723,9 @@ pub async fn actor_inbox_post(
 	}
 }
 
-async fn actor_inbox_process_undo(g: &Global, actor: &identity::Model, object: serde_json::Value) -> db::Result<Option<Response>> {
+async fn actor_inbox_process_undo(
+	g: &Global, actor: &identity::Model, object: serde_json::Value,
+) -> db::Result<Option<Response>> {
 	Ok(None)
 }
 
