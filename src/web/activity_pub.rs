@@ -619,7 +619,8 @@ async fn actor_inbox_register_follow(
 					to: vec![follower_string.clone()],
 					object,
 				};
-				queue_activity(g, actor.id, server, Some(path), &accept_activity).await?;
+				queue_activity(g, &g.api.db, actor.id, server, Some(path), &accept_activity)
+					.await?;
 			}
 		};
 
@@ -742,7 +743,7 @@ async fn populate_send_queue_from_new_object(
 	let tx = g.api.db.transaction().await?;
 
 	for server in follower_servers {
-		queue_activity(g, object.actor_id, server, None, &activity_json).await?;
+		queue_activity(g, &tx, object.actor_id, server, None, &activity_json).await?;
 	}
 
 	// Mark object as 'published on the fediverse'.
@@ -807,8 +808,8 @@ async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db::Res
 /// If `recipient_path` is `None`, the activity will be send to the server's
 /// shared inbox, otherwise it will be send to the actor's inbox.
 async fn queue_activity(
-	g: &Global, actor_id: i64, recipient_server: String, recipient_path: Option<String>,
-	object: &impl Serialize,
+	g: &Global, db: &impl PersistenceHandle, actor_id: i64, recipient_server: String,
+	recipient_path: Option<String>, object: &impl Serialize,
 ) -> db::Result<bool> {
 	// FIXME: Check if the queue is over capacity, in which case nothing will be
 	// done.
@@ -817,16 +818,10 @@ async fn queue_activity(
 		.from(Alias::new(
 			activity_pub_object::Entity::default().table_name(),
 		))
-		.build_any(&*g.api.db.backend().get_query_builder());
-	let result = g
-		.api
-		.db
+		.build_any(&*db.backend().get_query_builder());
+	let result = db
 		.inner()
-		.query_one(Statement::from_sql_and_values(
-			g.api.db.backend(),
-			query,
-			vals,
-		))
+		.query_one(Statement::from_sql_and_values(db.backend(), query, vals))
 		.await?
 		.expect("count query returned 0 rows");
 	let count: i64 = result.try_get_by_index(0)?;
@@ -847,7 +842,7 @@ async fn queue_activity(
 			failures: Set(0),
 		};
 		activity_pub_send_queue::Entity::insert(record)
-			.exec(g.api.db.inner())
+			.exec(db.inner())
 			.await?;
 		Ok(true)
 	} else {
