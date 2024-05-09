@@ -141,6 +141,7 @@ struct ActorObject {
 	url: String,
 	inbox: String,
 	outbox: String,
+	followers: String,
 	summary: String,
 
 	publicKey: ActorDocumentPublicKey,
@@ -348,6 +349,7 @@ impl ActorObject {
 			preferredUsername: address.to_string(),
 			inbox: format!("{}/actor/{}/activity-pub/inbox", url_base, address),
 			outbox: format!("{}/actor/{}/activity-pub/outbox", url_base, address),
+			followers: format!("{}/actor/{}/activity-pub/followers", url_base, address),
 			publicKey: ActorDocumentPublicKey {
 				id: format!("{}#main-key", &id),
 				owner: id.clone(),
@@ -597,6 +599,34 @@ pub async fn actor(
 	);
 	json_response(
 		&actor,
+		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
+	)
+}
+
+pub async fn actor_followers(
+	State(g): State<Arc<Global>>, Extension(actor): Extension<identity::Model>,
+) -> Response {
+	let objects = match activity_pub_follow::Entity::find()
+		.filter(activity_pub_follow::Column::ActorId.eq(actor.id))
+		.all(g.api.db.inner())
+		.await
+	{
+		Ok(o) => o,
+		Err(e) => return server_error_response(e, "Database issue"),
+	};
+
+	let feed = OrderedCollection {
+		context: ActivityPubDocumentContext::default(),
+		summary: "Actor Followers",
+		r#type: OrderedCollectionType,
+		totalItems: objects.len(),
+		orderedItems: objects
+			.iter()
+			.map(|record| serde_json::Value::String(record.server.clone() + &record.path))
+			.collect(),
+	};
+	json_response(
+		&feed,
 		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
 	)
 }
@@ -1210,6 +1240,7 @@ fn hash_activity(activity: &str) -> String {
 
 pub fn router(_: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
+		.route("/followers", get(actor_followers))
 		.route("/inbox", get(actor_inbox).post(actor_inbox_post))
 		.route("/outbox", get(actor_outbox))
 }
