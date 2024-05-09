@@ -19,7 +19,7 @@ use axum::{
 use base64::prelude::*;
 use chrono::{Local, SecondsFormat};
 use lazy_static::lazy_static;
-use log::{error, warn};
+use log::*;
 use rand::rngs::OsRng;
 use reqwest::Url;
 use rsa::{
@@ -938,6 +938,10 @@ async fn process_next_send_queue_item(
 		.await?
 	{
 		let actor_address = actor_record.address;
+		info!(
+			"Sending activity {} to {}...",
+			record.id, &record.recipient_server
+		);
 		send_state = match send_activity(
 			g,
 			&actor_address,

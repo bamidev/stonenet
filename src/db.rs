@@ -4,7 +4,7 @@
 
 mod install;
 
-use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str};
+use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration};
 
 use ::serde::Serialize;
 use async_trait::async_trait;
@@ -12,7 +12,7 @@ use chacha20::{
 	cipher::{KeyIvInit, StreamCipher},
 	ChaCha20,
 };
-use chrono::*;
+use chrono::Utc;
 use fallible_iterator::FallibleIterator;
 use generic_array::{typenum::U12, GenericArray};
 use log::*;
@@ -21,10 +21,7 @@ use rusqlite::{
 	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Value, ValueRef},
 	Rows, ToSql,
 };
-use sea_orm::{
-	prelude::*, sea_query::*, ColumnTrait, ConnectionTrait, DatabaseBackend, EntityTrait, JoinType,
-	QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait, Statement, TransactionTrait,
-};
+use sea_orm::{prelude::*, sea_query::*, *};
 use thiserror::Error;
 use unsafe_send_sync::UnsafeSendSync;
 
@@ -910,7 +907,10 @@ impl Database {
 			},
 		}
 
-		let orm = sea_orm::Database::connect(format!("sqlite://{}?mode=rwc", path.display()))
+		let mut opts = ConnectOptions::new(format!("sqlite://{}?mode=rwc", path.display()));
+		opts.idle_timeout(Duration::from_secs(10));
+		opts.acquire_timeout(Duration::from_secs(1));
+		let orm = sea_orm::Database::connect(opts)
 			.await
 			.map_err(|e| self::Error::OrmError(e))?;
 

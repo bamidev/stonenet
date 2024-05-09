@@ -13,7 +13,7 @@ pub struct Migration;
 #[async_trait]
 impl MigrationTrait for Migration {
 	async fn run(&self, tx: &db::Transaction) -> db::Result<()> {
-			tx.inner()
+		tx.inner()
 			.execute_unprepared(
 				r#"
 			CREATE TABLE "activity_pub_actor_inbox" (
