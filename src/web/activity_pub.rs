@@ -17,7 +17,7 @@ use axum::{
 	*,
 };
 use base64::prelude::*;
-use chrono::{Local, SecondsFormat};
+use chrono::{SecondsFormat, Utc};
 use lazy_static::lazy_static;
 use log::*;
 use rand::rngs::OsRng;
@@ -144,7 +144,7 @@ struct ActorObject {
 	followers: String,
 	summary: String,
 
-	publicKey: ActorDocumentPublicKey,
+	publicKey: ActorPublicKey,
 	icon: Option<ActorObjectIcon>,
 
 	nodeInfo2Url: String,
@@ -159,7 +159,7 @@ struct ActorObjectIcon {
 
 #[allow(non_snake_case)]
 #[derive(Serialize)]
-struct ActorDocumentPublicKey {
+struct ActorPublicKey {
 	id: String,
 	owner: String,
 	publicKeyPem: String,
@@ -347,11 +347,11 @@ impl ActorObject {
 			r#type: "Person",
 			name,
 			preferredUsername: address.to_string(),
-			inbox: format!("{}/actor/{}/activity-pub/inbox", url_base, address),
-			outbox: format!("{}/actor/{}/activity-pub/outbox", url_base, address),
-			followers: format!("{}/actor/{}/activity-pub/followers", url_base, address),
-			publicKey: ActorDocumentPublicKey {
-				id: format!("{}#main-key", &id),
+			inbox: format!("{}/inbox", &id),
+			outbox: format!("{}/outbox", &id),
+			followers: format!("{}/followers", &id),
+			publicKey: ActorPublicKey {
+				id: format!("{}/public-key", &id),
 				owner: id.clone(),
 				publicKeyPem: PUBLIC_KEY.replace("\n", "\\n"),
 			},
@@ -599,6 +599,24 @@ pub async fn actor(
 	);
 	json_response(
 		&actor,
+		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
+	)
+}
+
+pub async fn actor_public_key(
+	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
+) -> Response {
+	let actor_id = format!(
+		"{}/actor/{}/activity-pub",
+		&g.server_info.url_base, &address
+	);
+	let key = ActorPublicKey {
+		id: format!("{}/public-key", &actor_id),
+		owner: actor_id,
+		publicKeyPem: PUBLIC_KEY.to_string(),
+	};
+	json_response(
+		&key,
 		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
 	)
 }
@@ -1243,6 +1261,7 @@ pub fn router(_: Arc<Global>) -> Router<Arc<Global>> {
 		.route("/followers", get(actor_followers))
 		.route("/inbox", get(actor_inbox).post(actor_inbox_post))
 		.route("/outbox", get(actor_outbox))
+		.route("/public-key", get(actor_public_key))
 }
 
 fn sign_activity(shared_inbox_url: &Url, date_header: &str) -> String {
@@ -1289,7 +1308,7 @@ async fn send_activity(
 	let digest_header = format!("sha-256={}", body_digest);
 	let signature = sign_activity(&inbox_url, &date_header);
 	let signature_header = format!(
-		"keyId=\"{}/actor/{}#main-key\",headers=\"(request-target) host date \
+		"keyId=\"{}/actor/{}activity-pub/public-key\",headers=\"(request-target) host date \
 		 digest\",signature=\"{}\"",
 		&g.server_info.url_base, actor_address, signature
 	);
