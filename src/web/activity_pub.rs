@@ -1292,13 +1292,14 @@ pub fn router(_: Arc<Global>) -> Router<Arc<Global>> {
 		.route("/public-key", get(actor_public_key))
 }
 
-fn sign_activity(shared_inbox_url: &Url, date_header: &str) -> String {
+fn sign_activity(shared_inbox_url: &Url, date_header: &str, digest_header: &str) -> String {
 	// Prepare sign data
 	let sign_data = format!(
-		"(request-target): post {}\nhost: {}\ndate: {}",
+		"(request-target): post {}\nhost: {}\ndate: {}\ndigest: {}",
 		shared_inbox_url.path(),
 		shared_inbox_url.domain().unwrap(),
-		date_header
+		date_header,
+		digest_header
 	);
 
 	// Sign data
@@ -1334,7 +1335,7 @@ async fn send_activity(
 	let date_header = format!("{}", Utc::now().format("%a, %d %b %Y %T GMT"));
 	let body_digest = hash_activity(&activity);
 	let digest_header = format!("sha-256={}", body_digest);
-	let signature = sign_activity(&inbox_url, &date_header);
+	let signature = sign_activity(&inbox_url, &date_header, &digest_header);
 	let signature_header = format!(
 		"keyId=\"{}/actor/{}/activity-pub/public-key\",headers=\"(request-target) host date \
 		 digest\",signature=\"{}\"",
