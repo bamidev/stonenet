@@ -695,7 +695,7 @@ pub async fn actor_inbox_post(
 			"Create" => actor_inbox_store_object(&g, &address, &actor, object_json).await,
 			"Like" => actor_inbox_store_object(&g, &address, &actor, object_json).await,
 			"Follow" => actor_inbox_register_follow(&g, &actor, object_json).await,
-			//"Undo" => actor_inbox_process_undo(&g, &address, &actor, object_json).await,
+			//"Undo" => actor_inbox_process_undo(&g, &actor, object_json).await,
 			other =>
 				return error_response(406, &format!("Object type \"{}\" not supported.", other)),
 		}
@@ -710,6 +710,10 @@ pub async fn actor_inbox_post(
 			Some(response) => response,
 		},
 	}
+}
+
+async fn actor_inbox_process_undo(g: &Global, actor: &identity::Model, object: serde_json::Value) -> db::Result<Option<Response>> {
+	Ok(None)
 }
 
 async fn actor_inbox_register_follow(
@@ -1319,7 +1323,7 @@ async fn send_activity(
 	let digest_header = format!("sha-256={}", body_digest);
 	let signature = sign_activity(&inbox_url, &date_header);
 	let signature_header = format!(
-		"keyId=\"{}/actor/{}activity-pub/public-key\",headers=\"(request-target) host date \
+		"keyId=\"{}/actor/{}/activity-pub/public-key\",headers=\"(request-target) host date \
 		 digest\",signature=\"{}\"",
 		&g.server_info.url_base, actor_address, signature
 	);
