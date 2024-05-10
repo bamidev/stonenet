@@ -23,6 +23,7 @@ use log::*;
 use rand::rngs::OsRng;
 use reqwest::Url;
 use rsa::{
+	pkcs1::DecodeRsaPrivateKey,
 	pkcs1v15::{SigningKey, VerifyingKey},
 	pkcs8::{DecodePrivateKey, DecodePublicKey},
 	sha2::{Digest, Sha256},
@@ -55,43 +56,41 @@ const SEND_QUEUE_DEFAULT_CAPACITY: u64 = 100000;
 
 // The public and private keys that the activity pub specification wants. We
 // don't actually keep one for every user.
-const PUBLIC_KEY: &'static str = r#"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuisC4+iNmaASpAfQHS+Q
-rm22bSCIrzZViIVz8NgHIHD2nudJ7JVzIgtDk3dX6V39CvvMr0mkMrTQHdGXwnBs
-aOBYJ/j9tE5MngV9s1B1GPdj2hDBZF0w30h/Aqn/UCaWLtitrllOECbrCV+ZN0jV
-fNxD6lXW7gvbBQUDgxPNREjp3idJ/H2gFtDEZcf8BLzl90vUFcdXrWGN43lmENPO
-SomG7QsKp7MutQEtoz+UeBI/cOZ5sxsDEa4mLeeGsWfBfwmnvDCnU6Z1VooONo+q
-AXUgNJdM2qiaB/sxPJsX8HSCdf2LeB8JjogqD/+zGJFyS2kB8obTZRghLQJsMthY
-jwIDAQAB
------END PUBLIC KEY-----"#;
-const PRIVATE_KEY: &'static str = r#"-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC6KwLj6I2ZoBKk
-B9AdL5CubbZtIIivNlWIhXPw2AcgcPae50nslXMiC0OTd1fpXf0K+8yvSaQytNAd
-0ZfCcGxo4Fgn+P20TkyeBX2zUHUY92PaEMFkXTDfSH8Cqf9QJpYu2K2uWU4QJusJ
-X5k3SNV83EPqVdbuC9sFBQODE81ESOneJ0n8faAW0MRlx/wEvOX3S9QVx1etYY3j
-eWYQ085KiYbtCwqnsy61AS2jP5R4Ej9w5nmzGwMRriYt54axZ8F/Cae8MKdTpnVW
-ig42j6oBdSA0l0zaqJoH+zE8mxfwdIJ1/Yt4HwmOiCoP/7MYkXJLaQHyhtNlGCEt
-Amwy2FiPAgMBAAECggEAVX4LBb51yGbKKKmt2LlPJ8saS2L1YgEBpoAijiemni9C
-EhcEy7CV/rxNfBsCNBkFa1XW2WhoDyEZsZfeqVwXbNIZqcGeQH70kFzVLNN18tEo
-+atYJE7ncqJIMWD/7j7KGRlIKRi50JEOvm84XTsFTyGXzrU8znSDT/rNchRV31US
-yj3vFbMobwQO716QYqqDCXibFI8zW3rH19zjuyDKcFWnEXfDIZBwoGTHoSAcjbHW
-3SWQEofR9knMzPjbCiTGcchI7gQgv9/HQoAC37OtRQMzxnyzx7/zGtfZNOzaLhrf
-cyGu6J/yzaIqrcaWMHX1kiyvzdk7AhREyCFX5BpBAQKBgQD0SXHX2qbeFm37qinX
-xDGmKZcTUqIUQKtIG5+iEP8jTPpu2lGumCR+EZs4XXjhttMSj6VzKkvz9H/X/QBS
-FgSR+cBZrh1p91hXZYRDelJ4539P3NcYahSCojQETvcDDJEJZL2X7OJHAZwvTfd1
-/z0VHld8M9BptbEu6Y2LzthRmQKBgQDDGCxQ5LY/DpHkMgtLTT6T4Mv8q2CI4TpC
-WxF3lIwUl8HLqWTwmaqSSAfYpExdtl9kR8Qcg28SZXwgimhLT09ySfVgpZO5/fwg
-GYSW4m1ClYhz2ZWE1fCLq13v++Eyd2AoyWFp/1aoTd3BMGWRa23mKEkrbCkRZceE
-dpPFQsYkZwKBgBE0uxgBBo/N9KEtMxVHdFfHxiRORaw3gdjqWSwJFm9eFKWKKwap
-IKjghJZLvx/myKceBwE9kWv1ZKvJ3iPp+RhvBuVKJjg4e7hsJgy6qORrKcRuQZgu
-oJMy6YcEKNHGKNEIj3IL9UQbEO0kCLH+8EZ0hKTy4VMQwRIU0StvvjzBAoGAaMwf
-YgS5cP3emHnZX0XLC5yBduSIIn750JMiut1ssdMjIseHlUa2PYW70T/QVbaVX0S9
-r6NaksM4/jHa/DlKL9ZSnOvUguBQAt4yPuq6Tj4M4k5K5uQVJrGS8EqZGYbOfJpQ
-XaPvZNEPAauBo6/VhQC27UBYfyPxHNKlZh0MWpkCgYEAm1rC5typagkiNUl1XwRV
-70AbI/Vx8UMA63/tHXePuR/x9uFu4zqPr7VViWmCQrDqcf6F1I0prU9JETsoKiRD
-EFzCSxvsK9TM47WxntIAUmciHe+PvoJfV4Wsc2hhnPhszrkenxSA0kMj9dwg1Yyq
-yKNOge1KpLZ2M6dMVrhqvE0=
------END PRIVATE KEY-----"#;
+const PUBLIC_KEY: &'static str = r#"-----BEGIN RSA PUBLIC KEY-----
+MIIBCgKCAQEAhAKYdtoeoy8zcAcR874L8cnZxKzAGwd7v36APp7Pv6Q2jdsPBRrw
+WEBnez6d0UDKDwGbc6nxfEXAy5mbhgajzrw3MOEt8uA5txSKobBpKDeBLOsdJKFq
+MGmXCQvEG7YemcxDTRPxAleIAgYYRjTSd/QBwVW9OwNFhekro3RtlinV0a75jfZg
+kne/YiktSvLG34lw2zqXBDTC5NHROUqGTlML4PlNZS5Ri2U4aCNx2rUPRcKIlE0P
+uKxI4T+HIaFpv8+rdV6eUgOrB2xeI1dSFFn/nnv5OoZJEIB+VmuKn3DCUcCZSFlQ
+PSXSfBDiUGhwOw76WuSSsf1D4b/vLoJ10wIDAQAB
+-----END RSA PUBLIC KEY-----"#;
+const PRIVATE_KEY: &'static str = r#"-----BEGIN RSA PRIVATE KEY-----
+MIIEqAIBAAKCAQEAhAKYdtoeoy8zcAcR874L8cnZxKzAGwd7v36APp7Pv6Q2jdsP
+BRrwWEBnez6d0UDKDwGbc6nxfEXAy5mbhgajzrw3MOEt8uA5txSKobBpKDeBLOsd
+JKFqMGmXCQvEG7YemcxDTRPxAleIAgYYRjTSd/QBwVW9OwNFhekro3RtlinV0a75
+jfZgkne/YiktSvLG34lw2zqXBDTC5NHROUqGTlML4PlNZS5Ri2U4aCNx2rUPRcKI
+lE0PuKxI4T+HIaFpv8+rdV6eUgOrB2xeI1dSFFn/nnv5OoZJEIB+VmuKn3DCUcCZ
+SFlQPSXSfBDiUGhwOw76WuSSsf1D4b/vLoJ10wIDAQABAoIBAG/JZuSWdoVHbi56
+vjgCgkjg3lkO1KrO3nrdm6nrgA9P9qaPjxuKoWaKO1cBQlE1pSWp/cKncYgD5WxE
+CpAnRUXG2pG4zdkzCYzAh1i+c34L6oZoHsirK6oNcEnHveydfzJL5934egm6p8DW
++m1RQ70yUt4uRc0YSor+q1LGJvGQHReF0WmJBZHrhz5e63Pq7lE0gIwuBqL8SMaA
+yRXtK+JGxZpImTq+NHvEWWCu09SCq0r838ceQI55SvzmTkwqtC+8AT2zFviMZkKR
+Qo6SPsrqItxZWRty2izawTF0Bf5S2VAx7O+6t3wBsQ1sLptoSgX3QblELY5asI0J
+YFz7LJECgYkAsqeUJmqXE3LP8tYoIjMIAKiTm9o6psPlc8CrLI9CH0UbuaA2JCOM
+cCNq8SyYbTqgnWlB9ZfcAm/cFpA8tYci9m5vYK8HNxQr+8FS3Qo8N9RJ8d0U5Csw
+DzMYfRghAfUGwmlWj5hp1pQzAuhwbOXFtxKHVsMPhz1IBtF9Y8jvgqgYHLbmyiu1
+mwJ5AL0pYF0G7x81prlARURwHo0Yf52kEw1dxpx+JXER7hQRWQki5/NsUEtv+8RT
+qn2m6qte5DXLyn83b1qRscSdnCCwKtKWUug5q2ZbwVOCJCtmRwmnP131lWRYfj67
+B/xJ1ZA6X3GEf4sNReNAtaucPEelgR2nsN0gKQKBiGoqHWbK1qYvBxX2X3kbPDkv
+9C+celgZd2PW7aGYLCHq7nPbmfDV0yHcWjOhXZ8jRMjmANVR/eLQ2EfsRLdW69bn
+f3ZD7JS1fwGnO3exGmHO3HZG+6AvberKYVYNHahNFEw5TsAcQWDLRpkGybBcxqZo
+81YCqlqidwfeO5YtlO7etx1xLyqa2NsCeG9A86UjG+aeNnXEIDk1PDK+EuiThIUa
+/2IxKzJKWl1BKr2d4xAfR0ZnEYuRrbeDQYgTImOlfW6/GuYIxKYgEKCFHFqJATAG
+IxHrq1PDOiSwXd2GmVVYyEmhZnbcp8CxaEMQoevxAta0ssMK3w6UsDtvUvYvF22m
+qQKBiD5GwESzsFPy3Ga0MvZpn3D6EJQLgsnrtUPZx+z2Ep2x0xc5orneB5fGyF1P
+WtP+fG5Q6Dpdz3LRfm+KwBCWFKQjg7uTxcjerhBWEYPmEMKYwTJF5PBG9/ddvHLQ
+EQeNC8fHGg4UXU8mhHnSBt3EA10qQJfRDs15M38eG2cYwB1PZpDHScDnDA0=
+-----END RSA PRIVATE KEY-----"#;
 
 
 #[derive(Serialize)]
@@ -361,7 +360,7 @@ impl ActorObject {
 			outbox: format!("{}/outbox", &id),
 			followers: format!("{}/followers", &id),
 			publicKey: ActorPublicKey {
-				id: format!("{}/public-key", &id),
+				id: format!("{}#main-key", &id),
 				owner: id.clone(),
 				publicKeyPem: PUBLIC_KEY.replace("\n", "\\n"),
 			},
@@ -622,7 +621,7 @@ pub async fn actor_public_key(
 	);
 	let key = ActorPublicKeyWithContext {
 		context: DEFAULT_CONTEXT,
-		id: format!("{}/public-key", &actor_id),
+		id: format!("{}#main-key", &actor_id),
 		owner: actor_id,
 		publicKeyPem: PUBLIC_KEY.to_string(),
 	};
@@ -1292,24 +1291,21 @@ pub fn router(_: Arc<Global>) -> Router<Arc<Global>> {
 		.route("/public-key", get(actor_public_key))
 }
 
-fn sign_activity(shared_inbox_url: &Url, date_header: &str, digest_header: &str) -> String {
+fn sign_activity(inbox_url: &Url, date_header: &str, digest_header: &str) -> String {
 	// Prepare sign data
 	let sign_data = format!(
-		"(request-target): post {}\nhost: {}\ndate: {}\ndigest: {}",
-		shared_inbox_url.path(),
-		shared_inbox_url.domain().unwrap(),
+		"(request-target): post {}\nhost: {}\ndate: {}\ndigest: {}\ncontent-type: application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+		inbox_url.path(),
+		inbox_url.domain().unwrap(),
 		date_header,
 		digest_header
 	);
 
 	// Sign data
-	let private_key = RsaPrivateKey::from_pkcs8_pem(PRIVATE_KEY).unwrap();
+	let private_key = RsaPrivateKey::from_pkcs1_pem(PRIVATE_KEY).unwrap();
 	let signing_key = SigningKey::<Sha256>::new(private_key);
 	let signature = signing_key.sign_with_rng(&mut OsRng, sign_data.as_bytes());
 
-	let verifying_key = VerifyingKey::<Sha256>::from_public_key_pem(PUBLIC_KEY).unwrap();
-	verifying_key.verify(sign_data.as_bytes(), &signature).expect("signature error");
-	
 	BASE64_STANDARD.encode(&signature.to_bytes())
 }
 
@@ -1341,8 +1337,8 @@ async fn send_activity(
 	let digest_header = format!("sha-256={}", body_digest);
 	let signature = sign_activity(&inbox_url, &date_header, &digest_header);
 	let signature_header = format!(
-		"keyId=\"{}/actor/{}/activity-pub/public-key\",headers=\"(request-target) host date \
-		 digest\",signature=\"{}\"",
+		"keyId=\"{}/actor/{}/activity-pub#main-key\", algorithm=\"rsa-sha256\", \
+		 headers=\"(request-target) host date digest content-type\", signature=\"{}\"",
 		&g.server_info.url_base, actor_address, signature
 	);
 
