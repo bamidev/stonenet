@@ -105,6 +105,7 @@ struct AcceptActivity {
 	#[serde(rename(serialize = "@context"), default)]
 	context: ActivityPubDocumentContext,
 	r#type: AcceptActivityType,
+	id: String,
 	actor: String,
 	to: Vec<String>,
 	object: serde_json::Value,
@@ -852,15 +853,17 @@ async fn actor_inbox_register_follow(
 				path: Set(path.clone()),
 				server: Set(server.clone()),
 			};
-			activity_pub_follow::Entity::insert(record)
+			let follow_id = activity_pub_follow::Entity::insert(record)
 				.exec(g.api.db.inner())
-				.await?;
+				.await?
+				.last_insert_id;
 
 			// Send an Accept object back
 			let accept_activity = AcceptActivity {
 				context: ActivityPubDocumentContext::default(),
+				id: format!("{}/actor/{}/activity_pub/follower/{}", &g.server_info.url_base, &actor.address, follow_id),
 				r#type: AcceptActivityType,
-				actor: format!("{}/actor/{}", &g.server_info.url_base, &actor.address),
+				actor: format!("{}/actor/{}/activity-pub", &g.server_info.url_base, &actor.address),
 				to: vec![follower_string.clone()],
 				object,
 			};
