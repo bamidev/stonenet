@@ -365,11 +365,11 @@ impl ActorObject {
 			preferredUsername: address.to_string(),
 			inbox: format!("{}/inbox", &id),
 			outbox: format!("{}/outbox", &id),
-			followers: format!("{}/followers", &id),
+			followers: format!("{}/follower", &id),
 			publicKey: ActorPublicKey {
 				id: format!("{}#main-key", &id),
 				owner: id.clone(),
-				publicKeyPem: PUBLIC_KEY.replace("\n", "\\n"),
+				publicKeyPem: PUBLIC_KEY.to_string(),
 			},
 			summary,
 			icon: avatar_hash.map(|hash| ActorObjectIcon {
@@ -723,7 +723,7 @@ pub async fn actor_inbox_post(
 	match result {
 		Err(e) => server_error_response(e, "Database error"),
 		Ok(r) => match r {
-			None => error_response(404, "Couldn't find actor"),
+			None => error_response(404, "Couldn't find follower"),
 			Some(response) => response,
 		},
 	}
@@ -786,8 +786,13 @@ async fn actor_inbox_register_follow(
 			}
 		};
 
+		// Response
 		return Ok(Some(
-			Response::builder().status(201).body(Body::empty()).unwrap(),
+			Response::builder()
+				.status(201)
+				.header("Location", follower_string)
+				.body(Body::empty())
+				.unwrap(),
 		));
 	} else {
 		Ok(None)
@@ -1292,7 +1297,7 @@ fn hash_activity(activity: &str) -> String {
 
 pub fn router(_: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
-		.route("/followers", get(actor_followers))
+		.route("/follower", get(actor_followers))
 		.route("/inbox", get(actor_inbox).post(actor_inbox_post))
 		.route("/outbox", get(actor_outbox))
 		.route("/public-key", get(actor_public_key))
@@ -1380,7 +1385,7 @@ async fn send_activity(
 		}
 	};
 
-	if response.status() == 201 || response.status() == 200 {
+	if response.status() >= 200 || response.status() <= 202 {
 		return Ok(ActivitySendState::Send);
 	}
 	warn!(
