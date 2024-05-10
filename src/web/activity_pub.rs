@@ -27,7 +27,7 @@ use rsa::{
 	pkcs1v15::{SigningKey, VerifyingKey},
 	pkcs8::{DecodePrivateKey, DecodePublicKey},
 	sha2::{Digest, Sha256},
-	signature::{RandomizedSigner, SignatureEncoding, Verifier},
+	signature::{SignatureEncoding, Signer, Verifier},
 	RsaPrivateKey, RsaPublicKey,
 };
 use sea_orm::{
@@ -1299,7 +1299,7 @@ fn sign_data(data: &str, key_pem: &str) -> String {
 	let signing_key = SigningKey::<Sha256>::new(private_key);
 
 	// Sign
-	let signature = signing_key.sign_with_rng(&mut OsRng, data.as_bytes());
+	let signature = signing_key.sign(data.as_bytes());
 
 	// Format with base64
 	BASE64_STANDARD.encode(&signature.to_bytes())
@@ -1388,6 +1388,11 @@ async fn send_activity(
 
 
 mod tests {
+	use rsa::{
+		pkcs1::EncodeRsaPrivateKey,
+		pkcs8::{EncodePrivateKey, LineEnding},
+	};
+
 	use super::*;
 
 	fn verify_data(data: &str, signature: &str, public_key: &str) -> bool {
@@ -1400,54 +1405,44 @@ mod tests {
 
 	#[test]
 	fn test_signature() {
+		// All test data is taken from: https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures#appendix-C.3
 		let public_key_pem = r#"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2JqO4EjkmpeydGZqVPt7
-/McX5k2m5Y2ZLcnkkr3ROVlOWreEq5Qhr17lDLXkDGWWlvX/O/GXfozfwZNFapGA
-S3XOLK6F8SnJoIHvcPJyYSTrOig/uyzNQGy4rZLnbL3Ukm8gpkDf/BFvRn7FT/Ve
-kYF4bCGlyb7pJMpTMiZucQnTLCtCkYuPTlU8Vm2K4bHVmTnHMW1y+aS0YCGNt47p
-nHmhieOVpUqS572nDavlkCGnNm/Zr8I2o8Ve1mA6yCaYyTlycSz1Wk2TkPNovEr/
-HUi1Guwee2S3c4hmSGZeNHy8LUDJSJHeqDo1E0hyMg8fLCPr6WdqJxeW5sC2b2sk
-xwIDAQAB
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDCFENGw33yGihy92pDjZQhl0C3
+6rPJj+CvfSC8+q28hxA161QFNUd13wuCTUcq0Qd2qsBe/2hFyc2DCJJg0h1L78+6
+Z4UMR7EOcpfdUE9Hf3m/hs+FUR45uBJeDK1HSFHD8bHKD6kv8FPGfJTotc+2xjJw
+oYi+1hqp1fIekaxsyQIDAQAB
 -----END PUBLIC KEY-----"#;
-		let private_key_pem = r#"-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDYmo7gSOSal7J0
-ZmpU+3v8xxfmTabljZktyeSSvdE5WU5at4SrlCGvXuUMteQMZZaW9f878Zd+jN/B
-k0VqkYBLdc4sroXxKcmgge9w8nJhJOs6KD+7LM1AbLitkudsvdSSbyCmQN/8EW9G
-fsVP9V6RgXhsIaXJvukkylMyJm5xCdMsK0KRi49OVTxWbYrhsdWZOccxbXL5pLRg
-IY23jumceaGJ45WlSpLnvacNq+WQIac2b9mvwjajxV7WYDrIJpjJOXJxLPVaTZOQ
-82i8Sv8dSLUa7B57ZLdziGZIZl40fLwtQMlIkd6oOjUTSHIyDx8sI+vpZ2onF5bm
-wLZvayTHAgMBAAECggEACDkV433g792CcNjSgJdrhZUpWxznkR9nCU3413lNUBgL
-2XXOG5VsEfRQTcM5/R5+MQz1u5jYX32JoReuMvWDIVo/kYKuoxErDmTgajFKFlYI
-eBS/FqQExsVZ3X0OPBqYz1ZYrvcXicI/rzVw2DBAftWjdLdyS85rm3Hy5px+5Nug
-v1ERecMNQXZq42fnMWNRMyjwCT77WLdh4uCq5W41RZ4/nB7jbyiy4GFNVhm0KkAu
-+Id0egjnPoSxQHjTaPiS8uyI7DNt930oj3UeRLCZakjRplWVDD/zvxZilVadijRk
-5Bvf2nkBiq7sV5cE1N9+/NpQ77w/kdRuJDPzPs7vwQKBgQDt/Tj9eY1TWg6dUqh6
-Sqlju+AP5GGt5BoblKMqd/ZvHAr53X+VUGwR1IT4vGZToicT6Ymebi04loVehiX3
-9uJt8Jz5jMhm01oPeJKnvIZ8tObCbO1+fyDk0eXrqdkoxAfdbbsHbJWGOIozFTNp
-uE7AjSFqG9ylVVS4QpIcZKHJqwKBgQDo/wRMNfvdpoWOXTS+9xVZU6oOVI4tp8gQ
-vg99yPK/QK/4GTN7LpQ2Dqz67pem7LVOFRZIRfejkIyT8v9q94tg0G7NmdyDhqEy
-INkq/+JWe+iKOgJkh6+n7SUwJxJDWTWUnN8Ssr1fdwxNDWBO3bsIkOHO98/8KxK3
-41l2XOCNVQKBgQCqEHnZKDNFjOVEpvyd5xyEmIzUzm6+xHGjo+O1RWRkobV2OEIj
-gQS4+RTMalT1Drq+D/S3siO+fFFx6orXVyUXSwnhiijq0b1ZsN+b3ax9EQiVhyFv
-c4kd+qBCd20nJG46XV95Pq7a6yxWtJ+4vGwKTM/D84UI4KFZyrh+carrYQKBgB9n
-J6wh5oV0STHr7A0E/lKgzR3LVbJfl75x72KTr+wJCu6UbvTeTUmP5s6XU8dCxhj1
-DKDHFV5tQBU8viIrpRRyY0zAvRDZF2bLOJnsDRR89NWUhfgItasbclSwH20GXAtg
-rUw23QE96WGFOQLILco0xMqBaf3hzE8OjGNAl19VAoGAGsfUWoEJoEGU98/fA1oU
-FwK56YpuOhJgbN9QEN618kIwp156XRhVK78TbT8gYKyb0j9MGsXOxWHcThmhC2z9
-p0ch5VQpdUSdM3OoWgtntt0tRDhMKCQA3TzzSk2AteRVqRKQCuMeUZrdEJYP2znK
-QmsqfmOowCFttH4yGDZn0Do=
------END PRIVATE KEY-----"#;
+		let private_key_pem = r#"-----BEGIN RSA PRIVATE KEY-----
+MIICXgIBAAKBgQDCFENGw33yGihy92pDjZQhl0C36rPJj+CvfSC8+q28hxA161QF
+NUd13wuCTUcq0Qd2qsBe/2hFyc2DCJJg0h1L78+6Z4UMR7EOcpfdUE9Hf3m/hs+F
+UR45uBJeDK1HSFHD8bHKD6kv8FPGfJTotc+2xjJwoYi+1hqp1fIekaxsyQIDAQAB
+AoGBAJR8ZkCUvx5kzv+utdl7T5MnordT1TvoXXJGXK7ZZ+UuvMNUCdN2QPc4sBiA
+QWvLw1cSKt5DsKZ8UETpYPy8pPYnnDEz2dDYiaew9+xEpubyeW2oH4Zx71wqBtOK
+kqwrXa/pzdpiucRRjk6vE6YY7EBBs/g7uanVpGibOVAEsqH1AkEA7DkjVH28WDUg
+f1nqvfn2Kj6CT7nIcE3jGJsZZ7zlZmBmHFDONMLUrXR/Zm3pR5m0tCmBqa5RK95u
+412jt1dPIwJBANJT3v8pnkth48bQo/fKel6uEYyboRtA5/uHuHkZ6FQF7OUkGogc
+mSJluOdc5t6hI1VsLn0QZEjQZMEOWr+wKSMCQQCC4kXJEsHAve77oP6HtG/IiEn7
+kpyUXRNvFsDE0czpJJBvL/aRFUJxuRK91jhjC68sA7NsKMGg5OXb5I5Jj36xAkEA
+gIT7aFOYBFwGgQAQkWNKLvySgKbAZRTeLBacpHMuQdl1DfdntvAyqpAZ0lY0RKmW
+G6aFKaqQfOXKCyWoUiVknQJAXrlgySFci/2ueKlIE1QqIiLSZ8V8OlpFLRnb1pzI
+7U1yQXnTAEFYM560yJlzUpOb1V4cScGd365tiSMvxLOvTA==
+-----END RSA PRIVATE KEY-----"#;
+		let private_key_pem_pkcs8 = RsaPrivateKey::from_pkcs1_pem(private_key_pem)
+			.unwrap()
+			.to_pkcs8_pem(LineEnding::LF)
+			.unwrap();
 
-		let data = "(request-target): post /inbox\nhost: example.com\ndate: Fri, 10 May 2024 10:08:59 GMT\ndigest: sha-256=Ssw/TjS1ES1LDPNYOnTtfEFvjjZcBL77m8ICCRs9sbo=\ncontent-type: application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"";
+		let data = r#"(request-target): post /foo?param=value&pet=dog
+host: example.com
+date: Sun, 05 Jan 2014 21:31:40 GMT
+content-type: application/json
+digest: SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+content-length: 18"#;
 
-		let signature = sign_data(data, private_key_pem);
+		let signature = sign_data(data, &*private_key_pem_pkcs8);
 		assert_eq!(
 			signature,
-			"L4TA7sVertFCMd5k8yYjkx3nKXck2Zy6LoCmLDrXthJ44fNYci52AsdhtV6qoMayj8YKIfxvRu3g/\
-			 AdzFWOFlzQXTdA+vGFNEz0haN5dnBshOytENb0krWrspHyWbRSZz06GmVx0tJE0ztB5FWTjwhPBvhxFknJKCq2lJ5/\
-			 mXPrDtqdongOdDiCDUoUpteDyJZoOxMZb+xakyBTLXlTXa6CTmG37g7ssyYUjV+PSbiEooOMLHs20z//\
-			 EvPlsHxoPOvI7JXMFzNZ/EzGjqV+AmwuY/3Vs5RYzOSMKTGJdkyMl4jKb9/\
-			 5WSePMRWSB86a3iMmOMyIymfs+oHKVoK8m9g=="
+			"vSdrb+dS3EceC9bcwHSo4MlyKS59iFIrhgYkz8+oVLEEzmYZZvRs8rgOp+63LEM3v+MFHB32NfpB2bEKBIvB1q52LaEUHFv120V01IL+TAD48XaERZFukWgHoBTLMhYS2Gb51gWxpeIq8knRmPnYePbF5MOkR0Zkly4zKH7s1dE="
 		);
 		assert!(verify_data(data, &signature, public_key_pem));
 	}
