@@ -1390,9 +1390,17 @@ async fn send_activity(
 mod tests {
 	use super::*;
 
+	fn verify_data(data: &str, signature: &str, public_key: &str) -> bool {
+		let raw_signature = BASE64_STANDARD.decode(signature).unwrap();
+		let signature = rsa::pkcs1v15::Signature::try_from(raw_signature.as_slice()).unwrap();
+		let public_key = RsaPublicKey::from_public_key_pem(public_key).unwrap();
+		let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+		verifying_key.verify(data.as_bytes(), &signature).is_ok()
+	}
+
 	#[test]
 	fn test_signature() {
-		let _public_key_pem = r#"-----BEGIN PUBLIC KEY-----
+		let public_key_pem = r#"-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2JqO4EjkmpeydGZqVPt7
 /McX5k2m5Y2ZLcnkkr3ROVlOWreEq5Qhr17lDLXkDGWWlvX/O/GXfozfwZNFapGA
 S3XOLK6F8SnJoIHvcPJyYSTrOig/uyzNQGy4rZLnbL3Ukm8gpkDf/BFvRn7FT/Ve
@@ -1432,14 +1440,15 @@ QmsqfmOowCFttH4yGDZn0Do=
 
 		let data = "(request-target): post /inbox\nhost: example.com\ndate: Fri, 10 May 2024 10:08:59 GMT\ndigest: sha-256=Ssw/TjS1ES1LDPNYOnTtfEFvjjZcBL77m8ICCRs9sbo=\ncontent-type: application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"";
 
-		let base64_signature = sign_data(data, private_key_pem);
+		let signature = sign_data(data, private_key_pem);
 		assert_eq!(
-			base64_signature,
+			signature,
 			"L4TA7sVertFCMd5k8yYjkx3nKXck2Zy6LoCmLDrXthJ44fNYci52AsdhtV6qoMayj8YKIfxvRu3g/\
 			 AdzFWOFlzQXTdA+vGFNEz0haN5dnBshOytENb0krWrspHyWbRSZz06GmVx0tJE0ztB5FWTjwhPBvhxFknJKCq2lJ5/\
 			 mXPrDtqdongOdDiCDUoUpteDyJZoOxMZb+xakyBTLXlTXa6CTmG37g7ssyYUjV+PSbiEooOMLHs20z//\
 			 EvPlsHxoPOvI7JXMFzNZ/EzGjqV+AmwuY/3Vs5RYzOSMKTGJdkyMl4jKb9/\
 			 5WSePMRWSB86a3iMmOMyIymfs+oHKVoK8m9g=="
-		)
+		);
+		assert!(verify_data(data, &signature, public_key_pem));
 	}
 }
