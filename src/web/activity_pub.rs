@@ -56,41 +56,43 @@ const SEND_QUEUE_DEFAULT_CAPACITY: u64 = 100000;
 
 // The public and private keys that the activity pub specification wants. We
 // don't actually keep one for every user.
-const PUBLIC_KEY: &'static str = r#"-----BEGIN RSA PUBLIC KEY-----
-MIIBCgKCAQEAhAKYdtoeoy8zcAcR874L8cnZxKzAGwd7v36APp7Pv6Q2jdsPBRrw
-WEBnez6d0UDKDwGbc6nxfEXAy5mbhgajzrw3MOEt8uA5txSKobBpKDeBLOsdJKFq
-MGmXCQvEG7YemcxDTRPxAleIAgYYRjTSd/QBwVW9OwNFhekro3RtlinV0a75jfZg
-kne/YiktSvLG34lw2zqXBDTC5NHROUqGTlML4PlNZS5Ri2U4aCNx2rUPRcKIlE0P
-uKxI4T+HIaFpv8+rdV6eUgOrB2xeI1dSFFn/nnv5OoZJEIB+VmuKn3DCUcCZSFlQ
-PSXSfBDiUGhwOw76WuSSsf1D4b/vLoJ10wIDAQAB
------END RSA PUBLIC KEY-----"#;
-const PRIVATE_KEY: &'static str = r#"-----BEGIN RSA PRIVATE KEY-----
-MIIEqAIBAAKCAQEAhAKYdtoeoy8zcAcR874L8cnZxKzAGwd7v36APp7Pv6Q2jdsP
-BRrwWEBnez6d0UDKDwGbc6nxfEXAy5mbhgajzrw3MOEt8uA5txSKobBpKDeBLOsd
-JKFqMGmXCQvEG7YemcxDTRPxAleIAgYYRjTSd/QBwVW9OwNFhekro3RtlinV0a75
-jfZgkne/YiktSvLG34lw2zqXBDTC5NHROUqGTlML4PlNZS5Ri2U4aCNx2rUPRcKI
-lE0PuKxI4T+HIaFpv8+rdV6eUgOrB2xeI1dSFFn/nnv5OoZJEIB+VmuKn3DCUcCZ
-SFlQPSXSfBDiUGhwOw76WuSSsf1D4b/vLoJ10wIDAQABAoIBAG/JZuSWdoVHbi56
-vjgCgkjg3lkO1KrO3nrdm6nrgA9P9qaPjxuKoWaKO1cBQlE1pSWp/cKncYgD5WxE
-CpAnRUXG2pG4zdkzCYzAh1i+c34L6oZoHsirK6oNcEnHveydfzJL5934egm6p8DW
-+m1RQ70yUt4uRc0YSor+q1LGJvGQHReF0WmJBZHrhz5e63Pq7lE0gIwuBqL8SMaA
-yRXtK+JGxZpImTq+NHvEWWCu09SCq0r838ceQI55SvzmTkwqtC+8AT2zFviMZkKR
-Qo6SPsrqItxZWRty2izawTF0Bf5S2VAx7O+6t3wBsQ1sLptoSgX3QblELY5asI0J
-YFz7LJECgYkAsqeUJmqXE3LP8tYoIjMIAKiTm9o6psPlc8CrLI9CH0UbuaA2JCOM
-cCNq8SyYbTqgnWlB9ZfcAm/cFpA8tYci9m5vYK8HNxQr+8FS3Qo8N9RJ8d0U5Csw
-DzMYfRghAfUGwmlWj5hp1pQzAuhwbOXFtxKHVsMPhz1IBtF9Y8jvgqgYHLbmyiu1
-mwJ5AL0pYF0G7x81prlARURwHo0Yf52kEw1dxpx+JXER7hQRWQki5/NsUEtv+8RT
-qn2m6qte5DXLyn83b1qRscSdnCCwKtKWUug5q2ZbwVOCJCtmRwmnP131lWRYfj67
-B/xJ1ZA6X3GEf4sNReNAtaucPEelgR2nsN0gKQKBiGoqHWbK1qYvBxX2X3kbPDkv
-9C+celgZd2PW7aGYLCHq7nPbmfDV0yHcWjOhXZ8jRMjmANVR/eLQ2EfsRLdW69bn
-f3ZD7JS1fwGnO3exGmHO3HZG+6AvberKYVYNHahNFEw5TsAcQWDLRpkGybBcxqZo
-81YCqlqidwfeO5YtlO7etx1xLyqa2NsCeG9A86UjG+aeNnXEIDk1PDK+EuiThIUa
-/2IxKzJKWl1BKr2d4xAfR0ZnEYuRrbeDQYgTImOlfW6/GuYIxKYgEKCFHFqJATAG
-IxHrq1PDOiSwXd2GmVVYyEmhZnbcp8CxaEMQoevxAta0ssMK3w6UsDtvUvYvF22m
-qQKBiD5GwESzsFPy3Ga0MvZpn3D6EJQLgsnrtUPZx+z2Ep2x0xc5orneB5fGyF1P
-WtP+fG5Q6Dpdz3LRfm+KwBCWFKQjg7uTxcjerhBWEYPmEMKYwTJF5PBG9/ddvHLQ
-EQeNC8fHGg4UXU8mhHnSBt3EA10qQJfRDs15M38eG2cYwB1PZpDHScDnDA0=
------END RSA PRIVATE KEY-----"#;
+const PUBLIC_KEY: &'static str = r#"-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2JqO4EjkmpeydGZqVPt7
+/McX5k2m5Y2ZLcnkkr3ROVlOWreEq5Qhr17lDLXkDGWWlvX/O/GXfozfwZNFapGA
+S3XOLK6F8SnJoIHvcPJyYSTrOig/uyzNQGy4rZLnbL3Ukm8gpkDf/BFvRn7FT/Ve
+kYF4bCGlyb7pJMpTMiZucQnTLCtCkYuPTlU8Vm2K4bHVmTnHMW1y+aS0YCGNt47p
+nHmhieOVpUqS572nDavlkCGnNm/Zr8I2o8Ve1mA6yCaYyTlycSz1Wk2TkPNovEr/
+HUi1Guwee2S3c4hmSGZeNHy8LUDJSJHeqDo1E0hyMg8fLCPr6WdqJxeW5sC2b2sk
+xwIDAQAB
+-----END PUBLIC KEY-----"#;
+const PRIVATE_KEY: &'static str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDYmo7gSOSal7J0
+ZmpU+3v8xxfmTabljZktyeSSvdE5WU5at4SrlCGvXuUMteQMZZaW9f878Zd+jN/B
+k0VqkYBLdc4sroXxKcmgge9w8nJhJOs6KD+7LM1AbLitkudsvdSSbyCmQN/8EW9G
+fsVP9V6RgXhsIaXJvukkylMyJm5xCdMsK0KRi49OVTxWbYrhsdWZOccxbXL5pLRg
+IY23jumceaGJ45WlSpLnvacNq+WQIac2b9mvwjajxV7WYDrIJpjJOXJxLPVaTZOQ
+82i8Sv8dSLUa7B57ZLdziGZIZl40fLwtQMlIkd6oOjUTSHIyDx8sI+vpZ2onF5bm
+wLZvayTHAgMBAAECggEACDkV433g792CcNjSgJdrhZUpWxznkR9nCU3413lNUBgL
+2XXOG5VsEfRQTcM5/R5+MQz1u5jYX32JoReuMvWDIVo/kYKuoxErDmTgajFKFlYI
+eBS/FqQExsVZ3X0OPBqYz1ZYrvcXicI/rzVw2DBAftWjdLdyS85rm3Hy5px+5Nug
+v1ERecMNQXZq42fnMWNRMyjwCT77WLdh4uCq5W41RZ4/nB7jbyiy4GFNVhm0KkAu
++Id0egjnPoSxQHjTaPiS8uyI7DNt930oj3UeRLCZakjRplWVDD/zvxZilVadijRk
+5Bvf2nkBiq7sV5cE1N9+/NpQ77w/kdRuJDPzPs7vwQKBgQDt/Tj9eY1TWg6dUqh6
+Sqlju+AP5GGt5BoblKMqd/ZvHAr53X+VUGwR1IT4vGZToicT6Ymebi04loVehiX3
+9uJt8Jz5jMhm01oPeJKnvIZ8tObCbO1+fyDk0eXrqdkoxAfdbbsHbJWGOIozFTNp
+uE7AjSFqG9ylVVS4QpIcZKHJqwKBgQDo/wRMNfvdpoWOXTS+9xVZU6oOVI4tp8gQ
+vg99yPK/QK/4GTN7LpQ2Dqz67pem7LVOFRZIRfejkIyT8v9q94tg0G7NmdyDhqEy
+INkq/+JWe+iKOgJkh6+n7SUwJxJDWTWUnN8Ssr1fdwxNDWBO3bsIkOHO98/8KxK3
+41l2XOCNVQKBgQCqEHnZKDNFjOVEpvyd5xyEmIzUzm6+xHGjo+O1RWRkobV2OEIj
+gQS4+RTMalT1Drq+D/S3siO+fFFx6orXVyUXSwnhiijq0b1ZsN+b3ax9EQiVhyFv
+c4kd+qBCd20nJG46XV95Pq7a6yxWtJ+4vGwKTM/D84UI4KFZyrh+carrYQKBgB9n
+J6wh5oV0STHr7A0E/lKgzR3LVbJfl75x72KTr+wJCu6UbvTeTUmP5s6XU8dCxhj1
+DKDHFV5tQBU8viIrpRRyY0zAvRDZF2bLOJnsDRR89NWUhfgItasbclSwH20GXAtg
+rUw23QE96WGFOQLILco0xMqBaf3hzE8OjGNAl19VAoGAGsfUWoEJoEGU98/fA1oU
+FwK56YpuOhJgbN9QEN618kIwp156XRhVK78TbT8gYKyb0j9MGsXOxWHcThmhC2z9
+p0ch5VQpdUSdM3OoWgtntt0tRDhMKCQA3TzzSk2AteRVqRKQCuMeUZrdEJYP2znK
+QmsqfmOowCFttH4yGDZn0Do=
+-----END PRIVATE KEY-----"#;
 
 
 #[derive(Serialize)]
@@ -1291,9 +1293,21 @@ pub fn router(_: Arc<Global>) -> Router<Arc<Global>> {
 		.route("/public-key", get(actor_public_key))
 }
 
+fn sign_data(data: &str, key_pem: &str) -> String {
+	// Load key
+	let private_key = RsaPrivateKey::from_pkcs8_pem(key_pem).unwrap();
+	let signing_key = SigningKey::<Sha256>::new(private_key);
+
+	// Sign
+	let signature = signing_key.sign_with_rng(&mut OsRng, data.as_bytes());
+
+	// Format with base64
+	BASE64_STANDARD.encode(&signature.to_bytes())
+}
+
 fn sign_activity(inbox_url: &Url, date_header: &str, digest_header: &str) -> String {
 	// Prepare sign data
-	let sign_data = format!(
+	let data = format!(
 		"(request-target): post {}\nhost: {}\ndate: {}\ndigest: {}\ncontent-type: application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
 		inbox_url.path(),
 		inbox_url.domain().unwrap(),
@@ -1301,12 +1315,7 @@ fn sign_activity(inbox_url: &Url, date_header: &str, digest_header: &str) -> Str
 		digest_header
 	);
 
-	// Sign data
-	let private_key = RsaPrivateKey::from_pkcs1_pem(PRIVATE_KEY).unwrap();
-	let signing_key = SigningKey::<Sha256>::new(private_key);
-	let signature = signing_key.sign_with_rng(&mut OsRng, sign_data.as_bytes());
-
-	BASE64_STANDARD.encode(&signature.to_bytes())
+	sign_data(&data, PRIVATE_KEY)
 }
 
 async fn send_activity(
@@ -1375,4 +1384,62 @@ async fn send_activity(
 		response.status()
 	);
 	Ok(ActivitySendState::Failed)
+}
+
+
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_signature() {
+		let _public_key_pem = r#"-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2JqO4EjkmpeydGZqVPt7
+/McX5k2m5Y2ZLcnkkr3ROVlOWreEq5Qhr17lDLXkDGWWlvX/O/GXfozfwZNFapGA
+S3XOLK6F8SnJoIHvcPJyYSTrOig/uyzNQGy4rZLnbL3Ukm8gpkDf/BFvRn7FT/Ve
+kYF4bCGlyb7pJMpTMiZucQnTLCtCkYuPTlU8Vm2K4bHVmTnHMW1y+aS0YCGNt47p
+nHmhieOVpUqS572nDavlkCGnNm/Zr8I2o8Ve1mA6yCaYyTlycSz1Wk2TkPNovEr/
+HUi1Guwee2S3c4hmSGZeNHy8LUDJSJHeqDo1E0hyMg8fLCPr6WdqJxeW5sC2b2sk
+xwIDAQAB
+-----END PUBLIC KEY-----"#;
+		let private_key_pem = r#"-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDYmo7gSOSal7J0
+ZmpU+3v8xxfmTabljZktyeSSvdE5WU5at4SrlCGvXuUMteQMZZaW9f878Zd+jN/B
+k0VqkYBLdc4sroXxKcmgge9w8nJhJOs6KD+7LM1AbLitkudsvdSSbyCmQN/8EW9G
+fsVP9V6RgXhsIaXJvukkylMyJm5xCdMsK0KRi49OVTxWbYrhsdWZOccxbXL5pLRg
+IY23jumceaGJ45WlSpLnvacNq+WQIac2b9mvwjajxV7WYDrIJpjJOXJxLPVaTZOQ
+82i8Sv8dSLUa7B57ZLdziGZIZl40fLwtQMlIkd6oOjUTSHIyDx8sI+vpZ2onF5bm
+wLZvayTHAgMBAAECggEACDkV433g792CcNjSgJdrhZUpWxznkR9nCU3413lNUBgL
+2XXOG5VsEfRQTcM5/R5+MQz1u5jYX32JoReuMvWDIVo/kYKuoxErDmTgajFKFlYI
+eBS/FqQExsVZ3X0OPBqYz1ZYrvcXicI/rzVw2DBAftWjdLdyS85rm3Hy5px+5Nug
+v1ERecMNQXZq42fnMWNRMyjwCT77WLdh4uCq5W41RZ4/nB7jbyiy4GFNVhm0KkAu
++Id0egjnPoSxQHjTaPiS8uyI7DNt930oj3UeRLCZakjRplWVDD/zvxZilVadijRk
+5Bvf2nkBiq7sV5cE1N9+/NpQ77w/kdRuJDPzPs7vwQKBgQDt/Tj9eY1TWg6dUqh6
+Sqlju+AP5GGt5BoblKMqd/ZvHAr53X+VUGwR1IT4vGZToicT6Ymebi04loVehiX3
+9uJt8Jz5jMhm01oPeJKnvIZ8tObCbO1+fyDk0eXrqdkoxAfdbbsHbJWGOIozFTNp
+uE7AjSFqG9ylVVS4QpIcZKHJqwKBgQDo/wRMNfvdpoWOXTS+9xVZU6oOVI4tp8gQ
+vg99yPK/QK/4GTN7LpQ2Dqz67pem7LVOFRZIRfejkIyT8v9q94tg0G7NmdyDhqEy
+INkq/+JWe+iKOgJkh6+n7SUwJxJDWTWUnN8Ssr1fdwxNDWBO3bsIkOHO98/8KxK3
+41l2XOCNVQKBgQCqEHnZKDNFjOVEpvyd5xyEmIzUzm6+xHGjo+O1RWRkobV2OEIj
+gQS4+RTMalT1Drq+D/S3siO+fFFx6orXVyUXSwnhiijq0b1ZsN+b3ax9EQiVhyFv
+c4kd+qBCd20nJG46XV95Pq7a6yxWtJ+4vGwKTM/D84UI4KFZyrh+carrYQKBgB9n
+J6wh5oV0STHr7A0E/lKgzR3LVbJfl75x72KTr+wJCu6UbvTeTUmP5s6XU8dCxhj1
+DKDHFV5tQBU8viIrpRRyY0zAvRDZF2bLOJnsDRR89NWUhfgItasbclSwH20GXAtg
+rUw23QE96WGFOQLILco0xMqBaf3hzE8OjGNAl19VAoGAGsfUWoEJoEGU98/fA1oU
+FwK56YpuOhJgbN9QEN618kIwp156XRhVK78TbT8gYKyb0j9MGsXOxWHcThmhC2z9
+p0ch5VQpdUSdM3OoWgtntt0tRDhMKCQA3TzzSk2AteRVqRKQCuMeUZrdEJYP2znK
+QmsqfmOowCFttH4yGDZn0Do=
+-----END PRIVATE KEY-----"#;
+
+		let data = "(request-target): post /inbox\nhost: example.com\ndate: Fri, 10 May 2024 10:08:59 GMT\ndigest: sha-256=Ssw/TjS1ES1LDPNYOnTtfEFvjjZcBL77m8ICCRs9sbo=\ncontent-type: application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"";
+
+		let base64_signature = sign_data(data, private_key_pem);
+		assert_eq!(
+			base64_signature,
+			"L4TA7sVertFCMd5k8yYjkx3nKXck2Zy6LoCmLDrXthJ44fNYci52AsdhtV6qoMayj8YKIfxvRu3g/\
+			 AdzFWOFlzQXTdA+vGFNEz0haN5dnBshOytENb0krWrspHyWbRSZz06GmVx0tJE0ztB5FWTjwhPBvhxFknJKCq2lJ5/\
+			 mXPrDtqdongOdDiCDUoUpteDyJZoOxMZb+xakyBTLXlTXa6CTmG37g7ssyYUjV+PSbiEooOMLHs20z//\
+			 EvPlsHxoPOvI7JXMFzNZ/EzGjqV+AmwuY/3Vs5RYzOSMKTGJdkyMl4jKb9/\
+			 5WSePMRWSB86a3iMmOMyIymfs+oHKVoK8m9g=="
+		)
+	}
 }
