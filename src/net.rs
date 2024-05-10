@@ -40,12 +40,6 @@ lazy_static! {
 }
 
 
-#[derive(Default)]
-pub struct BindInfo {
-	pub ipv4: IpBindInfo,
-	pub ipv6: IpBindInfo,
-}
-
 #[allow(dead_code)]
 #[derive(Default)]
 pub struct IpBindInfo {

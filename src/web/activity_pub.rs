@@ -695,8 +695,7 @@ pub async fn actor_inbox(
 }
 
 pub async fn actor_inbox_post(
-	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
-	Extension(actor): Extension<identity::Model>, body: String,
+	State(g): State<Arc<Global>>, Extension(actor): Extension<identity::Model>, body: String,
 ) -> Response {
 	if body.len() > 20480 {
 		return error_response(406, "JSON object too big.");
@@ -709,8 +708,8 @@ pub async fn actor_inbox_post(
 			_ => return error_response(406, "Activity object type field has invalid type"),
 		};
 		match type_string.as_str() {
-			"Create" => actor_inbox_store_object(&g, &address, &actor, object_json).await,
-			"Like" => actor_inbox_store_object(&g, &address, &actor, object_json).await,
+			"Create" => actor_inbox_store_object(&g, &actor, object_json).await,
+			"Like" => actor_inbox_store_object(&g, &actor, object_json).await,
 			"Follow" => actor_inbox_register_follow(&g, &actor, object_json).await,
 			//"Undo" => actor_inbox_process_undo(&g, &actor, object_json).await,
 			other =>
@@ -721,87 +720,92 @@ pub async fn actor_inbox_post(
 	};
 
 	match result {
+		Ok(r) => r,
 		Err(e) => server_error_response(e, "Database error"),
-		Ok(r) => match r {
-			None => error_response(404, "Couldn't find follower"),
-			Some(response) => response,
-		},
 	}
 }
 
-async fn actor_inbox_process_undo(
+/*async fn actor_inbox_process_undo(
 	g: &Global, actor: &identity::Model, object: serde_json::Value,
-) -> db::Result<Option<Response>> {
+) -> db::Result<Response> {
+	// Check if sender of request is owner of domain
+
+
+	//activity_pub_follow::Entity::delete()
+
 	Ok(None)
-}
+}*/
 
 async fn actor_inbox_register_follow(
 	g: &Global, actor: &identity::Model, object: serde_json::Value,
-) -> db::Result<Option<Response>> {
-	if let Some(follower) = object.get("actor") {
-		let follower_string = match follower {
-			serde_json::Value::String(s) => s,
-			_ => return Ok(Some(error_response(400, "Actor field not a string"))),
-		};
-
-		// Store follower
-		match Url::parse(&follower_string) {
-			Err(e) =>
-				return Ok(Some(error_response(
-					400,
-					&format!("Invalid URL for follower {}: {}", &follower_string, e),
-				))),
-			Ok(url) => {
-				let domain = if let Some(d) = url.domain() {
-					d
-				} else {
-					return Ok(Some(error_response(
-						400,
-						&format!("No domain in follower URL"),
-					)));
-				};
-				let server = format!("{}://{}", url.scheme(), domain);
-				let path = url.path().to_string();
-
-				let record = activity_pub_follow::ActiveModel {
-					id: NotSet,
-					actor_id: Set(actor.id),
-					path: Set(path.clone()),
-					server: Set(server.clone()),
-				};
-				activity_pub_follow::Entity::insert(record)
-					.exec(g.api.db.inner())
-					.await?;
-
-				// Send an Accept object back
-				let accept_activity = AcceptActivity {
-					context: ActivityPubDocumentContext::default(),
-					r#type: AcceptActivityType,
-					actor: format!("{}/actor/{}", &g.server_info.url_base, &actor.address),
-					to: vec![follower_string.clone()],
-					object,
-				};
-				queue_activity(g, &g.api.db, actor.id, server, Some(path), &accept_activity)
-					.await?;
-			}
-		};
-
-		// Response
-		return Ok(Some(
-			Response::builder()
-				.status(201)
-				.header("Location", follower_string)
-				.body(Body::empty())
-				.unwrap(),
-		));
+) -> db::Result<Response> {
+	let follower_string = if let Some(follower) = object.get("actor") {
+		match follower {
+			serde_json::Value::String(s) => s.clone(),
+			_ => return Ok(error_response(400, "Actor field not a string")),
+		}
 	} else {
-		Ok(None)
-	}
+		return Ok(error_response(
+			400,
+			&format!("No actor in Register activity"),
+		));
+	};
+
+	// Store follower
+	match Url::parse(&follower_string) {
+		Err(e) =>
+			return Ok(error_response(
+				400,
+				&format!("Invalid URL for follower {}: {}", &follower_string, e),
+			)),
+		Ok(url) => {
+			let domain = if let Some(d) = url.domain() {
+				d
+			} else {
+				return Ok(error_response(
+					400,
+					&format!("No domain in follower URL"),
+				));
+			};
+			let server = format!("{}://{}", url.scheme(), domain);
+			let path = url.path().to_string();
+
+			let record = activity_pub_follow::ActiveModel {
+				id: NotSet,
+				actor_id: Set(actor.id),
+				path: Set(path.clone()),
+				server: Set(server.clone()),
+			};
+			activity_pub_follow::Entity::insert(record)
+				.exec(g.api.db.inner())
+				.await?;
+
+			// Send an Accept object back
+			let accept_activity = AcceptActivity {
+				context: ActivityPubDocumentContext::default(),
+				r#type: AcceptActivityType,
+				actor: format!("{}/actor/{}", &g.server_info.url_base, &actor.address),
+				to: vec![follower_string.clone()],
+				object,
+			};
+			queue_activity(g, &g.api.db, actor.id, server, Some(path), &accept_activity)
+				.await?;
+		}
+	};
+
+	// Response
+	return Ok(
+		Response::builder()
+			.status(201)
+			.header("Location", follower_string)
+			.body(Body::empty())
+			.unwrap()
+	);
 }
 
 async fn actor_inbox_store_object(
-	g: &Global, actor_address: &ActorAddress, actor: &identity::Model, json: serde_json::Value,
-) -> db::Result<Option<Response>> {
+	g: &Global, actor: &identity::Model, json: serde_json::Value,
+) -> db::Result<Response> {
 	let record = activity_pub_object::ActiveModel {
 		id: NotSet,
 		actor_id: Set(actor.id),
@@ -830,19 +834,19 @@ async fn actor_inbox_store_object(
 		.exec(g.api.db.inner())
 		.await?;
 
-	return Ok(Some(
+	return Ok(
 		Response::builder()
 			.status(201)
 			.header(
 				"Location",
 				&format!(
 					"{}/actor/{}/activity-pub/inbox/{}",
-					&g.server_info.url_base, actor_address, object_id
+					&g.server_info.url_base, actor.address, object_id
 				),
 			)
 			.body(Body::empty())
 			.unwrap(),
-	));
+	);
 }
 
 pub async fn actor_outbox(
@@ -1385,7 +1389,7 @@ async fn send_activity(
 		}
 	};
 
-	if response.status() >= 200 || response.status() <= 202 {
+	if response.status().as_u16() >= 200 || response.status().as_u16() <= 202 {
 		return Ok(ActivitySendState::Send);
 	}
 	warn!(
