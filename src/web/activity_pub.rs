@@ -711,7 +711,7 @@ pub async fn actor_inbox_post(
 			"Create" => actor_inbox_store_object(&g, &actor, object_json).await,
 			"Like" => actor_inbox_store_object(&g, &actor, object_json).await,
 			"Follow" => actor_inbox_register_follow(&g, &actor, object_json).await,
-			//"Undo" => actor_inbox_process_undo(&g, &actor, object_json).await,
+			"Undo" => actor_inbox_process_undo(&g, &actor, object_json).await,
 			other =>
 				return error_response(406, &format!("Object type \"{}\" not supported.", other)),
 		}
@@ -725,16 +725,108 @@ pub async fn actor_inbox_post(
 	}
 }
 
-/*async fn actor_inbox_process_undo(
+async fn actor_inbox_process_undo(
 	g: &Global, actor: &identity::Model, object: serde_json::Value,
 ) -> db::Result<Response> {
 	// Check if sender of request is owner of domain
 
+	let actor_url = format!(
+		"{}/actor/{}/activity-pub",
+		&g.server_info.url_base, &actor.address
+	);
+	let object_field = if let Some(o) = object.get("object") {
+		o
+	} else {
+		return Ok(error_response(406, "Missing \"object\" field."));
+	};
+	Ok(match object_field {
+		serde_json::Value::String(_) =>
+			return Ok(error_response(
+				406,
+				"Undoing object by only their ID in the \"object\" parameter not yet supported.",
+			)),
+		serde_json::Value::Object(object_to_undo) => {
+			let object_type_opt = object_to_undo.get("type");
+			if let Some(object_type) = object_type_opt {
+				if object_type != "Follow" {
+					return Ok(error_response(
+						406,
+						"Undoing objects of other type than Follow not supported.",
+					));
+				}
+			} else {
+				return Ok(error_response(406, "Object has no type field."));
+			}
 
-	//activity_pub_follow::Entity::delete()
+			if let Some(to) = object_to_undo.get("to") {
+				let has_actor = match to {
+					serde_json::Value::String(to_actor) => to_actor == &actor_url,
+					serde_json::Value::Array(to_list) => {
+						let mut found = false;
+						for value in to_list {
+							match value {
+								serde_json::Value::String(s) =>
+									if s == &actor_url {
+										found = true;
+									},
+								_ => {}
+							}
+						}
+						found
+					}
+					_ =>
+						return Ok(error_response(
+							406,
+							"Invalid type for \"to\" field in Follow activity.",
+						)),
+				};
 
-	Ok(None)
-}*/
+				if has_actor {
+					// Get actor's host and path
+					let other_actor = if let Some(a) = object_to_undo.get("actor") {
+						match a {
+							serde_json::Value::String(s) => s.clone(),
+							_ => return Ok(error_response(406, "Field \"actor\" not a string")),
+						}
+					} else {
+						return Ok(error_response(406, "No actor on Follow activity."));
+					};
+					let (host, path) = match Url::parse(&other_actor) {
+						Err(e) =>
+							return Ok(error_response(406, format!("Invalid actor URL: {}", e))),
+						Ok(url) => {
+							let host = if let Some(h) = url.host_str() {
+								h
+							} else {
+								return Ok(error_response(406, "No host in actor URL"));
+							};
+							let path = url.path();
+							(host.to_string(), path.to_string())
+						}
+					};
+
+					let deleted = activity_pub_follow::Entity::delete_many()
+						.filter(activity_pub_follow::Column::ActorId.eq(actor.id))
+						.filter(activity_pub_follow::Column::Server.eq(host))
+						.filter(activity_pub_follow::Column::Path.eq(path))
+						.exec(g.api.db.inner())
+						.await?
+						.rows_affected;
+					if deleted > 0 {
+						error_response(200, "Actor has been removed from follower list")
+					} else {
+						error_response(404, "Actor was not in the follower list")
+					}
+				} else {
+					error_response(404, "Actor was not following our actor")
+				}
+			} else {
+				error_response(406, "Missing \"to\" field.")
+			}
+		}
+		_ => error_response(406, "Object to undo has invalid type"),
+	})
+}
 
 async fn actor_inbox_register_follow(
 	g: &Global, actor: &identity::Model, object: serde_json::Value,
@@ -762,10 +854,7 @@ async fn actor_inbox_register_follow(
 			let domain = if let Some(d) = url.domain() {
 				d
 			} else {
-				return Ok(error_response(
-					400,
-					&format!("No domain in follower URL"),
-				));
+				return Ok(error_response(400, "No domain in follower URL"));
 			};
 			let server = format!("{}://{}", url.scheme(), domain);
 			let path = url.path().to_string();
@@ -788,19 +877,12 @@ async fn actor_inbox_register_follow(
 				to: vec![follower_string.clone()],
 				object,
 			};
-			queue_activity(g, &g.api.db, actor.id, server, Some(path), &accept_activity)
-				.await?;
+			queue_activity(g, &g.api.db, actor.id, server, Some(path), &accept_activity).await?;
 		}
 	};
 
 	// Response
-	return Ok(
-		Response::builder()
-			.status(201)
-			.header("Location", follower_string)
-			.body(Body::empty())
-			.unwrap()
-	);
+	return Ok(Response::builder().status(202).body(Body::empty()).unwrap());
 }
 
 async fn actor_inbox_store_object(
@@ -834,19 +916,17 @@ async fn actor_inbox_store_object(
 		.exec(g.api.db.inner())
 		.await?;
 
-	return Ok(
-		Response::builder()
-			.status(201)
-			.header(
-				"Location",
-				&format!(
-					"{}/actor/{}/activity-pub/inbox/{}",
-					&g.server_info.url_base, actor.address, object_id
-				),
-			)
-			.body(Body::empty())
-			.unwrap(),
-	);
+	return Ok(Response::builder()
+		.status(201)
+		.header(
+			"Location",
+			&format!(
+				"{}/actor/{}/activity-pub/inbox/{}",
+				&g.server_info.url_base, actor.address, object_id
+			),
+		)
+		.body(Body::empty())
+		.unwrap());
 }
 
 pub async fn actor_outbox(
