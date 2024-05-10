@@ -1343,7 +1343,7 @@ async fn send_activity(
 	// Sign the activity
 	let date_header = format!("{}", Utc::now().format("%a, %d %b %Y %T GMT"));
 	let body_digest = hash_activity(&activity);
-	let digest_header = format!("sha-256={}", body_digest);
+	let digest_header = format!("SHA-256={}", body_digest);
 	let signature = sign_activity(&inbox_url, &date_header, &digest_header);
 	let signature_header = format!(
 		"keyId=\"{}/actor/{}/activity-pub#main-key\", algorithm=\"rsa-sha256\", \
