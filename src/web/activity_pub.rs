@@ -54,8 +54,13 @@ const DEFAULT_CONTEXT: ActivityPubDocumentContext = ActivityPubDocumentContext(&
 ]);
 const SEND_QUEUE_DEFAULT_CAPACITY: u64 = 100000;
 
-// The public and private keys that the activity pub specification wants. We
-// don't actually keep one for every user.
+// The public and private keys that many AcitivtyPub implementations want.
+// We don't actually store one for every actor, as they don't have control over
+// them anyway, and so that would be useless. The only real use for the
+// signatures is to have some extra validation that the correct server is indeed
+// sending the activities.
+// TODO: Remove these hardcoded keys, and have config
+// vars for them.
 const PUBLIC_KEY: &'static str = r#"-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2JqO4EjkmpeydGZqVPt7
 /McX5k2m5Y2ZLcnkkr3ROVlOWreEq5Qhr17lDLXkDGWWlvX/O/GXfozfwZNFapGA
