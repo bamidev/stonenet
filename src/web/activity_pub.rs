@@ -758,22 +758,9 @@ async fn actor_inbox_process_undo(
 				return Ok(error_response(406, "Object has no type field."));
 			}
 
-			if let Some(to) = object_to_undo.get("to") {
-				let has_actor = match to {
-					serde_json::Value::String(to_actor) => to_actor == &actor_url,
-					serde_json::Value::Array(to_list) => {
-						let mut found = false;
-						for value in to_list {
-							match value {
-								serde_json::Value::String(s) =>
-									if s == &actor_url {
-										found = true;
-									},
-								_ => {}
-							}
-						}
-						found
-					}
+			if let Some(our_actor) = object_to_undo.get("object") {
+				let has_actor = match our_actor {
+					serde_json::Value::String(our_actor_string) => our_actor_string == &actor_url,
 					_ =>
 						return Ok(error_response(
 							406,
@@ -801,7 +788,7 @@ async fn actor_inbox_process_undo(
 								return Ok(error_response(406, "No host in actor URL"));
 							};
 							let path = url.path();
-							(host.to_string(), path.to_string())
+							(url.scheme().to_string() + "://" + host, path.to_string())
 						}
 					};
 
@@ -818,10 +805,10 @@ async fn actor_inbox_process_undo(
 						error_response(404, "Actor was not in the follower list")
 					}
 				} else {
-					error_response(404, "Actor was not following our actor")
+					error_response(404, "Posted undo at wrong inbox")
 				}
 			} else {
-				error_response(406, "Missing \"to\" field.")
+				error_response(406, "Missing \"object\" field on Follow activity.")
 			}
 		}
 		_ => error_response(406, "Object to undo has invalid type"),
