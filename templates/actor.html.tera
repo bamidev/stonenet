@@ -44,11 +44,17 @@
 		</div>
 		<div class="card-body">
 			{% if profile %}
-				<div id="description" class="mt-5">{{profile.description | escape | linebreaksbr | safe}}</div>
-				<script type="text/javascript">
-					let element = document.getElementById('description')
-					element.innerHTML = marked.parse(element.innerText)
-				</script>
+				{% if profile.description %}
+					<div id="description" class="mt-5">{{profile.description | escape | linebreaksbr | safe}}</div>
+					<script type="text/javascript">
+						let element = document.getElementById('description')
+						element.innerHTML = marked.parse(element.innerText)
+					</script>
+				{% else %}
+					<div class="alert alert-danger mt-5">
+						The description of this profile has not been able to synchronize yet.
+					</div>
+				{% endif %}
 			{% else %}
 				<div class="alert alert-danger mt-5">
 					This Stonenet address is unreachable.
