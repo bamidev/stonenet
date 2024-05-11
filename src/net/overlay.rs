@@ -1187,7 +1187,7 @@ impl OverlayNode {
 					actor_node.start_synchronization();
 				}
 
-				sleep(Duration::from_secs(3600)).await;
+				sleep(Duration::from_secs(300)).await;
 			}
 		});
 	}
