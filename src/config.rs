@@ -42,16 +42,17 @@ pub struct Config {
 
 	pub track: Option<Vec<String>>,
 
+	pub activity_pub_inbox_server: Option<String>,
+	pub activity_pub_inbox_size: Option<u32>,
+	pub activity_pub_private_key: Option<String>,
+	pub activity_pub_public_key: Option<String>,
+	pub activity_pub_send_queue_capacity: Option<u64>,
+
 	pub federation_contact_info: Option<String>,
 	pub federation_domain: Option<String>,
 	pub federation_organization: Option<String>,
 	pub federation_server_account: Option<String>,
 	pub federation_server_name: Option<String>,
-
-	pub activity_pub_inbox_size: Option<u32>,
-	pub activity_pub_public_key: Option<String>,
-	pub activity_pub_private_key: Option<String>,
-	pub activity_pub_send_queue_capacity: Option<u64>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]

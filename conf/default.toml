@@ -85,13 +85,67 @@ bucket_size = 4
 relay_node = false
 
 # Set up this node to track certain actors. This is similar as 'following' said
-# actor.
-track = []
+# actor from this node.
+# This is an array of actor addresses
+#track = ["2KLquvVSCjtJGwtNENhkCnpJQnZN1xJZeDNbzSGtrkEKFX"]
 
-# If you want activitypub support, a domain needs to be configured.
-# Also, keep in mind that if the `web_url_base` parameter has a path in it, like:
+
+################################
+#   ActivityPub & Federation   #
+################################
+
+# All options under this section configure things related to ActivityPub
+# support, which is only relevant if you've set up this node on a server.
+# The only exception to this rule is the `activity_pub_inbox_url` option.
+
+# If enabled, will check the following server for replies to our local
+# identities sent with ActivityPub, and import them.
+#activity_pub_inbox_server = "https://social.example.com"
+
+# If set, this enables the inbox, with the given limit.
+# When the inbox reaches its limit, the old activities will be pushed out to
+# accomodate for the new ones.
+#activity_pub_inbox_size = 1000
+
+# The public & private key of the server certificate. If these are set, HTTP
+# signatures will be used whenever delivering activities to other servers,
+# according this specification draft:
+# https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12
+# For most ActivityPub servers, this is mandatory in order to be able to
+# federate with them. These are the keys will be used for every actor, as for
+# the use case of Stonenet, there is no need for one keypair for every actor.
+# The keys have to be PKCS#8 formatted RSA keys and can be generated with
+# openssl like this:
+# ```
+# openssl genrsa -out private_key.pem 2048
+# openssl rsa -in private_key.pem -outform PEM -pubout -out public_key.pem
+# ```
+#activity_pub_public_key = /etc/stonenet/public_key.pem
+#activity_pub_private_key = /etc/stonenet/private_key.pem
+
+# The limit to the number of activities that can be put in the send queue. If
+# this limit is reached, new activities will not be federated to other servers.
+# This limit exists to prevent a certain DoS attack.
+activity_pub_send_queue_capacity = 100000
+
+# Administrator contact info for this instance
+#federation_contact_info = "admin@email.com"
+
+# If you want to support federation through ActivityPub, a domain needs to be
+# configured.
+# Also, keep in mind that if the `web_url_base` parameter has a path in it like:
 # https://example.com/my/path
-# Then your reverse proxy needs to be set up to serve
-# https://example/.well-known/webfinger as
+# Then your reverse proxy needs to be set up to serve or redirect
+# https://example/.well-known/webfinger as/to
 # https://example.com/my/path/.well-known/webfinger
-#activitypub_domain = "example.com"
+#federation_domain = "example.com"
+
+# Optionally set the organization for this server:
+#federation_organization = "My Organization"
+
+# The Stonenet actor address that is considered the 'admin' identity of this
+# server.
+#federation_server_account = "..."
+
+# The display name of this server
+federation_server_name = "Just another Stonenet bridge"
