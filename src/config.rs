@@ -119,6 +119,7 @@ impl Default for Config {
 			activity_pub_private_key: None,
 			activity_pub_public_key: None,
 			activity_pub_send_queue_capacity: None,
+			activity_pub_inbox_server: None,
 		}
 	}
 }
