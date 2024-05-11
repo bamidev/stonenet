@@ -1173,7 +1173,7 @@ impl OverlayNode {
 	fn maintain_synchronization(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) {
 		let this = self.clone();
 		spawn(async move {
-			while stop_flag.load(Ordering::Relaxed) {
+			while self.base.is_running() {
 				let actor_nodes: Vec<Arc<ActorNode>> = this
 					.base
 					.interface
