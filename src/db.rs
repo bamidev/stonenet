@@ -277,6 +277,16 @@ pub trait PersistenceHandle {
 		Ok(objects)
 	}
 
+	async fn find_actor_head(&self, address: &ActorAddress) -> Result<Option<object::Model>> {
+		let result = object::Entity::find()
+			.filter(object::Column::ActorId.in_subquery(query_actor_id(address)))
+			.order_by_desc(object::Column::Sequence)
+			.limit(1)
+			.one(self.inner())
+			.await?;
+		Ok(result)
+	}
+
 	async fn find_file_data(
 		&self, file_id: i64, plain_hash: &IdType, block_count: u32,
 	) -> Result<Option<Vec<u8>>> {
@@ -754,6 +764,14 @@ pub trait PersistenceHandle {
 	}
 }
 
+
+fn query_actor_id(address: &ActorAddress) -> SelectStatement {
+	Query::select()
+		.column(identity::Column::Id)
+		.from(Alias::new(identity::Entity::default().table_name()))
+		.and_where(identity::Column::Address.eq(address))
+		.take()
+}
 
 impl FromSql for ActorAddress {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {

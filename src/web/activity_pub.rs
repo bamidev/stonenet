@@ -562,7 +562,8 @@ async fn actor_inbox_process_undo(
 						"Undoing objects of other type than Follow not supported.",
 					));
 				}
-				// TODO: For the other types, check if the object exists in activity_pub_object, and delete it if it does
+			// TODO: For the other types, check if the object exists in
+			// activity_pub_object, and delete it if it does
 			} else {
 				return Ok(error_response(406, "Object has no type field."));
 			}

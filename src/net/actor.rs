@@ -19,7 +19,7 @@ use super::{
 use crate::{
 	common::*,
 	core::*,
-	db::{self, Database},
+	db::{self, Database, PersistenceHandle},
 	identity::*,
 	trace::Mutex,
 };
@@ -439,6 +439,7 @@ impl ActorNode {
 	}
 
 	pub async fn initialize_with_connection(self: &Arc<Self>, mut connection: Box<Connection>) {
+		// Synchronize the 10 latest objects
 		self.synchronize_recent_objects_on_connection(&mut connection)
 			.await;
 	}
@@ -540,8 +541,8 @@ impl ActorNode {
 
 		// If there is one or more fingers that do not require relaying, the node will
 		// synchronize by using the whole network. If there are only nodes that require
-		// communication via a relay, we savour the open connection and use it to
-		// synchronize at least the last 10 objects.
+		// communication via a relay, we savor the open connection and use it to
+		// synchronize at least the latest 10 objects.
 		if !fingers.iter().any(|f| {
 			if let Some(strategy) = self.base.pick_contact_strategy(&f.contact_info) {
 				&f.node_id != &self.base.node_id && strategy.method != ContactStrategyMethod::Relay
@@ -1004,7 +1005,8 @@ impl ActorNode {
 	}
 
 	pub async fn synchronize(&self) -> db::Result<()> {
-		self.synchronize_objects().await?;
+		self.synchronize_objects_from_head(10).await?;
+		self.synchronize_objects_from_start().await?;
 		self.synchronize_files().await?;
 		self.synchronize_blocks().await
 	}
@@ -1130,8 +1132,45 @@ impl ActorNode {
 		Ok(())
 	}
 
+	/// Attempts to synchonize the few objects before our known head object
+	async fn synchronize_objects_from_head(&self, count: u64) -> db::Result<bool> {
+		// Fetch our known head
+		if let Some(head) = self.db().find_actor_head(self.actor_address()).await? {
+			let stop_sequence = if head.sequence as u64 >= count {
+				head.sequence as u64 - count
+			} else {
+				0
+			};
+
+			let mut current_sequence = head.sequence as u64;
+			let mut previous_hash = head.previous_hash;
+			loop {
+				if let Some((previous_object, _)) =
+					self.db().perform(|c| c.fetch_object(&previous_hash))?
+				{
+					current_sequence = previous_object.sequence;
+					previous_hash = previous_object.previous_hash;
+				} else {
+					if let Some(result) = self.find_object(&previous_hash).await {
+						self.store_object(&previous_hash, &result.object, false)?;
+						current_sequence = result.object.sequence;
+						previous_hash = result.object.previous_hash;
+					} else {
+						return Ok(false);
+					}
+				}
+
+				if current_sequence <= stop_sequence {
+					debug_assert_eq!(current_sequence, stop_sequence);
+					return Ok(true);
+				}
+			}
+		}
+		Ok(false)
+	}
+
 	/// Iteratively search the network for object meta data.
-	async fn synchronize_objects(&self) -> db::Result<bool> {
+	async fn synchronize_objects_from_start(&self) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db().connect_old()?;
 			c.fetch_last_verified_object(self.actor_address())
