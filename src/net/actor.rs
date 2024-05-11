@@ -888,10 +888,15 @@ impl ActorNode {
 
 	pub async fn publish_object(
 		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &Object,
+		skip_node_ids: &[IdType],
 	) {
 		let mut iter = self.base.iter_all_fingers().await;
 		let mut futs = Vec::new();
 		while let Some(finger) = iter.next().await {
+			if skip_node_ids.contains(&finger.node_id) {
+				continue;
+			}
+
 			let this = self.clone();
 			let overlay_node2 = overlay_node.clone();
 			let id2 = id.clone();
@@ -941,6 +946,7 @@ impl ActorNode {
 	/// * Uses the connection to ask for files and blocks as well.
 	/// * Starts the synchronization process if we don't have the objects
 	///   leading up to this new object.
+	/// Returns true if the given object is newer than what we have locally.
 	async fn process_new_object(
 		&self, connection: &mut Connection, id: &IdType, object: &Object,
 	) -> db::Result<bool> {
@@ -1023,7 +1029,7 @@ impl ActorNode {
 			}
 		};
 
-		if let Some((head, _)) = result {
+		if let Some((_, head, _)) = result {
 			let head_sequence = head.sequence;
 			let mut i = head_sequence as i128;
 			let mut last_object = head;
@@ -1084,26 +1090,65 @@ impl ActorNode {
 	}
 
 	async fn synchronize_head(self: &Arc<Self>, fingers: &[NodeContactInfo]) -> db::Result<()> {
+		let mut latest_object: Option<Object> = None;
+		let mut latest_hash = IdType::default();
+		let mut up_to_date_nodes = Vec::with_capacity(fingers.len());
+
 		for finger in fingers {
 			if let Some((mut connection, _)) =
 				self.base.select_direct_connection(&finger, None).await
 			{
-				if let Err(e) = self.synchronize_head_on_connection(&mut connection).await {
-					error!("Database issue with synchronizing head: {}", e);
+				match self.synchronize_head_on_connection(&mut connection).await {
+					Err(e) => error!("Database issue with synchronizing head: {}", e),
+					Ok(r) =>
+						if let Some((hash, object, is_newer)) = r {
+							if is_newer {
+								// If the node had a newer head, remember it so that we can
+								// re-publish it to the ones that don't have it yet
+								if let Some(other_latest) = &latest_object {
+									if other_latest.sequence < object.sequence {
+										latest_object = Some(object);
+										latest_hash = hash;
+										up_to_date_nodes = vec![finger.node_id.clone(); 1];
+									} else if other_latest.sequence == object.sequence {
+										up_to_date_nodes.push(finger.node_id.clone());
+									}
+								} else {
+									latest_object = Some(object);
+									latest_hash = hash;
+									up_to_date_nodes = vec![finger.node_id.clone(); 1];
+								}
+							}
+						},
 				}
 			}
+		}
+
+		// Publish the head we've found to the rest of the network, except for those
+		// nodes for which we already know they have it
+		if let Some(object) = latest_object {
+			let this = self.clone();
+			spawn(async move {
+				this.publish_object(
+					&this.base.overlay_node(),
+					&latest_hash,
+					&object,
+					&up_to_date_nodes,
+				)
+				.await
+			});
 		}
 		Ok(())
 	}
 
 	async fn synchronize_head_on_connection(
 		&self, connection: &mut Connection,
-	) -> db::Result<Option<(Object, bool)>> {
+	) -> db::Result<Option<(IdType, Object, bool)>> {
 		if let Some(response) = self.exchange_head_on_connection(connection).await {
 			let result = self
 				.process_new_object(connection, &response.hash, &response.object)
 				.await?;
-			return Ok(Some((response.object, result)));
+			return Ok(Some((response.hash, response.object, result)));
 		}
 		Ok(None)
 	}
