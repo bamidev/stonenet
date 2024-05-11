@@ -339,7 +339,7 @@ impl CreateActivity {
 			object: ActivityObject::new(url_base, actor, object_hash, created, content),
 			published: DateTime(created),
 			to: vec![format!(
-				"{}/actor/{}/activity-pub/followers",
+				"{}/actor/{}/activity-pub/follower",
 				url_base, actor
 			)],
 			cc: Some(vec![
