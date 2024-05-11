@@ -115,13 +115,19 @@
 	<div class="card-body">
 		<a href="/actor/{{payload.original_post.actor_address}}">{{payload.original_post.actor_name}}</a> wrote:
 
-		{{macros::compose_post_object_body(
-			index=index,
-			actor_address=actor_address,
-			message=payload.original_post.message[1],
-			attachments=payload.original_post.attachments,
-			mime_type=payload.original_post.message[0]
-		)}}
+		{% if payload.original_post and payload.original_post.message %}
+			{{macros::compose_post_object_body(
+				index=index,
+				actor_address=actor_address,
+				message=payload.original_post.message[1],
+				attachments=payload.original_post.attachments,
+				mime_type=payload.original_post.message[0]
+			)}}
+		{% else %}
+			<div class="alert alert-danger">
+				The message of this share has not been able to synchronize yet.
+			</div>
+		{% endif %}
 	</div>
 {% endmacro %}
 
@@ -196,7 +202,13 @@
 			{% endif %}
 				id="message-{{index}}"
 			>
-				{{message | escape | linebreaksbr | safe}}
+				{% if message %}
+					{{message | escape | linebreaksbr | safe}}
+				{% else %}
+					<div class="alert alert-danger">
+						The message of this post has not been able to synchronize yet.
+					</div>
+				{% endif %}
 			</div>
 
 			{% if use_markdown %}
