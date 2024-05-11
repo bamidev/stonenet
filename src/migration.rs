@@ -22,9 +22,6 @@ pub const LATEST_VERSION: Version = Version {
 };
 
 
-type Result<T, E> = trace::Result<T, E>;
-
-
 #[derive(Clone, Debug)]
 pub struct Version {
 	major: u32,
