@@ -48,8 +48,9 @@ pub struct Config {
 	pub federation_server_account: Option<String>,
 	pub federation_server_name: Option<String>,
 
-	pub activity_pub_proactive: Option<bool>,
 	pub activity_pub_inbox_size: Option<u32>,
+	pub activity_pub_public_key: Option<String>,
+	pub activity_pub_private_key: Option<String>,
 	pub activity_pub_send_queue_capacity: Option<u64>,
 }
 
@@ -114,7 +115,8 @@ impl Default for Config {
 			federation_server_account: None,
 			federation_server_name: None,
 			activity_pub_inbox_size: None,
-			activity_pub_proactive: None,
+			activity_pub_private_key: None,
+			activity_pub_public_key: None,
 			activity_pub_send_queue_capacity: None,
 		}
 	}

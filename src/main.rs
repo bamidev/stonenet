@@ -16,6 +16,7 @@ mod net;
 #[cfg(test)]
 mod test;
 mod trace;
+mod util;
 mod web;
 
 #[cfg(target_family = "windows")]

@@ -1,16 +1,18 @@
 use std::{
 	collections::HashMap,
+	io,
+	os::unix::net::SocketAddr,
 	str::FromStr,
 	sync::{
 		atomic::{AtomicBool, Ordering},
-		Arc,
+		Arc, OnceLock,
 	},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
 	body::Body,
-	extract::{Query, State},
+	extract::{ConnectInfo, Query, State},
 	http::HeaderMap,
 	response::Response,
 	routing::*,
@@ -38,12 +40,14 @@ use sea_orm::{
 };
 use serde::*;
 use stonenetd::core::OBJECT_TYPE_PROFILE;
-use tokio::{spawn, time::sleep};
+use tokio::{fs::File, spawn, time::sleep};
+use zeroize::Zeroizing;
 
 use super::{common::*, ActorAddress, Address, IdType};
 use crate::{
 	db::{self, ObjectPayloadInfo, PersistenceHandle},
 	entity::*,
+	util::read_text_file,
 	web::Global,
 };
 
@@ -53,51 +57,6 @@ const DEFAULT_CONTEXT: ActivityPubDocumentContext = ActivityPubDocumentContext(&
 	"https://w3id.org/security/v1",
 ]);
 const SEND_QUEUE_DEFAULT_CAPACITY: u64 = 100000;
-
-// The public and private keys that many AcitivtyPub implementations want.
-// We don't actually store one for every actor, as they don't have control over
-// them anyway, and so that would be useless. The only real use for the
-// signatures is to have some extra validation that the correct server is indeed
-// sending the activities.
-// TODO: Remove these hardcoded keys, and have config
-// vars for them.
-const PUBLIC_KEY: &'static str = r#"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2JqO4EjkmpeydGZqVPt7
-/McX5k2m5Y2ZLcnkkr3ROVlOWreEq5Qhr17lDLXkDGWWlvX/O/GXfozfwZNFapGA
-S3XOLK6F8SnJoIHvcPJyYSTrOig/uyzNQGy4rZLnbL3Ukm8gpkDf/BFvRn7FT/Ve
-kYF4bCGlyb7pJMpTMiZucQnTLCtCkYuPTlU8Vm2K4bHVmTnHMW1y+aS0YCGNt47p
-nHmhieOVpUqS572nDavlkCGnNm/Zr8I2o8Ve1mA6yCaYyTlycSz1Wk2TkPNovEr/
-HUi1Guwee2S3c4hmSGZeNHy8LUDJSJHeqDo1E0hyMg8fLCPr6WdqJxeW5sC2b2sk
-xwIDAQAB
------END PUBLIC KEY-----"#;
-const PRIVATE_KEY: &'static str = r#"-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDYmo7gSOSal7J0
-ZmpU+3v8xxfmTabljZktyeSSvdE5WU5at4SrlCGvXuUMteQMZZaW9f878Zd+jN/B
-k0VqkYBLdc4sroXxKcmgge9w8nJhJOs6KD+7LM1AbLitkudsvdSSbyCmQN/8EW9G
-fsVP9V6RgXhsIaXJvukkylMyJm5xCdMsK0KRi49OVTxWbYrhsdWZOccxbXL5pLRg
-IY23jumceaGJ45WlSpLnvacNq+WQIac2b9mvwjajxV7WYDrIJpjJOXJxLPVaTZOQ
-82i8Sv8dSLUa7B57ZLdziGZIZl40fLwtQMlIkd6oOjUTSHIyDx8sI+vpZ2onF5bm
-wLZvayTHAgMBAAECggEACDkV433g792CcNjSgJdrhZUpWxznkR9nCU3413lNUBgL
-2XXOG5VsEfRQTcM5/R5+MQz1u5jYX32JoReuMvWDIVo/kYKuoxErDmTgajFKFlYI
-eBS/FqQExsVZ3X0OPBqYz1ZYrvcXicI/rzVw2DBAftWjdLdyS85rm3Hy5px+5Nug
-v1ERecMNQXZq42fnMWNRMyjwCT77WLdh4uCq5W41RZ4/nB7jbyiy4GFNVhm0KkAu
-+Id0egjnPoSxQHjTaPiS8uyI7DNt930oj3UeRLCZakjRplWVDD/zvxZilVadijRk
-5Bvf2nkBiq7sV5cE1N9+/NpQ77w/kdRuJDPzPs7vwQKBgQDt/Tj9eY1TWg6dUqh6
-Sqlju+AP5GGt5BoblKMqd/ZvHAr53X+VUGwR1IT4vGZToicT6Ymebi04loVehiX3
-9uJt8Jz5jMhm01oPeJKnvIZ8tObCbO1+fyDk0eXrqdkoxAfdbbsHbJWGOIozFTNp
-uE7AjSFqG9ylVVS4QpIcZKHJqwKBgQDo/wRMNfvdpoWOXTS+9xVZU6oOVI4tp8gQ
-vg99yPK/QK/4GTN7LpQ2Dqz67pem7LVOFRZIRfejkIyT8v9q94tg0G7NmdyDhqEy
-INkq/+JWe+iKOgJkh6+n7SUwJxJDWTWUnN8Ssr1fdwxNDWBO3bsIkOHO98/8KxK3
-41l2XOCNVQKBgQCqEHnZKDNFjOVEpvyd5xyEmIzUzm6+xHGjo+O1RWRkobV2OEIj
-gQS4+RTMalT1Drq+D/S3siO+fFFx6orXVyUXSwnhiijq0b1ZsN+b3ax9EQiVhyFv
-c4kd+qBCd20nJG46XV95Pq7a6yxWtJ+4vGwKTM/D84UI4KFZyrh+carrYQKBgB9n
-J6wh5oV0STHr7A0E/lKgzR3LVbJfl75x72KTr+wJCu6UbvTeTUmP5s6XU8dCxhj1
-DKDHFV5tQBU8viIrpRRyY0zAvRDZF2bLOJnsDRR89NWUhfgItasbclSwH20GXAtg
-rUw23QE96WGFOQLILco0xMqBaf3hzE8OjGNAl19VAoGAGsfUWoEJoEGU98/fA1oU
-FwK56YpuOhJgbN9QEN618kIwp156XRhVK78TbT8gYKyb0j9MGsXOxWHcThmhC2z9
-p0ch5VQpdUSdM3OoWgtntt0tRDhMKCQA3TzzSk2AteRVqRKQCuMeUZrdEJYP2znK
-QmsqfmOowCFttH4yGDZn0Do=
------END PRIVATE KEY-----"#;
 
 
 #[derive(Serialize)]
@@ -151,7 +110,7 @@ struct ActorObject {
 	followers: String,
 	summary: String,
 
-	publicKey: ActorPublicKey,
+	publicKey: Option<ActorPublicKey>,
 	icon: Option<ActorObjectIcon>,
 
 	nodeInfo2Url: String,
@@ -298,6 +257,7 @@ lazy_static! {
 			.build()
 			.unwrap()
 	};
+	static ref PUBLIC_KEY: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
 }
 
 
@@ -353,7 +313,7 @@ impl CreateActivity {
 impl ActorObject {
 	fn new(
 		url_base: &str, address: &ActorAddress, name: String, avatar_hash: Option<&IdType>,
-		summary: String,
+		summary: String, public_key: Option<&str>,
 	) -> Self {
 		let id = format!("{}/actor/{}/activity-pub", url_base, address);
 		Self {
@@ -367,11 +327,11 @@ impl ActorObject {
 			inbox: format!("{}/inbox", &id),
 			outbox: format!("{}/outbox", &id),
 			followers: format!("{}/follower", &id),
-			publicKey: ActorPublicKey {
+			publicKey: public_key.map(|pk| ActorPublicKey {
 				id: format!("{}#main-key", &id),
 				owner: id.clone(),
-				publicKeyPem: PUBLIC_KEY.to_string(),
-			},
+				publicKeyPem: pk.to_string(),
+			}),
 			summary,
 			icon: avatar_hash.map(|hash| ActorObjectIcon {
 				r#type: "Image",
@@ -504,6 +464,25 @@ fn compose_object_payload(payload: &ObjectPayloadInfo) -> String {
 	}
 }
 
+pub async fn init(stop_flag: Arc<AtomicBool>, global: Arc<Global>) {
+	if let Err(e) = init_public_key(&global.config.activity_pub_public_key).await {
+		error!("Unable to load public key for ActivityPub: {}", e);
+	}
+
+	if let Some(p) = &global.config.activity_pub_private_key {
+		let private_key_path = p.clone();
+		spawn(loop_send_queue(stop_flag, global, private_key_path));
+	}
+}
+
+async fn init_public_key(config: &Option<String>) -> io::Result<()> {
+	if let Some(public_key_filename) = &config {
+		let key = read_text_file(public_key_filename).await?;
+		PUBLIC_KEY.set(key).unwrap();
+	}
+	Ok(())
+}
+
 fn parse_account_name(resource: &str) -> Option<&str> {
 	if !resource.starts_with("acct:") {
 		return None;
@@ -601,6 +580,8 @@ pub async fn webfinger(
 pub async fn actor(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
+	let public_key = PUBLIC_KEY.get().map(|s| s.as_str());
+
 	let profile = match g.api.db.connect_old() {
 		Err(e) => return server_error_response(e, "DB issue"),
 		Ok(c) => c.fetch_profile_info(&address).unwrap().unwrap(),
@@ -613,6 +594,7 @@ pub async fn actor(
 		profile.actor.name,
 		profile.actor.avatar_id.as_ref(),
 		description,
+		public_key,
 	);
 	json_response(
 		&actor,
@@ -623,20 +605,24 @@ pub async fn actor(
 pub async fn actor_public_key(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
-	let actor_id = format!(
-		"{}/actor/{}/activity-pub",
-		&g.server_info.url_base, &address
-	);
-	let key = ActorPublicKeyWithContext {
-		context: DEFAULT_CONTEXT,
-		id: format!("{}#main-key", &actor_id),
-		owner: actor_id,
-		publicKeyPem: PUBLIC_KEY.to_string(),
-	};
-	json_response(
-		&key,
-		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
-	)
+	if let Some(public_key) = PUBLIC_KEY.get() {
+		let actor_id = format!(
+			"{}/actor/{}/activity-pub",
+			&g.server_info.url_base, &address
+		);
+		let key = ActorPublicKeyWithContext {
+			context: DEFAULT_CONTEXT,
+			id: format!("{}#main-key", &actor_id),
+			owner: actor_id,
+			publicKeyPem: public_key.clone(),
+		};
+		json_response(
+			&key,
+			Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
+		)
+	} else {
+		not_found_error_response("No public key has been configured.")
+	}
 }
 
 pub async fn actor_followers(
@@ -861,9 +847,15 @@ async fn actor_inbox_register_follow(
 			// Send an Accept object back
 			let accept_activity = AcceptActivity {
 				context: ActivityPubDocumentContext::default(),
-				id: format!("{}/actor/{}/activity_pub/follower/{}", &g.server_info.url_base, &actor.address, follow_id),
+				id: format!(
+					"{}/actor/{}/activity_pub/follower/{}",
+					&g.server_info.url_base, &actor.address, follow_id
+				),
 				r#type: AcceptActivityType,
-				actor: format!("{}/actor/{}/activity-pub", &g.server_info.url_base, &actor.address),
+				actor: format!(
+					"{}/actor/{}/activity-pub",
+					&g.server_info.url_base, &actor.address
+				),
 				to: vec![follower_string.clone()],
 				object,
 			};
@@ -1099,7 +1091,7 @@ async fn queue_activity(
 /// instances that can follow an actor. So if this causes too many activities to
 /// be sent out, at least it is limited so that the network doesn't get
 /// constipated.
-pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
+pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>, private_key_path: String) {
 	let mut last_iteration = current_timestamp();
 	while !stop_flag.load(Ordering::Relaxed) {
 		// Generate queue items for any new objects not published on the fediverse yet.
@@ -1143,18 +1135,33 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
 				e
 			),
 			Ok(records) =>
-				for record in records {
-					let g2 = g.clone();
-					spawn(async move {
-						let item_id = record.id;
-						if let Err(e) = process_next_send_queue_item(&g2, record).await {
-							error!(
-								"Unable to process ActivityPub send-queue activity {}: {:?}",
-								item_id, e
-							);
+				if records.len() > 0 {
+					let private_key = match read_text_file(&private_key_path).await {
+						Ok(pk) => Arc::new(Zeroizing::<String>::new(pk)),
+						Err(e) => {
+							error!("Unable to load private key file for ActivityPub: {}", e);
+							continue;
 						}
-					});
-					sleep(Duration::from_millis(100)).await;
+					};
+					let mut i = 0;
+					let len = records.len();
+					for record in records {
+						let g2 = g.clone();
+						let pk = private_key.clone();
+						spawn(async move {
+							let item_id = record.id;
+							if let Err(e) = process_next_send_queue_item(&g2, record, pk).await {
+								error!(
+									"Unable to process ActivityPub send-queue activity {}: {:?}",
+									item_id, e
+								);
+							}
+						});
+						if i < (len - 1) {
+							sleep(Duration::from_millis(100)).await;
+						}
+						i += 1;
+					}
 				},
 		}
 
@@ -1166,7 +1173,7 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>) {
 
 /// Attempts to send the given send-queue activity.
 async fn process_next_send_queue_item(
-	g: &Global, record: activity_pub_send_queue::Model,
+	g: &Global, record: activity_pub_send_queue::Model, private_key: Arc<Zeroizing<String>>,
 ) -> db::Result<()> {
 	let mut send_state = ActivitySendState::Impossible;
 	if let Some(actor_record) = identity::Entity::find_by_id(record.actor_id)
@@ -1184,6 +1191,7 @@ async fn process_next_send_queue_item(
 			&record.recipient_server,
 			record.recipient_path.as_ref().map(|p| p.as_str()),
 			record.object.clone(),
+			private_key.as_ref(),
 		)
 		.await
 		{
@@ -1389,7 +1397,9 @@ fn sign_data(data: &str, key_pem: &str) -> String {
 	BASE64_STANDARD.encode(&signature.to_bytes())
 }
 
-fn sign_activity(inbox_url: &Url, date_header: &str, digest_header: &str) -> String {
+fn sign_activity(
+	inbox_url: &Url, date_header: &str, digest_header: &str, private_key: &str,
+) -> String {
 	// Prepare sign data
 	let data = format!(
 		"(request-target): post {}\nhost: {}\ndate: {}\ndigest: {}\ncontent-type: application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
@@ -1399,12 +1409,12 @@ fn sign_activity(inbox_url: &Url, date_header: &str, digest_header: &str) -> Str
 		digest_header
 	);
 
-	sign_data(&data, PRIVATE_KEY)
+	sign_data(&data, private_key)
 }
 
 async fn send_activity(
 	g: &Global, actor_address: &ActorAddress, recipient_server: &str, recipient_path: Option<&str>,
-	activity: String,
+	activity: String, private_key: &str,
 ) -> db::Result<ActivitySendState> {
 	// Get & parse the shared inbox url
 	let inbox_url_raw = if let Some(si) = find_inbox(g, recipient_server, recipient_path).await? {
@@ -1428,7 +1438,7 @@ async fn send_activity(
 	let date_header = format!("{}", Utc::now().format("%a, %d %b %Y %T GMT"));
 	let body_digest = hash_activity(&activity);
 	let digest_header = format!("SHA-256={}", body_digest);
-	let signature = sign_activity(&inbox_url, &date_header, &digest_header);
+	let signature = sign_activity(&inbox_url, &date_header, &digest_header, private_key);
 	let signature_header = format!(
 		"keyId=\"{}/actor/{}/activity-pub#main-key\", algorithm=\"rsa-sha256\", \
 		 headers=\"(request-target) host date digest content-type\", signature=\"{}\"",
@@ -1472,13 +1482,11 @@ async fn send_activity(
 
 
 mod tests {
-	use rsa::{
-		pkcs1::EncodeRsaPrivateKey,
-		pkcs8::{EncodePrivateKey, LineEnding},
-	};
+	use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 
 	use super::*;
 
+	#[allow(dead_code)]
 	fn verify_data(data: &str, signature: &str, public_key: &str) -> bool {
 		let raw_signature = BASE64_STANDARD.decode(signature).unwrap();
 		let signature = rsa::pkcs1v15::Signature::try_from(raw_signature.as_slice()).unwrap();

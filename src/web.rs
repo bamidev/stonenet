@@ -197,10 +197,7 @@ pub async fn serve(
 
 	// TODO: Only turn this on via a config option that is off by default.
 	if global.server_info.is_exposed {
-		spawn(activity_pub::loop_send_queue(
-			stop_flag.clone(),
-			global.clone(),
-		));
+		activity_pub::init(stop_flag.clone(), global.clone()).await;
 	}
 
 	let ip = if global.server_info.is_exposed {
@@ -221,14 +218,17 @@ pub async fn serve(
 		.with_state(global);
 
 	let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-	axum::serve(listener, app)
-		.with_graceful_shutdown(async move {
-			while !stop_flag.load(Ordering::Relaxed) {
-				sleep(Duration::from_secs(1)).await;
-			}
-		})
-		.await
-		.unwrap();
+	axum::serve(
+		listener,
+		app.into_make_service_with_connect_info::<SocketAddr>(),
+	)
+	.with_graceful_shutdown(async move {
+		while !stop_flag.load(Ordering::Relaxed) {
+			sleep(Duration::from_secs(1)).await;
+		}
+	})
+	.await
+	.unwrap();
 	Ok(())
 }
 
