@@ -928,6 +928,7 @@ impl Database {
 		let mut opts = ConnectOptions::new(format!("sqlite://{}?mode=rwc", path.display()));
 		opts.idle_timeout(Duration::from_secs(10));
 		opts.acquire_timeout(Duration::from_secs(1));
+		opts.sqlx_logging_level(log::LevelFilter::Trace);
 		let orm = sea_orm::Database::connect(opts)
 			.await
 			.map_err(|e| self::Error::OrmError(e))?;
