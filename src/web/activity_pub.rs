@@ -439,7 +439,7 @@ pub async fn actor_followers(
 		totalItems: objects.len(),
 		orderedItems: objects
 			.iter()
-			.map(|record| serde_json::Value::String(record.server.clone() + &record.path))
+			.map(|record| serde_json::Value::String(record.host.clone() + &record.path))
 			.collect(),
 	};
 	json_response(
@@ -604,7 +604,7 @@ async fn actor_inbox_process_undo(
 
 					let deleted = activity_pub_follow::Entity::delete_many()
 						.filter(activity_pub_follow::Column::ActorId.eq(actor.id))
-						.filter(activity_pub_follow::Column::Server.eq(host))
+						.filter(activity_pub_follow::Column::Host.eq(host))
 						.filter(activity_pub_follow::Column::Path.eq(path))
 						.exec(g.api.db.inner())
 						.await?
@@ -659,8 +659,8 @@ async fn actor_inbox_register_follow(
 			let record = activity_pub_follow::ActiveModel {
 				id: NotSet,
 				actor_id: Set(actor.id),
+				host: Set(server.clone()),
 				path: Set(path.clone()),
-				server: Set(server.clone()),
 			};
 			let follow_id = activity_pub_follow::Entity::insert(record)
 				.exec(g.api.db.inner())
@@ -891,8 +891,8 @@ async fn find_inbox(
 	// Check if we know it already
 	if let Some(path) = recipient_path {
 		let result = activity_pub_actor_inbox::Entity::find()
-			.filter(activity_pub_actor_inbox::Column::Server.eq(recipient_server))
-			.filter(activity_pub_actor_inbox::Column::Server.eq(path))
+			.filter(activity_pub_actor_inbox::Column::Host.eq(recipient_server))
+			.filter(activity_pub_actor_inbox::Column::Host.eq(path))
 			.one(g.api.db.inner())
 			.await?;
 		if let Some(record) = result {
@@ -909,7 +909,7 @@ async fn find_inbox(
 
 	// Otherwise, find the relevant inbox from the actor
 	let result = activity_pub_follow::Entity::find()
-		.filter(activity_pub_follow::Column::Server.eq(recipient_server))
+		.filter(activity_pub_follow::Column::Host.eq(recipient_server))
 		.one(g.api.db.inner())
 		.await?;
 	if let Some(record) = result {
@@ -1285,7 +1285,7 @@ async fn process_next_send_queue_item(
 				let mut delete =
 					<activity_pub_follow::ActiveModel as std::default::Default>::default();
 				delete.actor_id = Set(record.actor_id);
-				delete.server = Set(record.recipient_server);
+				delete.host = Set(record.recipient_server);
 				activity_pub_follow::Entity::delete(delete)
 					.exec(g.api.db.inner())
 					.await?;

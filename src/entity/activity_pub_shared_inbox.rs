@@ -4,7 +4,7 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "activity_pub_shared_inbox")]
 pub struct Model {
 	#[sea_orm(primary_key)]
-	pub server: String,
+	pub host: String,
 	pub shared_inbox: Option<String>,
 }
 

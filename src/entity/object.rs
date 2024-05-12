@@ -9,8 +9,8 @@ use crate::{common::*, identity::ActorSignatureV1};
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
-	pub hash: IdType,
 	pub actor_id: i64,
+	pub hash: IdType,
 	pub sequence: i64,
 	pub previous_hash: IdType,
 	pub created: i64,

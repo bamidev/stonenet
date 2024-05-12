@@ -2,13 +2,16 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::common::IdType;
+
+
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "block")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
-	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))", nullable, unique)]
-	pub hash: Option<Vec<u8>>,
+	#[sea_orm(unique)]
+	pub hash: IdType,
 	pub size: i32,
 	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
 	pub data: Vec<u8>,

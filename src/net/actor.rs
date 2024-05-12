@@ -1023,17 +1023,18 @@ impl ActorNode {
 				// Find the object on the network
 				if let Some(result) = actor_node.find_object(&object_hash).await {
 					let result = async {
-						actor_node.store_object(&object_hash, &result.object, false)?;
-						// If found, collect all files & blocks on the network as well.
-						actor_node.synchronize_files().await?;
-						actor_node.synchronize_blocks().await?;
-						// FIXME: The above two lines synchronize all missing files & blocks on that
-						// actor network. While this may be beneficial in some cases, it may be
-						// spammy in others. We need some methods like the `collect_*` methods that
-						// only collect the files & blocks in a targeted fashion. And then the
-						// synchronize methods on the overlay node need something that synchronizes
-						// objects, files & blocks needed from actor networks we don't follow as
-						// well. This will take some work.
+						if actor_node.store_object(&object_hash, &result.object, false)? {
+							// If found, collect all files & blocks on the network as well.
+							actor_node.synchronize_files().await?;
+							actor_node.synchronize_blocks().await?;
+							// FIXME: The above two lines synchronize all missing files & blocks on that
+							// actor network. While this may be beneficial in some cases, it may be
+							// spammy in others. We need some methods like the `collect_*` methods that
+							// only collect the files & blocks in a targeted fashion. And then the
+							// synchronize methods on the overlay node need something that synchronizes
+							// objects, files & blocks needed from actor networks we don't follow as
+							// well. This will take some work.
+						}
 						db::Result::Ok(())
 					};
 					if let Err(e) = result.await {
@@ -1071,7 +1072,7 @@ impl ActorNode {
 	pub async fn synchronize(self: &Arc<Self>) -> db::Result<()> {
 		let neighbours = self.base.iter_all_fingers().await.collect_amount(4).await;
 		let republish_head = self.synchronize_head(&neighbours).await?;
-		self.synchronize_objects_from_start().await?;
+		//self.synchronize_objects_from_start().await?;
 		self.synchronize_objects_from_head(10).await?;
 		self.synchronize_files().await?;
 		self.synchronize_blocks().await?;
@@ -1306,6 +1307,9 @@ impl ActorNode {
 			let c = self.db().connect_old()?;
 			c.fetch_last_verified_object(self.actor_address())
 		})?;
+
+		// FIXME: Instead of using self.find_object, which searches on the network only,
+		//        search in our DB first.
 		let (mut last_known_object_id, mut last_known_object_sequence) = match result {
 			Some((hash, object)) => (hash, object.sequence),
 			// If we don't have anything, try to find the first object as well
@@ -1324,10 +1328,6 @@ impl ActorNode {
 								&object_result.object,
 								true,
 							)?;
-							debug_assert!(
-								stored,
-								"Object already existed even though it couldn't be found."
-							);
 						} else {
 							return Ok(false);
 						}
@@ -1337,7 +1337,7 @@ impl ActorNode {
 			}
 		};
 
-		loop {
+		loop { error!("LOOP");
 			match self.find_next_object(&last_known_object_id).await {
 				None => return Ok(true),
 				Some(FindNextObjectResult { hash, object }) => {

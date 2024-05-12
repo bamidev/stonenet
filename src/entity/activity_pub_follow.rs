@@ -6,8 +6,8 @@ pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
 	pub actor_id: i64,
+	pub host: String,
 	pub path: String,
-	pub server: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

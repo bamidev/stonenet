@@ -160,7 +160,7 @@ pub trait PersistenceHandle {
 	async fn load_activity_pub_follower_servers(&self, actor_id: i64) -> Result<Vec<String>> {
 		let (query, vals) = Query::select()
 			.distinct()
-			.column(activity_pub_follow::Column::Server)
+			.column(activity_pub_follow::Column::Host)
 			.from(activity_pub_follow::Entity)
 			.and_where(activity_pub_follow::Column::ActorId.eq(actor_id))
 			.build_any(&*self.backend().get_query_builder());
@@ -3076,6 +3076,7 @@ impl Connection {
 		&mut self, actor_id: &ActorAddress, id: &IdType, object: &Object, verified_from_start: bool,
 	) -> self::Result<bool> {
 		let tx = self.old.transaction()?;
+
 		let _object_id = match Self::_store_object(&tx, actor_id, id, object, verified_from_start) {
 			Ok(id) => id,
 			// Just return false if the object already existed

@@ -5,7 +5,8 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "post_tag")]
 pub struct Model {
-	#[sea_orm(primary_key, auto_increment = false)]
+	#[sea_orm(primary_key, auto_increment = true)]
+	pub id: i64,
 	pub object_id: i64,
 	pub tag: String,
 }
