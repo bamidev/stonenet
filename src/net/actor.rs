@@ -1007,12 +1007,23 @@ impl ActorNode {
 	}
 
 	pub async fn synchronize(self: &Arc<Self>) -> db::Result<()> {
-		self.synchronize_objects_from_start().await?;
 		let neighbours = self.base.iter_all_fingers().await.collect_amount(4).await;
-		self.synchronize_head(&neighbours).await?;
+		let republish_head = self.synchronize_head(&neighbours).await?;
+		self.synchronize_objects_from_start().await?;
 		self.synchronize_objects_from_head(10).await?;
 		self.synchronize_files().await?;
-		self.synchronize_blocks().await
+		self.synchronize_blocks().await?;
+
+		// If our head is newer than our neighbour's, or their head is newer than ours,
+		// re-publish that head across the network so that everyone's up to date
+		if let Some((hash, object, skip_nodes)) = republish_head {
+			let this = self.clone();
+			spawn(async move {
+				this.publish_object(&this.base.overlay_node(), &hash, &object, &skip_nodes)
+					.await
+			});
+		}
+		Ok(())
 	}
 
 	pub async fn synchronize_recent_objects_on_connection(&self, connection: &mut Connection) {
@@ -1087,7 +1098,9 @@ impl ActorNode {
 		Ok(())
 	}
 
-	async fn synchronize_head(self: &Arc<Self>, fingers: &[NodeContactInfo]) -> db::Result<()> {
+	async fn synchronize_head(
+		self: &Arc<Self>, fingers: &[NodeContactInfo],
+	) -> db::Result<Option<(IdType, Object, Vec<IdType>)>> {
 		let mut latest_object: Option<Object> = None;
 		let mut latest_hash = IdType::default();
 		let mut up_to_date_nodes = Vec::with_capacity(fingers.len());
@@ -1135,31 +1148,19 @@ impl ActorNode {
 			}
 		}
 
+
 		// Publish the head we've found to the rest of the network, except for those
 		// nodes for which we already know they have it
 		if let Some(object) = latest_object {
-			let this = self.clone();
-			spawn(async move {
-				this.publish_object(
-					&this.base.overlay_node(),
-					&latest_hash,
-					&object,
-					&up_to_date_nodes,
-				)
-				.await
-			});
+			return Ok(Some((latest_hash, object, up_to_date_nodes)));
 		// Otherwise, if our head was actually newer than any of the tried
 		// fingers, simply publish our head again.
 		} else if let Some((hash, object)) = our_head {
 			if our_head_is_newer {
-				let this = self.clone();
-				spawn(async move {
-					this.publish_object(&this.base.overlay_node(), &hash, &object, &[])
-						.await
-				});
+				return Ok(Some((hash, object, Vec::new())));
 			}
 		}
-		Ok(())
+		Ok(None)
 	}
 
 	async fn synchronize_head_on_connection(
