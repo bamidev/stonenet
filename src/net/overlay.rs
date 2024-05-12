@@ -672,7 +672,7 @@ impl OverlayNode {
 
 				// Then we can collect all the values related to this identity
 				match node
-					.collect_object(&mut connection, object_id, object.clone(), false)
+					.complete_object(&mut connection, object_id, object.clone(), false)
 					.await
 				{
 					Ok(done) =>

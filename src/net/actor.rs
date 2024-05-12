@@ -175,10 +175,24 @@ impl ActorNode {
 		Ok(true)
 	}
 
+	pub async fn collect_object(
+		self: &Arc<Self>, connection: &mut Connection, hash: &IdType,
+	) -> db::Result<bool> {
+		if let Some(result) = self
+			.exchange_find_object_on_connection(connection, hash)
+			.await
+		{
+			self.complete_object(connection, hash.clone(), result.object, false)
+				.await
+		} else {
+			Ok(false)
+		}
+	}
+
 	/// Attempts to collect as much files and their blocks on the given
 	/// connection.
-	pub(super) fn collect_object<'a, 'b: 'a>(
-		&'a self, connection: &'b mut Connection, id: IdType, object: Object,
+	pub(super) fn complete_object<'a, 'b: 'a>(
+		self: &'a Arc<Self>, connection: &'b mut Connection, id: IdType, object: Object,
 		verified_from_start: bool,
 	) -> BoxFuture<'a, db::Result<bool>> {
 		async move {
@@ -209,45 +223,42 @@ impl ActorNode {
 						}
 					}
 				}
-				ObjectPayload::Share(payload) => {
-					let mut _temp = None;
-					let mut actor_node = self;
-					if &payload.actor_address != self.actor_address() {
-						_temp = self
-							.base
-							.overlay_node()
-							.get_actor_node_or_lurker(&payload.actor_address)
-							.await;
-						if let Some(an) = _temp.as_ref() {
-							actor_node = &**an;
-						} else {
-							error!(
-								"Unable to set up actor node to find object {}",
-								&payload.object_hash
-							);
-							return Ok(false);
-						}
-					};
+				ObjectPayload::Share(payload) =>
+					if &payload.actor_address == self.actor_address() {
+						self.collect_object(connection, &payload.object_hash)
+							.await?;
+					} else {
+						self.spawn_collect_object_from_other_network(
+							payload.actor_address,
+							payload.object_hash,
+						);
+					},
+				ObjectPayload::Post(payload) => {
+					match &payload.data {
+						PostObjectCryptedData::Plain(plain) =>
+							for hash in &plain.files {
+								if self.needs_file(&hash) {
+									if !self.collect_file(connection, &hash).await? {
+										return Ok(false);
+									}
+								}
+							},
+					}
 
-					if let Some(result) = actor_node.find_object(&payload.object_hash).await {
-						if !actor_node
-							.collect_object(connection, payload.object_hash, result.object, false)
-							.await?
-						{
-							return Ok(false);
-						}
+					// If the post is a reply, also collect the object it replied to.
+					if let Some((actor_address, object_hash)) = payload.in_reply_to {
+						if &actor_address == self.actor_address() {
+							self.collect_object(connection, &object_hash).await?;
+						} else {
+							// TODO: Try to collect the object, although from another actor, on this
+							// connection. They probably already have it.
+							self.spawn_collect_object_from_other_network(
+								actor_address,
+								object_hash,
+							);
+						};
 					}
 				}
-				ObjectPayload::Post(payload) => match &payload.data {
-					PostObjectCryptedData::Plain(plain) =>
-						for hash in &plain.files {
-							if self.needs_file(&hash) {
-								if !self.collect_file(connection, &hash).await? {
-									return Ok(false);
-								}
-							}
-						},
-				},
 			}
 			Ok(true)
 		}
@@ -283,6 +294,13 @@ impl ActorNode {
 		&self, connection: &mut Connection, id: &IdType,
 	) -> Option<FindFileResult> {
 		self.exchange_find_value_on_connection_and_parse(connection, ValueType::File, id)
+			.await
+	}
+
+	pub async fn exchange_find_object_on_connection(
+		&self, connection: &mut Connection, id: &IdType,
+	) -> Option<FindObjectResult> {
+		self.exchange_find_value_on_connection_and_parse(connection, ValueType::Object, id)
 			.await
 	}
 
@@ -944,7 +962,7 @@ impl ActorNode {
 	///   leading up to this new object.
 	/// Returns true if the given object was newer than what we have locally.
 	async fn process_new_object(
-		&self, connection: &mut Connection, id: &IdType, object: &Object,
+		self: &Arc<Self>, connection: &mut Connection, id: &IdType, object: &Object,
 	) -> db::Result<bool> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db().connect_old()?;
@@ -956,7 +974,7 @@ impl ActorNode {
 			// If we are behind, store the received object in our database
 			if object.sequence > our_head.sequence {
 				if !self
-					.collect_object(
+					.complete_object(
 						connection,
 						id.clone(),
 						object.clone(),
@@ -981,7 +999,7 @@ impl ActorNode {
 				}
 			}
 			if !self
-				.collect_object(connection, id.clone(), object.clone(), object.sequence == 0)
+				.complete_object(connection, id.clone(), object.clone(), object.sequence == 0)
 				.await?
 			{
 				error!("Unable to collect object {}.", id);
@@ -989,6 +1007,50 @@ impl ActorNode {
 			}
 			Ok(true)
 		}
+	}
+
+	fn spawn_collect_object_from_other_network(
+		self: &Arc<Self>, actor_address: ActorAddress, object_hash: IdType,
+	) {
+		let this = self.clone();
+		spawn(async move {
+			if let Some(actor_node) = this
+				.base
+				.overlay_node()
+				.get_actor_node_or_lurker(&actor_address)
+				.await
+			{
+				// Find the object on the network
+				if let Some(result) = actor_node.find_object(&object_hash).await {
+					let result = async {
+						actor_node.store_object(&object_hash, &result.object, false)?;
+						// If found, collect all files & blocks on the network as well.
+						actor_node.synchronize_files().await?;
+						actor_node.synchronize_blocks().await?;
+						// FIXME: The above two lines synchronize all missing files & blocks on that
+						// actor network. While this may be beneficial in some cases, it may be
+						// spammy in others. We need some methods like the `collect_*` methods that
+						// only collect the files & blocks in a targeted fashion. And then the
+						// synchronize methods on the overlay node need something that synchronizes
+						// objects, files & blocks needed from actor networks we don't follow as
+						// well. This will take some work.
+						db::Result::Ok(())
+					};
+					if let Err(e) = result.await {
+						error!(
+							"Database error while synchronizing object, files & blocks with actor \
+							 network {}: {:?}",
+							actor_address, e
+						);
+					}
+				} else {
+					warn!(
+						"Object {} not found on actor network {}.",
+						object_hash, actor_address
+					);
+				}
+			}
+		});
 	}
 
 	fn store_block(&self, id: &IdType, data: &[u8]) -> db::Result<()> {
@@ -1026,7 +1088,9 @@ impl ActorNode {
 		Ok(())
 	}
 
-	pub async fn synchronize_recent_objects_on_connection(&self, connection: &mut Connection) {
+	pub async fn synchronize_recent_objects_on_connection(
+		self: &Arc<Self>, connection: &mut Connection,
+	) {
 		let result = match self.synchronize_head_on_connection(connection).await {
 			Ok(r) => r,
 			Err(e) => {
@@ -1057,7 +1121,7 @@ impl ActorNode {
 						None => break,
 						Some(result) => {
 							match self
-								.collect_object(
+								.complete_object(
 									connection,
 									last_object.previous_hash.clone(),
 									result.object.clone(),
@@ -1164,7 +1228,7 @@ impl ActorNode {
 	}
 
 	async fn synchronize_head_on_connection(
-		&self, connection: &mut Connection,
+		self: &Arc<Self>, connection: &mut Connection,
 	) -> db::Result<Option<(IdType, Object, bool)>> {
 		if let Some(response) = self.exchange_head_on_connection(connection).await {
 			let result = self
