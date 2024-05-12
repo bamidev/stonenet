@@ -1234,50 +1234,69 @@ async fn process_next_send_queue_item(
 		};
 	}
 
+	let mut recipient = record.recipient_server.clone();
+	if let Some(path) = &record.recipient_path {
+		recipient += path;
+	}
+	match send_state {
+		ActivitySendState::Send => {
+			info!("Sent activity {} to {}.", record.id, recipient);
+			activity_pub_send_queue::Entity::delete_by_id(record.id)
+				.exec(g.api.db.inner())
+				.await?;
+		}
+		ActivitySendState::Impossible => {
+			warn!(
+				"Impossible to send activity {} to {}.",
+				record.id, recipient
+			);
+			activity_pub_send_queue::Entity::delete_by_id(record.id)
+				.exec(g.api.db.inner())
+				.await?;
+		}
+		ActivitySendState::Failed => {
+			if record.failures < 7 * 24 {
+				let attempt = record.failures + 1;
+				warn!(
+					"Failed to send activity {} to {} this time. (Attempt #{})",
+					record.id, recipient, attempt
+				);
+				let mut updated =
+					<activity_pub_send_queue::ActiveModel as std::default::Default>::default();
+				updated.id = Set(record.id);
+				updated.last_fail = Set(Some(current_timestamp() as _));
+				updated.failures = Set(attempt);
+				activity_pub_send_queue::Entity::update(updated)
+					.exec(g.api.db.inner())
+					.await?;
+			} else {
+				warn!(
+					"Failed to sent activity {} to {} after {} retries. Dropping activity from \
+					 send-queue.",
+					record.id,
+					recipient,
+					7 * 24
+				);
+				activity_pub_send_queue::Entity::delete_by_id(record.id)
+					.exec(g.api.db.inner())
+					.await?;
+				// Delete all followers of the recipient server, because the server is deemed to
+				// be unresponsive after not responding for a week.
+				let mut delete =
+					<activity_pub_follow::ActiveModel as std::default::Default>::default();
+				delete.actor_id = Set(record.actor_id);
+				delete.server = Set(record.recipient_server);
+				activity_pub_follow::Entity::delete(delete)
+					.exec(g.api.db.inner())
+					.await?;
+			}
+		}
+	}
 	if send_state == ActivitySendState::Send || send_state == ActivitySendState::Impossible {
 		activity_pub_send_queue::Entity::delete_by_id(record.id)
 			.exec(g.api.db.inner())
 			.await?;
 	} else {
-		if record.failures < 7 * 24 {
-			warn!(
-				"Failed to sent ActivityPub activity {} (attempt {}).",
-				record.id,
-				record.failures + 1
-			);
-			let updated = activity_pub_send_queue::ActiveModel {
-				id: Set(record.id),
-				actor_id: NotSet,
-				object: NotSet,
-				recipient_server: NotSet,
-				recipient_path: NotSet,
-				last_fail: Set(Some(current_timestamp() as _)),
-				failures: Set(record.failures + 1),
-			};
-			activity_pub_send_queue::Entity::update(updated)
-				.exec(g.api.db.inner())
-				.await?;
-		} else {
-			warn!(
-				"Failed to sent ActitityPub activity {} after 5 retries. Dropping activity from \
-				 send-queue.",
-				record.id
-			);
-			activity_pub_send_queue::Entity::delete_by_id(record.id)
-				.exec(g.api.db.inner())
-				.await?;
-			// Delete all followers of the recipient server, because the server is deemed to
-			// be unresponsive after not responding for a week.
-			let d = activity_pub_follow::ActiveModel {
-				id: NotSet,
-				actor_id: Set(record.actor_id),
-				path: NotSet,
-				server: Set(record.recipient_server),
-			};
-			activity_pub_follow::Entity::delete(d)
-				.exec(g.api.db.inner())
-				.await?;
-		}
 	}
 	Ok(())
 }
@@ -1346,6 +1365,11 @@ async fn send_activity(
 	let inbox_url_raw = if let Some(si) = find_inbox(g, recipient_server, recipient_path).await? {
 		si
 	} else {
+		warn!(
+			"Couldn't find the inbox for: {}{}",
+			recipient_server,
+			recipient_path.unwrap_or("")
+		);
 		return Ok(ActivitySendState::Impossible);
 	};
 	let inbox_url = match Url::parse(&inbox_url_raw) {
