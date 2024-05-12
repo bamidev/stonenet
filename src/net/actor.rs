@@ -429,10 +429,6 @@ impl ActorNode {
 			neighbours.len() > 0,
 			"need fingers to intialize actor node with"
 		);
-		// Check if we are behind or if the network is behind
-		self.synchronize_head(neighbours)
-			.await
-			.expect("unable to synchronize head");
 
 		// Do the work of synchronizing all missing data.
 		self.start_synchronization();
@@ -946,7 +942,7 @@ impl ActorNode {
 	/// * Uses the connection to ask for files and blocks as well.
 	/// * Starts the synchronization process if we don't have the objects
 	///   leading up to this new object.
-	/// Returns true if the given object is newer than what we have locally.
+	/// Returns true if the given object was newer than what we have locally.
 	async fn process_new_object(
 		&self, connection: &mut Connection, id: &IdType, object: &Object,
 	) -> db::Result<bool> {
@@ -1010,9 +1006,11 @@ impl ActorNode {
 			.perform(|mut c| c.store_object(self.actor_address(), id, object, verified_from_start))
 	}
 
-	pub async fn synchronize(&self) -> db::Result<()> {
-		self.synchronize_objects_from_head(10).await?;
+	pub async fn synchronize(self: &Arc<Self>) -> db::Result<()> {
 		self.synchronize_objects_from_start().await?;
+		let neighbours = self.base.iter_all_fingers().await.collect_amount(4).await;
+		self.synchronize_head(&neighbours).await?;
+		self.synchronize_objects_from_head(10).await?;
 		self.synchronize_files().await?;
 		self.synchronize_blocks().await
 	}
@@ -1093,6 +1091,16 @@ impl ActorNode {
 		let mut latest_object: Option<Object> = None;
 		let mut latest_hash = IdType::default();
 		let mut up_to_date_nodes = Vec::with_capacity(fingers.len());
+		let our_head = self
+			.db()
+			.perform(|c| c.fetch_head(self.actor_address()))?
+			.map(|(i, o, _)| (i, o));
+		let our_head_sequence = if let Some((_, object)) = &our_head {
+			object.sequence as i128
+		} else {
+			-1
+		};
+		let mut our_head_is_newer = true;
 
 		for finger in fingers {
 			if let Some((mut connection, _)) =
@@ -1101,10 +1109,11 @@ impl ActorNode {
 				match self.synchronize_head_on_connection(&mut connection).await {
 					Err(e) => error!("Database issue with synchronizing head: {}", e),
 					Ok(r) =>
-						if let Some((hash, object, is_newer)) = r {
-							if is_newer {
-								// If the node had a newer head, remember it so that we can
-								// re-publish it to the ones that don't have it yet
+						if let Some((hash, object, _is_newer)) = r {
+							// If the node had a newer head, remember it so that we can
+							// re-publish it to the ones that don't have it yet
+							if object.sequence as i128 > our_head_sequence {
+								our_head_is_newer = false;
 								if let Some(other_latest) = &latest_object {
 									if other_latest.sequence < object.sequence {
 										latest_object = Some(object);
@@ -1118,6 +1127,8 @@ impl ActorNode {
 									latest_hash = hash;
 									up_to_date_nodes = vec![finger.node_id.clone(); 1];
 								}
+							} else if object.sequence as i128 == our_head_sequence {
+								our_head_is_newer = false;
 							}
 						},
 				}
@@ -1137,6 +1148,16 @@ impl ActorNode {
 				)
 				.await
 			});
+		// Otherwise, if our head was actually newer than any of the tried
+		// fingers, simply publish our head again.
+		} else if let Some((hash, object)) = our_head {
+			if our_head_is_newer {
+				let this = self.clone();
+				spawn(async move {
+					this.publish_object(&this.base.overlay_node(), &hash, &object, &[])
+						.await
+				});
+			}
 		}
 		Ok(())
 	}
@@ -1187,7 +1208,7 @@ impl ActorNode {
 				0
 			};
 
-			let mut current_sequence = head.sequence as u64;
+			let mut current_sequence: u64;
 			let mut previous_hash = head.previous_hash;
 			loop {
 				if let Some((previous_object, _)) =

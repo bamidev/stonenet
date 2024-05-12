@@ -437,9 +437,8 @@ impl OverlayNode {
 		// When nodes attach to us, make sure to ping on those connections to keep them
 		// alive.
 		this.maintain_node_connections();
-
 		// Synchronize data on each actor network every hour
-		this.maintain_synchronization(stop_flag);
+		this.maintain_synchronization();
 
 		Ok(this)
 	}
@@ -1170,10 +1169,10 @@ impl OverlayNode {
 		});
 	}
 
-	fn maintain_synchronization(self: &Arc<Self>, stop_flag: Arc<AtomicBool>) {
+	fn maintain_synchronization(self: &Arc<Self>) {
 		let this = self.clone();
 		spawn(async move {
-			while self.base.is_running() {
+			while this.base.is_running() {
 				let actor_nodes: Vec<Arc<ActorNode>> = this
 					.base
 					.interface
@@ -1187,7 +1186,7 @@ impl OverlayNode {
 					actor_node.start_synchronization();
 				}
 
-				sleep(Duration::from_secs(300)).await;
+				sleep(Duration::from_secs(3600)).await;
 			}
 		});
 	}

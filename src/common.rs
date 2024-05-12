@@ -11,9 +11,14 @@ use sha3::{Digest, Sha3_256};
 
 #[async_trait]
 pub trait AsyncIterator {
-	type Item;
+	type Item: Send;
 
 	async fn next(&mut self) -> Option<Self::Item>;
+}
+
+#[async_trait]
+pub trait AsyncIteratorExt: AsyncIterator {
+	async fn collect_amount(&mut self, amount: usize) -> Vec<Self::Item>;
 }
 
 #[derive(Clone, Default, Deserialize, Eq, Hash, PartialEq)]
@@ -39,6 +44,20 @@ fn differs_at_bit_u8(a: u8, b: u8) -> u8 {
 	return 0xFF;
 }
 
+
+#[async_trait]
+impl<T> AsyncIteratorExt for T
+where
+	T: AsyncIterator + Send,
+{
+	async fn collect_amount(&mut self, amount: usize) -> Vec<Self::Item> {
+		let mut list = Vec::with_capacity(amount);
+		while let Some(node_info) = self.next().await {
+			list.push(node_info);
+		}
+		list
+	}
+}
 
 impl IdType {
 	pub fn as_bytes(&self) -> &[u8; 32] { &self.0 }
