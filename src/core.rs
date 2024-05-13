@@ -31,7 +31,7 @@ pub enum ActorInfo {
 ///
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum Address {
-	Node(IdType),
+	Node(NodeAddress),
 	Actor(ActorAddress),
 }
 
@@ -73,6 +73,12 @@ pub struct FileHeader {
 	pub hash: IdType,
 	pub mime_type: String,
 	pub block_count: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, Serialize)]
+pub enum NodeAddress {
+	/// The first version of the node address refers to a ed448 keypair.
+	V1(IdType),
 }
 
 #[derive(Debug, Error)]
@@ -280,11 +286,9 @@ impl Address {
 				if buffer.len() != 33 {
 					return Err(FromBytesAddressError::InvalidSize(buffer.len()));
 				}
-				Ok(Address::Node(IdType::from_bytes(array_ref![buffer, 1, 32])))
+				Ok(Address::Node(NodeAddress::from_bytes(&buffer[1..])?))
 			}
-			1 => Ok(Address::Actor(ActorAddress::from_bytes(array_ref![
-				buffer, 1, 33
-			])?)),
+			1 => Ok(Address::Actor(ActorAddress::from_bytes(&buffer[1..])?)),
 			_ => Err(FromBytesAddressError::UnknownType(type_id)),
 		}
 	}
@@ -292,13 +296,13 @@ impl Address {
 	pub fn to_bytes(&self) -> Vec<u8> {
 		match self {
 			Self::Node(address) => {
-				let mut buffer = vec![0u8; 33];
-				buffer[1..33].copy_from_slice(address.as_bytes());
+				let mut buffer = vec![0; 34];
+				buffer[1..34].copy_from_slice(&address.to_bytes());
 				buffer
 			}
 			Self::Actor(address) => {
-				let mut buffer = address.to_bytes();
-				buffer.insert(0, 1);
+				let mut buffer = vec![1; 34];
+				buffer[1..34].copy_from_slice(&address.to_bytes());
 				buffer
 			}
 		}
@@ -358,6 +362,77 @@ impl ActorInfoV1 {
 	pub fn generate_id(&self) -> IdType {
 		let buffer = binserde::serialize(self).unwrap();
 		IdType::hash(&buffer)
+	}
+}
+
+impl NodeAddress {
+	pub fn to_bytes(&self) -> Vec<u8> { binserde::serialize(&self).unwrap() }
+
+	pub fn from_bytes(buffer: &[u8]) -> Result<Self, FromBytesAddressError> {
+		let version = buffer[0];
+		if version != 0 {
+			return Err(FromBytesAddressError::InvalidVersion(version));
+		}
+		if buffer.len() != 33 {
+			return Err(FromBytesAddressError::InvalidSize(buffer.len() - 1));
+		}
+		Ok(Self::V1(IdType::from_bytes(array_ref![buffer, 1, 32])))
+	}
+}
+
+impl Display for NodeAddress {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let addr = Address::Node(self.clone());
+		f.write_str(&addr.to_base58())
+	}
+}
+
+impl Into<sea_orm::Value> for &NodeAddress {
+	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
+}
+
+impl sea_orm::sea_query::Nullable for NodeAddress {
+	fn null() -> sea_orm::Value { sea_orm::Value::Bytes(None) }
+}
+
+impl sea_orm::TryGetable for NodeAddress {
+	fn try_get_by<I: sea_orm::ColIdx>(
+		res: &sea_orm::QueryResult, index: I,
+	) -> Result<Self, sea_orm::TryGetError> {
+		let bytes = <Vec<u8> as sea_orm::TryGetable>::try_get_by(res, index)?;
+		Ok(Self::from_bytes(&bytes).map_err(|e| {
+			sea_orm::TryGetError::DbErr(sea_orm::DbErr::TryIntoErr {
+				from: "Vec<u8>",
+				into: "NodeAddress",
+				source: Box::new(e),
+			})
+		})?)
+	}
+}
+
+impl Into<sea_orm::Value> for NodeAddress {
+	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
+}
+
+impl sea_orm::sea_query::ValueType for NodeAddress {
+	fn try_from(v: sea_orm::Value) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
+		match v {
+			sea_orm::Value::Bytes(b) =>
+				if let Some(bytes) = b {
+					Ok(Self::from_bytes(&bytes).map_err(|_| sea_orm::sea_query::ValueTypeErr)?)
+				} else {
+					Err(sea_orm::sea_query::ValueTypeErr)
+				},
+			_ => Err(sea_orm::sea_query::ValueTypeErr),
+		}
+	}
+
+	fn type_name() -> String { "NodeAddress".to_owned() }
+
+	fn array_type() -> sea_orm::sea_query::ArrayType { sea_orm::sea_query::ArrayType::Bytes }
+
+	fn column_type() -> sea_orm::ColumnType {
+		sea_orm::ColumnType::Binary(sea_orm::sea_query::BlobSize::Blob(None))
 	}
 }
 
