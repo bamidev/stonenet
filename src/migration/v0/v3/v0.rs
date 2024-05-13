@@ -106,7 +106,7 @@ impl MigrationTrait for Migration {
 			ALTER TABLE object ADD COLUMN "published_on_fediverse" boolean NOT NULL DEFAULT FALSE;
 
 			-- Create missing unique constraint/index
-			--CREATE UNIQUE INDEX uniq_object_hash ON object(actor_id, hash);
+			CREATE UNIQUE INDEX uniq_object_hash ON object(actor_id, hash);
 			CREATE UNIQUE INDEX uniq_post_files_sequence ON post_files(object_id, sequence);
 			CREATE UNIQUE INDEX uniq_post_tag ON post_tag(object_id, tag);
 		"#,
