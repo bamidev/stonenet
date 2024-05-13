@@ -1,7 +1,6 @@
 use std::{
 	collections::HashMap,
 	io,
-	os::unix::net::SocketAddr,
 	str::FromStr,
 	sync::{
 		atomic::{AtomicBool, Ordering},
