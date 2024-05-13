@@ -11,6 +11,7 @@ pub struct Model {
 	pub identity_id: i64,
 	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
 	pub private_key: Vec<u8>,
+	//pub is_private: bool
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

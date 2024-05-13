@@ -30,6 +30,21 @@ pub struct KeepAliveResponse {
 	pub ok: bool,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ListActorsRequest {}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ListActorsResponse {
+	address: NodeAddress,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ListFriendsRequest {}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ListFriendsResponse {
+	address: NodeAddress,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PingRequest {}

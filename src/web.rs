@@ -13,7 +13,7 @@ use std::{
 use ::serde::*;
 use axum::{body::Body, extract::*, response::Response, routing::get, Router};
 use tera::{Context, Tera};
-use tokio::{spawn, time::sleep};
+use tokio::time::sleep;
 use tower_http::services::ServeDir;
 
 use self::common::*;

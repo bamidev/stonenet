@@ -1027,13 +1027,16 @@ impl ActorNode {
 							// If found, collect all files & blocks on the network as well.
 							actor_node.synchronize_files().await?;
 							actor_node.synchronize_blocks().await?;
-							// FIXME: The above two lines synchronize all missing files & blocks on that
-							// actor network. While this may be beneficial in some cases, it may be
-							// spammy in others. We need some methods like the `collect_*` methods that
-							// only collect the files & blocks in a targeted fashion. And then the
-							// synchronize methods on the overlay node need something that synchronizes
-							// objects, files & blocks needed from actor networks we don't follow as
-							// well. This will take some work.
+							// FIXME: The above two lines synchronize all
+							// missing files & blocks on that actor network.
+							// While this may be beneficial in some cases, it
+							// may be spammy in others. We need some methods
+							// like the `collect_*` methods that only collect
+							// the files & blocks in a targeted fashion. And
+							// then the synchronize methods on the overlay node
+							// need something that synchronizes objects, files &
+							// blocks needed from actor networks we don't follow
+							// as well. This will take some work.
 						}
 						db::Result::Ok(())
 					};
@@ -1337,7 +1340,8 @@ impl ActorNode {
 			}
 		};
 
-		loop { error!("LOOP");
+		loop {
+			error!("LOOP");
 			match self.find_next_object(&last_known_object_id).await {
 				None => return Ok(true),
 				Some(FindNextObjectResult { hash, object }) => {

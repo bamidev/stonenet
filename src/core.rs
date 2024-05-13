@@ -296,13 +296,13 @@ impl Address {
 	pub fn to_bytes(&self) -> Vec<u8> {
 		match self {
 			Self::Node(address) => {
-				let mut buffer = vec![0; 34];
-				buffer[1..34].copy_from_slice(&address.to_bytes());
+				let mut buffer = vec![0; 1];
+				buffer.extend(address.to_bytes());
 				buffer
 			}
 			Self::Actor(address) => {
-				let mut buffer = vec![1; 34];
-				buffer[1..34].copy_from_slice(&address.to_bytes());
+				let mut buffer = vec![1; 1];
+				buffer.extend(address.to_bytes());
 				buffer
 			}
 		}

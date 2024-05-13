@@ -8,10 +8,7 @@ use async_trait::async_trait;
 use log::info;
 use sea_orm::{prelude::*, sea_query::*, DatabaseBackend, Statement};
 
-use crate::{
-	db::{self, PersistenceHandle},
-	trace,
-};
+use crate::db::{self, PersistenceHandle};
 
 
 /// The latest database version.
