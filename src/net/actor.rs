@@ -1,26 +1,39 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+	net::SocketAddr,
+	sync::{
+		atomic::{AtomicBool, AtomicPtr, Ordering},
+		Arc,
+	},
+	time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use futures::{
 	future::{join_all, BoxFuture},
 	FutureExt,
 };
+use log::{error, warn};
 use serde::de::DeserializeOwned;
 use tokio::{spawn, time::sleep};
 
 use super::{
-	connection_manager::*,
-	message::*,
-	node::*,
+	binserde,
+	connection_manager::ConnectionManager,
+	message::{
+		FindBlockResult, FindFileResult, FindNextObjectResult, FindObjectResult, GetProfileRequest,
+		GetProfileResponse, HeadResponse, PublishObjectMessage, PublishObjectRequest,
+		PublishObjectResponse,
+	},
+	node::{ContactStrategyMethod, Node, NodeInterface},
 	overlay::OverlayNode,
-	sstp::{self, MessageProcessorResult, MessageWorkToDo, Result},
-	*,
+	sstp::{self, Connection, MessageProcessorResult, MessageWorkToDo, Result},
 };
 use crate::{
 	common::*,
 	core::*,
 	db::{self, Database, PersistenceHandle},
-	identity::*,
+	identity::ActorPublicKeyV1,
+	net::{message::ValueType, NodeContactInfo},
 	trace::Mutex,
 };
 
@@ -1341,7 +1354,6 @@ impl ActorNode {
 		};
 
 		loop {
-			error!("LOOP");
 			match self.find_next_object(&last_known_object_id).await {
 				None => return Ok(true),
 				Some(FindNextObjectResult { hash, object }) => {

@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use std::{
-	cmp::PartialEq,
 	collections::{vec_deque::Iter, VecDeque},
 	ops::{Deref, DerefMut},
 };

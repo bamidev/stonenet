@@ -2291,9 +2291,11 @@ impl OverlayNode {
 			else {
 				if let Some(result) = self.find_actor(&address, 100, true).await {
 					let actor_info = result.0;
-					self.db().perform(|mut c| {
+					if let Err(e) = self.db().perform(|mut c| {
 						c.store_identity(&address, &actor_info.public_key, &actor_info.first_object)
-					});
+					}) {
+						error!("Unable to store identity of tracked actor: {:?}", e);
+					}
 					join(self.clone(), address.clone(), actor_info);
 				}
 				// If failed to obtain actor info from anywhere, wait an hour and then try again

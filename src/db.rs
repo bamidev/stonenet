@@ -17,7 +17,7 @@ use fallible_iterator::FallibleIterator;
 use generic_array::{typenum::U12, GenericArray};
 use log::*;
 use rusqlite::{
-	self, params,
+	params,
 	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Value, ValueRef},
 	Rows, ToSql,
 };
@@ -322,7 +322,10 @@ pub trait PersistenceHandle {
 			if sequence != i {
 				Err(Error::FileMissingBlock(file_id, sequence as _))?;
 			}
-			let block_id_opt: Option<i64> = r.try_get_by(block::Column::Id.as_str())?;
+			let block_id_opt: Option<i64> = r.try_get(
+				block::Entity::default().table_name(),
+				block::Column::Id.as_str(),
+			)?;
 			if let Some(block_id) = block_id_opt {
 				let size: i64 = r.try_get_by(block::Column::Size.as_str())?;
 				let mut data: Vec<u8> = r.try_get_by(block::Column::Data.as_str())?;

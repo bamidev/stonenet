@@ -25,7 +25,7 @@ impl MigrationTrait for Migration {
 
 		tx.inner()
 			.execute_unprepared("CREATE UNIQUE INDEX uniq_identity_address ON identity(address)")
-			.await;
+			.await?;
 		Ok(())
 	}
 }

@@ -21,7 +21,6 @@ use base64::prelude::*;
 use chrono::{SecondsFormat, Utc};
 use lazy_static::lazy_static;
 use log::*;
-
 use reqwest::Url;
 use rsa::{
 	pkcs1v15::{SigningKey, VerifyingKey},
@@ -1506,7 +1505,12 @@ pub async fn webfinger(
 
 
 mod tests {
-	
+	#[allow(unused_imports)]
+	use rsa::{
+		pkcs1::DecodeRsaPrivateKey,
+		pkcs8::{EncodePrivateKey, LineEnding},
+		RsaPrivateKey,
+	};
 
 	use super::*;
 

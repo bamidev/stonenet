@@ -7,7 +7,10 @@ use std::{
 use ed25519_dalek::{self as ed25519, Signer};
 use ed448_rust as ed448;
 use rand::{prelude::*, rngs::OsRng};
-use rusqlite::{types::*, ToSql};
+use rusqlite::{
+	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
+	ToSql,
+};
 use sea_orm::{prelude::*, ColIdx, TryGetError};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
@@ -50,13 +53,6 @@ struct NodePrivateKeyCopy([u8; ed25519::SECRET_KEY_LENGTH]);
 
 impl ActorPublicKeyV1 {
 	pub fn from_bytes(bytes: [u8; 57]) -> Result<Self, ActorPublicKeyV1Error> { Ok(Self(bytes)) }
-
-	pub fn generate_address(&self) -> IdType {
-		let mut hasher = Sha3_256::new();
-		hasher.update(&self.0);
-		let buffer: [u8; 32] = hasher.finalize().into();
-		buffer.into()
-	}
 
 	pub fn to_bytes(self) -> [u8; 57] { self.0 }
 
@@ -174,6 +170,7 @@ impl NodePublicKey {
 impl NodePrivateKey {
 	pub fn as_bytes(&self) -> &[u8; 32] { &self.copy.0 }
 
+	#[allow(unused)]
 	pub fn to_bytes(&self) -> [u8; 32] { self.inner.to_bytes() }
 
 	pub fn from_bytes(mut bytes: [u8; 32]) -> Self {
@@ -246,6 +243,7 @@ impl Clone for NodePrivateKey {
 impl NodeSignature {
 	pub fn to_bytes(&self) -> [u8; 64] { self.0.to_bytes() }
 
+	#[allow(unused)]
 	pub fn from_bytes(bytes: [u8; 64]) -> Self { Self(ed25519::Signature::from_bytes(&bytes)) }
 
 	#[allow(unused)]

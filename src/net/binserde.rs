@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use bincode::{self, Options};
+use bincode::Options;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use super::sstp;

@@ -2,7 +2,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::Mutex;
 
-use crate::{common::*, net::*};
+use super::{
+	sstp::{self, Connection},
+	NodeContactInfo,
+};
+use crate::common::*;
 
 
 /// The ConnectionManager keeps alive a number of connections.

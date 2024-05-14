@@ -80,11 +80,6 @@ impl Bucket {
 	}
 
 	/// The fingers that can given to other nodes
-	pub fn public_fingers2(&self) -> Vec<NodeContactInfo> {
-		self.public_fingers().map(|f| f.clone()).collect()
-	}
-
-	/// The fingers that can given to other nodes
 	pub fn public_fingers_no_connection(&self) -> impl Iterator<Item = &NodeContactInfo> {
 		self.fingers.iter().map(|e| &e.node_info)
 	}

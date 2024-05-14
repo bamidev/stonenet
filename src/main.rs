@@ -37,18 +37,15 @@ use std::{
 };
 
 use api::Api;
-use config::{Config, *};
-use ctrlc;
+use config::Config;
 use db::Database;
-use env_logger;
 use log::*;
-use net::{overlay::OverlayNode, *};
+use net::{overlay::OverlayNode, resolve_bootstrap_addresses, Openness};
 use semver::Version;
 use signal_hook::flag;
-use simple_logging;
-use tokio::{self, spawn};
+use tokio::{spawn, time::sleep};
 
-use crate::migration::Migrations;
+use crate::{config::CONFIG, migration::Migrations};
 
 
 #[allow(dead_code)]
@@ -386,7 +383,7 @@ async fn node_main(stop_flag: Arc<AtomicBool>, g: &Api, config: &Config) {
 	}
 
 	while !stop_flag.load(Ordering::Relaxed) {
-		tokio::time::sleep(Duration::from_secs(1)).await;
+		sleep(Duration::from_secs(1)).await;
 	}
 }
 
