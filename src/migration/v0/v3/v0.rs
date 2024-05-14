@@ -58,7 +58,7 @@ impl MigrationTrait for Migration {
 				"data" blob NOT NULL
 			);
 			INSERT INTO "block" (hash, size, data)
-			SELECT hash, size, data FROM "block";
+			SELECT hash, size, data FROM "block_old";
 			DROP TABLE "block_old";
 			
 			-- Recreate file_blocks, as the unique constraint on block_hash isn't needed
@@ -103,6 +103,7 @@ impl MigrationTrait for Migration {
 			DELETE FROM object WHERE id NOT IN (
 				SELECT MIN(id) FROM object GROUP BY actor_id, hash
 			);
+
 			ALTER TABLE object ADD COLUMN "published_on_fediverse" boolean NOT NULL DEFAULT FALSE;
 
 			-- Create missing unique constraint/index
