@@ -1971,6 +1971,8 @@ impl Server {
 							// A connection could be closed by the other end at any time, which is
 							// considered reasonable.
 							Error::ConnectionClosed => {}
+							Error::Timeout(timeout) =>
+								warn!("Timeout ({:?}) with {}.", timeout, &contact2),
 							_ => warn!("SSTP I/O error: {:?}", e),
 						},
 					}
