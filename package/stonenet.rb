@@ -1,13 +1,14 @@
 class Stonenet < Formula
   homepage "https://stonenet.org/"
-  url "https://github.com/bamidev/stonenet/archive/refs/tags/v0.0.17.tar.gz"
-  sha256 "06cecc3336902ee1560af2455f65fc10833b1e0ac7e0ec03283ebf7347b7625d"
+  url "https://github.com/bamidev/stonenet/archive/refs/tags/v{{VERSION}}.tar.gz"
+  sha256 "{{CHECKSUM}}"
 
   depends_on "rust"
 
   service do
     run opt_bin/"stonenetd"
-    launch_only_once true
+    working_dir HOMEBREW_PREFIX/"share/stonenet"
+    process_type :background
     keep_alive true
   end
 
@@ -16,11 +17,13 @@ class Stonenet < Formula
       PREFIX=#{prefix}
     ]
     system "cargo", "build", "--release"
-    
+
     bin.install "target/release/stonenetd" => "stonenetd"
-    system "install" "conf/base.toml" "#{prefix}/usr/local/etc/config.toml"
-    system "install" "static" "#{prefix}/usr/local/share/stonenet/static"
-    system "install" "templates" "#{prefix}/usr/local/share/stonenet/templates"
+    system "install", "conf/default.toml", "-D", "#{prefix}/etc/config.toml"
+    system "mkdir", "-p", "#{prefix}/share/stonenet"
+    system "cp", "-r", "static", "#{prefix}/share/stonenet"
+    system "cp", "-r", "templates", "#{prefix}/share/stonenet"
+    system "mkdir", "-p", "#{prefix}/var/lib/stonenet"
+    system "mkdir", "-p", "#{prefix}/var/log"
   end
 end
-
