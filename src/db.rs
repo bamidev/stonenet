@@ -291,7 +291,7 @@ pub trait PersistenceHandle {
 		&self, file_id: i64, plain_hash: &IdType, block_count: u32,
 	) -> Result<Option<Vec<u8>>> {
 		let query = file_blocks::Entity::find()
-			.column(block::Column::Id)
+			.column_as(block::Column::Id, "block_id")
 			.column(block::Column::Size)
 			.column(block::Column::Data)
 			.join(
@@ -322,10 +322,7 @@ pub trait PersistenceHandle {
 			if sequence != i {
 				Err(Error::FileMissingBlock(file_id, sequence as _))?;
 			}
-			let block_id_opt: Option<i64> = r.try_get(
-				block::Entity::default().table_name(),
-				block::Column::Id.as_str(),
-			)?;
+			let block_id_opt: Option<i64> = r.try_get_by("block_id")?;
 			if let Some(block_id) = block_id_opt {
 				let size: i64 = r.try_get_by(block::Column::Size.as_str())?;
 				let mut data: Vec<u8> = r.try_get_by(block::Column::Data.as_str())?;
