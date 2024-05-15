@@ -1,6 +1,7 @@
 [Unit]
 Description=Stonenet Daemon
 After=network-online.target
+Icon=stonenet
 
 [Install]
 WantedBy=multi-user.target

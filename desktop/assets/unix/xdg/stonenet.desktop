@@ -1,4 +1,5 @@
 [Desktop Entry]
 Type=Application
 Name=Stonenet
+Icon=stonenet
 Exec=stonenet-desktop

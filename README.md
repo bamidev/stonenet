@@ -1,3 +1,5 @@
+![logo](desktop/assets/logo/128x128.png "Stonenet Logo")
+
 # Stonenet
 
 Stonenet is a censorship-resistant (social) media platform built on top of a

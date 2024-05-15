@@ -34,6 +34,8 @@ priority = "optional"
 assets = [
 	["target/release/stonenet-desktop", "usr/bin/", "755"],
 	["assets/unix/xdg/stonenet.desktop", "usr/share/applications/", "644"],
+	["assets/logo/128x128.png", "usr/share/icons/hicolor/128x128/apps/stonenet.png", "644"],
+	["assets/logo/64x64.png", "usr/share/icons/hicolor/64x64/apps/stonenet.png", "644"],
 ]
 depends = ["$auto", "stonenet", "libwebkit2gtk-4.1-0"]
 features = ["browser-window/webkitgtk"]
