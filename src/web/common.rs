@@ -12,7 +12,7 @@ use super::{ActorAddress, FileData, Global, IdType};
 use crate::db::{ObjectInfo, ObjectPayloadInfo};
 
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ObjectDisplayInfo {
 	hash: IdType,
 	actor_address: String,

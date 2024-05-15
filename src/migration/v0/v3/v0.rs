@@ -84,20 +84,17 @@ impl MigrationTrait for Migration {
 				FOREIGN KEY ("object_id") REFERENCES "object" ("id") ON DELETE NO ACTION ON UPDATE NO ACTION
 			);
 			INSERT INTO post_files (object_id, hash, sequence)
-			SELECT object_id, hash, sequence FROM post_files;
+			SELECT object_id, hash, sequence FROM post_files_old;
 			DROP TABLE post_files_old;
 
 			-- Recreate post_tag, as object_id can't be unique
-			ALTER TABLE post_tag RENAME TO post_tag_old;
+			DROP TABLE "post_tag";
 			CREATE TABLE "post_tag" (
 				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
 				"object_id" bigint NOT NULL,
 				"tag" text NOT NULL,
 				FOREIGN KEY ("object_id") REFERENCES "post_object" ("object_id") ON DELETE NO ACTION ON UPDATE NO ACTION
 			);
-			INSERT INTO post_tag (object_id, tag)
-			SELECT object_id, tag FROM post_tag;
-			DROP TABLE post_tag_old;
 
 			-- Delete all duplicates in table "object"
 			DELETE FROM object WHERE id NOT IN (
