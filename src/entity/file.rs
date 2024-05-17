@@ -11,6 +11,7 @@ pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
 	pub hash: IdType,
+	pub compression_type: u8,
 	pub mime_type: String,
 	pub block_count: i32,
 	pub plain_hash: IdType,

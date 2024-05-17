@@ -50,17 +50,17 @@ impl Api {
 		self.db.perform(|c| {
 			// Prepare profile object
 			let avatar_hash = if let Some(f) = avatar {
-				Some(db::Connection::_store_file_data(&c, &f.mime_type, &f.data)?.1)
+				Some(db::Connection::_store_file_data(&c, &f.mime_type, 0, &f.data)?.1)
 			} else {
 				None
 			};
 			let wallpaper_hash = if let Some(f) = wallpaper {
-				Some(db::Connection::_store_file_data(&c, &f.mime_type, &f.data)?.1)
+				Some(db::Connection::_store_file_data(&c, &f.mime_type, 0, &f.data)?.1)
 			} else {
 				None
 			};
 			let description_hash = if let Some(f) = description {
-				Some(db::Connection::_store_file_data(&c, &f.mime_type, &f.data)?.1)
+				Some(db::Connection::_store_file_data(&c, &f.mime_type, 0, &f.data)?.1)
 			} else {
 				None
 			};
@@ -524,10 +524,10 @@ impl Api {
 			// Store all files
 			let mut files = Vec::with_capacity(attachments.len() + 1);
 			let (_, file_hash, _) =
-				db::Connection::_store_file_data(&tx, "text/markdown", message.as_bytes())?;
+				db::Connection::_store_file_data(&tx, "text/markdown", 0, message.as_bytes())?;
 			files.push(file_hash);
 			for FileData { mime_type, data } in attachments {
-				let (_, file_hash, _) = db::Connection::_store_file_data(&tx, mime_type, data)?;
+				let (_, file_hash, _) = db::Connection::_store_file_data(&tx, mime_type, 0, data)?;
 				files.push(file_hash);
 			}
 

@@ -13,6 +13,7 @@ use futures::{
 	FutureExt,
 };
 use log::{error, warn};
+use sea_orm::prelude::*;
 use serde::de::DeserializeOwned;
 use tokio::{spawn, time::sleep};
 
@@ -32,6 +33,7 @@ use crate::{
 	common::*,
 	core::*,
 	db::{self, Database, PersistenceHandle},
+	entity::block,
 	identity::ActorPublicKeyV1,
 	net::{message::ValueType, NodeContactInfo},
 	trace::Mutex,
@@ -66,14 +68,16 @@ struct PublishObjectToDo {
 	hash: IdType,
 }
 
+
 impl ActorInterface {
 	async fn find_block(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.fetch_block(id)
-		})?;
-		if let Some(data) = result {
-			let response = FindBlockResult { data };
+		let result = block::Entity::find()
+			.filter(block::Column::Hash.eq(id))
+			.one(self.db.inner())
+			.await?;
+
+		if let Some(record) = result {
+			let response = FindBlockResult { data: record.data };
 			Ok(Some(binserde::serialize(&response).unwrap()))
 		} else {
 			Ok(None)

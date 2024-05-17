@@ -49,6 +49,13 @@ pub struct Block {
 	pub data: Arc<Vec<u8>>,
 }
 
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[repr(u8)]
+pub enum CompressionType {
+	None   = 0,
+	Brotli = 1,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ShareObject {
 	pub actor_address: ActorAddress,
@@ -65,6 +72,7 @@ pub struct FileData {
 pub struct File {
 	pub plain_hash: IdType,
 	pub mime_type: String,
+	pub compression_type: u8,
 	pub blocks: Vec<IdType>,
 }
 
@@ -362,6 +370,16 @@ impl ActorInfoV1 {
 	pub fn generate_id(&self) -> IdType {
 		let buffer = binserde::serialize(self).unwrap();
 		IdType::hash(&buffer)
+	}
+}
+
+impl CompressionType {
+	pub fn from_u8(code: u8) -> Option<Self> {
+		match code {
+			0 => Some(Self::None),
+			1 => Some(Self::Brotli),
+			_ => None,
+		}
 	}
 }
 

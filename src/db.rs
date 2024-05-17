@@ -1824,7 +1824,7 @@ impl Connection {
 	}
 
 	pub(crate) fn _store_file_data(
-		tx: &impl DerefConnection, mime_type: &str, data: &[u8],
+		tx: &impl DerefConnection, mime_type: &str, compression_type: u8, data: &[u8],
 	) -> Result<(i64, IdType, Vec<IdType>)> {
 		debug_assert!(data.len() <= u64::MAX as usize, "data too large");
 		debug_assert!(data.len() > 0, "data can not be empty");
@@ -1857,6 +1857,7 @@ impl Connection {
 			&binserde::serialize(&File {
 				plain_hash: plain_hash.clone(),
 				mime_type: mime_type.to_string(),
+				compression_type,
 				blocks: block_hashes.clone(),
 			})
 			.unwrap(),
@@ -1864,8 +1865,14 @@ impl Connection {
 		// FIXME: Prevent the unnecessary cloning just to calculate the file hash
 
 		// Create the file record
-		let file_id =
-			Self::_store_file_record(tx, &file_hash, &plain_hash, mime_type, block_count as _)?;
+		let file_id = Self::_store_file_record(
+			tx,
+			&file_hash,
+			&plain_hash,
+			mime_type,
+			compression_type,
+			block_count as _,
+		)?;
 
 		// Create block records
 		for i in 0..block_count {
@@ -1879,13 +1886,20 @@ impl Connection {
 
 	pub(crate) fn _store_file(
 		tx: &impl Deref<Target = rusqlite::Connection>, id: &IdType, plain_hash: &IdType,
-		mime_type: &str, blocks: &[IdType],
+		mime_type: &str, compression_type: u8, blocks: &[IdType],
 	) -> Result<i64> {
 		debug_assert!(blocks.len() <= u32::MAX as usize, "too many blocks");
 		debug_assert!(blocks.len() > 0, "file must have at least one block");
 
 		// Create the file record
-		let file_id = Self::_store_file_record(tx, id, plain_hash, mime_type, blocks.len() as _)?;
+		let file_id = Self::_store_file_record(
+			tx,
+			id,
+			plain_hash,
+			mime_type,
+			compression_type,
+			blocks.len() as _,
+		)?;
 
 		// Create block records
 		for i in 0..blocks.len() {
@@ -1918,7 +1932,7 @@ impl Connection {
 
 	fn _store_file_record(
 		tx: &impl DerefConnection, hash: &IdType, plain_hash: &IdType, mime_type: &str,
-		block_count: u32,
+		compression_type: u8, block_count: u32,
 	) -> Result<i64> {
 		match tx.query_row(
 			r#"
@@ -1950,10 +1964,10 @@ impl Connection {
 
 		tx.execute(
 			r#"
-			INSERT INTO file (hash, plain_hash, mime_type, block_count)
-			VALUES (?,?,?,?)
+			INSERT INTO file (hash, plain_hash, mime_type, block_count, compression_type)
+			VALUES (?,?,?,?,?)
 		"#,
-			params![hash, plain_hash, mime_type, block_count],
+			params![hash, plain_hash, mime_type, block_count, compression_type],
 		)?;
 		Ok(tx.last_insert_rowid())
 	}
@@ -2400,7 +2414,7 @@ impl Connection {
 	pub fn fetch_file(&self, id: &IdType) -> Result<Option<File>> {
 		let mut stat = self.prepare(
 			r#"
-			SELECT id, plain_hash, mime_type, block_count FROM file WHERE hash = ?
+			SELECT id, plain_hash, mime_type, block_count, compression_type FROM file WHERE hash = ?
 		"#,
 		)?;
 		let mut rows = stat.query([id.to_string()])?;
@@ -2409,6 +2423,7 @@ impl Connection {
 			let plain_hash: IdType = row.get(1)?;
 			let mime_type: String = row.get(2)?;
 			let block_count: u32 = row.get(3)?;
+			let compression_type: u8 = row.get(4)?;
 
 			let mut stat = self.prepare(
 				r#"
@@ -2436,6 +2451,7 @@ impl Connection {
 			}
 
 			Ok(Some(File {
+				compression_type,
 				plain_hash,
 				mime_type,
 				blocks,
@@ -2994,24 +3010,49 @@ impl Connection {
 	}
 
 	pub fn store_file(&mut self, id: &IdType, file: &File) -> Result<()> {
-		self.store_file2(id, &file.plain_hash, &file.mime_type, &file.blocks)
+		Self::_store_file(
+			self,
+			id,
+			&file.plain_hash,
+			&file.mime_type,
+			file.compression_type as _,
+			&file.blocks,
+		)?;
+		Ok(())
 	}
 
-	pub fn store_file_data(&mut self, file_data: &FileData) -> Result<IdType> {
-		let (_, file_hash, _) =
-			Self::_store_file_data(self, &file_data.mime_type, &file_data.data)?;
+	pub fn store_file_data(
+		&mut self, compression_type: CompressionType, file_data: &FileData,
+	) -> Result<IdType> {
+		let (_, file_hash, _) = Self::_store_file_data(
+			self,
+			&file_data.mime_type,
+			compression_type as _,
+			&file_data.data,
+		)?;
 		Ok(file_hash)
 	}
 
-	pub fn store_file_data2(&mut self, mime_type: &str, data: &[u8]) -> Result<IdType> {
-		let (_, file_hash, _) = Self::_store_file_data(self, mime_type, data)?;
+	pub fn store_file_data2(
+		&mut self, mime_type: &str, compression_type: CompressionType, data: &[u8],
+	) -> Result<IdType> {
+		let (_, file_hash, _) =
+			Self::_store_file_data(self, mime_type, compression_type as _, data)?;
 		Ok(file_hash)
 	}
 
 	pub fn store_file2(
-		&mut self, id: &IdType, plain_hash: &IdType, mime_type: &str, blocks: &[IdType],
+		&mut self, id: &IdType, plain_hash: &IdType, mime_type: &str,
+		compression_type: CompressionType, blocks: &[IdType],
 	) -> Result<()> {
-		Self::_store_file(self, id, plain_hash, mime_type, blocks)?;
+		Self::_store_file(
+			self,
+			id,
+			plain_hash,
+			mime_type,
+			compression_type as _,
+			blocks,
+		)?;
 		Ok(())
 	}
 
@@ -3321,8 +3362,12 @@ mod tests {
 			mime_type: "text/markdown".to_string(),
 			data: "This is some text.".as_bytes().to_vec(),
 		};
-		let hash1 = c.store_file_data(&file_data1).unwrap();
-		let hash2 = c.store_file_data(&file_data2).unwrap();
+		let hash1 = c
+			.store_file_data(CompressionType::None, &file_data1)
+			.unwrap();
+		let hash2 = c
+			.store_file_data(CompressionType::None, &file_data2)
+			.unwrap();
 
 		let fetched_file1 = c.fetch_file_data(&hash1).unwrap().unwrap();
 		let fetched_file2 = c.fetch_file_data(&hash2).unwrap().unwrap();
