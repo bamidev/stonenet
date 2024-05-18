@@ -11,8 +11,7 @@ use crate::core::*;
 /// The file path of the configuration file
 #[cfg(target_family = "unix")]
 pub const CONFIG_FILE_PATH: &str = "/etc/stonenet/config.toml";
-#[cfg(target_family = "windows")]
-pub const CONFIG_FILE_PATH: &str = "C:\\Program Files\\stonenet\\config.toml";
+
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
