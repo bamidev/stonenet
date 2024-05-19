@@ -297,6 +297,7 @@ pub trait PersistenceHandle {
 						),
 					),
 			)
+			.order_by_desc(object::Column::Found)
 			.offset(offset)
 			.limit(limit)
 			.build(self.backend());
