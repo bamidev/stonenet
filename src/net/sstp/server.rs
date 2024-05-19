@@ -1973,7 +1973,7 @@ impl Server {
 							Error::ConnectionClosed => {}
 							Error::Timeout(timeout) =>
 								warn!("Timeout ({:?}) with {}.", timeout, &contact2),
-							_ => warn!("SSTP I/O error: {:?}", e),
+							_ => warn!("SSTP I/O error with {}: {:?}", &contact2, e),
 						},
 					}
 				});

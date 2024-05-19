@@ -424,9 +424,9 @@ pub trait PersistenceHandle {
 			.one(self.inner())
 			.await?
 		{
-			let blocks = file_blocks::Entity::find()
-				.filter(file_blocks::Column::FileId.eq(file.id))
-				.order_by_asc(file_blocks::Column::Sequence)
+			let blocks = file_block::Entity::find()
+				.filter(file_block::Column::FileId.eq(file.id))
+				.order_by_asc(file_block::Column::Sequence)
 				.all(self.inner())
 				.await?
 				.into_iter()
@@ -450,19 +450,19 @@ pub trait PersistenceHandle {
 	async fn find_file_data(
 		&self, file_id: i64, plain_hash: &IdType, block_count: u32,
 	) -> Result<Option<Vec<u8>>> {
-		let query = file_blocks::Entity::find()
+		let query = file_block::Entity::find()
 			.column_as(block::Column::Id, "block_id")
 			.column(block::Column::Size)
 			.column(block::Column::Data)
 			.join(
 				JoinType::LeftJoin,
-				file_blocks::Entity::belongs_to(block::Entity)
-					.from(file_blocks::Column::BlockHash)
+				file_block::Entity::belongs_to(block::Entity)
+					.from(file_block::Column::BlockHash)
 					.to(block::Column::Hash)
 					.into(),
 			)
-			.filter(file_blocks::Column::FileId.eq(file_id))
-			.order_by(file_blocks::Column::Sequence, Order::Asc)
+			.filter(file_block::Column::FileId.eq(file_id))
+			.order_by(file_block::Column::Sequence, Order::Asc)
 			.build(self.inner().get_database_backend());
 
 		let results = self.inner().query_all(query).await?;
@@ -478,7 +478,7 @@ pub trait PersistenceHandle {
 		let mut buffer = Vec::with_capacity(capacity);
 		let mut i = 0;
 		for r in results {
-			let sequence: i64 = r.try_get_by(file_blocks::Column::Sequence.as_str())?;
+			let sequence: i64 = r.try_get_by(file_block::Column::Sequence.as_str())?;
 			if sequence != i {
 				Err(Error::FileMissingBlock(file_id, sequence as _))?;
 			}
@@ -1227,7 +1227,7 @@ impl Connection {
 		let mut stat = this.prepare(
 			r#"
 			SELECT fb.block_hash, fb.sequence, b.id, b.size, b.data
-			FROM file_blocks AS fb
+			FROM file_block AS fb
 			LEFT JOIN block AS b ON fb.file_id = b.file_id AND fb.block_hash = b.hash
 			WHERE fb.file_id = ?
 			ORDER BY fb.sequence ASC
@@ -2077,7 +2077,7 @@ impl Connection {
 			let hash = &blocks[i];
 			tx.execute(
 				r#"
-				INSERT INTO file_blocks (file_id, block_hash, sequence)
+				INSERT INTO file_block (file_id, block_hash, sequence)
 				VALUES (?,?,?)
 			"#,
 				params![file_id, hash.to_string(), i],
@@ -2094,7 +2094,7 @@ impl Connection {
 
 		tx.execute(
 			r#"
-			INSERT INTO file_blocks (file_id, block_hash, sequence) VALUES (?,?,?)
+			INSERT INTO file_block (file_id, block_hash, sequence) VALUES (?,?,?)
 		"#,
 			params![file_id, hash, sequence],
 		)?;
@@ -2515,7 +2515,7 @@ impl Connection {
 		let mut stat = self.prepare(
 			r#"
 			SELECT fb.file_id, fb.block_hash
-			FROM file_blocks AS fb
+			FROM file_block AS fb
 			INNER JOIN file AS f ON f.id = fb.file_id
 			WHERE fb.block_hash NOT IN (
 				SELECT hash FROM block
@@ -2537,7 +2537,7 @@ impl Connection {
 		let mut stat = self.prepare(
 			r#"
 			SELECT block_hash
-			FROM file_blocks AS fb
+			FROM file_block AS fb
 			INNER JOIN file AS f ON fb.file_id = f.id
 			WHERE f.hash = ?
 			ORDER BY fb.sequence ASC
@@ -2599,7 +2599,7 @@ impl Connection {
 			let mut stat = self.prepare(
 				r#"
 				SELECT sequence, block_hash
-				FROM file_blocks
+				FROM file_block
 				WHERE file_id = ?
 				ORDER BY sequence ASC
 			"#,

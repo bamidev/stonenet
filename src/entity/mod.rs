@@ -7,7 +7,7 @@ pub mod actor;
 pub mod block;
 pub mod bootstrap_id;
 pub mod file;
-pub mod file_blocks;
+pub mod file_block;
 pub mod following;
 pub mod friend;
 pub mod identity;

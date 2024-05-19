@@ -57,7 +57,7 @@ impl MigrationTrait for Migration {
 				"block_count" integer NOT NULL,
 				"plain_hash" text(45) NOT NULL
 			);
-			CREATE TABLE "file_blocks" (
+			CREATE TABLE "file_block" (
 				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
 				"file_id" bigint NOT NULL,
 				"block_hash" text(45) NOT NULL,

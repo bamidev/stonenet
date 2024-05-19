@@ -20,12 +20,12 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-	#[sea_orm(has_many = "super::file_blocks::Entity")]
-	FileBlocks,
+	#[sea_orm(has_many = "super::file_block::Entity")]
+	FileBlock,
 }
 
-impl Related<super::file_blocks::Entity> for Entity {
-	fn to() -> RelationDef { Relation::FileBlocks.def() }
+impl Related<super::file_block::Entity> for Entity {
+	fn to() -> RelationDef { Relation::FileBlock.def() }
 }
 
 impl ActiveModelBehavior for ActiveModel {}
