@@ -10,7 +10,7 @@ use std::{
 use chrono::*;
 use log::*;
 use rand::rngs::OsRng;
-use sea_orm::{ActiveValue::NotSet, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{prelude::*, NotSet, Set};
 use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -23,7 +23,7 @@ use super::{
 };
 use crate::{
 	db::{Database, ObjectInfo, ProfileObjectInfo},
-	entity::{boost_object, identity, object},
+	entity::*,
 };
 
 /*#[derive(Debug)]
@@ -139,9 +139,12 @@ impl Api {
 		// TODO: Create a seperate db function that merely finds the hash of the object,
 		// not the whole object.
 		let previous_object = tx
-			.find_object_by_sequence(identity, next_object_sequence - 1)
+			.find_objects_by_sequence(identity, next_object_sequence - 1)
 			.await?;
-		let previous_hash = previous_object.map(|o| o.hash).unwrap_or(IdType::default());
+		let previous_hash = previous_object
+			.get(0)
+			.map(|o| o.hash.clone())
+			.unwrap_or(IdType::default());
 		let (hash, signature) = Self::sign_object(
 			next_object_sequence,
 			&previous_hash,
@@ -449,10 +452,10 @@ impl Api {
 		&self, actor_address: ActorAddress, file_hash: IdType,
 	) -> db::Result<Option<(String, ReceiverStream<db::Result<Vec<u8>>>)>> {
 		let db = self.db.clone();
-		let r: Option<File> = db.perform(|c| c.fetch_file(&file_hash))?;
+		let r: Option<(i64, File)> = db.find_file(&file_hash).await?;
 
 		let (tx, rx) = mpsc::channel(1);
-		if let Some(file) = r {
+		if let Some((file_id, file)) = r {
 			// Asynchronously start loading the blocks one by one, from disk preferably,
 			// from the network otherwise
 			let node = self.node.clone();
@@ -480,9 +483,9 @@ impl Api {
 									// Find the block on the network, and store it if we have found
 									// it
 									if let Some(r) = n.find_block(block_hash).await {
-										if let Err(e) =
-											db.perform(|mut c| c.store_block(block_hash, &r.data))
-										{
+										if let Err(e) = db.perform(|mut c| {
+											c.store_block(file_id, block_hash, &r.data)
+										}) {
 											if let Err(_) = tx.send(Err(e)).await {
 												error!(
 													"Unable to send error on stream-file channel."

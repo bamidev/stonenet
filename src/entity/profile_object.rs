@@ -9,7 +9,7 @@ use crate::common::IdType;
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = false)]
 	pub object_id: i64,
-	pub name: Option<IdType>,
+	pub name: String,
 	pub avatar_file_hash: Option<IdType>,
 	pub wallpaper_file_hash: Option<IdType>,
 	pub description_file_hash: Option<IdType>,

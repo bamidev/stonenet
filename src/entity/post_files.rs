@@ -2,13 +2,16 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::common::IdType;
+
+
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "post_files")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
 	pub object_id: i64,
-	pub hash: String,
+	pub hash: IdType,
 	pub sequence: i32,
 }
 

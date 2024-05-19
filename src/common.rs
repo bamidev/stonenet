@@ -1,4 +1,8 @@
-use std::{error::Error, fmt, ops, str};
+use std::{
+	error::Error,
+	fmt, ops, str,
+	time::{SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use base58::*;
@@ -31,6 +35,13 @@ pub enum IdFromBase58Error {
 	TooShort,
 }
 
+
+pub fn current_timestamp() -> u64 {
+	SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.unwrap()
+		.as_millis() as _
+}
 
 /// If the bytes differ, returns the index of the bit (little endian),
 /// otherwise, returns 0xFF indicating no change

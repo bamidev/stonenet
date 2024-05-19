@@ -10,9 +10,9 @@ use crate::common::IdType;
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
-	#[sea_orm(unique)]
+	pub file_id: i64,
 	pub hash: IdType,
-	pub size: i32,
+	pub size: u32,
 	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
 	pub data: Vec<u8>,
 }

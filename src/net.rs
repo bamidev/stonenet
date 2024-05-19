@@ -103,6 +103,7 @@ pub struct LinkProtocol {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NodeContactInfo {
+	// TODO: Change this type in NodeAddress:
 	pub node_id: IdType,
 	pub contact_info: ContactInfo,
 }

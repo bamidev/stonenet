@@ -12,6 +12,7 @@ use futures::{
 };
 use log::*;
 use rand::{rngs::OsRng, Rng};
+use sea_orm::prelude::*;
 use tokio::{select, spawn, time::sleep};
 
 use super::{
@@ -636,12 +637,24 @@ impl OverlayNode {
 		let mut iter = self.connect_actor_iter(actor_address).await;
 		let (node, object) = loop {
 			if let Some((mut connection, actor_info)) = iter.next().await {
+				let actor_id = match self.db().ensure_actor_id(actor_address, &actor_info).await {
+					Ok(id) => id,
+					Err(e) => {
+						error!(
+							"Database error while trying to find actor profile info for {}: {:?}",
+							actor_address, e
+						);
+						return None;
+					}
+				};
+
 				let node = Arc::new(ActorNode::new(
 					self.base.stop_flag.clone(),
 					self.clone(),
 					self.node_id().clone(),
 					self.base.packet_server.clone(),
 					actor_address.clone(),
+					actor_id,
 					actor_info.clone(),
 					self.db().clone(),
 					self.base.bucket_size,
@@ -657,16 +670,8 @@ impl OverlayNode {
 					};
 
 				// We need to store the identity in order for the object to be able to be stored
-				let result = tokio::task::block_in_place(|| {
-					let mut db = self.db().connect_old()?;
-					db.store_identity(
-						actor_address,
-						&actor_info.public_key,
-						&actor_info.first_object,
-					)
-				});
-				if let Err(e) = result {
-					error!("Unable to store identity: {}", e);
+				if let Err(e) = self.db().ensure_actor_id(actor_address, &actor_info).await {
+					error!("Unable to store identity: {:?}", e);
 					return Some(object);
 				}
 
@@ -694,13 +699,14 @@ impl OverlayNode {
 
 		// Try to synchronize the missing files and blocks. Only works if there are some
 		// bidirectional nodes available.
-		if let Err(e) = node.synchronize_files().await {
-			error!("Database error while synchronizing files: {}", e);
-			return Some(object);
-		}
-		if let Err(e) = node.synchronize_blocks().await {
-			error!("Database error while synchronizing files: {}", e);
-			return Some(object);
+		if let Err(e) = node
+			.synchronize_files_and_blocks_of_object(&object.payload)
+			.await
+		{
+			error!(
+				"Database error while synchronizing files & blocks for profile info: {:?}",
+				e
+			);
 		}
 
 		Some(object)
@@ -869,40 +875,52 @@ impl OverlayNode {
 	}
 
 	pub async fn join_actor_network(
-		self: &Arc<Self>, actor_id: &ActorAddress, actor_info: &ActorInfo,
+		self: &Arc<Self>, actor_address: &ActorAddress, actor_info: &ActorInfo,
 	) -> Option<Arc<ActorNode>> {
 		debug_assert!(
-			&actor_info.generate_address() == actor_id,
+			&actor_info.generate_address() == actor_address,
 			"actor info and actor address don't match ({:?})",
-			actor_id
+			actor_address
 		);
 
 		// Insert a new - or load the existing node
 		let node = {
 			let mut actor_nodes = self.base.interface.actor_nodes.lock().await;
-			if let Some(node) = actor_nodes.get(&actor_id.as_id()) {
+			if let Some(node) = actor_nodes.get(&actor_address.as_id()) {
 				node.clone()
 			} else {
+				let actor_id = match self.db().ensure_actor_id(actor_address, actor_info).await {
+					Ok(id) => id,
+					Err(e) => {
+						error!(
+							"Database error while joining actor network {}: {:?}",
+							&actor_address, e
+						);
+						return None;
+					}
+				};
+
 				// Start up a new node for the actor network
 				let node = Arc::new(ActorNode::new(
 					self.base.stop_flag.clone(),
 					self.clone(),
 					self.node_id().clone(),
 					self.base.packet_server.clone(),
-					actor_id.clone(),
+					actor_address.clone(),
+					actor_id,
 					actor_info.clone(),
 					self.db().clone(),
 					self.base.bucket_size,
 					self.base.leak_first_request,
 					false,
 				));
-				actor_nodes.insert(actor_id.as_id().into_owned(), node.clone());
+				actor_nodes.insert(actor_address.as_id().into_owned(), node.clone());
 				node
 			}
 		};
 
 		// Try to find a node on the overlay network first
-		let mut iter = self.connect_actor_iter(actor_id).await;
+		let mut iter = self.connect_actor_iter(actor_address).await;
 		loop {
 			if let Some((connection, _)) = iter.next().await {
 				if let Some(_open) = node.join_network_starting_with_connection(connection).await {
@@ -921,9 +939,9 @@ impl OverlayNode {
 			.map(|f| f.clone())
 			.collect();
 		let stored = self
-			.store_actor_at_contacts(&actor_id.as_id(), 4, actor_info, &last_two_visited)
+			.store_actor_at_contacts(&actor_address.as_id(), 4, actor_info, &last_two_visited)
 			.await;
-		debug!("Stored actor {:?} at {} nodes.", actor_id, stored);
+		debug!("Stored actor {:?} at {} nodes.", actor_address, stored);
 
 		Some(node)
 	}
@@ -1104,12 +1122,24 @@ impl OverlayNode {
 	) -> Option<Arc<ActorNode>> {
 		let mut iter = self.connect_actor_iter(address).await;
 		while let Some((connection, actor_info)) = iter.next().await {
+			let actor_id = match self.db().ensure_actor_id(address, &actor_info).await {
+				Ok(id) => id,
+				Err(e) => {
+					error!(
+						"Database error while going to lurk actor network {}: {:?}",
+						address, e
+					);
+					return None;
+				}
+			};
+
 			let node = Arc::new(ActorNode::new(
 				self.base.stop_flag.clone(),
 				self.clone(),
 				self.base.node_id.clone(),
 				self.base.packet_server.clone(),
 				address.clone(),
+				actor_id,
 				actor_info,
 				self.base.interface.db.clone(),
 				1, // A lurker node doesn't need to keep fingers in the first place

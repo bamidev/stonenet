@@ -160,15 +160,15 @@ pub struct ObjectSignData<'a> {
 	pub payload: &'a ObjectPayload,
 }
 
-pub const OBJECT_TYPE_POST: u8 = 0;
-pub const OBJECT_TYPE_SHARE: u8 = 1;
-pub const OBJECT_TYPE_PROFILE: u8 = 2;
+pub const OBJECT_TYPE_PROFILE: u8 = 0;
+pub const OBJECT_TYPE_POST: u8 = 1;
+pub const OBJECT_TYPE_SHARE: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ObjectPayload {
+	Profile(ProfileObject),
 	Post(PostObject),
 	Share(ShareObject),
-	Profile(ProfileObject),
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -457,9 +457,9 @@ impl sea_orm::sea_query::ValueType for NodeAddress {
 impl ObjectPayload {
 	pub fn type_id(&self) -> u8 {
 		match self {
-			Self::Post(_) => 0,
-			Self::Share(_) => 1,
-			Self::Profile(_) => 2,
+			Self::Profile(_) => OBJECT_TYPE_PROFILE,
+			Self::Post(_) => OBJECT_TYPE_POST,
+			Self::Share(_) => OBJECT_TYPE_SHARE,
 		}
 	}
 }

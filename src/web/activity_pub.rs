@@ -6,7 +6,7 @@ use std::{
 		atomic::{AtomicBool, Ordering},
 		Arc, OnceLock,
 	},
-	time::{Duration, SystemTime, UNIX_EPOCH},
+	time::Duration,
 };
 
 use axum::{
@@ -40,7 +40,7 @@ use stonenetd::core::OBJECT_TYPE_PROFILE;
 use tokio::{spawn, time::sleep};
 use zeroize::Zeroizing;
 
-use super::{common::*, ActorAddress, Address, IdType};
+use super::{common::*, current_timestamp, ActorAddress, Address, IdType};
 use crate::{
 	db::{self, ObjectPayloadInfo, PersistenceHandle},
 	entity::*,
@@ -829,13 +829,6 @@ fn compose_object_payload(payload: &ObjectPayloadInfo) -> String {
 			format!("[Updated my profile]")
 		}
 	}
-}
-
-fn current_timestamp() -> u64 {
-	SystemTime::now()
-		.duration_since(UNIX_EPOCH)
-		.unwrap()
-		.as_millis() as _
 }
 
 async fn fetch_actor(
