@@ -630,7 +630,7 @@ pub trait PersistenceHandle {
 			       df.plain_hash, df.block_count
 			FROM profile_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.id
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			LEFT JOIN file AS df ON po.description_file_hash = df.hash
 			WHERE o.id = ?
 		"#,
