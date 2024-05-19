@@ -10,7 +10,7 @@ use axum::{
 	routing::get,
 	Extension, Form, RequestExt, Router,
 };
-use sea_orm::*;
+use sea_orm::prelude::*;
 use serde::Deserialize;
 use tera::Context;
 
@@ -18,7 +18,7 @@ use super::{
 	activity_pub, error_response, into_object_display_info, server_error_response,
 	server_error_response2, ActorAddress, Address, Global, ObjectDisplayInfo, PaginationQuery,
 };
-use crate::{db::PersistenceHandle, entity::identity};
+use crate::{db::PersistenceHandle, entity::*};
 
 
 #[derive(Deserialize)]
@@ -58,8 +58,8 @@ async fn actor_middleware(
 		Err(r) => return r,
 		Ok(a) => a,
 	};
-	let actor_opt = match identity::Entity::find()
-		.filter(identity::Column::Address.eq(&address))
+	let actor_opt = match actor::Entity::find()
+		.filter(actor::Column::Address.eq(&address))
 		.one(g.api.db.inner())
 		.await
 	{

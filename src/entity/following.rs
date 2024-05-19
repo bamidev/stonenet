@@ -6,10 +6,23 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "following")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = false)]
-	pub identity_id: i64,
+	pub actor_id: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+	#[sea_orm(
+		belongs_to = "super::actor::Entity",
+		from = "Column::ActorId",
+		to = "super::actor::Column::Id",
+		on_update = "NoAction",
+		on_delete = "NoAction"
+	)]
+	Actor,
+}
+
+impl Related<super::actor::Entity> for Entity {
+	fn to() -> RelationDef { Relation::Actor.def() }
+}
 
 impl ActiveModelBehavior for ActiveModel {}

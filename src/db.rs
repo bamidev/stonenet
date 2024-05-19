@@ -154,21 +154,21 @@ pub trait PersistenceHandle {
 
 
 	async fn ensure_actor_id(&self, address: &ActorAddress, info: &ActorInfo) -> Result<i64> {
-		if let Some(record) = identity::Entity::find()
-			.filter(identity::Column::Address.eq(address))
+		if let Some(record) = actor::Entity::find()
+			.filter(actor::Column::Address.eq(address))
 			.one(self.inner())
 			.await?
 		{
 			Ok(record.id)
 		} else {
-			let model = identity::ActiveModel {
+			let model = actor::ActiveModel {
 				id: NotSet,
 				address: Set(address.clone()),
 				public_key: Set(info.public_key.clone().to_bytes().to_vec()),
 				first_object: Set(info.first_object.clone()),
 				r#type: Set(info.actor_type.clone()),
 			};
-			Ok(identity::Entity::insert(model)
+			Ok(actor::Entity::insert(model)
 				.exec(self.inner())
 				.await?
 				.last_insert_id)
@@ -231,11 +231,11 @@ pub trait PersistenceHandle {
 			.column(object::Column::Found)
 			.from(object::Entity)
 			.inner_join(
-				identity::Entity,
+				actor::Entity,
 				Expr::col((object::Entity, object::Column::ActorId))
-					.equals((identity::Entity, identity::Column::Id)),
+					.equals((actor::Entity, actor::Column::Id)),
 			)
-			.and_where(identity::Column::Address.eq(actor))
+			.and_where(actor::Column::Address.eq(actor))
 			.order_by(object::Column::Sequence, Order::Desc)
 			.limit(limit)
 			.offset(offset)
@@ -264,17 +264,17 @@ pub trait PersistenceHandle {
 
 		// The query
 		let query = object::Entity::find()
-			.column(identity::Column::Address)
-			.join(JoinType::LeftJoin, object::Relation::Identity.def())
+			.column(actor::Column::Address)
+			.join(JoinType::LeftJoin, object::Relation::Actor.def())
 			.filter(
 				Condition::any()
 					.add(
 						object::Column::ActorId.in_subquery(
 							Query::select()
-								.column(identity::Column::Id)
-								.from(Alias::new(identity::Entity::default().table_name()))
+								.column(actor::Column::Id)
+								.from(Alias::new(actor::Entity::default().table_name()))
 								.and_where(
-									Expr::col((identity::Entity, identity::Column::Address))
+									Expr::col((actor::Entity, actor::Column::Address))
 										.in_tuples(tuples),
 								)
 								.take(),
@@ -283,15 +283,15 @@ pub trait PersistenceHandle {
 					.add(
 						object::Column::ActorId.in_subquery(
 							Query::select()
-								.column(my_identity::Column::IdentityId)
-								.from(Alias::new(my_identity::Entity::default().table_name()))
+								.column(identity::Column::ActorId)
+								.from(Alias::new(identity::Entity::default().table_name()))
 								.take(),
 						),
 					)
 					.add(
 						object::Column::ActorId.in_subquery(
 							Query::select()
-								.column(following::Column::IdentityId)
+								.column(following::Column::ActorId)
 								.from(Alias::new(following::Entity::default().table_name()))
 								.take(),
 						),
@@ -306,7 +306,7 @@ pub trait PersistenceHandle {
 		let mut objects = Vec::with_capacity(limit as _);
 		for result in &results {
 			let actor_address_opt: Option<ActorAddress> =
-				result.try_get_by(identity::Column::Address.as_str())?;
+				result.try_get_by(actor::Column::Address.as_str())?;
 			if let Some(actor_address) = actor_address_opt {
 				if let Some(object) = self
 					._load_object_info_from_result(&actor_address, result)
@@ -346,9 +346,9 @@ pub trait PersistenceHandle {
 	}
 
 	async fn load_post_files(&self, object_id: i64) -> Result<Vec<IdType>> {
-		Ok(post_files::Entity::find()
-			.filter(post_files::Column::ObjectId.eq(object_id))
-			.order_by_asc(post_files::Column::Sequence)
+		Ok(post_file::Entity::find()
+			.filter(post_file::Column::ObjectId.eq(object_id))
+			.order_by_asc(post_file::Column::Sequence)
 			.all(self.inner())
 			.await?
 			.into_iter()
@@ -379,7 +379,7 @@ pub trait PersistenceHandle {
 	}
 
 	async fn load_share_object_payload(&self, object_id: i64) -> Result<Option<ShareObject>> {
-		let result = boost_object::Entity::find_by_id(object_id)
+		let result = share_object::Entity::find_by_id(object_id)
 			.one(self.inner())
 			.await?;
 		Ok(result.map(|r| ShareObject {
@@ -511,8 +511,8 @@ pub trait PersistenceHandle {
 	}
 
 	async fn find_actor_info(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
-		let result = identity::Entity::find()
-			.filter(identity::Column::Address.eq(address))
+		let result = actor::Entity::find()
+			.filter(actor::Column::Address.eq(address))
 			.one(self.inner())
 			.await?;
 
@@ -530,10 +530,10 @@ pub trait PersistenceHandle {
 		Ok(actor_info_opt)
 	}
 
-	async fn find_next_object_sequence(&self, identity_id: i64) -> Result<u64> {
+	async fn find_next_object_sequence(&self, actor_id: i64) -> Result<u64> {
 		let stat = object::Entity::find()
 			.column_as(object::Column::Sequence.max(), "max")
-			.filter(object::Column::ActorId.eq(identity_id))
+			.filter(object::Column::ActorId.eq(actor_id))
 			.build(DatabaseBackend::Sqlite);
 
 		if let Some(result) = self.inner().query_one(stat).await? {
@@ -555,11 +555,11 @@ pub trait PersistenceHandle {
 			.column(object::Column::Found)
 			.from(object::Entity)
 			.inner_join(
-				identity::Entity,
+				actor::Entity,
 				Expr::col((object::Entity, object::Column::ActorId))
-					.equals((identity::Entity, identity::Column::Id)),
+					.equals((actor::Entity, actor::Column::Id)),
 			)
-			.and_where(identity::Column::Address.eq(actor_address))
+			.and_where(actor::Column::Address.eq(actor_address))
 			.and_where(object::Column::Hash.eq(hash))
 			.take();
 		let stat = self.backend().build(&query);
@@ -577,8 +577,8 @@ pub trait PersistenceHandle {
 	async fn find_objects_by_sequence(
 		&self, actor_address: &ActorAddress, sequence: u64,
 	) -> Result<Vec<object::Model>> {
-		if let Some(actor) = identity::Entity::find()
-			.filter(identity::Column::Address.eq(actor_address))
+		if let Some(actor) = actor::Entity::find()
+			.filter(actor::Column::Address.eq(actor_address))
 			.limit(1)
 			.one(self.inner())
 			.await?
@@ -679,9 +679,9 @@ pub trait PersistenceHandle {
 				r#"
 			SELECT bo.actor_address, bi.id, to_.id
 			FROM object AS o
-			LEFT JOIN boost_object AS bo ON bo.object_id = o.id
-			LEFT JOIN identity AS i ON o.actor_id = i.id
-			LEFT JOIN identity AS bi ON bo.actor_address = bi.address
+			LEFT JOIN share_object AS bo ON bo.object_id = o.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS bi ON bo.actor_address = bi.address
 			LEFT JOIN object AS to_ ON to_.hash = bo.object_hash
 			WHERE o.id = ?
 		"#,
@@ -742,14 +742,14 @@ pub trait PersistenceHandle {
 			file::Entity::find()
 				.join(
 					JoinType::LeftJoin,
-					file::Entity::belongs_to(post_files::Entity)
+					file::Entity::belongs_to(post_file::Entity)
 						.from(file::Column::Hash)
-						.to(post_files::Column::Hash)
+						.to(post_file::Column::Hash)
 						.into(),
 				)
-				.filter(post_files::Column::ObjectId.eq(object_id))
+				.filter(post_file::Column::ObjectId.eq(object_id))
 				.filter(condition)
-				.order_by(post_files::Column::Sequence, Order::Asc)
+				.order_by(post_file::Column::Sequence, Order::Asc)
 				.build(backend)
 		}
 
@@ -764,7 +764,7 @@ pub trait PersistenceHandle {
 			let query = file_query(
 				self.inner().get_database_backend(),
 				object_id,
-				post_files::Column::Sequence.eq(0),
+				post_file::Column::Sequence.eq(0),
 			);
 			if let Some(row) = self.inner().query_one(query).await? {
 				//let file_hash: IdType = row.try_get_by(file::Column::Hash.as_str())?;
@@ -792,7 +792,7 @@ pub trait PersistenceHandle {
 						let query = file_query(
 							self.inner().get_database_backend(),
 							object_id,
-							post_files::Column::Sequence.gt(0),
+							post_file::Column::Sequence.gt(0),
 						);
 						let results = self.inner().query_all(query).await?;
 						for row in results {
@@ -830,8 +830,8 @@ pub trait PersistenceHandle {
 			SELECT o.actor_id, o.sequence, ti.id, ti.address, tpo.object_id
 			FROM post_object AS po
 			INNER JOIN object AS o ON po.object_id = o.id
-			INNER JOIN identity AS i ON o.actor_id = i.id
-			LEFT JOIN identity AS ti ON po.in_reply_to_actor_address = ti.address
+			INNER JOIN actor AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS ti ON po.in_reply_to_actor_address = ti.address
 			LEFT JOIN object AS to_ ON to_.actor_id = ti.id
 				AND to_.hash = po.in_reply_to_object_hash
 			LEFT JOIN post_object as tpo ON tpo.object_id = to_.id
@@ -935,9 +935,9 @@ pub trait PersistenceHandle {
 
 fn query_actor_id(address: &ActorAddress) -> SelectStatement {
 	Query::select()
-		.column(identity::Column::Id)
-		.from(Alias::new(identity::Entity::default().table_name()))
-		.and_where(identity::Column::Address.eq(address))
+		.column(actor::Column::Id)
+		.from(Alias::new(actor::Entity::default().table_name()))
+		.and_where(actor::Column::Address.eq(address))
 		.take()
 }
 
@@ -1115,21 +1115,21 @@ impl Database {
 }
 
 impl Connection {
-	fn _fetch_actor_info<C>(this: &C, identity_id: i64) -> Result<Option<TargetedActorInfo>>
+	fn _fetch_actor_info<C>(this: &C, actor_id: i64) -> Result<Option<TargetedActorInfo>>
 	where
 		C: DerefConnection,
 	{
 		let mut stat = this.prepare(
 			r#"
 			SELECT i.address, p.name, af.hash, wf.hash
-			FROM identity AS i
-			LEFT JOIN profile AS p ON p.identity_id = i.id
+			FROM actor AS i
+			LEFT JOIN profile AS p ON p.actor_id = i.id
 			LEFT JOIN file AS af ON p.avatar_file_id = f.id
 			LEFT JOIN file AS wf ON p.wallpaper_file_id = f.id
 			WHERE id = ?
 		"#,
 		)?;
-		let mut rows = stat.query([identity_id])?;
+		let mut rows = stat.query([actor_id])?;
 		if let Some(row) = rows.next()? {
 			let address: ActorAddress = row.get(0)?;
 			let name = row.get(1)?;
@@ -1301,7 +1301,7 @@ impl Connection {
 			r#"
 			SELECT o.id, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
 			FROM object AS o
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND o.sequence = ?
 		"#,
 		)?;
@@ -1317,7 +1317,7 @@ impl Connection {
 	{
 		let id: IdType = this.query_row(
 			r#"
-			SELECT o.hash FROM object AS o LEFT JOIN identity AS i ON o.actor_id = i.id
+			SELECT o.hash FROM object AS o LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND o.sequence = ?
 		"#,
 			params![actor_address, sequence],
@@ -1355,7 +1355,7 @@ impl Connection {
 			r#"
 			SELECT o.id, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
 			FROM object AS o
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ?
 			ORDER BY sequence DESC LIMIT 1
 		"#,
@@ -1374,7 +1374,7 @@ impl Connection {
 			r#"
 			SELECT o.id, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
 			FROM object AS o
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND o.verified_from_start = TRUE
 			ORDER BY sequence DESC LIMIT 1
 		"#,
@@ -1410,7 +1410,7 @@ impl Connection {
 		let mut stat = this.prepare(
 			r#"
 			SELECT actor_address, object_hash
-			FROM boost_object
+			FROM share_object
 			WHERE object_id = ?
 		"#,
 		)?;
@@ -1435,9 +1435,9 @@ impl Connection {
 			r#"
 			SELECT bo.actor_address, bi.id, to_.id
 			FROM object AS o
-			LEFT JOIN boost_object AS bo ON bo.object_id = o.id
-			LEFT JOIN identity AS i ON o.actor_id = i.id
-			LEFT JOIN identity AS bi ON bo.actor_address = bi.address
+			LEFT JOIN share_object AS bo ON bo.object_id = o.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS bi ON bo.actor_address = bi.address
 			LEFT JOIN object AS to_ ON to_.hash = bo.object_hash
 			WHERE o.actor_id = ? AND o.sequence = ?
 		"#,
@@ -1479,7 +1479,7 @@ impl Connection {
 		let mut stat = this.prepare(
 			r#"
 			SELECT hash
-			FROM post_files
+			FROM post_file
 			WHERE object_id = ?
 			ORDER BY sequence ASC
 		"#,
@@ -1513,7 +1513,7 @@ impl Connection {
 			let mut stat = this.prepare(
 				r#"
 				SELECT f.id, f.plain_hash, f.mime_type, f.block_count
-				FROM post_files AS pf
+				FROM post_file AS pf
 				LEFT JOIN file AS f ON pf.hash = f.hash
 				WHERE pf.object_id = ? AND pf.sequence = 0
 				ORDER BY pf.sequence ASC
@@ -1553,7 +1553,7 @@ impl Connection {
 			let mut stat = this.prepare(
 				r#"
 				SELECT pf.hash, f.mime_type, f.block_count
-				FROM post_files AS pf
+				FROM post_file AS pf
 				LEFT JOIN file AS f ON f.hash = pf.hash
 				WHERE pf.object_id = ? AND pf.sequence > 0
 				ORDER BY pf.sequence ASC
@@ -1591,8 +1591,8 @@ impl Connection {
 			SELECT o.id, o.sequence, ti.id, ti.address, tpo.object_id, to_.sequence
 			FROM post_object AS po
 			INNER JOIN object AS o ON po.object_id = o.id
-			INNER JOIN identity AS i ON o.actor_id = i.id
-			LEFT JOIN identity AS ti ON po.in_reply_to_actor_address = ti.address
+			INNER JOIN actor AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS ti ON po.in_reply_to_actor_address = ti.address
 			LEFT JOIN object AS to_ ON to_.actor_id = ti.id
 			    AND to_.hash = po.in_reply_to_object_hash
 			LEFT JOIN post_object as tpo ON tpo.object_id = to_.id
@@ -1712,7 +1712,7 @@ impl Connection {
 			       df.plain_hash, df.block_count
 			FROM profile_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.id
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			LEFT JOIN file AS df ON po.description_file_hash = df.hash
 			WHERE o.actor_id = ? AND o.sequence = ?
 		"#,
@@ -1768,7 +1768,7 @@ impl Connection {
 	{
 		let mut stat = tx.prepare(
 			r#"
-			SELECT id FROM identity WHERE address = ?
+			SELECT id FROM actor WHERE address = ?
 		"#,
 		)?;
 		let mut rows = stat.query([address])?;
@@ -1846,7 +1846,7 @@ impl Connection {
 			r#"
 			SELECT MAX(o.sequence)
 			FROM object AS o
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ?
 		"#,
 		)?;
@@ -2149,7 +2149,7 @@ impl Connection {
 	) -> Result<i64> {
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO identity (address, public_key, first_object, type) VALUES (?,?,?,?)
+			INSERT INTO actor (address, public_key, first_object, type) VALUES (?,?,?,?)
 		"#,
 		)?;
 		let rowid = stat.insert(params![
@@ -2172,16 +2172,15 @@ impl Connection {
 			actor_type,
 		};
 		let address = ActorAddress::V1(actor_info.generate_id());
-		let identity_id =
-			Self::_store_identity(tx, &address, &actor_info.public_key, first_object)?;
+		let actor_id = Self::_store_identity(tx, &address, &actor_info.public_key, first_object)?;
 
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO my_identity (label, identity_id, private_key) VALUES (?,?,?)
+			INSERT INTO identity (label, actor_id, private_key, is_private) VALUES (?,?,?,FALSE)
 		"#,
 		)?;
-		stat.insert(params![label, identity_id, private_key.as_bytes()])?;
-		Ok(identity_id)
+		stat.insert(params![label, actor_id, private_key.as_bytes()])?;
+		Ok(actor_id)
 	}
 
 	pub fn _store_object(
@@ -2190,7 +2189,7 @@ impl Connection {
 	) -> Result<i64> {
 		let mut stat = tx.prepare(
 			r#"
-			SELECT id FROM identity WHERE address = ?
+			SELECT id FROM actor WHERE address = ?
 		"#,
 		)?;
 		let mut rows = stat.query(params![actor_address])?;
@@ -2275,7 +2274,7 @@ impl Connection {
 
 			tx.execute(
 				r#"
-				INSERT INTO post_files (object_id, hash, sequence)
+				INSERT INTO post_file (object_id, hash, sequence)
 				VALUES (?,?,?)
 			"#,
 				params![object_id, file.to_string(), i],
@@ -2381,7 +2380,7 @@ impl Connection {
 	) -> Result<()> {
 		tx.execute(
 			r#"
-			INSERT INTO boost_object (object_id, actor_address, object_hash)
+			INSERT INTO share_object (object_id, actor_address, object_hash)
 			VALUES (?,?,?)
 		"#,
 			params![object_id, &payload.actor_address, &payload.object_hash],
@@ -2411,7 +2410,7 @@ impl Connection {
 		avatar_hash: Option<&IdType>, wallpaper_hash: Option<&IdType>,
 		description_hash: Option<&IdType>,
 	) -> Result<()> {
-		let identity_id = Self::_store_my_identity(
+		let actor_id = Self::_store_my_identity(
 			tx,
 			label,
 			private_key,
@@ -2421,7 +2420,7 @@ impl Connection {
 
 		Self::_store_profile_object(
 			tx,
-			identity_id,
+			actor_id,
 			first_object_hash,
 			&first_object,
 			name,
@@ -2437,7 +2436,7 @@ impl Connection {
 		let object_id: i64 = self.old.query_row(
 			r#"
 			SELECT id FROM object WHERE hash = ? AND actor_id = (
-				SELECT id FROM identity WHERE address = ?
+				SELECT id FROM actor WHERE address = ?
 			)"#,
 			params![hash.to_string(), actor_address],
 			|r| r.get(0),
@@ -2446,7 +2445,7 @@ impl Connection {
 		// Delete all possible foreign references first
 		self.old.execute(
 			r#"
-			DELETE FROM post_files WHERE object_id = ?
+			DELETE FROM post_file WHERE object_id = ?
 		"#,
 			[object_id],
 		)?;
@@ -2464,7 +2463,7 @@ impl Connection {
 		)?;
 		self.old.execute(
 			r#"
-			DELETE FROM boost_object WHERE object_id = ?
+			DELETE FROM share_object WHERE object_id = ?
 		"#,
 			[object_id],
 		)?;
@@ -2492,7 +2491,7 @@ impl Connection {
 		let mut stat = self.old.prepare(r#"
 			SELECT rowid FROM post_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.rowid
-			WHERE actor_id = (SELECT rowid FROM identity WHERE address = ?)
+			WHERE actor_id = (SELECT rowid FROM actor WHERE address = ?)
 			ORDER BY o.index DESC
 			LIMIT ? OFFSET ?
 		"#)?;
@@ -2638,7 +2637,7 @@ impl Connection {
 			r#"
 			SELECT i.address, i.public_key, i.first_object, i.type
 			FROM following AS f
-			LEFT JOIN identity AS i ON f.identity_id = i.id
+			LEFT JOIN actor AS i ON f.actor_id = i.id
 		"#,
 		)?;
 		let mut rows = stat.query([])?;
@@ -2668,7 +2667,7 @@ impl Connection {
 			r#"
 			SELECT o.actor_id, o.hash, o.sequence, o.created, o.found, o.type, i.address
 			FROM object AS o
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND o.hash = ?
 		"#,
 		)?;
@@ -2683,11 +2682,11 @@ impl Connection {
 			r#"
 			SELECT o.actor_id, o.hash, o.sequence, o.created, o.found, o.type, i.address
 			FROM object AS o
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE o.actor_id IN (
-				SELECT identity_id FROM my_identity
+				SELECT actor_id FROM identity
 			) OR o.actor_id IN (
-				SELECT identity_id FROM following
+				SELECT actor_id FROM following
 			)
 			ORDER BY o.found DESC LIMIT ? OFFSET ?
 		"#,
@@ -2724,7 +2723,7 @@ impl Connection {
 			r#"
 			SELECT o.sequence
 			FROM object AS o
-			INNER JOIN identity AS i ON o.actor_id = i.id
+			INNER JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND i.actor_version = ? AND o.hash = ?
 		"#,
 		)?;
@@ -2749,7 +2748,7 @@ impl Connection {
 			r#"
 			SELECT o.sequence
 			FROM object AS o
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND o.hash = ?
 		"#,
 		)?;
@@ -2789,7 +2788,7 @@ impl Connection {
 	pub fn fetch_identity(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
 		let mut stat = self.prepare(
 			r#"
-			SELECT public_key, first_object, type FROM identity WHERE address = ?
+			SELECT public_key, first_object, type FROM actor WHERE address = ?
 		"#,
 		)?;
 		let mut rows = stat.query(params![address])?;
@@ -2811,7 +2810,7 @@ impl Connection {
 	pub fn fetch_identity_by_id(&self, id: &IdType) -> Result<Option<ActorInfo>> {
 		let mut stat = self.prepare(
 			r#"
-			SELECT public_key, first_object, type FROM identity WHERE address = ?
+			SELECT public_key, first_object, type FROM actor WHERE address = ?
 		"#,
 		)?;
 		let mut rows = stat.query([id])?;
@@ -2835,7 +2834,7 @@ impl Connection {
 	) -> Result<Option<(String, ActorPrivateKeyV1)>> {
 		let mut stat = self.old.prepare(
 			r#"
-			SELECT label, private_key FROM my_identity AS mi LEFT JOIN identity AS i
+			SELECT label, private_key FROM identity AS mi LEFT JOIN actor AS i
 			WHERE i.address = ?
 		"#,
 		)?;
@@ -2856,7 +2855,7 @@ impl Connection {
 		let mut stat = self.old.prepare(
 			r#"
 			SELECT i.address, mi.private_key
-			FROM my_identity AS mi LEFT JOIN identity AS i ON mi.identity_id = i.id
+			FROM identity AS mi LEFT JOIN actor AS i ON mi.actor_id = i.id
 			WHERE label = ?
 		"#,
 		)?;
@@ -2877,8 +2876,8 @@ impl Connection {
 		let mut stat = self.old.prepare(
 			r#"
 			SELECT label, i.address, i.first_object, i.type, mi.private_key
-			FROM my_identity AS mi
-			LEFT JOIN identity AS i ON mi.identity_id = i.id
+			FROM identity AS mi
+			LEFT JOIN actor AS i ON mi.actor_id = i.id
 		"#,
 		)?;
 		let mut rows = stat.query([])?;
@@ -2934,7 +2933,7 @@ impl Connection {
 			SELECT o.id, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
 			FROM profile_object AS po
 			INNER JOIN object AS o ON po.object_id = o.id
-			INNER JOIN identity AS i ON o.actor_id = i.id
+			INNER JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ?
 			ORDER BY o.id DESC LIMIT 1
 		"#,
@@ -2954,7 +2953,7 @@ impl Connection {
 			       df.plain_hash, df.block_count
 			FROM profile_object AS po
 			INNER JOIN object AS o ON po.object_id = o.id
-			INNER JOIN identity AS i ON o.actor_id = i.id
+			INNER JOIN actor AS i ON o.actor_id = i.id
 			LEFT JOIN file AS df ON po.description_file_hash = df.hash
 			WHERE i.address = ?
 			ORDER BY o.sequence DESC LIMIT 1
@@ -3013,20 +3012,20 @@ impl Connection {
 	pub fn follow(&mut self, actor_id: &ActorAddress, actor_info: &ActorInfo) -> Result<()> {
 		let tx = self.old.transaction()?;
 
-		let identity_id = {
+		let actor_id = {
 			let mut stat = tx.prepare(
 				r#"
-				SELECT id FROM identity WHERE address = ?
+				SELECT id FROM actor WHERE address = ?
 			"#,
 			)?;
 			let mut rows = stat.query(params![actor_id])?;
-			let identity_id = if let Some(row) = rows.next()? {
+			let actor_id = if let Some(row) = rows.next()? {
 				row.get(0)?
 			} else {
 				drop(rows);
 				let mut stat = tx.prepare(
 					r#"
-					INSERT INTO identity (address, public_key, first_object, type) VALUES (?,?,?,?,?)
+					INSERT INTO actor (address, public_key, first_object, type) VALUES (?,?,?,?,?)
 				"#,
 				)?;
 				stat.insert(params![
@@ -3036,14 +3035,14 @@ impl Connection {
 					ACTOR_TYPE_BLOGCHAIN
 				])?
 			};
-			identity_id
+			actor_id
 		};
 
 		tx.execute(
 			r#"
-			INSERT INTO following (identity_id) VALUES (?)
+			INSERT INTO following (actor_id) VALUES (?)
 		"#,
-			params![identity_id],
+			params![actor_id],
 		)?;
 
 		tx.commit()?;
@@ -3079,7 +3078,7 @@ impl Connection {
 			r#"
 			SELECT o.id
 			FROM object AS o
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND o.hash = ?
 		"#,
 		)?;
@@ -3094,7 +3093,7 @@ impl Connection {
 			r#"
 			SELECT o.id
 			FROM object AS o
-			LEFT JOIN identity AS i ON o.actor_id = i.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ? AND o.sequence = ?
 		"#,
 		)?;
@@ -3105,11 +3104,11 @@ impl Connection {
 	pub fn is_identity_available(&self, address: &ActorAddress) -> rusqlite::Result<bool> {
 		let mut stat = self.old.prepare(
 			r#"
-			SELECT address FROM identity AS i
+			SELECT address FROM actor AS i
 			WHERE address = ? AND id IN (
-				SELECT identity_id FROM my_identity
+				SELECT actor_id FROM identity
 			) OR id IN (
-				SELECT identity_id FROM feed_followed
+				SELECT actor_id FROM feed_followed
 			)
 		"#,
 		)?;
@@ -3122,7 +3121,7 @@ impl Connection {
 			r#"
 			SELECT 1
 			FROM following AS f
-			LEFT JOIN identity AS i ON f.identity_id = i.id
+			LEFT JOIN actor AS i ON f.actor_id = i.id
 			WHERE i.address = ?
 		"#,
 		)?;
@@ -3232,7 +3231,7 @@ impl Connection {
 	) -> Result<()> {
 		let mut stat = self.prepare(
 			r#"
-			INSERT INTO identity (address, public_key, first_object, type) VALUES(?,?,?,?)
+			INSERT INTO actor (address, public_key, first_object, type) VALUES(?,?,?,?)
 		"#,
 		)?;
 		stat.insert(params![
@@ -3252,7 +3251,7 @@ impl Connection {
 
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO identity (address, public_key, first_object) VALUES(?,?,?)
+			INSERT INTO actor (address, public_key, first_object) VALUES(?,?,?)
 		"#,
 		)?;
 		let new_id = stat.insert(rusqlite::params![
@@ -3263,7 +3262,7 @@ impl Connection {
 		stat = tx
 			.prepare(
 				r#"
-			INSERT INTO my_identity (label, identity_id, private_key) VALUES (?,?,?)
+			INSERT INTO identity (label, actor_id, private_key) VALUES (?,?,?)
 		"#,
 			)
 			.unwrap();
@@ -3375,8 +3374,8 @@ impl Connection {
 	pub fn unfollow(&mut self, actor_id: &ActorAddress) -> Result<bool> {
 		let affected = self.old.execute(
 			r#"
-			DELETE FROM following WHERE identity_id = (
-				SELECT id FROM identity WHERE address = ?
+			DELETE FROM following WHERE actor_id = (
+				SELECT id FROM actor WHERE address = ?
 			)
 		"#,
 			params![actor_id],
@@ -3390,8 +3389,8 @@ impl Connection {
 		self.old.execute(
 			r#"
 			UPDATE object SET verified_from_start = 1
-			WHERE hash = ? AND identity_id = (
-				SELECT id FROM identity WHERE address = ?
+			WHERE hash = ? AND actor_id = (
+				SELECT id FROM actor WHERE address = ?
 			)
 		"#,
 			params![object_id.to_string(), actor_address],

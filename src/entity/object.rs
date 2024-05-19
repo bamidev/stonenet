@@ -24,28 +24,28 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-	#[sea_orm(has_many = "super::boost_object::Entity")]
-	BoostObject,
+	#[sea_orm(has_many = "super::share_object::Entity")]
+	ShareObject,
 	#[sea_orm(
-		belongs_to = "super::identity::Entity",
+		belongs_to = "super::actor::Entity",
 		from = "Column::ActorId",
-		to = "super::identity::Column::Id",
+		to = "super::actor::Column::Id",
 		on_update = "NoAction",
 		on_delete = "NoAction"
 	)]
-	Identity,
+	Actor,
 	#[sea_orm(has_many = "super::post_object::Entity")]
 	PostObject,
 	#[sea_orm(has_many = "super::profile_object::Entity")]
 	ProfileObject,
 }
 
-impl Related<super::boost_object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::BoostObject.def() }
+impl Related<super::share_object::Entity> for Entity {
+	fn to() -> RelationDef { Relation::ShareObject.def() }
 }
 
-impl Related<super::identity::Entity> for Entity {
-	fn to() -> RelationDef { Relation::Identity.def() }
+impl Related<super::actor::Entity> for Entity {
+	fn to() -> RelationDef { Relation::Actor.def() }
 }
 
 impl Related<super::post_object::Entity> for Entity {

@@ -418,7 +418,7 @@ impl WebFingerDocument {
 
 
 pub async fn actor_followers(
-	State(g): State<Arc<Global>>, Extension(actor): Extension<identity::Model>,
+	State(g): State<Arc<Global>>, Extension(actor): Extension<actor::Model>,
 ) -> Response {
 	let objects = match activity_pub_follow::Entity::find()
 		.filter(activity_pub_follow::Column::ActorId.eq(actor.id))
@@ -471,7 +471,7 @@ pub async fn actor_get(
 }
 
 pub async fn actor_inbox_get(
-	State(g): State<Arc<Global>>, Extension(actor): Extension<identity::Model>,
+	State(g): State<Arc<Global>>, Extension(actor): Extension<actor::Model>,
 ) -> Response {
 	let objects = match activity_pub_object::Entity::find()
 		.filter(activity_pub_object::Column::ActorId.eq(actor.id))
@@ -499,7 +499,7 @@ pub async fn actor_inbox_get(
 }
 
 pub async fn actor_inbox_post(
-	State(g): State<Arc<Global>>, Extension(actor): Extension<identity::Model>, body: String,
+	State(g): State<Arc<Global>>, Extension(actor): Extension<actor::Model>, body: String,
 ) -> Response {
 	if body.len() > 20480 {
 		return error_response(406, "JSON object too big.");
@@ -531,7 +531,7 @@ pub async fn actor_inbox_post(
 }
 
 async fn actor_inbox_process_undo(
-	g: &Global, actor: &identity::Model, object: serde_json::Value,
+	g: &Global, actor: &actor::Model, object: serde_json::Value,
 ) -> db::Result<Response> {
 	// Check if sender of request is owner of domain
 
@@ -623,7 +623,7 @@ async fn actor_inbox_process_undo(
 }
 
 async fn actor_inbox_register_follow(
-	g: &Global, actor: &identity::Model, object: serde_json::Value,
+	g: &Global, actor: &actor::Model, object: serde_json::Value,
 ) -> db::Result<Response> {
 	let follower_string = if let Some(follower) = object.get("actor") {
 		match follower {
@@ -688,7 +688,7 @@ async fn actor_inbox_register_follow(
 }
 
 async fn actor_inbox_store_object(
-	g: &Global, actor: &identity::Model, json: serde_json::Value,
+	g: &Global, actor: &actor::Model, json: serde_json::Value,
 ) -> db::Result<Response> {
 	let record = activity_pub_object::ActiveModel {
 		id: NotSet,
@@ -1145,7 +1145,7 @@ async fn populate_send_queue_from_new_object(
 
 async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db::Result<()> {
 	let objects = object::Entity::find()
-		.join(JoinType::InnerJoin, object::Relation::Identity.def())
+		.join(JoinType::InnerJoin, object::Relation::Actor.def())
 		.filter(object::Column::PublishedOnFediverse.eq(false))
 		.filter(object::Column::Type.ne(OBJECT_TYPE_PROFILE))
 		.order_by_asc(object::Column::Id)
@@ -1170,7 +1170,7 @@ async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db::Res
 			// Ignore objects that don't have enough info on them yet to display them yet
 			if payload_info.has_main_content() {
 				// TODO: Don't query for the address for each object.
-				if let Some(actor) = identity::Entity::find_by_id(object.actor_id)
+				if let Some(actor) = actor::Entity::find_by_id(object.actor_id)
 					.one(g.api.db.inner())
 					.await?
 				{
@@ -1194,7 +1194,7 @@ async fn process_next_send_queue_item(
 	g: &Global, record: activity_pub_send_queue::Model, private_key: Arc<Zeroizing<String>>,
 ) -> db::Result<()> {
 	let mut send_state = ActivitySendState::Impossible;
-	if let Some(actor_record) = identity::Entity::find_by_id(record.actor_id)
+	if let Some(actor_record) = actor::Entity::find_by_id(record.actor_id)
 		.one(g.api.db.inner())
 		.await?
 	{

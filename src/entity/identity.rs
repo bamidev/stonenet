@@ -2,28 +2,32 @@
 
 use sea_orm::entity::prelude::*;
 
-use crate::{common::IdType, core::ActorAddress};
-
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "identity")]
 pub struct Model {
-	#[sea_orm(primary_key, auto_increment = true)]
-	pub id: i64,
+	#[sea_orm(primary_key, auto_increment = false)]
+	pub label: String,
 	#[sea_orm(unique)]
-	pub address: ActorAddress,
-	pub public_key: Vec<u8>,
-	pub first_object: IdType,
-	pub r#type: String,
+	pub actor_id: i64,
+	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
+	pub private_key: Vec<u8>,
+	pub is_private: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-	#[sea_orm(has_many = "super::object::Entity")]
-	Object,
+	#[sea_orm(
+		belongs_to = "super::actor::Entity",
+		from = "Column::ActorId",
+		to = "super::actor::Column::Id",
+		on_update = "NoAction",
+		on_delete = "NoAction"
+	)]
+	Actor,
 }
 
-impl Related<super::object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::Object.def() }
+impl Related<super::actor::Entity> for Entity {
+	fn to() -> RelationDef { Relation::Actor.def() }
 }
 
 impl ActiveModelBehavior for ActiveModel {}

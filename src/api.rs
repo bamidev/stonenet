@@ -126,8 +126,8 @@ impl Api {
 		let tx = connection.transaction().await?;
 
 		// Construct fields for the share object
-		let identity_record = identity::Entity::find()
-			.filter(identity::Column::Address.eq(identity))
+		let identity_record = actor::Entity::find()
+			.filter(actor::Column::Address.eq(identity))
 			.one(&tx.0)
 			.await?
 			.expect("identity doesn't exist");
@@ -173,7 +173,7 @@ impl Api {
 		let object_id = result.last_insert_id;
 
 		// Insert the share object record
-		boost_object::Entity::insert(boost_object::ActiveModel {
+		share_object::Entity::insert(share_object::ActiveModel {
 			object_id: Set(object_id),
 			actor_address: Set(share.actor_address.clone()),
 			object_hash: Set(share.object_hash.clone()),

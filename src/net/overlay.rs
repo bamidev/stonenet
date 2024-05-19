@@ -1092,7 +1092,7 @@ impl OverlayNode {
 		match c.fetch_follow_list() {
 			Ok(r) => r,
 			Err(e) => {
-				error!("Unable to fetch following identities: {}", e);
+				error!("Unable to fetch following identities: {:?}", e);
 				Vec::new()
 			}
 		}
@@ -1104,7 +1104,7 @@ impl OverlayNode {
 		let result = match c.fetch_my_identities() {
 			Ok(r) => r,
 			Err(e) => {
-				error!("Unable to fetch my identities: {}", e);
+				error!("Unable to fetch my identities: {:?}", e);
 				return Vec::new();
 			}
 		};

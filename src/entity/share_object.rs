@@ -5,11 +5,10 @@ use sea_orm::entity::prelude::*;
 use crate::{common::IdType, core::ActorAddress};
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "boost_object")]
+#[sea_orm(table_name = "share_object")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = false)]
 	pub object_id: i64,
-	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
 	pub actor_address: ActorAddress,
 	pub object_hash: IdType,
 }
