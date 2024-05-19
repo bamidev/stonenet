@@ -1634,9 +1634,11 @@ impl MessageWorkToDo for PublishObjectToDo {
 			.await;
 
 		// Forget we were downloading this object
-		let mut downloading_objects = self.node.downloading_objects.lock().await;
-		if let Some(p) = downloading_objects.iter().position(|i| i == &self.hash) {
-			downloading_objects.remove(p);
+		{
+			let mut downloading_objects = self.node.downloading_objects.lock().await;
+			if let Some(p) = downloading_objects.iter().position(|i| i == &self.hash) {
+				downloading_objects.remove(p);
+			}
 		}
 
 		// Store & rebroadcast object if needed
