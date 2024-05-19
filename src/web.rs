@@ -1,7 +1,7 @@
 mod activity_pub;
 mod actor;
 mod common;
-mod my_identity;
+mod identity;
 
 use std::{
 	net::*,
@@ -13,7 +13,7 @@ use std::{
 use ::serde::*;
 use axum::{body::Body, extract::*, response::Response, routing::get, Router};
 use tera::{Context, Tera};
-use tokio::time::sleep;
+use tokio::{sync::Mutex, time::sleep};
 use tower_http::services::ServeDir;
 
 use self::common::*;
@@ -38,10 +38,9 @@ pub struct AppState {
 	identities: Vec<IdentityData>,
 }
 
-#[derive(Clone)]
 pub struct Global {
 	pub config: Config,
-	pub state: AppState,
+	pub state: Mutex<AppState>,
 	pub server_info: ServerInfo,
 	pub api: Api,
 	pub template_engine: Tera,
@@ -76,9 +75,10 @@ impl AppState {
 }
 
 impl Global {
-	pub fn render(&self, template_name: &str, context: Context) -> Response {
+	pub async fn render(&self, template_name: &str, context: Context) -> Response {
 		let mut complete_context = Context::new();
-		complete_context.insert("app", &self.state);
+		let state = self.state.lock().await.clone();
+		complete_context.insert("app", &state);
 		complete_context.insert("server", &self.server_info);
 		complete_context.extend(context);
 
@@ -188,7 +188,7 @@ pub async fn serve(
 	server_info: ServerInfo, config: Config,
 ) -> db::Result<()> {
 	let global = Arc::new(Global {
-		state: AppState::load(&api.db).await?,
+		state: Mutex::new(AppState::load(&api.db).await?),
 		api,
 		server_info,
 		template_engine: Tera::new("templates/**/*.tera").unwrap(),
@@ -211,7 +211,7 @@ pub async fn serve(
 		.route("/", get(home).post(home_post))
 		.nest_service("/static", ServeDir::new("static"))
 		.nest("/actor", actor::router(global.clone()))
-		.nest("/my-identity", my_identity::router(global.clone()))
+		.nest("/identity", identity::router(global.clone()))
 		.route("/search", get(search))
 		.route("/.well-known/webfinger", get(activity_pub::webfinger))
 		.route("/.well-known/x-nodeinfo2", get(activity_pub::nodeinfo))
@@ -248,7 +248,7 @@ async fn home(State(g): State<Arc<Global>>, Query(query): Query<PaginationQuery>
 	let mut context = Context::new();
 	context.insert("objects", &objects);
 	context.insert("page", &p);
-	g.render("home.html.tera", context)
+	g.render("home.html.tera", context).await
 }
 
 async fn home_post(State(g): State<Arc<Global>>, form: Multipart) -> Response {

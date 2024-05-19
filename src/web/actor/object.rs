@@ -83,7 +83,7 @@ async fn object_get(
 	let mut context = Context::new();
 	context.insert("address", &actor_address);
 	context.insert("object", &into_object_display_info(object_info.unwrap()));
-	g.render("actor/object.html.tera", context)
+	g.render("actor/object.html.tera", context).await
 }
 
 async fn object_post(
@@ -105,7 +105,15 @@ async fn object_share(
 	State(g): State<Arc<Global>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(object_hash): Extension<IdType>,
 ) -> Response {
-	let identity = g.state.active_identity.as_ref().unwrap().1.clone();
+	let identity = g
+		.state
+		.lock()
+		.await
+		.active_identity
+		.as_ref()
+		.unwrap()
+		.1
+		.clone();
 	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
 		Ok(r) =>
 			if let Some((_, pk)) = r {

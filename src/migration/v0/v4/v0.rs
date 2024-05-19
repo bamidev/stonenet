@@ -62,7 +62,8 @@ impl MigrationTrait for Migration {
 				"file_id" bigint NOT NULL,
 				"block_hash" text(45) NOT NULL,
 				"sequence" integer NOT NULL,
-				FOREIGN KEY ("file_id") REFERENCES "file" ("id") ON DELETE NO ACTION ON UPDATE NO ACTION
+				FOREIGN KEY ("file_id") REFERENCES "file" ("id") ON DELETE NO ACTION ON UPDATE NO ACTION,
+				UNIQUE(file_id, sequence)
 			);
 			CREATE TABLE "following" (
 				"actor_id" bigint NOT NULL PRIMARY KEY,

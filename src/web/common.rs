@@ -93,7 +93,15 @@ pub async fn post_message(
 	g: &Arc<Global>, mut form: Multipart, in_reply_to: Option<(ActorAddress, IdType)>,
 ) -> Result<(), Response> {
 	// Load identity + private key
-	let identity = g.state.active_identity.as_ref().unwrap().1.clone();
+	let identity = g
+		.state
+		.lock()
+		.await
+		.active_identity
+		.as_ref()
+		.unwrap()
+		.1
+		.clone();
 	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
 		Ok(r) =>
 			if let Some((_, pk)) = r {

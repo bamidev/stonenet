@@ -2,16 +2,26 @@ use std::sync::Arc;
 
 use axum::{body::*, extract::*, response::Response, routing::*};
 use log::*;
-use serde::Serialize;
+use sea_orm::{prelude::*, QuerySelect, QueryTrait};
+use serde::{Deserialize, Serialize};
 use tera::Context;
 
-use super::{server_error_response, FileData, Global};
+use super::{server_error_response, server_error_response2, FileData, Global};
+use crate::{
+	db::{self, Database, PersistenceHandle},
+	entity::*,
+};
 
 
 #[derive(Serialize)]
 struct IdentityData {
 	label: String,
 	address: String,
+}
+
+#[derive(Deserialize)]
+struct SelectFormData {
+	identity: String,
 }
 
 
@@ -21,9 +31,13 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 		new_methods = new_methods.post(new_post);
 	}
 
-	Router::new()
+	let mut router = Router::new()
 		.route("/", get(index))
-		.route("/new", new_methods)
+		.route("/new", new_methods);
+	if !g.server_info.is_exposed {
+		router = router.route("/select", post(select_post));
+	}
+	router
 }
 
 
@@ -45,11 +59,11 @@ async fn index(State(g): State<Arc<Global>>) -> Response {
 
 	let mut context = Context::new();
 	context.insert("identities", &identities_data);
-	g.render("identity/overview.html.tera", context)
+	g.render("identity/overview.html.tera", context).await
 }
 
 async fn new(State(g): State<Arc<Global>>) -> Response {
-	g.render("identity/new.html.tera", Context::new())
+	g.render("identity/new.html.tera", Context::new()).await
 }
 
 async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Response {
@@ -73,7 +87,9 @@ async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Res
 			}
 			"wallpaper" => {
 				wallpaper_mime_type = field.content_type().map(|s| s.to_string());
-				wallpaper_buf = field.bytes().await.unwrap().to_vec();
+				let b = field.bytes().await;
+				println!("TEST: {:?}", &b);
+				wallpaper_buf = b.unwrap().to_vec();
 			}
 			"description" => description_buf = field.bytes().await.unwrap().to_vec(),
 			other => warn!("Unrecognized profile form field: {}", other),
@@ -116,11 +132,51 @@ async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Res
 		wallpaper.as_ref(),
 		description.as_ref(),
 	) {
-		Ok(_) => Response::builder()
-			.status(303)
-			.header("Location", "/my-identity")
-			.body(Body::empty())
-			.unwrap(),
+		Ok((address, _)) => {
+			g.state.lock().await.identities.push(super::IdentityData {
+				label,
+				address: address.to_string(),
+			});
+
+			Response::builder()
+				.status(303)
+				.header("Location", "/identity")
+				.body(Body::empty())
+				.unwrap()
+		}
 		Err(e) => server_error_response(e, "Unable to create your new identity:"),
+	}
+}
+
+async fn find_actor_by_label(db: &Database, label: &str) -> db::Result<Option<actor::Model>> {
+	let r = actor::Entity::find()
+		.filter(
+			actor::Column::Id.in_subquery(
+				identity::Entity::find()
+					.select_only()
+					.column(identity::Column::ActorId)
+					.filter(identity::Column::Label.eq(label))
+					.into_query(),
+			),
+		)
+		.one(db.inner())
+		.await?;
+	Ok(r)
+}
+
+async fn select_post(State(g): State<Arc<Global>>, Form(form): Form<SelectFormData>) -> Response {
+	match find_actor_by_label(&g.api.db, &form.identity).await {
+		Err(e) => server_error_response(e, "Unable to find selected identity"),
+		Ok(resultset) =>
+			if let Some(record) = resultset {
+				g.state.lock().await.active_identity = Some((form.identity, record.address));
+				Response::builder()
+					.status(303)
+					.header("Location", "/")
+					.body(Body::empty())
+					.unwrap()
+			} else {
+				server_error_response2("Unable to find selected identity")
+			},
 	}
 }

@@ -104,7 +104,7 @@ async fn actor_get(
 	context.insert("is_following", &is_following);
 	context.insert("page", &p);
 	context.insert("objects", &objects);
-	g.render("actor.html.tera", context)
+	g.render("actor.html.tera", context).await
 }
 
 async fn actor_post(
