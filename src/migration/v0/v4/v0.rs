@@ -88,7 +88,8 @@ impl MigrationTrait for Migration {
 				"signature" text(45) NOT NULL,
 				"verified_from_start" boolean NOT NULL,
 				"published_on_fediverse" boolean NOT NULL DEFAULT FALSE,
-				FOREIGN KEY ("actor_id") REFERENCES "actor" ("id") ON DELETE NO ACTION ON UPDATE NO ACTION
+				FOREIGN KEY ("actor_id") REFERENCES "actor" ("id") ON DELETE NO ACTION ON UPDATE NO ACTION,
+				UNIQUE(actor_id, hash)
 			);
 			CREATE TABLE "post_file" (
 				"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,

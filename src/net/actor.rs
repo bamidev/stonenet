@@ -977,6 +977,10 @@ impl ActorNode {
 		true
 	}
 
+	async fn republish_object() {
+		
+	}
+
 	pub async fn publish_object(
 		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &Object,
 		skip_node_ids: &[IdType],
