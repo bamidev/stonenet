@@ -1037,10 +1037,14 @@ where
 		}
 	}
 
-	pub async fn iter_all_fingers_top_down(&self) -> AllFingersIterTopDown<'_> {
+	pub async fn iter_all_fingers_top_down(&self, bucket_offset: u8) -> AllFingersIterTopDown<'_> {
 		AllFingersIterTopDown {
-			global_index: 0,
-			bucket_iter: self.buckets[0].lock().await.private_fingers2().into_iter(),
+			global_index: bucket_offset as _,
+			bucket_iter: self.buckets[bucket_offset as usize]
+				.lock()
+				.await
+				.private_fingers2()
+				.into_iter(),
 			buckets: &self.buckets,
 		}
 	}

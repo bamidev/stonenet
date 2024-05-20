@@ -585,7 +585,7 @@ impl Api {
 
 		if let Some(actor_node) = self.node.get_actor_node(&identity.as_id()).await {
 			actor_node
-				.publish_object(&self.node, &hash, &object, &[])
+				.publish_object(&self.node, &hash, &object, &[], 0)
 				.await;
 		} else {
 			error!("Actor node not found.");
@@ -606,7 +606,7 @@ impl Api {
 		// Publish the object into the network
 		if let Some(actor_node) = self.node.get_actor_node(&identity.as_id()).await {
 			actor_node
-				.publish_object(&self.node, &hash, &object, &[])
+				.publish_object(&self.node, &hash, &object, &[], 0)
 				.await;
 		} else {
 			error!("Actor node not found.");

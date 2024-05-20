@@ -978,17 +978,25 @@ impl ActorNode {
 		true
 	}
 
-	async fn republish_object() {
-		
+	async fn republish_object(
+		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &Object,
+		source_node_id: &IdType,
+	) {
+		if let Some(bucket_offset) = self.base.differs_at_bit(source_node_id) {
+			self.publish_object(overlay_node, id, object, &[], bucket_offset)
+				.await;
+		} else {
+			debug_assert!(false, "Republishing an object received from ourselves.");
+		}
 	}
 
 	pub async fn publish_object(
 		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &Object,
-		skip_node_ids: &[IdType],
+		skip_node_ids: &[IdType], bucket_offset: u8,
 	) {
 		// TODO: When republishing, only publish the object to nodes below the sender's
 		// bit position on the binary tree.
-		let mut iter = self.base.iter_all_fingers_local_first().await;
+		let mut iter = self.base.iter_all_fingers_top_down(bucket_offset).await;
 		let mut futs = Vec::new();
 		while let Some(finger) = iter.next().await {
 			if skip_node_ids.contains(&finger.node_id) {
@@ -1118,6 +1126,7 @@ impl ActorNode {
 							&head_hash2,
 							&object,
 							&up_to_date_nodes,
+							0,
 						)
 						.await
 					});
@@ -1256,7 +1265,7 @@ impl ActorNode {
 		let mut a_node_is_behind = true;
 		let mut updated = false;
 
-		let mut iter = self.base.iter_all_fingers_top_down().await;
+		let mut iter = self.base.iter_all_fingers_top_down(0).await;
 		let mut checked = 0u8;
 		while let Some(finger) = iter.next().await {
 			if let Some((mut connection, _)) =
@@ -1621,9 +1630,15 @@ impl MessageWorkToDo for PublishObjectToDo {
 
 					let hash = self.hash.clone();
 					let node = self.node.clone();
+					let source_node_id = connection.their_node_id().clone();
 					spawn(async move {
-						node.publish_object(&node.base.overlay_node(), &hash, &object, &[])
-							.await;
+						node.republish_object(
+							&node.base.overlay_node(),
+							&hash,
+							&object,
+							&source_node_id,
+						)
+						.await;
 					});
 				}
 			}
