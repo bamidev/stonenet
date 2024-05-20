@@ -720,6 +720,7 @@ impl ActorNode {
 			.simple_result(ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE, &response)
 	}
 
+	/// After a new head is received and stored, will try to synchronize any files & blocks for it, as well as any missing objects.
 	async fn process_new_head_on_connection(
 		self: &Arc<Self>, connection: &mut Connection, hash: &IdType, head: Object,
 	) -> db::Result<()> {
@@ -1205,20 +1206,9 @@ impl ActorNode {
 		while i > 0 && (up_to_sequence - i as u64) < ACTOR_LIMIT_RECENT_OBJECTS {
 			i -= 1;
 			if !self.has_object_by_sequence(i as u64) {
-				match self
-					.exchange_find_value_on_connection_and_parse::<FindObjectResult>(
-						connection,
-						ValueType::Object,
-						&last_object.previous_hash,
-					)
-					.await
-				{
+				match self.collect_object(connection, &last_object.previous_hash).await? {
 					None => break,
-					Some(result) => {
-						self.complete_object(connection, result.object.clone())
-							.await?;
-						last_object = result.object;
-					}
+					Some((object, _)) => last_object = object,
 				}
 			// Stop if we closed the gap
 			} else {
@@ -1592,13 +1582,17 @@ impl MessageWorkToDo for PublishObjectToDo {
 			.await;
 
 		// Store object
-		if let Some(object) = &object_result {
-			if let Err(e) = self.node.db().perform(|mut c| {
+		let stored = if let Some(object) = &object_result {
+			match self.node.db().perform(|mut c| {
 				c.store_object(self.node.actor_address(), &self.hash, object, false)
 			}) {
-				error!("Unable to store received object: {:?}", e);
+				Ok(r) => r,
+				Err(e) => {
+					error!("Unable to store received object: {:?}", e);
+					false
+				}
 			}
-		}
+		} else { false };
 
 		// Forget we were downloading this object after it is stored
 		{
@@ -1608,7 +1602,8 @@ impl MessageWorkToDo for PublishObjectToDo {
 			}
 		}
 
-		if let Some(object) = object_result {
+		if stored {
+			let object = object_result.unwrap();
 			if let Err(e) = self
 				.node
 				.process_new_head_on_connection(&mut connection, &self.hash, object.clone())

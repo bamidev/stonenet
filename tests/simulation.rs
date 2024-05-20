@@ -235,10 +235,7 @@ Hoi ik ben Kees!
 
 	// Load posts
 	debug!("Loading home feed.");
-	let home_feed = tokio::task::block_in_place(|| {
-		let mut c = node2.db.connect_old().expect("unable to open database");
-		c.fetch_home_feed(6, 0).expect("unable to fetch home feed")
-	});
+	let home_feed = node2.load_home_feed(6, 0).await.expect("unable to load home feed");
 	assert_eq!(home_feed.len(), 5 + test_notifications as usize);
 
 	// Check if we've received all posts no mather in which order.
