@@ -295,12 +295,13 @@ impl ActorObject {
 		url_base: &str, address: &ActorAddress, name: String, avatar_hash: Option<&IdType>,
 		summary: String, public_key: Option<&str>,
 	) -> Self {
-		let id = format!("{}/actor/{}/activity-pub", url_base, address);
+		let url = format!("{}/actor/{}", url_base, address);
+		let id = format!("{}/activity-pub", &url);
 		Self {
 			context: DEFAULT_CONTEXT,
 			id: id.clone(),
 			nodeInfo2Url: format!("{}/.well-known/x-nodeinfo2", url_base),
-			url: id.clone(),
+			url,
 			r#type: "Person",
 			name,
 			preferredUsername: address.to_string(),
