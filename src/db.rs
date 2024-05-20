@@ -3088,7 +3088,7 @@ impl Connection {
 	}
 
 	pub fn has_object_sequence(
-		&self, actor_id: &ActorAddress, sequence: u64,
+		&self, actor_address: &ActorAddress, sequence: u64,
 	) -> rusqlite::Result<bool> {
 		let mut stat = self.prepare(
 			r#"
@@ -3098,7 +3098,7 @@ impl Connection {
 			WHERE i.address = ? AND o.sequence = ?
 		"#,
 		)?;
-		let mut rows = stat.query(params![actor_id, sequence])?;
+		let mut rows = stat.query(params![actor_address, sequence as i64])?;
 		Ok(rows.next()?.is_some())
 	}
 

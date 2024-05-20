@@ -2,7 +2,7 @@ use std::{
 	net::SocketAddr,
 	sync::{
 		atomic::{AtomicBool, AtomicPtr, Ordering},
-		Arc,
+		Arc, Mutex as StdMutex,
 	},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -52,7 +52,7 @@ pub const ACTOR_LIMIT_RECENT_OBJECTS: u64 = 1_000;
 /// The amount of recent objects to always store its files (including its
 /// blocks) for. The garbage collector will not clean up the files and blocks
 /// for these objects
-pub const ACTOR_LIMIT_RECENT_OBJECTS_FILES: u64 = 10;
+pub const ACTOR_LIMIT_RECENT_OBJECTS_FILES: u64 = 1_000;
 /// The max amount of objects to keep at minimum for an actor.
 /// This should equate to about 3-4MB of disk space.
 pub const ACTOR_MIN_LIMIT_TOTAL_OBJECTS: u64 = 10_000;
@@ -76,6 +76,7 @@ pub struct ActorInterface {
 	actor_address: ActorAddress,
 	actor_id: i64,
 	actor_info: ActorInfo,
+	head_sequence: StdMutex<Option<u64>>,
 	is_lurker: bool,
 	pub(super) connection_manager: Arc<ConnectionManager>,
 }
@@ -211,28 +212,27 @@ impl ActorNode {
 
 	pub async fn collect_object(
 		self: &Arc<Self>, connection: &mut Connection, hash: &IdType,
-	) -> db::Result<bool> {
+	) -> db::Result<Option<(Object, bool)>> {
 		if let Some(result) = self
 			.exchange_find_object_on_connection(connection, hash)
 			.await
 		{
-			self.complete_object(connection, hash.clone(), result.object, false)
-				.await
+			self.store_object(hash, &result.object, false)?;
+			let completed = self
+				.complete_object(connection, result.object.clone())
+				.await?;
+			Ok(Some((result.object, completed)))
 		} else {
-			Ok(false)
+			Ok(None)
 		}
 	}
 
 	/// Attempts to collect as much files and their blocks on the given
 	/// connection.
 	pub(super) fn complete_object<'a, 'b: 'a>(
-		self: &'a Arc<Self>, connection: &'b mut Connection, id: IdType, object: Object,
-		verified_from_start: bool,
+		self: &'a Arc<Self>, connection: &'b mut Connection, object: Object,
 	) -> BoxFuture<'a, db::Result<bool>> {
 		async move {
-			if !self.store_object(&id, &object, verified_from_start)? {
-				return Ok(false);
-			}
 			match object.payload {
 				ObjectPayload::Profile(payload) => {
 					if let Some(file_id) = payload.description.as_ref() {
@@ -284,8 +284,6 @@ impl ActorNode {
 						if &actor_address == self.actor_address() {
 							self.collect_object(connection, &object_hash).await?;
 						} else {
-							// TODO: Try to collect the object, although from another actor, on this
-							// connection. They probably already have it.
 							self.spawn_collect_object_from_other_network(
 								actor_address,
 								object_hash,
@@ -487,12 +485,8 @@ impl ActorNode {
 	}
 
 	pub async fn initialize_with_connection(self: &Arc<Self>, mut connection: Box<Connection>) {
-		// Synchronize the 10 latest objects
-		match self.db().perform(|c| c.fetch_head(self.actor_address())) {
-			Err(e) => error!("Unable to fetch head: {}", e),
-			Ok(our_head_opt) =>
-				self.synchronize_recent_objects_on_connection(&mut connection, &our_head_opt)
-					.await,
+		if let Err(e) = self.synchronize_head_on_connection(&mut connection).await {
+			error!("Unable to initialize with connection: {:?}", e);
 		}
 	}
 
@@ -669,12 +663,19 @@ impl ActorNode {
 	) -> Self {
 		let interface = ActorInterface {
 			overlay_node,
-			db,
 			actor_id,
-			actor_address,
 			actor_info,
-			is_lurker,
+			// TODO: Load head sequence from parameter in new, and create an async method `load`
+			// that does the same as `new` except it also loads the head_sequence from DB
+			head_sequence: StdMutex::new(
+				db.perform(|c| c.fetch_head(&actor_address))
+					.unwrap()
+					.map(|o| o.1.sequence),
+			),
+			actor_address,
+			db,
 			connection_manager: Arc::new(ConnectionManager::new(node_id.clone(), 1)),
+			is_lurker,
 		};
 		Self {
 			is_synchonizing: Arc::new(AtomicBool::new(false)),
@@ -717,6 +718,15 @@ impl ActorNode {
 		let response = GetProfileResponse { object };
 		self.base
 			.simple_result(ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE, &response)
+	}
+
+	async fn process_new_head_on_connection(
+		self: &Arc<Self>, connection: &mut Connection, hash: &IdType, head: Object,
+	) -> db::Result<()> {
+		self.collect_object(connection, hash).await?;
+		self.synchronize_missed_objects_on_connection(connection, head)
+			.await?;
+		Ok(())
 	}
 
 	pub(super) async fn process_request(
@@ -971,7 +981,9 @@ impl ActorNode {
 		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &Object,
 		skip_node_ids: &[IdType],
 	) {
-		let mut iter = self.base.iter_all_fingers().await;
+		// TODO: When republishing, only publish the object to nodes below the sender's
+		// bit position on the binary tree.
+		let mut iter = self.base.iter_all_fingers_local_first().await;
 		let mut futs = Vec::new();
 		while let Some(finger) = iter.next().await {
 			if skip_node_ids.contains(&finger.node_id) {
@@ -1019,56 +1031,6 @@ impl ActorNode {
 					.await;
 			}
 			return;
-		}
-	}
-
-	/// Processes a new object:
-	/// * Stores it in our DB if we don't have it yet.
-	/// * Uses the connection to ask for files and blocks as well.
-	/// * Starts the synchronization process if we don't have the objects
-	///   leading up to this new object.
-	/// Returns true if the given object was newer than what we have locally.
-	async fn process_new_object(
-		self: &Arc<Self>, connection: &mut Connection, id: &IdType, object: &Object,
-		our_head_opt: &Option<(IdType, Object, bool)>,
-	) -> db::Result<bool> {
-		// If we have at least one object already
-		if let Some((_, our_head, verified_from_start)) = our_head_opt {
-			// If we are behind, store the received object in our database
-			if object.sequence > our_head.sequence {
-				if !self
-					.complete_object(
-						connection,
-						id.clone(),
-						object.clone(),
-						*verified_from_start && object.sequence == (our_head.sequence + 1),
-					)
-					.await?
-				{
-					error!("Unable to collect object {}.", id);
-					return Ok(false);
-				}
-				Ok(true)
-			} else {
-				Ok(false)
-			}
-		// If we don't have any objects yet
-		} else {
-			// If it is the first object, we can say it is 'verified it from start'
-			if object.sequence == 0 {
-				if id != &self.base.interface.actor_info.first_object {
-					error!("Unable to collect object {}.", id);
-					return Ok(false);
-				}
-			}
-			if !self
-				.complete_object(connection, id.clone(), object.clone(), object.sequence == 0)
-				.await?
-			{
-				error!("Unable to collect object {}.", id);
-				return Ok(false);
-			}
-			Ok(true)
 		}
 	}
 
@@ -1129,10 +1091,11 @@ impl ActorNode {
 	/// Does everything needed to make sure a node is up to date with the rest
 	/// of the network. Invoke this periodically.
 	pub async fn synchronize(self: &Arc<Self>) -> db::Result<()> {
-		let neighbours = self.base.iter_all_fingers().await.collect_amount(4).await;
+		// TODO: Use a iterator that goes over all fingers but with the topmost fingers
+		// first instead of the local ones, and then stop when we've had 4 responses.
 		let head_opt =
 			if let Some((head_hash, newest_head, up_to_date_nodes, a_node_was_behind, updated)) =
-				self.synchronize_head(&neighbours).await?
+				self.synchronize_head().await?
 			{
 				// Synchronize any files & blocks that we've not yet gotten from the node that
 				// we got the head of
@@ -1225,69 +1188,42 @@ impl ActorNode {
 		Ok(())
 	}
 
-	pub async fn synchronize_recent_objects_on_connection(
-		self: &Arc<Self>, connection: &mut Connection,
-		our_head_opt: &Option<(IdType, Object, bool)>,
-	) {
-		let result = match self
-			.synchronize_head_on_connection(connection, our_head_opt)
-			.await
-		{
-			Ok(r) => r,
-			Err(e) => {
-				error!(
-					"Database error while synchonizing head on connection: {}",
-					e
-				);
-				return;
-			}
-		};
+	/// Given our own head info, this will utilize the connection to collect as
+	/// many of our missing objects (including their files and blocks) as
+	/// possible.
+	pub async fn synchronize_missed_objects_on_connection(
+		self: &Arc<Self>, connection: &mut Connection, up_to_object: Object,
+	) -> db::Result<()> {
+		let up_to_sequence = up_to_object.sequence;
+		let mut i = up_to_object.sequence as i128;
+		let mut last_object = up_to_object;
 
-		if let Some((_, head, _)) = result {
-			let head_sequence = head.sequence;
-			let mut i = head_sequence as i128;
-			let mut last_object = head;
-
-			while i > 0 && (head_sequence - i as u64) < 10 {
-				i -= 1;
-				if !self.has_object_by_sequence(i as u64) {
-					match self
-						.exchange_find_value_on_connection_and_parse::<FindObjectResult>(
-							connection,
-							ValueType::Object,
-							&last_object.previous_hash,
-						)
-						.await
-					{
-						None => break,
-						Some(result) => {
-							match self
-								.complete_object(
-									connection,
-									last_object.previous_hash.clone(),
-									result.object.clone(),
-									false,
-								)
-								.await
-							{
-								Ok(_) => {}
-								Err(e) => {
-									error!(
-										"Database issue while trying to synchronize object (seq \
-										 {}): {}",
-										i, e
-									);
-									return;
-								}
-							}
-							last_object = result.object;
-						}
+		while i > 0 && (up_to_sequence - i as u64) < ACTOR_LIMIT_RECENT_OBJECTS {
+			i -= 1;
+			if !self.has_object_by_sequence(i as u64) {
+				match self
+					.exchange_find_value_on_connection_and_parse::<FindObjectResult>(
+						connection,
+						ValueType::Object,
+						&last_object.previous_hash,
+					)
+					.await
+				{
+					None => break,
+					Some(result) => {
+						self.complete_object(connection, result.object.clone())
+							.await?;
+						last_object = result.object;
 					}
 				}
+			// Stop if we closed the gap
+			} else {
+				break;
 			}
-			// TODO: Actually check if the obtained objects are now verified
-			// from start.
 		}
+		// TODO: Actually check if the obtained objects are now verified
+		// from start.
+		Ok(())
 	}
 
 	pub(super) async fn synchronize_blocks(&self) -> db::Result<()> {
@@ -1309,11 +1245,12 @@ impl ActorNode {
 	/// if it was our own. And it also returns a list of node ids of the nodes
 	/// which are already up to date.
 	async fn synchronize_head(
-		self: &Arc<Self>, fingers: &[NodeContactInfo],
+		self: &Arc<Self>,
 	) -> db::Result<Option<(IdType, Object, Vec<IdType>, bool, bool)>> {
-		let mut up_to_date_nodes = Vec::with_capacity(fingers.len());
+		let mut up_to_date_nodes = Vec::with_capacity(4);
 		let our_head_info = self.db().perform(|c| c.fetch_head(self.actor_address()))?;
 		let our_head_sequence = if let Some((_, o, _)) = &our_head_info {
+			*self.base.interface.head_sequence.lock().unwrap() = Some(o.sequence);
 			o.sequence as i128
 		} else {
 			-1i128
@@ -1325,17 +1262,19 @@ impl ActorNode {
 		let mut a_node_is_behind = true;
 		let mut updated = false;
 
-		for finger in fingers {
+		let mut iter = self.base.iter_all_fingers_top_down().await;
+		let mut checked = 0u8;
+		while let Some(finger) = iter.next().await {
 			if let Some((mut connection, _)) =
 				self.base.select_direct_connection(&finger, None).await
 			{
-				match self
-					.synchronize_head_on_connection(&mut connection, &our_head_info)
-					.await
-				{
+				match self.synchronize_head_on_connection(&mut connection).await {
 					Err(e) => error!("Database issue with synchronizing head: {}", e),
 					Ok(r) =>
-						if let Some((hash, object, mut is_newer)) = r {
+						if let Some((hash, object)) = r {
+							checked += 1;
+							let mut is_newer = object.sequence as i128 > our_head_sequence;
+
 							// If the object is the same as our head, nothing will need to happen
 							if object.sequence as i128 == our_head_sequence {
 								// But if the sequence is the same but the hash different, it may
@@ -1370,6 +1309,11 @@ impl ActorNode {
 									updated = true;
 								}
 							}
+
+							// Only check up to 4 nodes
+							if checked == 4 {
+								break;
+							}
 						},
 				}
 			}
@@ -1378,15 +1322,31 @@ impl ActorNode {
 		Ok(latest_object.map(|o| (latest_hash, o, up_to_date_nodes, a_node_is_behind, updated)))
 	}
 
+	/// Checks the peer for their head object.
+	/// If we didn't have it yet, store it and collect all files, blocks &
+	/// previous objects.
 	async fn synchronize_head_on_connection(
 		self: &Arc<Self>, connection: &mut Connection,
-		our_head_opt: &Option<(IdType, Object, bool)>,
-	) -> db::Result<Option<(IdType, Object, bool)>> {
+	) -> db::Result<Option<(IdType, Object)>> {
 		if let Some(response) = self.exchange_head_on_connection(connection).await {
-			let result = self
-				.process_new_object(connection, &response.hash, &response.object, our_head_opt)
+			let stored = self.db().perform(|mut c| {
+				c.store_object(
+					self.actor_address(),
+					&response.hash,
+					&response.object,
+					false,
+				)
+			})?;
+
+			if stored {
+				self.process_new_head_on_connection(
+					connection,
+					&response.hash,
+					response.object.clone(),
+				)
 				.await?;
-			return Ok(Some((response.hash, response.object, result)));
+				return Ok(Some((response.hash, response.object)));
+			}
 		}
 		Ok(None)
 	}
@@ -1615,12 +1575,6 @@ impl PublishObjectToDo {
 			return None;
 		}
 
-		// If everything checks out, use the same connection to start synchronizing all
-		// the files and blocks on it, then close it ourselves.
-		// self.synchronize_object(c, object_id, &upload.object).await;
-		//self.process_new_object(c, object_id, &upload.object).await.expect("db
-		// error"); c.close().await;
-
 		return Some(upload.object);
 	}
 }
@@ -1633,7 +1587,16 @@ impl MessageWorkToDo for PublishObjectToDo {
 			.receive_object(&mut connection, &self.hash, public_key)
 			.await;
 
-		// Forget we were downloading this object
+		// Store object
+		if let Some(object) = &object_result {
+			if let Err(e) = self.node.db().perform(|mut c| {
+				c.store_object(self.node.actor_address(), &self.hash, object, false)
+			}) {
+				error!("Unable to store received object: {:?}", e);
+			}
+		}
+
+		// Forget we were downloading this object after it is stored
 		{
 			let mut downloading_objects = self.node.downloading_objects.lock().await;
 			if let Some(p) = downloading_objects.iter().position(|i| i == &self.hash) {
@@ -1641,25 +1604,29 @@ impl MessageWorkToDo for PublishObjectToDo {
 			}
 		}
 
-		// Store & rebroadcast object if needed
 		if let Some(object) = object_result {
-			let this = self.node.clone();
-			match this
-				.db()
-				.perform(|c| c.fetch_head(self.node.actor_address()))
+			if let Err(e) = self
+				.node
+				.process_new_head_on_connection(&mut connection, &self.hash, object.clone())
+				.await
 			{
-				Err(e) => error!(
-					"Database error while fetching head for public object request: {}",
-					e
-				),
-				Ok(head) =>
-					if let Err(e) = this
-						.process_new_object(&mut connection, &self.hash, &object, &head)
-						.await
-					{
-						error!("Database error while processing new object: {}", e);
-						return Ok(None);
-					},
+				error!("Database error while processing new head: {}", e);
+				return Ok(None);
+			}
+
+			// Republish object if it was newer than our head
+			let guard = self.node.base.interface.head_sequence.lock().unwrap();
+			if let Some(our_head_sequence) = &*guard {
+				if *our_head_sequence < object.sequence {
+					drop(guard);
+
+					let hash = self.hash.clone();
+					let node = self.node.clone();
+					spawn(async move {
+						node.publish_object(&node.base.overlay_node(), &hash, &object, &[])
+							.await;
+					});
+				}
 			}
 		}
 

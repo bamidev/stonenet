@@ -29,6 +29,12 @@ pub struct AllFingersIter<'a> {
 	bucket_iter: <Vec<NodeContactInfo> as IntoIterator>::IntoIter,
 }
 
+pub struct AllFingersIterTopDown<'a> {
+	global_index: usize,
+	buckets: &'a Vec<Mutex<Bucket>>,
+	bucket_iter: <Vec<NodeContactInfo> as IntoIterator>::IntoIter,
+}
+
 #[derive(Clone, Debug)]
 pub struct ContactStrategy {
 	pub contact: ContactOption,
@@ -1019,7 +1025,7 @@ where
 		true
 	}
 
-	pub async fn iter_all_fingers(&self) -> AllFingersIter<'_> {
+	pub async fn iter_all_fingers_local_first(&self) -> AllFingersIter<'_> {
 		AllFingersIter {
 			global_index: 255,
 			bucket_iter: self.buckets[255]
@@ -1027,6 +1033,14 @@ where
 				.await
 				.private_fingers2()
 				.into_iter(),
+			buckets: &self.buckets,
+		}
+	}
+
+	pub async fn iter_all_fingers_top_down(&self) -> AllFingersIterTopDown<'_> {
+		AllFingersIterTopDown {
+			global_index: 0,
+			bucket_iter: self.buckets[0].lock().await.private_fingers2().into_iter(),
 			buckets: &self.buckets,
 		}
 	}
@@ -1416,6 +1430,31 @@ impl<'a> AsyncIterator for AllFingersIter<'a> {
 			} else {
 				if self.global_index > 0 {
 					self.global_index -= 1;
+					self.bucket_iter = self.buckets[self.global_index]
+						.lock()
+						.await
+						.private_fingers2()
+						.into_iter();
+				} else {
+					break;
+				}
+			}
+		}
+		None
+	}
+}
+
+#[async_trait]
+impl<'a> AsyncIterator for AllFingersIterTopDown<'a> {
+	type Item = NodeContactInfo;
+
+	async fn next(&mut self) -> Option<NodeContactInfo> {
+		loop {
+			if let Some(contact) = self.bucket_iter.next() {
+				return Some(contact);
+			} else {
+				if self.global_index < 255 {
+					self.global_index += 1;
 					self.bucket_iter = self.buckets[self.global_index]
 						.lock()
 						.await

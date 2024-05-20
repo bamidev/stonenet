@@ -670,16 +670,25 @@ impl OverlayNode {
 					};
 
 				// We need to store the identity in order for the object to be able to be stored
-				if let Err(e) = self.db().ensure_actor_id(actor_address, &actor_info).await {
-					error!("Unable to store identity: {:?}", e);
-					return Some(object);
+				let _actor_id = match self.db().ensure_actor_id(actor_address, &actor_info).await {
+					Ok(id) => id,
+					Err(e) => {
+						error!("Unable to store identity: {:?}", e);
+						return Some(object);
+					}
+				};
+				if let Err(e) = self
+					.db()
+					.perform(|mut c| c.store_object(actor_address, &object_id, &object, false))
+				{
+					error!(
+						"Unable to store profile object for {}: {:?}",
+						actor_address, e
+					);
 				}
 
 				// Then we can collect all the values related to this identity
-				match node
-					.complete_object(&mut connection, object_id, object.clone(), false)
-					.await
-				{
+				match node.complete_object(&mut connection, object.clone()).await {
 					Ok(done) =>
 						if done {
 							return Some(object);
@@ -1061,7 +1070,7 @@ impl OverlayNode {
 		sleep(Duration::from_secs(120)).await;
 
 		while !stop_flag.load(Ordering::Relaxed) {
-			let mut iter = self.base.iter_all_fingers().await;
+			let mut iter = self.base.iter_all_fingers_local_first().await;
 
 			let mut tried = 0usize;
 			while let Some(peer) = iter.next().await {
@@ -1249,7 +1258,7 @@ impl OverlayNode {
 
 		// Try to find a bidirectional node to keep a connection with
 		let mut punchable_nodes = Vec::new();
-		let mut iter = self.base.iter_all_fingers().await;
+		let mut iter = self.base.iter_all_fingers_local_first().await;
 		while let Some(finger) = iter.next().await {
 			if let Some(ipv4_contact_info) = finger.contact_info.ipv4.clone() {
 				if let Some(udpv4_availability) = ipv4_contact_info.availability.udp {
