@@ -1,8 +1,8 @@
-{% extends "base.tera" %}
+{% extends "profile.tera" %}
 {% import "macros.tera" as macros %}
 {% block title %}Profile{% endblock %}
 
-{% block content %}
+{% block before_profile %}
 	{% set avatar_url = "/static/default_avatar.jpg" -%}
 	{% set wallpaper_url = "/static/default_wallpaper.jpg" -%}
 	{% set name = address -%}
@@ -22,57 +22,55 @@
 			background-size: cover;
 		}
 	</style>
+{% endblock before_profile %}
 
-	<p>
-	<div class="card bg-dark-subtle text-dark">
-		<div class="card-header background">
-			<h2 class="card-title text-center">
-				<span class="bg-light bg-opacity-50 rounded-pill p-2">{{name}}</span>
-			</h2>
-			<img class="position-relative rounded" width="150" height="150" class="avatar" src="{{avatar_url}}" style="top: 60px;" />
-			<div class="d-inline float-end position-relative" style="top: 170px;">
-				{% if profile %}
-					<form method="post">
-						{% if not is_following %}
-							<button class="btn btn-primary" type="submit" name="follow" value="1">Follow</button>
-						{% else %}
-							<button class="btn btn-secondary" type="submit" name="follow" value="0">Unfollow</button>
-						{% endif %}
-					</form>
-				{% endif %}
-			</div>
-		</div>
-		<div class="card-body">
-			{% if profile %}
-				{% if profile.description %}
-					<div id="description" class="mt-5">{{profile.description | escape | linebreaksbr | safe}}</div>
-					<script type="text/javascript">
-						let element = document.getElementById('description')
-						element.innerHTML = marked.parse(element.innerText)
-					</script>
-				{% else %}
-					<div class="alert alert-danger mt-5">
-						The description of this profile has not been able to synchronize yet.
-					</div>
-				{% endif %}
+{% block name %}
+{{name}}
+{% endblock name %}
+
+{% block header_buttons %}
+	{% if profile %}
+		<form method="post">
+			{% if not is_following %}
+				<button class="btn btn-primary" type="submit" name="follow" value="1">Follow</button>
 			{% else %}
-				<div class="alert alert-danger mt-5">
-					This Stonenet address is unreachable.
-					This may be because of any one of the following reasons:
-					<ul>
-						<li>You typed in the wrong address</li>
-						<li>The owner of the address, or any of its followers, are not online at the moment.</li>
-						<li>You can't reach the owner or its followers because of network/firewall issues.</li>
-					</ul>
-					You can't follow this address untill these issues are resolved.
-				</div>
+				<button class="btn btn-secondary" type="submit" name="follow" value="0">Unfollow</button>
 			{% endif %}
-		</div>
-	</div>
-	</p>
+		</form>
+	{% endif %}
+{% endblock header_buttons %}
 
-	<h2>Activity</h2>
-	<p>
-		{{macros::feed(objects=objects, page=page)}}
-	</p>
-{% endblock content %}
+
+{% block description %}
+	{% if profile %}
+		{% if profile.description %}
+			<div id="description" class="mt-5">{{profile.description | escape | linebreaksbr | safe}}</div>
+			<script type="text/javascript">
+				let element = document.getElementById('description')
+				element.innerHTML = marked.parse(element.innerText)
+			</script>
+		{% else %}
+			<div class="alert alert-danger mt-5">
+				The description of this profile has not been able to synchronize yet.
+			</div>
+		{% endif %}
+	{% else %}
+		<div class="alert alert-danger mt-5">
+			This Stonenet address is unreachable.
+			This may be because of any one of the following reasons:
+			<ul>
+				<li>You typed in the wrong address</li>
+				<li>The owner of the address, or any of its followers, are not online at the moment.</li>
+				<li>You can't reach the owner or its followers because of network/firewall issues.</li>
+			</ul>
+			You can't follow this address untill these issues are resolved.
+		</div>
+	{% endif %}
+{% endblock description %}
+
+{% block after_profile %}
+<h2>Activity:</h2>
+<p>
+	{{macros::feed(objects=objects, page=page)}}
+</p>
+{% endblock after_profile %}
