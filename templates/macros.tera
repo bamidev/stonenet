@@ -45,7 +45,7 @@
 						<button class="btn btn-primary float-end" type="submit">Post</button>
 					{% else %}
 						Unable to post without an identity.
-						<a href="/my-identity/new">Create one</a>. 
+						<a href="/identity/new">Create one</a>. 
 					{% endif %}
 				</div>
 			</div>
