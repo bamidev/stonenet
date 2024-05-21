@@ -163,12 +163,19 @@ where
 
 #[cfg(not(target_family = "windows"))]
 async fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Database> {
-	let db = Database::load(
-		PathBuf::from_str(&config.database_path)
-			.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+	// If the path doesn' exist yet, create it
+	let db_path = PathBuf::from_str(&config.database_path)
+		.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	tokio::fs::create_dir_all(
+		db_path
+			.parent()
+			.expect("database path doesn't have a folder"),
 	)
-	.await
-	.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	.await?;
+
+	let db = Database::load(db_path)
+		.await
+		.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 	Ok(db)
 }
 
