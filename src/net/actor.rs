@@ -720,7 +720,8 @@ impl ActorNode {
 			.simple_result(ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE, &response)
 	}
 
-	/// After a new head is received and stored, will try to synchronize any files & blocks for it, as well as any missing objects.
+	/// After a new head is received and stored, will try to synchronize any
+	/// files & blocks for it, as well as any missing objects.
 	async fn process_new_head_on_connection(
 		self: &Arc<Self>, connection: &mut Connection, hash: &IdType, head: Object,
 	) -> db::Result<()> {
@@ -1215,7 +1216,10 @@ impl ActorNode {
 		while i > 0 && (up_to_sequence - i as u64) < ACTOR_LIMIT_RECENT_OBJECTS {
 			i -= 1;
 			if !self.has_object_by_sequence(i as u64) {
-				match self.collect_object(connection, &last_object.previous_hash).await? {
+				match self
+					.collect_object(connection, &last_object.previous_hash)
+					.await?
+				{
 					None => break,
 					Some((object, _)) => last_object = object,
 				}
@@ -1601,7 +1605,9 @@ impl MessageWorkToDo for PublishObjectToDo {
 					false
 				}
 			}
-		} else { false };
+		} else {
+			false
+		};
 
 		// Forget we were downloading this object after it is stored
 		{

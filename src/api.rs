@@ -440,7 +440,14 @@ impl Api {
 	}
 
 	pub async fn load_home_feed(&self, count: u64, offset: u64) -> db::Result<Vec<ObjectInfo>> {
-		let tracked_actors: Vec<ActorAddress> = self.node.tracked_actors.lock().await.keys().map(|a| a.clone()).collect();
+		let tracked_actors: Vec<ActorAddress> = self
+			.node
+			.tracked_actors
+			.lock()
+			.await
+			.keys()
+			.map(|a| a.clone())
+			.collect();
 		self.db
 			.load_home_feed(count, offset, tracked_actors.iter())
 			.await
