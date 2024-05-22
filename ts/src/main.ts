@@ -30,7 +30,6 @@ function htmlToText(html: string): string {
 }
 
 function load_markdown(selector: string, editable: boolean, content?: string) {
-
 	if (editable) {
 		var underlying_element = <HTMLTextAreaElement>document.querySelector(selector + ' + textarea.default-editor')
 		underlying_element.setAttribute("style", "display: none;")

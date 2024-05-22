@@ -1,37 +1,78 @@
-{% extends "base.tera" %}
+{% extends "profile.tera" %}
 {% block title %}New Identity{% endblock %}
 
-{% block content %}
-<form method="post" enctype="multipart/form-data">
-	<div class="card bg-dark-subtle text-dark">
-		<div class="card-header">
-			<h1>New Identity</h1>
-		</div>
-		<div class="card-body">
-			<div class="mb-1 row">
-				<div class="col-3">Label:</div>
-				<div class="col"><input class="form-control" type="text" name="label" /></div>
+{% block before_profile %}
+	{% set avatar_url = "/static/default_wallpaper.jpg" -%}
+	{% set wallpaper_url = "/static/default_wallpaper.jpg" -%}
+	<style>
+		.wallpaper {
+			background-image: url('{{wallpaper_url | safe}}');
+			background-position: center;
+			background-size: cover;
+		}
+	</style>
+
+	<h2>Create Identity</h2>
+
+	<form method="post" enctype="multipart/form-data">
+		<p>
+			<div class="container">
+				<div class="mb-1 row">
+					<div class="col-3">
+						<label for="label">Label:</label>
+					</div>
+					<div class="col">
+						<input id="label" class="form-control form-control-m" name="label" type="text" placeholder="A name to distinguish it from your other identities" />
+					</div>
+				</div>
+				<div class="mb-1 row">
+					<div class="col-3">
+						<label for="avatar_upload">Avatar:</label>
+					</div>
+					<div class="col">
+						<input id="avatar_upload" class="form-control form-control-m" name="avatar" type="file" />
+					</div>
+				</div>
+				<div class="mb-1 row">
+					<div class="col-3">
+						<label for="wallpaper_upload">Wallpaper:</label>
+					</div>
+					<div class="col">
+						<input id="wallpaper_upload" class="form-control form-control-m" name="wallpaper" type="file" />
+					</div>
+				</div>
 			</div>
-			<div class="mb-1 row">
-				<div class="col-3">Name:</div>
-				<div class="col"><input class="form-control" type="text" name="name" /></div>
-			</div>
-			<div class="mb-1 row">
-				<div class="col-3">Avatar:</div>
-				<div class="col"><input class="form-control" type="file" name="avatar" /></div>
-			</div>
-			<div class="mb-1 row">
-				<div class="col-3">Wallpaper:</div>
-				<div class="col"><input class="form-control" type="file" name="wallpaper" /></div>
-			</div>
-			<div class="mb-1 row">
-				<div class="col-3">Description: <span class="text-muted">(Markdown supported)</span></div>
-				<div class="col"><textarea class="form-control" name="description" rows="5"></textarea></div>
-			</div>
-		</div>
-		<div class="card-footer">
-			<button class="btn btn-primary float-end" type="submit">Create</button>
-		</div>
+		</p>
+{% endblock before_profile %}
+
+{% block name %}
+	<input type="text" name="name" class="form-control form-control-m" placeholder="Display name..." />
+{% endblock name %}
+
+{% block description %}
+	<div id="description" class="mt-5">
+		<div id="editor" style="min-width: 50px;"></div>
+		<textarea class="default-editor" name="description"></textarea>
 	</div>
-</form>
-{% endblock content %}
+{% endblock description %}
+
+{% block after_profile %}
+		<button class="btn btn-primary float-end" type="submit">Create</button>
+	</form>
+
+	<script type="text/javascript">
+		let avatar_upload_el = document.getElementById("avatar_upload")
+		avatar_upload_el.onchange = (e) => {
+			let [file] = avatar_upload_el.files
+			let image_el = document.querySelector("img.avatar")
+			image_el.src = URL.createObjectURL(file)
+		}
+
+		let wallpaper_upload_el = document.getElementById("wallpaper_upload")
+		wallpaper_upload_el.onchange = (e) => {
+			let [file] = wallpaper_upload_el.files
+			let image_el = document.querySelector(".wallpaper")
+			image_el.style["background-image"] = "url('" + URL.createObjectURL(file) + "')"
+		}
+	</script>
+{% endblock after_profile %}

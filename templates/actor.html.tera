@@ -16,7 +16,7 @@
 		{% endif %}
 	{% endif %}
 	<style>
-		.background {
+		.wallpaper {
 			background-image: url('{{wallpaper_url | safe}}');
 			background-position: center;
 			background-size: cover;

@@ -7,18 +7,18 @@
 
 	<p>
 		<div class="card bg-dark-subtle text-dark">
-			<div class="card-header background">
+			<div class="card-header wallpaper">
 				<h2 class="card-title text-center">
-					<span class="bg-light bg-opacity-50 rounded-pill p-2">{% block name %}{% endblock name %}</span>
+					<div class="bg-light bg-opacity-50 d-inline-block rounded-pill p-2">{% block name %}{% endblock name %}</div>
 				</h2>
-				<img class="position-relative rounded" width="150" height="150" class="avatar" src="{{avatar_url}}" style="top: 60px;" />
+				<img class="avatar position-relative rounded" width="150" height="150" src="{{avatar_url}}" style="top: 60px;" />
 				<div class="d-inline float-end position-relative" style="top: 170px;">
 					{% block header_buttons %}
 					{% endblock header_buttons %}
 				</div>
 			</div>
 			<div class="card-body">
-				<div id="description" class="mt-5">{% block description %}{% endblock description %}</div>
+				<div class="mt-5">{% block description %}{% endblock description %}</div>
 			</div>
 		</div>
 	</p>

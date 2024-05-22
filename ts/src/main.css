@@ -15,3 +15,7 @@ img.attachment {
 	height: auto;
 	width: auto;
 }
+
+textarea {
+	width: 100%;
+}
