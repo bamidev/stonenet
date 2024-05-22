@@ -1,109 +1,108 @@
 # About Stonenet
 
-Stonenet is currently nothing more than a daemon running on your system. It
-connects you to the peer-to-peer network, and provides a user interface via a
-local web server at the same time.
-To open Stonenet, you need to browse to `http://localhost:37338`. There should
-also be a desktop entry that you can use to open that link, which could be more
-convenient.
+## The software
 
-## Comparison to other networks
+Stonenet really just consists of one piece of software. It runs a node on the
+peer-to-peer network, and it can be considered to be the client as well.
+You can run it on your desktop computer, or on a server. In both cases, you are
+running a node on the Stonenet network, but there is a difference to what the
+node can or will help with.
 
-### The freedom to choose the data you support
+The user interface is accessible in your browser, usually at
+`http://localhost:37338`. But on most systems you're probably using the desktop
+app which obfuscates that fact.
 
-On some peer-to-peer networks, like Gnunet & Freenet, there are a bunch of nodes
-run by a bunch volunteers that help with the storage of data on the network.
-The nodes store and share this data whenever it is needed by someone. However,
-the nodes themselves generally can't discern what they are actually storing, as
-it is encrypted with a key that is shared externally. This provides plausible
-deniability to the node operators, but that may not be enough to protect the
-operators in all jurisdictions.
+## A data model based on consent
 
-In other networks, like BitTorrent for example, the relevant data is only shared
-between peers that actually intent on acquiring and sharing that data. This
-makes running a node (or being a peer) much less dangerous for most people. As
-long as the content you acquire and share fits within the limitations brought
-upon by your local jurisdiction, the data would be able to flow freely without
-fear of consequence.
+A number of popular peer-to-peer networks (e.g. Freenet) store data in the
+network indiscriminately, which is useful for providing anonymity, but also puts
+your node at risk of storing disagreeable content, even though you might not be
+able to see it because of the use of encryption. Plausible deniability
+might still protect you in such cases, but that doesn't mean everyone would want
+to do that if they would have the option.
 
-That's why Stonenet uses the latter model.
+Other peer-to-peer networks, like with the Torrent DHT network, have peers only
+share data inbetween the peers that have explicitly chosen to participate in
+downloading and uploading certain torrents.
+Stonenet is designed to work more like that, so that a user would always be in
+control of the data they support.
+
+The upside of this is that a peer of Stonenet does not necessarily have to worry
+about contributing to disagreeable content. The downside of this is that your
+content is only available on the network when you're online, when you have a
+decent amount of followers, or when you do choose to host your content on a
+server.
+Really old data may tend to disappear as well, in which case you really would
+need someone to put a node on a server, or just a big or loyal following.
+
+However, there will soon also be 'storage nodes' on the network, set up by those
+that are willing to do so.
+Then, anyone whose following is not yet big enough, or that wishes to remain
+anonymous, can publish their content at those nodes.
 
 ### Accessibility
 
 Stonenet should be available to anyone. Currently, the network is available to
 anyone that has access to the internet. Or more specifically, anyone who can use
-UDP or TCP over IPv4 or IPv6. Except of course for cases with a firewall that
-blocks Stonenet traffic by deep packet inspection.
+UDP or TCP over IPv4 or IPv6. Except of course when dealing with firewalls that
+do 'deep packet inspection'.
+Nevertheless, all communication on the network is peer-to-peer encrypted, so
+that it at least can't be tampered with based on the content that is being
+communicated.
 
-However, there is currently a limitation where peers behind a symmetric NAT
-device will not be able to contact peers who are also behind a symmetric NAT
-device themselves.
-This means that in the case where there are only two peers online that follow a
-particular channel, and they are both behind a symmetric NAT device, they won't
-be able to share data.
-This is a problem which is to be solved soon, but Stonenet is still in an early
-stage of development, and this should only affect a negligible amount of users
-anyway.
+**Note:** *There still exists one edge case in which two peers can't communicate
+with eachother. This is when the two peers don't have any overlapping transport
+protocol options. This will be implemented soon though.*
 
 ### Anonymity
 
 Stonenet is built to protect free speech, but that means that anonymity is
 important as well, as in some cases users can be at risk for sharing certain
-information (e.g. whistleblowers).
-Stonenet does not require a user's personal identity, as all channel and node
-addresses are random, and profiles don't require any sort of personal
-verification. All node-to-node communication happens over a secure connection
-that prevents eavesdropping on the packet level.
+content (e.g. whistleblowers).
+Stonenet does not require a user's personal identity, as all addresses are
+random, and profiles don't require any personal information.
+All peer-to-peer communication happens over a secure connection that prevents
+eavesdropping on the packet level.
 However, all data transmitted over the internet uses an IP address, and an IP
-address can be used to identify a node.
+address can still unfortunately be use to try to identify who uses a node.
 
-It should also be noted, that someone could search the whole network, and figure
-out which node is following which channel. This could be linked to your IP
-address if it is not anonymized, or it could be used to fingerprint a node
-otherwise. It is also possible to 'lurk' a channel instead of following it,
-which means that the network does not remember you as a participant, and you do
-not participate in the sharing its data, you only download it when needed.
-This way, someone could not find out about your channels of interest if they
-searched the network. However, if the channel's network is filled with
-surveillance nodes, those nodes will be aware of the data you're lurking for.
-So even if fingerprinting by searching the network has become impossible,
-fingerprinting via a sybil attack still is.
-So if you want to stay anonymous, it is pretty important to hide your IP
-address so that any fingerprinting can not be linked to the actual identity of
-the peer.
-
+If you want to remain anonymous on Stonenet, besides not posting any personal
+information yourself, the real trick here is to hide your IP address.
 Now, anonymizing an IP address is possible, but always comes with a tradeoff in
-network efficiency. That's why it is not baked in & enabled by default.
-The most common solution is to use a VPN to hide your IP address. This works,
-but a VPN is usually a service that requires money and trust. Your VPN knows
-your IP address that you're trying to hide, so it is not a perfect solution.
-Moreover, the firewall of a VPN is generally more restrictive than the firewall
-of a home router, reducing the degree of support your node brings to Stonenet.
-
-An onion routing network could work in theory, although there isn't a whole lot
-of good choice out there besides Tor, and Tor is not intended, nor designed
-to be used in peer-to-peer networks such as Stonenet.
-
-Therefore, there will be seperate anonymization network in Stonenet.
-Participation in this network will be completely optional, and disabled by
-default, because it will require the nodes to relay possibly disagreeable data.
+network efficiency if it was built int.
+That's why it is not baked in & enabled by default in Stonenet.
+The most common solution is to use a VPN
+This works, but it is not perfect.
+An onion routing network would be better, and there is Tor, but Tor is famously
+not intended to be used in peer-to-peer networks.
+However, the reason for this really just depends on the context, and the plan is
+to integrate Tor into the Stonenet client in such a way that anyone that wishes
+to publish content with an anonymous identity, or follow such a person, can do
+so through Tor without bothering the Tor network with any overhead.
 
 ## How it works
 
 Stonenet is basically comprised of one 'overlay network', and many 'actor
 networks'. An actor network is the network of the peers that follow a specific
-channel.
+actor.
 
-A channel published a bunch of objects as part of the 'blogchain'.
+An actor published a bunch of objects as part of the 'blogchain'.
 Certain objects, like post objects, carry files with them, and each file is a
 collection of blocks.
 Each object is signed by the actor.
 
 Each node of an actor network decides how many objects, files & blocks they want
 to store, which gives the user the freedom to decide how much they want to
-support a channel.
+support an actor.
 
-The public key and the hash of the first object for a channel can be obtained by
+The public key and the hash of the first object for an actor can be obtained by
 searching the overlay network. This will also give them a list of peers to
 connect to in order to interact with the actor network.
-Once on the actor network, one can search for all the objects, files & blocks.
+Once on the actor network, one can search for all the objects, files & blocks
+that make up the actor's feed.
+
+An actor's feed is similar to a 'blockchain'. However, it is not a blockchain as
+it is known from cryptocurrencies, it is more just a chain of objects which make
+up the posts and profile changes of the actor.
+To distinguish it from what is used in crypto, the term 'blogchain' is actually
+used.
