@@ -38,7 +38,7 @@
 						</li>
 						{% if server.is_exposed == false %}
 							<li class="nav-item">
-								<a class="nav-link" href="/my-identity">Identities</a>
+								<a class="nav-link" href="/identity">Identities</a>
 							</li>
 						{% endif %}
 					</ul>
