@@ -1620,7 +1620,7 @@ impl OverlayNode {
 
 	pub(super) async fn process_actor_request(
 		self: &Arc<Self>, actor_node: &Arc<ActorNode>, message_type: u8, buffer: &[u8],
-		addr: &SocketAddr, node_info: &NodeContactInfo,
+		addr: &SocketAddr, node_info: &NodeContactInfo, is_lurker: bool,
 	) -> MessageProcessorResult {
 		let (result, processed) = actor_node
 			.base
@@ -1642,12 +1642,10 @@ impl OverlayNode {
 				.process_request(message_type, buffer, addr, node_info)
 				.await
 		} else {
-			// FIXME: Remember the actor node somewhere else.
-			// The following marks the node helpful or problematic based on whether a
-			// response is decided to be made. However, sometimes a respond isn't made
-			// because we had an internal error, like unexpected database errors.
 			if let Some(mut x) = result {
-				actor_node.base.mark_node_helpful(node_info).await;
+				if !is_lurker {
+					actor_node.base.mark_node_helpful(node_info).await;
+				}
 				if x.0.len() > 0 {
 					x.0[0] |= 0x80;
 				}
@@ -2506,6 +2504,7 @@ pub(super) async fn process_request_message(
 	if message_type_id >= 0x80 {
 		message_type_id ^= 0x80;
 		let actor_id: IdType = binserde::deserialize(&buffer[1..33]).unwrap();
+		let is_lurker = buffer[33] & 0x80 > 0;
 		let actor_nodes = overlay_node.base.interface.actor_nodes.lock().await;
 		let actor_node = match actor_nodes.get(&actor_id) {
 			None => {
@@ -2521,9 +2520,10 @@ pub(super) async fn process_request_message(
 			.process_actor_request(
 				&actor_node,
 				message_type_id,
-				&buffer[33..],
+				&buffer[34..],
 				&contact.target,
 				&node_info,
+				is_lurker,
 			)
 			.await
 	} else {

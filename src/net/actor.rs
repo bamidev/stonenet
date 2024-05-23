@@ -156,6 +156,7 @@ impl NodeInterface for ActorInterface {
 		let mut new_buffer = Vec::with_capacity(1 + 32 + buffer.len());
 		new_buffer.push(message_type | 0x80);
 		new_buffer.extend(self.actor_address.as_id().as_bytes());
+		new_buffer.push(self.is_lurker as u8);
 		new_buffer.extend(buffer);
 		new_buffer
 	}
