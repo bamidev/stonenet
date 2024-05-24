@@ -1,12 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
-use tokio::sync::Mutex;
-
-use super::{
-	sstp::{self, Connection},
-	NodeContactInfo,
+use super::{sstp::Connection, NodeContactInfo};
+use crate::{
+	common::*,
+	trace::{Mutex, MutexGuard},
 };
-use crate::common::*;
 
 
 /// The ConnectionManager keeps alive a number of connections.
@@ -19,21 +17,38 @@ pub struct ConnectionManager {
 	limit: usize,
 }
 
-pub type ConnectionManagerEntry = (NodeContactInfo, Arc<Mutex<Box<sstp::Connection>>>);
+/// Holds a lock on the internal map of the `ConnectionManager`, and allows you
+/// to insert a connection into it.
+pub struct ConnectionSpace<'a> {
+	node_info: NodeContactInfo,
+	guard: MutexGuard<'a, HashMap<IdType, ConnectionManagerEntry>>,
+	to_remove: Option<IdType>,
+}
+
+pub type ConnectionManagerEntry = (NodeContactInfo, Arc<Mutex<Box<Connection>>>);
 
 
 impl ConnectionManager {
-	/// Tries to add a connection to the ConnectionManager.
-	/// Returns true if it succeeded in doing that.
-	pub async fn add(
-		self: &Arc<Self>, node_info: &NodeContactInfo, connection: &Arc<Mutex<Box<Connection>>>,
-	) -> bool {
-		let mut map = self.map.lock().await;
+	pub async fn connections(&self) -> Vec<Arc<Mutex<Box<Connection>>>> {
+		self.map
+			.lock()
+			.await
+			.values()
+			.map(|(_, c)| c.clone())
+			.collect()
+	}
+
+	/// Checks whether there is space for a new connection in the manager,
+	pub async fn find_space<'a>(
+		&'a self, node_info: &NodeContactInfo,
+	) -> Option<ConnectionSpace<'a>> {
+		let map = self.map.lock().await;
 		if map.len() < self.limit {
-			map.insert(
-				node_info.node_id.clone(),
-				(node_info.clone(), connection.clone()),
-			);
+			Some(ConnectionSpace {
+				node_info: node_info.clone(),
+				guard: map,
+				to_remove: None,
+			})
 		} else {
 			// Remove a connection if it is further away.
 			let mut highest_distance = node_info.node_id.distance(&self.center);
@@ -46,30 +61,15 @@ impl ConnectionManager {
 				}
 			}
 			if let Some(id) = remove_node_id {
-				map.remove(&id);
-				map.insert(
-					node_info.node_id.clone(),
-					(node_info.clone(), connection.clone()),
-				);
+				Some(ConnectionSpace {
+					node_info: node_info.clone(),
+					guard: map,
+					to_remove: Some(id),
+				})
 			} else {
-				return false;
+				None
 			}
 		}
-
-		// Turn the connection into a keep-alive connection, as soon as the lock on it
-		// releases.
-		let _this = self.clone();
-		let _node_id2 = node_info.node_id.clone();
-		let _connection2 = connection.clone();
-		/*spawn(async move {
-			Connection::keep_alive(&connection2, move |_| {
-				spawn(async move {
-					this.map.lock().await.remove(&node_id2);
-				});
-			})
-			.await;
-		});*/
-		true
 	}
 
 	pub async fn find(&self, target: &IdType) -> Option<ConnectionManagerEntry> {
@@ -99,5 +99,28 @@ impl ConnectionManager {
 			map: Mutex::new(HashMap::new()),
 			limit,
 		}
+	}
+
+	pub async fn remove(&self, node_id: &IdType) -> bool {
+		self.map.lock().await.remove(node_id).is_some()
+	}
+}
+
+impl<'a> ConnectionSpace<'a> {
+	/// Puts the given connection in place, and returns the node ID of the
+	/// connection that has been removed.
+	pub fn put(mut self, connection: Arc<Mutex<Box<Connection>>>) -> Option<IdType> {
+		if let Some(to_remove) = &self.to_remove {
+			let _removed = self.guard.remove(to_remove);
+			debug_assert!(_removed.is_some(), "nothing was removed");
+		}
+
+		let Self {
+			mut guard,
+			node_info,
+			to_remove,
+		} = self;
+		guard.insert(node_info.node_id.clone(), (node_info, connection));
+		to_remove
 	}
 }

@@ -15,6 +15,7 @@ use rand::{rngs::OsRng, Rng};
 use sea_orm::prelude::*;
 use tokio::{select, spawn, time::sleep};
 
+use self::connection_manager::ConnectionManager;
 use super::{
 	actor::*,
 	actor_store::*,
@@ -35,6 +36,9 @@ use crate::{
 
 
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(120);
+
+const OVERLAY_ATTACHED_NODES_LIMIT_DEFAULT: usize = 1000;
+const OVERLAY_ATTACHED_NODES_MINIMUM: usize = 100;
 
 // Messages for the overlay network:
 pub const OVERLAY_MESSAGE_TYPE_FIND_ACTOR_REQUEST: u8 = 64;
@@ -97,6 +101,7 @@ pub(super) struct OverlayInterface {
 	db: Database,
 	pub(super) actor_nodes: Mutex<HashMap<IdType, Arc<ActorNode>>>,
 	last_message_time: StdMutex<SystemTime>,
+	connection_manager: Arc<ConnectionManager>,
 }
 
 struct ReverseConnectionToDo {
@@ -319,40 +324,48 @@ impl MessageWorkToDo for KeepAliveToDo {
 	async fn run(&mut self, mut connection: Box<Connection>) -> Result<Option<Box<Connection>>> {
 		let mut response = KeepAliveResponse { ok: false };
 
+		// If the node's ID is not our own, and if there is space for it in the
+		// connection manager, keep it alive.
+		let node_info = connection.their_node_info().clone();
 		if let Some(bucket_index) = self.node.base.differs_at_bit(&self.node_id) {
 			let mut bucket = self.node.base.buckets[bucket_index as usize].lock().await;
 
-			connection.set_keep_alive_timeout(KEEP_ALIVE_TIMEOUT).await;
-			let node_info = connection.their_node_info().clone();
-			response.ok =
-				bucket.space_for_connection(&self.node.node_id(), connection.their_node_id());
-			if response.ok {
+			if let Some(space) = self
+				.node
+				.base
+				.interface
+				.connection_manager
+				.find_space(&node_info)
+				.await
+			{
+				connection.set_keep_alive_timeout(KEEP_ALIVE_TIMEOUT).await;
+
+				response.ok = true;
+				let raw_response = self
+					.node
+					.base
+					.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
+				connection.send_async(raw_response)?;
+
+				if let Some(removed_id) = space.put(Arc::new(Mutex::new(connection))) {
+					bucket.remove_connection(&removed_id);
+				}
+				bucket.add_connection(&node_info, &self.node_id);
 				info!(
 					"[{}] Keeping connection with {} alive.",
 					self.node.node_id(),
 					node_info
 				);
-			} else {
-				warn!("Rejected keep-alive connection with {}.", node_info);
+				return Ok(None);
 			}
-			let raw_response = self
-				.node
-				.base
-				.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
-			let result = connection.send_async(raw_response);
-			if response.ok {
-				let success = bucket.add_connection(self.node.node_id(), connection);
-				debug_assert!(success, "unable to add connection to bucket");
-			}
-			result?;
-			return Ok(None);
 		}
 
-		let response = self
+		info!("Rejected keep-alive connection with {}.", node_info);
+		let raw_response = self
 			.node
 			.base
 			.simple_response(OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_RESPONSE, &response);
-		connection.send(response).await?;
+		connection.send(raw_response).await?;
 		Ok(Some(connection))
 	}
 }
@@ -360,10 +373,24 @@ impl MessageWorkToDo for KeepAliveToDo {
 impl OverlayNode {
 	pub async fn close(self: Arc<Self>) { self.base.close().await; }
 
+	pub fn connection_manager(&self) -> &ConnectionManager {
+		&self.base.interface.connection_manager
+	}
+
 	pub async fn start(
 		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: NodePrivateKey,
 		db: Database,
 	) -> StdResult<Arc<Self>, SocketBindError> {
+		let attached_node_limit = if let Some(limit) = config.attached_nodes_limit {
+			if limit >= OVERLAY_ATTACHED_NODES_MINIMUM {
+				limit
+			} else {
+				OVERLAY_ATTACHED_NODES_MINIMUM
+			}
+		} else {
+			OVERLAY_ATTACHED_NODES_LIMIT_DEFAULT
+		};
+
 		let bootstrap_nodes = resolve_bootstrap_addresses(&config.bootstrap_nodes, true, true);
 
 		let socket = sstp::Server::bind(
@@ -377,6 +404,7 @@ impl OverlayNode {
 		let mut rng = OsRng {};
 		socket.set_next_session_id(rng.gen()).await;
 
+		let node_id2 = node_id.clone();
 		let this = Arc::new(Self {
 			base: Arc::new(Node::new(
 				stop_flag.clone(),
@@ -387,6 +415,10 @@ impl OverlayNode {
 					db,
 					last_message_time: StdMutex::new(SystemTime::now()),
 					actor_nodes: Mutex::new(HashMap::new()),
+					connection_manager: Arc::new(ConnectionManager::new(
+						node_id2,
+						attached_node_limit,
+					)),
 				},
 				config.bucket_size.unwrap_or(4),
 				config.leak_first_request.unwrap_or(false),
@@ -1180,27 +1212,33 @@ impl OverlayNode {
 				next_ping = SystemTime::now() + Duration::from_secs(60);
 
 				// Sent a ping request to all connections at once
-				for i in 0..256 {
+				let connections = this.base.interface.connection_manager.connections().await;
+				for connection_mutex in connections {
 					let this2 = this.clone();
 					spawn(async move {
-						let connections = this2.base.buckets[i].lock().await.connections.clone();
-
-						for (_, connection_mutex) in connections.iter() {
-							let mut connection = connection_mutex.lock().await;
-							if this2
-								.base
-								.exchange_ping_on_connection(&mut connection)
-								.await
-								.is_none()
+						let mut connection = connection_mutex.lock().await;
+						if this2
+							.base
+							.exchange_ping_on_connection(&mut connection)
+							.await
+							.is_none()
+						{
+							warn!(
+								"Unable to ping on keep alive node connection of node {}, \
+								 rejecting it...",
+								connection.their_node_id()
+							);
+							if let Some(bucket) =
+								this2.base.bucket_for(connection.their_node_id()).await
 							{
-								warn!(
-									"Unable to ping on keep alive node connection of node {}, \
-									 rejecting it...",
-									connection.their_node_id()
-								);
-								let mut bucket = this2.base.buckets[i].lock().await;
-								bucket.reject(connection.their_node_id());
+								bucket.lock().await.reject(connection.their_node_id());
 							}
+							this2
+								.base
+								.interface
+								.connection_manager
+								.remove(connection.their_node_id())
+								.await;
 						}
 					});
 				}
@@ -1778,12 +1816,12 @@ impl OverlayNode {
 		let mut response = PassRelayRequestResponse { ok: true };
 		let this = self.clone();
 		match self
-			.base
-			.find_connection_in_buckets(&request2.target_node_id)
+			.connection_manager()
+			.find(&request2.target_node_id)
 			.await
 		{
 			None => response.ok = false,
-			Some(c) => {
+			Some((_, c)) => {
 				spawn(async move {
 					let mut connection = c.lock().await;
 
@@ -1899,8 +1937,8 @@ impl OverlayNode {
 			});
 		}
 		// Otherwise, we only allow if we have a connection with the node
-		else if let Some(connection_mutex) =
-			self.base.find_connection_in_buckets(&request.target).await
+		else if let Some((_, connection_mutex)) =
+			self.connection_manager().find(&request.target).await
 		{
 			let this = self.clone();
 			let node_id2 = node_info.node_id.clone();

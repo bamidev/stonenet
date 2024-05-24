@@ -1,13 +1,11 @@
-use std::{cmp::Ordering, sync::Arc};
+use std::cmp::Ordering;
 
-use tokio::sync::Mutex;
-
-use super::{distance, sstp::Connection, NodeContactInfo};
+use super::{distance, NodeContactInfo};
 use crate::{common::*, limited_store::LimitedVec};
 
 
 pub struct Bucket {
-	pub(super) connections: LimitedVec<(NodeContactInfo, Arc<Mutex<Box<Connection>>>)>,
+	pub(super) connections: LimitedVec<NodeContactInfo>,
 	fingers: LimitedVec<BucketEntry>,
 	replacement_cache: LimitedVec<BucketReplacementEntry>,
 }
@@ -28,30 +26,29 @@ pub struct BucketReplacementEntry {
 
 
 impl Bucket {
-	pub fn add_connection(&mut self, our_node_id: &IdType, connection: Box<Connection>) -> bool {
-		let new_node_info = connection.their_node_info();
-		let new_distance = distance(our_node_id, &new_node_info.node_id);
+	pub fn add_connection(
+		&mut self, connection_node_info: &NodeContactInfo, our_node_id: &IdType,
+	) -> bool {
+		let new_distance = distance(our_node_id, &connection_node_info.node_id);
 
 		if let Some(pos) = self
 			.connections
 			.iter()
-			.position(|(n, _)| new_distance < distance(our_node_id, &n.node_id))
+			.position(|n| new_distance < distance(our_node_id, &n.node_id))
 		{
-			let node_info = new_node_info.clone();
-			let mutex = Arc::new(Mutex::new(connection));
-			self.connections.insert(pos, (node_info, mutex));
+			let node_info = connection_node_info.clone();
+			self.connections.insert(pos, node_info);
 			true
 		} else if self.connections.len() < self.connections.limit() {
-			let node_info = new_node_info.clone();
-			let mutex = Arc::new(Mutex::new(connection));
-			self.connections.push_back((node_info, mutex));
+			let node_info = connection_node_info.clone();
+			self.connections.push_back(node_info);
 			true
 		} else {
 			false
 		}
 	}
 
-	pub fn space_for_connection(
+	/*pub fn space_for_connection(
 		&mut self, our_node_id: &IdType, connection_node_id: &IdType,
 	) -> bool {
 		if self.connections.len() < self.connections.limit() {
@@ -69,13 +66,13 @@ impl Bucket {
 		} else {
 			false
 		}
-	}
+	}*/
 
 	/// The fingers that can given to other nodes
 	pub fn public_fingers(&self) -> impl Iterator<Item = &NodeContactInfo> {
 		self.connections
 			.iter()
-			.map(|e| &e.0)
+			.map(|n| n)
 			.chain(self.fingers.iter().map(|e| &e.node_info))
 	}
 
@@ -85,8 +82,8 @@ impl Bucket {
 	}
 
 	pub fn find(&self, id: &IdType) -> Option<&NodeContactInfo> {
-		if let Some(index) = self.connections.iter().position(|c| &c.0.node_id == id) {
-			return Some(&self.connections[index].0);
+		if let Some(index) = self.connections.iter().position(|n| &n.node_id == id) {
+			return Some(&self.connections[index]);
 		}
 		if let Some(index) = self.fingers.iter().position(|f| &f.node_info.node_id == id) {
 			return Some(&self.fingers[index].node_info);
@@ -188,7 +185,7 @@ impl Bucket {
 	}
 
 	pub fn reject(&mut self, id: &IdType) {
-		match self.connections.iter().position(|c| &c.0.node_id == id) {
+		match self.connections.iter().position(|n| &n.node_id == id) {
 			None => {}
 			Some(index) => {
 				self.connections.remove(index);
@@ -234,7 +231,6 @@ impl Bucket {
 		let new_entry = BucketEntry::new(node, trusted, is_relay);
 
 		// Try to add it above an exististing entry if it has higher priority
-
 		if let Some(pos) = self.fingers.iter().rev().position(|e| &new_entry < e) {
 			self.fingers.insert(pos, new_entry);
 			return true;
@@ -247,6 +243,15 @@ impl Bucket {
 		}
 
 		false
+	}
+
+	pub fn remove_connection(&mut self, node_id: &IdType) -> bool {
+		if let Some(index) = self.connections.iter().position(|n| &n.node_id == node_id) {
+			self.connections.remove(index);
+			true
+		} else {
+			false
+		}
 	}
 
 	/// Returns a finger that can be tried out to check if

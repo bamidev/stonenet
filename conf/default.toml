@@ -62,21 +62,14 @@ bootstrap_nodes = [
 ]
 
 # Enabling this feature makes it so that the first request message on a
-# connection is sometimes sent unencrypted, if the message is small enough to be
-# included in the very first packet. This speeds up node communication, at the
-# expense of privacy. The response message, and any further message, are never
-# sent on the connection unencrypted.
-leak_first_request = true
+# connection is sometimes send unencrypted, if the message is small enough to be
+# included in the very first packet. This speeds up searching the network, at
+# the expense of privacy. The response message, and any further messages, are
+# not under any circumstance sent over the connection unencrypted, ever.
+leak_first_request = false
 
 # The interval (in seconds) in which other nodes are pinged.
 node_ping_interval = 60
-
-# The number of nodes to remember in each 'bucket'. This is a technical feature
-# that generally does not need to be changed. However, increasing this number
-# makes it less likely to be disconnected from the network. Decreasing this
-# number saves a tiny amount of memory.
-# Needs to be 1 or more.
-bucket_size = 4
 
 # Become a super node. Being a super node means you'll relay ANY data for ANY
 # node without restriction. This helps the network by allowing nodes that can't
@@ -84,6 +77,20 @@ bucket_size = 4
 # However, as a super node you could run the risk of being complicit in sharing
 # illegal data. So only set this to true at your own risk!
 relay_node = false
+
+# The number of nodes that can attach themselves to this node.
+# This helps nodes behind restrictive firewalls being able to be contacted by 
+# anyone else. Only relevant if one of the transport protocols has openness
+# "bidirectional".
+# Has to be a number of 100 or more, and defaults to 1000.
+attached_node_limit = 1000
+
+# The number of nodes to remember in each 'bucket'. This is a technical feature
+# that generally does not need to be changed. However, increasing this number
+# makes it less likely to be disconnected from the network. Decreasing this
+# number saves a tiny amount of memory.
+# Needs to be 1 or more.
+bucket_size = 4
 
 # Set up this node to track certain actors. This is similar as 'following' said
 # actor from this node.

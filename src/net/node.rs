@@ -199,6 +199,14 @@ where
 		}
 	}
 
+	pub(super) async fn bucket_for(&self, node_id: &IdType) -> Option<&Mutex<Bucket>> {
+		if let Some(bucket_index) = self.differs_at_bit(node_id) {
+			Some(&self.buckets[bucket_index as usize])
+		} else {
+			None
+		}
+	}
+
 	pub async fn close(&self) {
 		self.stop_flag.store(true, Ordering::Relaxed);
 		self.interface.close().await;
@@ -532,10 +540,7 @@ where
 
 	pub async fn find_finger_or_connection(
 		&self, id: &IdType,
-	) -> Option<(
-		NodeContactInfo,
-		Option<Arc<EternalMutex<Box<sstp::Connection>>>>,
-	)> {
+	) -> Option<(NodeContactInfo, Option<Arc<Mutex<Box<sstp::Connection>>>>)> {
 		let bucket_pos = match self.differs_at_bit(id) {
 			// If ID is the same as ours, don't give any other contacts
 			None => return None,
@@ -543,11 +548,13 @@ where
 		};
 		let bucket = self.buckets[bucket_pos].lock().await;
 		// First check if we have an active connection to it
-		if let Some((node_info, connection)) =
-			bucket.connections.iter().find(|c| &c.0.node_id == id)
-		{
+		if let Some(node_info) = bucket.connections.iter().find(|c| &c.node_id == id) {
 			if &node_info.node_id == id {
-				return Some((node_info.clone(), Some(connection.clone())));
+				if let Some((_, connection)) =
+					self.overlay_node().connection_manager().find(id).await
+				{
+					return Some((node_info.clone(), Some(connection.clone())));
+				}
 			}
 		}
 		// Then see if we have it in our cache.
@@ -573,7 +580,7 @@ where
 				let bucket = self.buckets[i].lock().await;
 				// Only add connections that are part of the specific bucket
 				if i == bucket_pos {
-					connections = bucket.connections.iter().map(|(n, _)| n.clone()).collect();
+					connections = bucket.connections.iter().map(|n| n.clone()).collect();
 				}
 				bucket
 					.public_fingers_no_connection()
@@ -640,21 +647,6 @@ where
 		}
 		self.find_node_from_fingers(id, &fingers, result_limit, hop_limit)
 			.await
-	}
-
-	pub async fn find_connection_in_buckets(
-		&self, id: &IdType,
-	) -> Option<Arc<EternalMutex<Box<Connection>>>> {
-		for i in (0..256).rev() {
-			let bucket_mutex = &self.buckets[i];
-			let bucket = bucket_mutex.lock().await;
-			if let Some((_, connection_mutex)) =
-				&bucket.connections.iter().find(|(n, _)| &n.node_id == id)
-			{
-				return Some(connection_mutex.clone());
-			}
-		}
-		None
 	}
 
 	pub async fn find_node_from_fingers(
@@ -920,8 +912,11 @@ where
 			// using it will block any hole punch requests that might come in during usage.
 			// Open a new connection to the node, because the existing connection has
 			// already 'opened the hole'.
-			if let Some(existing_connection) =
-				self.find_connection_in_buckets(&node_info.node_id).await
+			if let Some((_, existing_connection)) = self
+				.overlay_node()
+				.connection_manager()
+				.find(&node_info.node_id)
+				.await
 			{
 				// FIXME: contact option should be obtainable without having to lock the
 				// existing connection.

@@ -19,7 +19,6 @@ use tokio::{spawn, time::sleep};
 
 use super::{
 	binserde,
-	connection_manager::ConnectionManager,
 	message::{
 		FindBlockResult, FindFileResult, FindNextObjectResult, FindObjectResult, GetProfileRequest,
 		GetProfileResponse, HeadResponse, PublishObjectMessage, PublishObjectRequest,
@@ -78,7 +77,6 @@ pub struct ActorInterface {
 	actor_info: ActorInfo,
 	head_sequence: StdMutex<Option<u64>>,
 	is_lurker: bool,
-	pub(super) connection_manager: Arc<ConnectionManager>,
 }
 
 struct PublishObjectToDo {
@@ -675,7 +673,6 @@ impl ActorNode {
 			),
 			actor_address,
 			db,
-			connection_manager: Arc::new(ConnectionManager::new(node_id.clone(), 1)),
 			is_lurker,
 		};
 		Self {

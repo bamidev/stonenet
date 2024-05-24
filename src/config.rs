@@ -28,6 +28,7 @@ pub struct Config {
 	pub ipv6_udp_openness: Option<String>,
 	pub ipv6_tcp_openness: Option<String>,
 
+	pub attached_nodes_limit: Option<usize>,
 	pub bootstrap_nodes: Vec<String>,
 	pub load_web_interface: Option<bool>,
 	pub web_interface_port: Option<u16>,
@@ -93,6 +94,7 @@ impl Default for Config {
 			activity_pub_public_key: None,
 			activity_pub_send_queue_capacity: None,
 			activity_pub_inbox_server: None,
+			attached_nodes_limit: None,
 			bootstrap_nodes: vec![],
 			bucket_size: Some(4),
 			database_path: String::default(),
