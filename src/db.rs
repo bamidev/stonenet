@@ -26,6 +26,7 @@ use unsafe_send_sync::UnsafeSendSync;
 
 use crate::{
 	common::*,
+	compression::{compress, decompress, mime_type_use_compression},
 	core::*,
 	entity::*,
 	identity::*,
@@ -58,9 +59,12 @@ pub struct Transaction(pub(crate) sea_orm::DatabaseTransaction);
 #[derive(Debug, Error)]
 pub enum Error {
 	/// Sqlite error
-	SqliteError(rusqlite::Error),
+	DecompressDecodeError(i32),
 	OrmError(sea_orm::DbErr),
+	SqliteError(rusqlite::Error),
+
 	ActorAddress(FromBytesAddressError),
+	InvalidCompressionType(u8),
 	InvalidObjectType(u8),
 	/// An invalid hash has been found in the database
 	InvalidHash(IdFromBase58Error),
@@ -70,7 +74,7 @@ pub enum Error {
 	/// The data that is stored for a block is corrupt
 	BlockDataCorrupt(i64),
 	PostMissingFiles(i64),
-	FileMissingBlock(i64, u64),
+	FileMissingBlock(i64, i64),
 
 	MissingIdentity(ActorAddress),
 }
@@ -152,6 +156,137 @@ pub trait PersistenceHandle {
 
 	fn backend(&self) -> DatabaseBackend { self.inner().get_database_backend() }
 
+
+	/// Creates a file by doing the following:
+	/// * Compress the data if the file type isn't known to use compression
+	///   already
+	/// * Devide the (possibly compressed) data into blocks
+	/// * Encrypt & store all blocks
+	/// * Store file
+	/// Returns the file id, the hash & the list of block hashes
+	async fn create_file(
+		&self, tx: &Transaction, file_data: &FileData,
+	) -> Result<(i64, IdType, Vec<IdType>)> {
+		self.create_file2(tx, &file_data.mime_type, &file_data.data)
+			.await
+	}
+
+	/// Same as `create_file`.
+	async fn create_file2(
+		&self, tx: &Transaction, mime_type: &str, data: &[u8],
+	) -> Result<(i64, IdType, Vec<IdType>)> {
+		debug_assert!(data.len() <= u64::MAX as usize, "data too large");
+		debug_assert!(data.len() > 0, "data can not be empty");
+		let compressed_data;
+		let mut compression_type = if mime_type_use_compression(mime_type) {
+			CompressionType::Brotli
+		} else {
+			CompressionType::None
+		};
+
+		// Compress the data first, but only if it actually turns out significantly
+		// smaller than the original data blob
+		let file_data = if compression_type == CompressionType::Brotli {
+			compressed_data = compress(compression_type, data);
+			if compressed_data.len() <= (data.len() as f32 * 0.95) as usize {
+				&compressed_data
+			} else {
+				compression_type = CompressionType::None;
+				data
+			}
+		} else {
+			data
+		};
+
+		// Use an appropriate block size that is not too small to overload the network
+		// with blocks.
+		let mut block_count =
+			file_data.len() / BLOCK_SIZE + ((file_data.len() % BLOCK_SIZE) > 0) as usize;
+		let block_size = if block_count <= 100 {
+			BLOCK_SIZE
+		} else {
+			let bs = file_data.len() / 100 + (file_data.len() % 100 > 0) as usize;
+			block_count = file_data.len() / bs + ((file_data.len() % bs) > 0) as usize;
+			bs
+		};
+		let mut block_hashes = Vec::with_capacity(block_count);
+		let mut block_ids = Vec::with_capacity(block_count);
+
+		// Devide data into blocks, and store them already
+		let plain_hash = IdType::hash(data);
+		let mut i = 0;
+		let mut block_index = 0;
+		loop {
+			let slice = &file_data[i..];
+			let actual_block_size = min(block_size, slice.len());
+			let mut block = slice[..actual_block_size].to_vec();
+			encrypt_block(block_index, &plain_hash, &mut block);
+			let block_hash = IdType::hash(&block);
+			block_hashes.push(block_hash.clone());
+
+			// Store block with an invalid file_id
+			// When PostgreSQL & MySQL are available, use a unique temporary file_id because
+			// there may be multiple files stored at once. For SQLite it should not be an
+			// issue.
+			let insert = block::ActiveModel {
+				id: NotSet,
+				hash: Set(block_hash),
+				size: Set(actual_block_size as _),
+				data: Set(block),
+			};
+			let block_id = block::Entity::insert(insert)
+				.exec(tx.inner())
+				.await?
+				.last_insert_id;
+			block_ids.push(block_id);
+
+			block_index += 1;
+			i += block_size;
+			if i >= file_data.len() {
+				break;
+			}
+		}
+
+		// Calculate the file hash
+		let file_hash = IdType::hash(
+			&binserde::serialize(&File {
+				plain_hash: plain_hash.clone(),
+				mime_type: mime_type.to_string(),
+				compression_type: compression_type as u8,
+				blocks: block_hashes.clone(),
+			})
+			.unwrap(),
+		);
+
+		// Create the file record
+		let file_record = file::ActiveModel {
+			id: NotSet,
+			hash: Set(file_hash.clone()),
+			compression_type: Set(compression_type as u8),
+			mime_type: Set(mime_type.to_string()),
+			block_count: Set(block_count as _),
+			plain_hash: Set(plain_hash),
+		};
+		let file_id = file::Entity::insert(file_record)
+			.exec(tx.inner())
+			.await?
+			.last_insert_id;
+
+		// Create the file_block records
+		let mut seq = 0;
+		for block_hash in &block_hashes {
+			let insert = file_block::ActiveModel {
+				id: NotSet,
+				file_id: Set(file_id),
+				block_hash: Set(block_hash.clone()),
+				sequence: Set(seq),
+			};
+			file_block::Entity::insert(insert).exec(tx.inner()).await?;
+			seq += 1;
+		}
+
+		Ok((file_id as _, file_hash, block_hashes))
+	}
 
 	async fn ensure_actor_id(&self, address: &ActorAddress, info: &ActorInfo) -> Result<i64> {
 		if let Some(record) = actor::Entity::find()
@@ -250,6 +385,111 @@ pub trait PersistenceHandle {
 			}
 		}
 		Ok(objects)
+	}
+
+	async fn load_file_data(&self, hash: &IdType) -> Result<Option<FileData>> {
+		Ok(
+			if let Some(file) = file::Entity::find()
+				.filter(file::Column::Hash.eq(hash))
+				.limit(1)
+				.one(self.inner())
+				.await?
+			{
+				if let Some(compression_type) = CompressionType::from_u8(file.compression_type) {
+					let data = self
+						.load_file_data2(
+							file.id,
+							compression_type,
+							&file.plain_hash,
+							file.block_count,
+						)
+						.await?;
+					Some(FileData {
+						mime_type: file.mime_type,
+						data,
+					})
+				} else {
+					Err(Error::InvalidCompressionType(file.compression_type))?
+				}
+			} else {
+				None
+			},
+		)
+	}
+
+	async fn load_file_data2(
+		&self, file_id: i64, compression_type: CompressionType, plain_hash: &IdType,
+		block_count: u32,
+	) -> Result<Vec<u8>> {
+		let query = Query::select()
+			.column(file_block::Column::BlockHash)
+			.column(file_block::Column::Sequence)
+			.column((block::Entity, block::Column::Id))
+			.column(block::Column::Size)
+			.column(block::Column::Data)
+			.from(file_block::Entity)
+			.left_join(
+				block::Entity,
+				Expr::col((file_block::Entity, file_block::Column::BlockHash))
+					.equals((block::Entity, block::Column::Hash)),
+			)
+			.and_where(file_block::Column::FileId.eq(file_id))
+			.order_by(file_block::Column::Sequence, Order::Asc)
+			.take();
+		let stat = self.backend().build(&query);
+		let results = self.inner().query_all(stat).await?;
+		if results.len() == 0 {
+			Err(Error::FileMissingBlock(file_id, 0))?;
+		}
+
+		// If block count is 1, chances are high that its size is pretty small.
+		// If that is the case, preallocation of the buffer isn't really
+		// necessary.
+		let capacity = if block_count == 1 {
+			0
+		} else {
+			block_count as usize * BLOCK_SIZE
+		};
+		let mut buffer = Vec::with_capacity(capacity);
+		let mut i = 0;
+		for row in results {
+			let sequence: i64 = row.try_get_by_index(1)?;
+			if sequence != i {
+				Err(Error::FileMissingBlock(file_id, sequence))?;
+			}
+			let block_id: Option<i64> = row.try_get_by_index(2)?;
+			let size2: Option<i64> = row.try_get_by_index(3)?;
+			let data2: Option<Vec<u8>> = row.try_get_by_index(4)?;
+
+			if block_id.is_none() {
+				Err(Error::FileMissingBlock(file_id, sequence))?;
+			}
+			let size = size2.unwrap() as usize;
+			let mut data = data2.unwrap();
+			data.resize(size, 0);
+
+			if data.len() < size {
+				Err(Error::BlockDataCorrupt(block_id.unwrap()))?;
+			} else if data.len() > size {
+				warn!(
+					"Block {} has more data than its size: {} > {}",
+					block_id.unwrap(),
+					data.len(),
+					size
+				);
+			}
+
+			decrypt_block(i as u64, plain_hash, &mut data);
+			buffer.extend(&data);
+			i += 1;
+		}
+
+		// Decompress the data
+		Ok(if compression_type != CompressionType::None {
+			decompress(compression_type, &buffer).map_err(|e| Error::from(e))?
+		} else {
+			buffer
+		})
 	}
 
 	async fn load_home_feed(
@@ -601,6 +841,39 @@ pub trait PersistenceHandle {
 			.await?)
 	}
 
+	async fn load_object_info(
+		&self, actor_address: &ActorAddress, hash: &IdType,
+	) -> Result<Option<ObjectInfo>> {
+		let result = object::Entity::find()
+			.filter(object::Column::Hash.eq(hash))
+			.filter(actor::Column::Address.eq(actor_address))
+			.one(self.inner())
+			.await?;
+		let info = if let Some(object) = result {
+			let (actor_name, actor_avatar) = self.find_profile_limited(object.actor_id).await?;
+
+			if let Some(payload) = self
+				.load_object_payload_info(object.id, object.r#type)
+				.await?
+			{
+				Some(ObjectInfo {
+					hash: hash.clone(),
+					created: object.created as _,
+					found: object.found as _,
+					actor_address: actor_address.clone(),
+					actor_avatar,
+					actor_name,
+					payload,
+				})
+			} else {
+				None
+			}
+		} else {
+			None
+		};
+		Ok(info)
+	}
+
 	async fn load_object_payload_info(
 		&self, object_id: i64, object_type: u8,
 	) -> Result<Option<ObjectPayloadInfo>> {
@@ -621,6 +894,34 @@ pub trait PersistenceHandle {
 		})
 	}
 
+	async fn find_profile_info(
+		&self, actor_address: &ActorAddress,
+	) -> Result<Option<ProfileObjectInfo>> {
+		let result = self
+			.inner()
+			.query_one(Statement::from_sql_and_values(
+				self.inner().get_database_backend(),
+				r#"
+			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
+				df.plain_hash, df.block_count
+			FROM profile_object AS po
+			LEFT JOIN object AS o ON po.object_id = o.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
+			LEFT JOIN file AS df ON po.description_file_hash = df.hash
+			WHERE i.address = ?
+			ORDER BY sequence DESC
+			LIMIT 1
+		"#,
+				[actor_address.into()],
+			))
+			.await?;
+		Ok(if let Some(r) = result {
+			self._parse_profile_info(r).await?
+		} else {
+			None
+		})
+	}
+
 	async fn find_profile_object_info(&self, object_id: i64) -> Result<Option<ProfileObjectInfo>> {
 		let result = self
 			.inner()
@@ -638,38 +939,11 @@ pub trait PersistenceHandle {
 				[object_id.into()],
 			))
 			.await?;
-
-		if let Some(row) = result {
-			let actor_address: ActorAddress = row.try_get_by_index(0)?;
-			let actor_name: String = row.try_get_by_index(1)?;
-			let avatar_id: Option<IdType> = row.try_get_by_index(2)?;
-			let wallpaper_id: Option<IdType> = row.try_get_by_index(3)?;
-			let description_id: Option<i64> = row.try_get_by_index(4)?;
-			let description_plain_hash: Option<IdType> = row.try_get_by_index(5)?;
-			let description_block_count: Option<i64> = row.try_get_by_index(6)?;
-
-			let description = if let Some(file_id) = description_id {
-				self.find_file_data(
-					file_id,
-					&description_plain_hash.unwrap(),
-					description_block_count.unwrap() as _,
-				)
-				.await?
-			} else {
-				None
-			};
-			Ok(Some(ProfileObjectInfo {
-				actor: TargetedActorInfo {
-					address: actor_address.to_string(),
-					name: actor_name,
-					avatar_id,
-					wallpaper_id,
-				},
-				description: description.map(|b| String::from_utf8_lossy(&b).to_string()),
-			}))
+		Ok(if let Some(r) = result {
+			self._parse_profile_info(r).await?
 		} else {
-			Ok(None)
-		}
+			None
+		})
 	}
 
 	async fn find_share_object_info(&self, object_id: i64) -> Result<Option<ShareObjectInfo>> {
@@ -931,6 +1205,37 @@ pub trait PersistenceHandle {
 			Ok(None)
 		}
 	}
+
+
+	async fn _parse_profile_info(&self, result: QueryResult) -> Result<Option<ProfileObjectInfo>> {
+		let actor_address: ActorAddress = result.try_get_by_index(0)?;
+		let actor_name: String = result.try_get_by_index(1)?;
+		let avatar_id: Option<IdType> = result.try_get_by_index(2)?;
+		let wallpaper_id: Option<IdType> = result.try_get_by_index(3)?;
+		let description_id: Option<i64> = result.try_get_by_index(4)?;
+		let description_plain_hash: Option<IdType> = result.try_get_by_index(5)?;
+		let description_block_count: Option<i64> = result.try_get_by_index(6)?;
+
+		let description = if let Some(file_id) = description_id {
+			self.find_file_data(
+				file_id,
+				&description_plain_hash.unwrap(),
+				description_block_count.unwrap() as _,
+			)
+			.await?
+		} else {
+			None
+		};
+		Ok(Some(ProfileObjectInfo {
+			actor: TargetedActorInfo {
+				address: actor_address.to_string(),
+				name: actor_name,
+				avatar_id,
+				wallpaper_id,
+			},
+			description: description.map(|b| String::from_utf8_lossy(&b).to_string()),
+		}))
+	}
 }
 
 
@@ -1181,29 +1486,6 @@ impl Connection {
 		}
 	}
 
-	fn _fetch_file<C>(this: &C, hash: &IdType) -> Result<Option<(String, Vec<u8>)>>
-	where
-		C: DerefConnection,
-	{
-		let mut stat = this.prepare(
-			r#"
-			SELECT id, plain_hash, mime_type, block_count FROM file WHERE hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query([hash.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let rowid = row.get(0)?;
-			let plain_hash: IdType = row.get(1)?;
-			let mime_type = row.get(2)?;
-			let block_count = row.get(3)?;
-
-			let data = Self::_fetch_file_data(this, rowid, &plain_hash, block_count)?;
-			Ok(Some((mime_type, data)))
-		} else {
-			Ok(None)
-		}
-	}
-
 	pub(super) fn _fetch_file_block_hash(
 		this: &impl DerefConnection, file_id: i64, sequence: u64,
 	) -> Result<Option<IdType>> {
@@ -1220,65 +1502,6 @@ impl Connection {
 		} else {
 			Ok(None)
 		}
-	}
-
-	fn _fetch_file_data(
-		this: &impl DerefConnection, file_id: i64, plain_hash: &IdType, block_count: u64,
-	) -> Result<Vec<u8>> {
-		let mut stat = this.prepare(
-			r#"
-			SELECT fb.block_hash, fb.sequence, b.id, b.size, b.data
-			FROM file_block AS fb
-			LEFT JOIN block AS b ON fb.file_id = b.file_id AND fb.block_hash = b.hash
-			WHERE fb.file_id = ?
-			ORDER BY fb.sequence ASC
-		"#,
-		)?;
-		let mut rows = stat.query([file_id])?;
-
-		// If block count is 1, chances are high that its size is pretty small.
-		// If that is the case, preallocation of the buffer isn't really
-		// necessary.
-		let capacity = if block_count == 1 {
-			0
-		} else {
-			block_count as usize * BLOCK_SIZE
-		};
-		let mut buffer = Vec::with_capacity(capacity);
-		let mut i = 0;
-		while let Some(row) = rows.next()? {
-			let sequence: u64 = row.get(1)?;
-			if sequence != i {
-				Err(Error::FileMissingBlock(file_id, sequence))?;
-			}
-			let block_id: Option<i64> = row.get(2)?;
-			let size2: Option<usize> = row.get(3)?;
-			let data2: Option<Vec<u8>> = row.get(4)?;
-
-			if block_id.is_none() {
-				Err(Error::FileMissingBlock(file_id, sequence))?;
-			}
-			let size = size2.unwrap();
-			let mut data = data2.unwrap();
-			data.resize(size, 0);
-
-			if data.len() < size {
-				Err(Error::BlockDataCorrupt(block_id.unwrap()))?;
-			} else if data.len() > size {
-				warn!(
-					"Block {} has more data than its size: {} > {}",
-					block_id.unwrap(),
-					data.len(),
-					size
-				);
-			}
-
-			decrypt_block(i, plain_hash, &mut data);
-			buffer.extend(&data);
-			i += 1;
-		}
-
-		Ok(buffer)
 	}
 
 	fn _fetch_object(
@@ -1384,26 +1607,6 @@ impl Connection {
 		Self::_parse_object(tx, &mut rows)
 	}
 
-	/*pub fn _fetch_post_files(&self, post_id: i64) -> Result<Vec<FileHeader>> {
-		let mut stat = self.old().prepare(
-			r#"
-			SELECT hash, mime_type, block_count FROM file WHERE post_id = ?
-		"#,
-		)?;
-		let mut rows = stat.query([post_id])?;
-		let mut files = Vec::new();
-		while let Some(row) = rows.next()? {
-			let hash: String = row.get(0)?;
-			let hash_id = IdType::from_base58(&hash)?;
-			files.push(FileHeader {
-				hash: hash_id,
-				mime_type: row.get(1)?,
-				block_count: row.get(2)?,
-			});
-		}
-		Ok(files)
-	}*/
-
 	pub fn _fetch_share_object<C>(this: &C, object_id: i64) -> Result<Option<ShareObject>>
 	where
 		C: DerefConnection,
@@ -1429,51 +1632,6 @@ impl Connection {
 		}
 	}
 
-	pub fn _fetch_boost_object_info(
-		this: &impl DerefConnection, actor_id: i64, sequence: u64,
-	) -> Result<Option<ShareObjectInfo>> {
-		let mut stat = this.prepare(
-			r#"
-			SELECT bo.actor_address, bi.id, to_.id
-			FROM object AS o
-			LEFT JOIN share_object AS bo ON bo.object_id = o.id
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			LEFT JOIN actor AS bi ON bo.actor_address = bi.address
-			LEFT JOIN object AS to_ ON to_.hash = bo.object_hash
-			WHERE o.actor_id = ? AND o.sequence = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_id, sequence])?;
-
-		if let Some(row) = rows.next()? {
-			let actor_address: ActorAddress = row.get(0)?;
-			let target_actor_id_opt: Option<i64> = row.get(1)?;
-			let target_object_id_opt: Option<i64> = row.get(2)?;
-
-			let mut boost_object = ShareObjectInfo::default();
-			if let Some(target_object_id) = target_object_id_opt {
-				let (actor_name, actor_avatar) = if let Some(target_actor_id) = target_actor_id_opt
-				{
-					Self::_find_profile_limited(this, target_actor_id)?
-				} else {
-					(None, None)
-				};
-				let (message, attachments) =
-					Self::_fetch_post_object_info_files(this, target_object_id)?;
-				boost_object.original_post = Some(TargetedPostInfo {
-					actor_address: actor_address.to_string(),
-					actor_name,
-					actor_avatar,
-					message,
-					attachments,
-				});
-			}
-			Ok(Some(boost_object))
-		} else {
-			Ok(None)
-		}
-	}
-
 	fn _fetch_post_files(this: &impl DerefConnection, object_id: i64) -> Result<Vec<IdType>> {
 		// Collect the files
 		let mut files = Vec::new();
@@ -1493,151 +1651,6 @@ impl Connection {
 		}
 
 		Ok(files)
-	}
-
-	fn _fetch_post_object_info_files<C>(
-		this: &C, object_id: i64,
-	) -> Result<(Option<(String, String)>, Vec<PossiblyKnownFileHeader>)>
-	where
-		C: DerefConnection,
-	{
-		let mut stat = this.prepare(
-			r#"
-			SELECT file_count FROM post_object WHERE object_id = ?
-		"#,
-		)?;
-		let mut rows = stat.query([object_id])?;
-		if let Some(row) = rows.next()? {
-			let file_count: u64 = row.get(0)?;
-
-			// Collect the message file
-			let mut stat = this.prepare(
-				r#"
-				SELECT f.id, f.plain_hash, f.mime_type, f.block_count
-				FROM post_file AS pf
-				LEFT JOIN file AS f ON pf.hash = f.hash
-				WHERE pf.object_id = ? AND pf.sequence = 0
-				ORDER BY pf.sequence ASC
-			"#,
-			)?;
-			let mut rows = stat.query([object_id])?;
-			let message_opt: Option<(String, String)> = if let Some(row) = rows.next()? {
-				let file_id_opt: Option<i64> = row.get(0)?;
-				let plain_hash_opt: Option<IdType> = row.get(1)?;
-				let mime_type_opt: Option<String> = row.get(2)?;
-				let block_count_opt: Option<u64> = row.get(3)?;
-				if let Some(file_id) = file_id_opt {
-					let plain_hash = plain_hash_opt.unwrap();
-					let mime_type = mime_type_opt.unwrap();
-					let block_count = block_count_opt.unwrap();
-					match Self::_fetch_file_data(this, file_id, &plain_hash, block_count) {
-						Ok(message_data) => Some((
-							mime_type,
-							String::from_utf8_lossy(&message_data).to_string(),
-						)),
-						Err(e) => match &*e {
-							// If a block is still missing from the message data file, don't
-							// actually raise an error, just leave the message data unset.
-							Error::FileMissingBlock(..) => None,
-							_ => return Err(e),
-						},
-					}
-				} else {
-					None
-				}
-			} else {
-				None
-			};
-
-			// Collect the files
-			let mut attachments = Vec::with_capacity(file_count as _);
-			let mut stat = this.prepare(
-				r#"
-				SELECT pf.hash, f.mime_type, f.block_count
-				FROM post_file AS pf
-				LEFT JOIN file AS f ON f.hash = pf.hash
-				WHERE pf.object_id = ? AND pf.sequence > 0
-				ORDER BY pf.sequence ASC
-			"#,
-			)?;
-			let mut rows = stat.query([object_id])?;
-			while let Some(row) = rows.next()? {
-				let hash: IdType = row.get(0)?;
-				let mime_type_opt: Option<String> = row.get(1)?;
-				let block_count_opt: Option<u32> = row.get(2)?;
-				let attachment = if let Some(mime_type) = mime_type_opt {
-					let block_count = block_count_opt.unwrap();
-					PossiblyKnownFileHeader::Known(FileHeader {
-						hash,
-						mime_type,
-						block_count,
-					})
-				} else {
-					PossiblyKnownFileHeader::Unknown(hash)
-				};
-				attachments.push(attachment);
-			}
-
-			Ok((message_opt, attachments))
-		} else {
-			Ok((None, Vec::new()))
-		}
-	}
-
-	fn _fetch_post_object_info(
-		this: &impl DerefConnection, actor_id: i64, sequence: u64,
-	) -> Result<Option<PostObjectInfo>> {
-		let mut stat = this.prepare(
-			r#"
-			SELECT o.id, o.sequence, ti.id, ti.address, tpo.object_id, to_.sequence
-			FROM post_object AS po
-			INNER JOIN object AS o ON po.object_id = o.id
-			INNER JOIN actor AS i ON o.actor_id = i.id
-			LEFT JOIN actor AS ti ON po.in_reply_to_actor_address = ti.address
-			LEFT JOIN object AS to_ ON to_.actor_id = ti.id
-			    AND to_.hash = po.in_reply_to_object_hash
-			LEFT JOIN post_object as tpo ON tpo.object_id = to_.id
-			WHERE o.actor_id = ? AND o.sequence = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_id, sequence])?;
-		if let Some(row) = rows.next()? {
-			let object_id = row.get(0)?;
-			let sequence = row.get(1)?;
-			let irt_actor_rowid: Option<i64> = row.get(2)?;
-			let irt_actor_address_opt: Option<ActorAddress> = row.get(3)?;
-			let irt_object_id_opt: Option<i64> = row.get(4)?;
-			//let irt_sequence: Option<u64> = row.get(5)?;
-
-			let in_reply_to = match irt_object_id_opt {
-				None => None,
-				Some(irt_object_id) => {
-					let (irt_actor_name, irt_actor_avatar_id) = match irt_actor_rowid {
-						None => (None, None),
-						Some(id) => Self::_find_profile_limited(this, id)?,
-					};
-					let (irt_message_opt, irt_attachments) =
-						Self::_fetch_post_object_info_files(this, irt_object_id)?;
-					Some(TargetedPostInfo {
-						actor_address: irt_actor_address_opt.unwrap().to_string(),
-						actor_name: irt_actor_name,
-						actor_avatar: irt_actor_avatar_id,
-						message: irt_message_opt,
-						attachments: irt_attachments,
-					})
-				}
-			};
-			let (message_opt, attachments) = Self::_fetch_post_object_info_files(this, object_id)?;
-			Ok(Some(PostObjectInfo {
-				in_reply_to,
-				sequence,
-				mime_type: message_opt.as_ref().map(|o| o.0.clone()),
-				message: message_opt.map(|o| o.1),
-				attachments,
-			}))
-		} else {
-			Ok(None)
-		}
 	}
 
 	fn _fetch_post_object(
@@ -1696,56 +1709,6 @@ impl Connection {
 				avatar: avatar_id,
 				wallpaper: wallpaper_id,
 				description: description_hash,
-			}))
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn _fetch_profile_object_info(
-		this: &impl DerefConnection, actor_id: i64, sequence: u64,
-	) -> Result<Option<ProfileObjectInfo>> where
-		//C: DerefConnection
-	{
-		let mut stat = this.prepare(
-			r#"
-			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-			       df.plain_hash, df.block_count
-			FROM profile_object AS po
-			LEFT JOIN object AS o ON po.object_id = o.id
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			LEFT JOIN file AS df ON po.description_file_hash = df.hash
-			WHERE o.actor_id = ? AND o.sequence = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_id, sequence])?;
-		if let Some(row) = rows.next()? {
-			let actor_address: ActorAddress = row.get(0)?;
-			let actor_name: String = row.get(1)?;
-			let avatar_id: Option<IdType> = row.get(2)?;
-			let wallpaper_id: Option<IdType> = row.get(3)?;
-			let description_id: Option<i64> = row.get(4)?;
-			let description_plain_hash: Option<IdType> = row.get(5)?;
-			let description_block_count: Option<i64> = row.get(6)?;
-
-			let description = if let Some(file_id) = description_id {
-				Some(Self::_fetch_file_data(
-					this,
-					file_id,
-					&description_plain_hash.unwrap(),
-					description_block_count.unwrap() as _,
-				)?)
-			} else {
-				None
-			};
-			Ok(Some(ProfileObjectInfo {
-				actor: TargetedActorInfo {
-					address: actor_address.to_string(),
-					name: actor_name,
-					avatar_id,
-					wallpaper_id,
-				},
-				description: description.map(|b| String::from_utf8_lossy(&b).to_string()),
 			}))
 		} else {
 			Ok(None)
@@ -1932,56 +1895,15 @@ impl Connection {
 		}
 	}
 
-	fn _parse_object_info(
-		tx: &impl DerefConnection, rows: &mut Rows<'_>,
-	) -> Result<Option<ObjectInfo>> {
-		if let Some(row) = rows.next()? {
-			let actor_id = row.get(0)?;
-			let hash: IdType = row.get(1)?;
-			let sequence = row.get(2)?;
-			let created = row.get(3)?;
-			let found = row.get(4)?;
-			let object_type = row.get(5)?;
-			let actor_address: ActorAddress = row.get(6)?;
-
-			let (actor_name, actor_avatar_id) = Self::_find_profile_limited(tx, actor_id)?;
-			let payload_result = match object_type {
-				OBJECT_TYPE_POST => Self::_fetch_post_object_info(tx, actor_id, sequence)
-					.map(|o| o.map(|p| ObjectPayloadInfo::Post(p))),
-				OBJECT_TYPE_SHARE => Self::_fetch_boost_object_info(tx, actor_id, sequence)
-					.map(|o| o.map(|b| ObjectPayloadInfo::Share(b))),
-				OBJECT_TYPE_PROFILE => Self::_fetch_profile_object_info(tx, actor_id, sequence)
-					.map(|o| o.map(|p| ObjectPayloadInfo::Profile(p))),
-				other => Err(Error::InvalidObjectType(other))?,
-			};
-			let payload = if let Some(p) = payload_result? {
-				p
-			} else {
-				return Ok(None);
-			};
-			Ok(Some(ObjectInfo {
-				hash,
-				created,
-				found,
-				actor_address,
-				actor_name,
-				actor_avatar: actor_avatar_id,
-				payload,
-			}))
-		} else {
-			Ok(None)
-		}
-	}
-
 	pub fn _store_block(
-		tx: &impl DerefConnection, file_id: i64, hash: &IdType, data: &[u8],
+		tx: &impl DerefConnection, _file_id: i64, hash: &IdType, data: &[u8],
 	) -> Result<()> {
 		let mut stat = tx.prepare(
 			r#"
-			INSERT INTO block (file_id, hash, size, data) VALUES (?,?,?,?)
+			INSERT INTO block (hash, size, data) VALUES (?,?,?)
 		"#,
 		)?;
-		if let Err(e) = stat.insert(params![file_id, hash, data.len(), data]) {
+		if let Err(e) = stat.insert(params![hash, data.len(), data]) {
 			match e {
 				rusqlite::Error::SqliteFailure(error, _) => {
 					// If the hash already exists, do nothing, it is fine...
@@ -2484,32 +2406,6 @@ impl Connection {
 		Ok(affected > 0)
 	}
 
-	/*pub fn fetch_latest_posts(&self,
-		actor_id: &IdType,
-		count: usize,
-		offset: usize
-	) -> Result<Vec<PostObject>> {
-		let mut stat = self.old.prepare(r#"
-			SELECT rowid FROM post_object AS po
-			LEFT JOIN object AS o ON po.object_id = o.rowid
-			WHERE actor_id = (SELECT rowid FROM actor WHERE address = ?)
-			ORDER BY o.index DESC
-			LIMIT ? OFFSET ?
-		"#)?;
-		let mut rows = stat.query(rusqlite::params![actor_id.to_string(), count, offset])?;
-		let mut posts = Vec::new();
-		while let Some(row) = rows.next()? {
-			let rowid = row.get(0)?;
-			//let hash_blob: Vec<u8> = row.get(1)?;
-			posts.push(PostObject {
-				//hash: Self::parse_hash(&hash_blob, format!("post {}", rowid))?,
-				tags: self.fetch_post_tags(rowid)?,
-				files: self.fetch_post_files(rowid)?
-			})
-		}
-		Ok(posts)
-	}*/
-
 	/// Returns a list of hashes of blocks we're still missing but also in need
 	/// of
 	pub fn fetch_missing_file_blocks(&self) -> Result<Vec<(i64, IdType)>> {
@@ -2576,12 +2472,12 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_file_data(&self, id: &IdType) -> Result<Option<FileData>> {
+	/*pub fn fetch_file_data(&self, id: &IdType) -> Result<Option<FileData>> {
 		match Self::_fetch_file(self, id)? {
 			None => Ok(None),
 			Some((mime_type, data)) => Ok(Some(FileData { mime_type, data })),
 		}
-	}
+	}*/
 
 	pub fn fetch_file(&self, id: &IdType) -> Result<Option<File>> {
 		let mut stat = self.prepare(
@@ -2606,10 +2502,10 @@ impl Connection {
 			"#,
 			)?;
 			let mut rows = stat.query([file_id])?;
-			let mut i = 0;
+			let mut i = 0i64;
 			let mut blocks = Vec::with_capacity(block_count as _);
 			while let Some(row) = rows.next()? {
-				let sequence: u64 = row.get(0)?;
+				let sequence: i64 = row.get(0)?;
 				if sequence != i {
 					Err(Error::FileMissingBlock(file_id, i))?;
 				}
@@ -2658,47 +2554,6 @@ impl Connection {
 			list.push((address, actor_info));
 		}
 		Ok(list)
-	}
-
-	pub fn fetch_object_info(
-		&mut self, actor_address: &ActorAddress, hash: &IdType,
-	) -> Result<Option<ObjectInfo>> {
-		let tx = self.old.transaction()?;
-		let mut stat = tx.prepare(
-			r#"
-			SELECT o.actor_id, o.hash, o.sequence, o.created, o.found, o.type, i.address
-			FROM object AS o
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			WHERE i.address = ? AND o.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_address, hash])?;
-		Self::_parse_object_info(&tx, &mut rows)
-	}
-
-	pub fn fetch_home_feed(&mut self, count: u64, offset: u64) -> Result<Vec<ObjectInfo>> {
-		let tx = self.old.transaction()?;
-
-		let mut stat = tx.prepare(
-			r#"
-			SELECT o.actor_id, o.hash, o.sequence, o.created, o.found, o.type, i.address
-			FROM object AS o
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			WHERE o.actor_id IN (
-				SELECT actor_id FROM identity
-			) OR o.actor_id IN (
-				SELECT actor_id FROM following
-			)
-			ORDER BY o.found DESC LIMIT ? OFFSET ?
-		"#,
-		)?;
-		let mut rows = stat.query([count, offset])?;
-
-		let mut objects = Vec::with_capacity(count as _);
-		while let Some(object) = Self::_parse_object_info(&tx, &mut rows)? {
-			objects.push(object);
-		}
-		Ok(objects)
 	}
 
 	pub fn fetch_object(&self, object_hash: &IdType) -> Result<Option<(Object, bool)>> {
@@ -2942,54 +2797,6 @@ impl Connection {
 		let mut rows = stat.query(params![actor_id])?;
 		if let Some((hash, object, _)) = Self::_parse_object(self, &mut rows)? {
 			Ok(Some((hash, object)))
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn fetch_profile_info(&self, actor_id: &ActorAddress) -> Result<Option<ProfileObjectInfo>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-			       df.plain_hash, df.block_count
-			FROM profile_object AS po
-			INNER JOIN object AS o ON po.object_id = o.id
-			INNER JOIN actor AS i ON o.actor_id = i.id
-			LEFT JOIN file AS df ON po.description_file_hash = df.hash
-			WHERE i.address = ?
-			ORDER BY o.sequence DESC LIMIT 1
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_id])?;
-		if let Some(row) = rows.next()? {
-			let address: ActorAddress = row.get(0)?;
-			let actor_name: String = row.get(1)?;
-			let avatar_id: Option<IdType> = row.get(2)?;
-			let wallpaper_id: Option<IdType> = row.get(3)?;
-			let description_file_id: Option<i64> = row.get(4)?;
-			let description_plain_hash: Option<IdType> = row.get(5)?;
-			let description_block_count: Option<u64> = row.get(6)?;
-
-			let description = if let Some(file_id) = description_file_id {
-				Some(Self::_fetch_file_data(
-					self,
-					file_id,
-					&description_plain_hash.unwrap(),
-					description_block_count.unwrap(),
-				)?)
-			} else {
-				None
-			};
-
-			Ok(Some(ProfileObjectInfo {
-				actor: TargetedActorInfo {
-					address: address.to_string(),
-					name: actor_name,
-					avatar_id,
-					wallpaper_id,
-				},
-				description: description.map(|b| String::from_utf8_lossy(&b).to_string()),
-			}))
 		} else {
 			Ok(None)
 		}
@@ -3425,9 +3232,12 @@ impl DerefMut for Connection {
 impl fmt::Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
+			Self::DecompressDecodeError(code) =>
+				write!(f, "decode error during decompression: {}", code),
 			Self::SqliteError(e) => write!(f, "{}", e),
 			Self::OrmError(e) => write!(f, "{}", e),
 			Self::ActorAddress(e) => write!(f, "invalid actor address format: {}", e),
+			Self::InvalidCompressionType(code) => write!(f, "invalid compression type: {}", code),
 			Self::InvalidHash(e) => {
 				write!(f, "hash not a valid base58-encoded 32-byte address {}", e)
 			}
@@ -3448,6 +3258,10 @@ impl fmt::Display for Error {
 			Self::MissingIdentity(hash) => write!(f, "identity {:?} is missing", &hash),
 		}
 	}
+}
+
+impl From<compu::DecodeError> for Error {
+	fn from(other: compu::DecodeError) -> Self { Self::DecompressDecodeError(other.as_raw()) }
 }
 
 impl From<FromBytesAddressError> for Error {
@@ -3521,11 +3335,10 @@ mod tests {
 		let db = test::load_database("db").await;
 
 		let mut rng = test::initialize_rng();
-		let mut c = db.connect_old().expect("unable to connect to database");
 
 		let mut file_data1 = FileData {
 			mime_type: "image/png".to_string(),
-			data: vec![0u8; 1000],
+			data: vec![0u8; 10000],
 		};
 		rng.fill_bytes(&mut file_data1.data);
 
@@ -3533,15 +3346,13 @@ mod tests {
 			mime_type: "text/markdown".to_string(),
 			data: "This is some text.".as_bytes().to_vec(),
 		};
-		let hash1 = c
-			.store_file_data(CompressionType::None, &file_data1)
-			.unwrap();
-		let hash2 = c
-			.store_file_data(CompressionType::None, &file_data2)
-			.unwrap();
+		let tx = db.transaction().await.unwrap();
+		let (_, hash1, _) = db.create_file(&tx, &file_data1).await.unwrap();
+		let (_, hash2, _) = db.create_file(&tx, &file_data2).await.unwrap();
+		tx.commit().await.unwrap();
 
-		let fetched_file1 = c.fetch_file_data(&hash1).unwrap().unwrap();
-		let fetched_file2 = c.fetch_file_data(&hash2).unwrap().unwrap();
+		let fetched_file1 = db.load_file_data(&hash1).await.unwrap().unwrap();
+		let fetched_file2 = db.load_file_data(&hash2).await.unwrap().unwrap();
 		assert_eq!(
 			fetched_file1.mime_type, file_data1.mime_type,
 			"corrupted mime type"

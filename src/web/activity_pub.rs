@@ -451,9 +451,12 @@ pub async fn actor_get(
 ) -> Response {
 	let public_key = PUBLIC_KEY.get().map(|s| s.as_str());
 
-	let profile = match g.api.db.connect_old() {
+	let profile = match g.api.db.find_profile_info(&address).await {
 		Err(e) => return server_error_response(e, "DB issue"),
-		Ok(c) => c.fetch_profile_info(&address).unwrap().unwrap(),
+		Ok(r) => match r {
+			None => return not_found_error_response("actor profile not found"),
+			Some(p) => p,
+		},
 	};
 
 	let description = profile.description.clone().unwrap_or_default();

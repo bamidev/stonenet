@@ -43,66 +43,71 @@ pub struct Api {
 impl Api {
 	pub async fn close(self) { self.node.close().await; }
 
-	pub fn create_my_identity(
+	pub async fn create_my_identity(
 		&self, label: &str, name: &str, avatar: Option<&FileData>, wallpaper: Option<&FileData>,
 		description: Option<&FileData>,
 	) -> db::Result<(ActorAddress, ActorInfo)> {
+		// Prepare profile files
+		let tx = self.db.transaction().await?;
+		let avatar_hash = if let Some(f) = avatar {
+			Some(self.db.create_file(&tx, f).await?.1)
+		} else {
+			None
+		};
+		let wallpaper_hash = if let Some(f) = wallpaper {
+			Some(self.db.create_file(&tx, f).await?.1)
+		} else {
+			None
+		};
+		let description_hash = if let Some(f) = description {
+			Some(self.db.create_file(&tx, f).await?.1)
+		} else {
+			None
+		};
+		tx.commit().await?;
+
+		let profile = ProfileObject {
+			name: name.to_string(),
+			avatar: avatar_hash.clone(),
+			wallpaper: wallpaper_hash.clone(),
+			description: description_hash.clone(),
+		};
+
+		// Sign the profile object and construct an object out of it
+		let payload = ObjectPayload::Profile(profile);
+		let sign_data = ObjectSignData {
+			sequence: 0,
+			previous_hash: IdType::default(),
+			created: SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.unwrap()
+				.as_millis() as u64,
+			payload: &payload,
+		};
+		let private_key = ActorPrivateKeyV1::generate_with_rng(&mut OsRng);
+		let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
+		let object_hash = signature.hash();
+		let object = Object {
+			signature,
+			previous_hash: IdType::default(),
+			sequence: 0,
+			created: sign_data.created,
+			payload,
+		};
+
+		// Generate an actor ID with our new object hash.
+		let actor_info = ActorInfo::V1(ActorInfoV1 {
+			flags: 0,
+			public_key: private_key.public(),
+			first_object: object_hash.clone(),
+			actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
+		});
+		let actor_address = actor_info.generate_address();
+
+		// Create the identity on disk
+		// TODO: Remove old code and create the identity with the same transaction as
+		// used for the files
 		self.db.perform(|c| {
-			// Prepare profile object
-			let avatar_hash = if let Some(f) = avatar {
-				Some(db::Connection::_store_file_data(&c, &f.mime_type, 0, &f.data)?.1)
-			} else {
-				None
-			};
-			let wallpaper_hash = if let Some(f) = wallpaper {
-				Some(db::Connection::_store_file_data(&c, &f.mime_type, 0, &f.data)?.1)
-			} else {
-				None
-			};
-			let description_hash = if let Some(f) = description {
-				Some(db::Connection::_store_file_data(&c, &f.mime_type, 0, &f.data)?.1)
-			} else {
-				None
-			};
-			let profile = ProfileObject {
-				name: name.to_string(),
-				avatar: avatar_hash.clone(),
-				wallpaper: wallpaper_hash.clone(),
-				description: description_hash.clone(),
-			};
-
-			// Sign the profile object and construct an object out of it
-			let payload = ObjectPayload::Profile(profile);
-			let sign_data = ObjectSignData {
-				sequence: 0,
-				previous_hash: IdType::default(),
-				created: SystemTime::now()
-					.duration_since(UNIX_EPOCH)
-					.unwrap()
-					.as_millis() as u64,
-				payload: &payload,
-			};
-			let private_key = ActorPrivateKeyV1::generate_with_rng(&mut OsRng);
-			let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
-			let object_hash = signature.hash();
-			let object = Object {
-				signature,
-				previous_hash: IdType::default(),
-				sequence: 0,
-				created: sign_data.created,
-				payload,
-			};
-
-			// Generate an actor ID with our new object hash.
-			let actor_info = ActorInfo::V1(ActorInfoV1 {
-				flags: 0,
-				public_key: private_key.public(),
-				first_object: object_hash.clone(),
-				actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
-			});
-			let actor_address = actor_info.generate_address();
-
-			// Create the identity on disk
 			db::Connection::_create_my_identity(
 				&c,
 				label,
@@ -222,12 +227,7 @@ impl Api {
 	pub async fn find_file_data(
 		&self, actor_node: &ActorNode, id: &IdType,
 	) -> db::Result<Option<FileData>> {
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.fetch_file_data(id)
-		})?;
-
-		let file_result = match result {
+		let file_result = match self.db.load_file_data(id).await? {
 			Some(b) => return Ok(Some(b)),
 			None => match actor_node.find_file(id).await {
 				None => return Ok(None),
@@ -332,10 +332,7 @@ impl Api {
 	pub async fn fetch_object_info(
 		&self, actor_address: &ActorAddress, hash: &IdType,
 	) -> db::Result<Option<ObjectInfo>> {
-		tokio::task::block_in_place(|| {
-			let mut c = self.db.connect_old()?;
-			c.fetch_object_info(actor_address, hash)
-		})
+		self.db.load_object_info(actor_address, hash).await
 	}
 
 	/*pub async fn fetch_objects(
@@ -369,22 +366,16 @@ impl Api {
 	}*/
 
 	pub async fn fetch_profile_info(
-		&self, actor_id: &ActorAddress,
+		&self, actor_address: &ActorAddress,
 	) -> db::Result<Option<ProfileObjectInfo>> {
-		let profile = tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.fetch_profile_info(actor_id)
-		})?;
+		let profile = self.db.find_profile_info(actor_address).await?;
 		if profile.is_some() {
 			return Ok(profile);
 		}
 
 		// Try to get the profile from the actor network
-		if let Some(_) = self.node.find_actor_profile_info(actor_id).await {
-			let profile = tokio::task::block_in_place(|| {
-				let c = self.db.connect_old()?;
-				c.fetch_profile_info(actor_id)
-			})?;
+		if let Some(_) = self.node.find_actor_profile_info(actor_address).await {
+			let profile = self.db.find_profile_info(actor_address).await?;
 			return Ok(profile);
 		}
 		Ok(None)

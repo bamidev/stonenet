@@ -5,6 +5,7 @@ extern crate arrayref;
 
 mod api;
 mod common;
+mod compression;
 mod config;
 mod core;
 mod db;

@@ -107,6 +107,7 @@ Hoi ik ben Kees!
 			Some(&wallpaper_file_data),
 			Some(&description_file_data),
 		)
+		.await
 		.expect("unable to create identity");
 	let _ = node1
 		.node

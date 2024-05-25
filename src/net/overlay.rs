@@ -2667,6 +2667,7 @@ mod tests {
 		// Create data at the target node
 		let (actor_address, actor_info) = target_node
 			.create_my_identity("test", "Test", None, None, None)
+			.await
 			.unwrap();
 		let _ = target_node
 			.node

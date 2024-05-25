@@ -125,13 +125,17 @@ async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Res
 	};
 
 	// Create the identity
-	match g.api.create_my_identity(
-		&label,
-		&name,
-		avatar.as_ref(),
-		wallpaper.as_ref(),
-		description.as_ref(),
-	) {
+	match g
+		.api
+		.create_my_identity(
+			&label,
+			&name,
+			avatar.as_ref(),
+			wallpaper.as_ref(),
+			description.as_ref(),
+		)
+		.await
+	{
 		Ok((address, _)) => {
 			g.state.lock().await.identities.push(super::IdentityData {
 				label,

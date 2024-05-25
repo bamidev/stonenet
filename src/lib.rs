@@ -3,6 +3,7 @@ extern crate arrayref;
 
 pub mod api;
 pub mod common;
+pub mod compression;
 pub mod config;
 pub mod core;
 pub mod db;
