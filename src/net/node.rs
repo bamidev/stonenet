@@ -1475,6 +1475,7 @@ where
 {
 	type Item = AtomicPtr<()>;
 
+	// FIXME: Only contact the same node once
 	async fn next(&mut self) -> Option<Self::Item> {
 		while self.candidates.len() > 0 && self.visited.len() < self.visited.capacity() {
 			let (dist, candidate_contact, strategy) = self.candidates.pop_front().unwrap();

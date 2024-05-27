@@ -2666,7 +2666,7 @@ mod tests {
 
 		// Create data at the target node
 		let (actor_address, actor_info) = target_node
-			.create_my_identity("test", "Test", None, None, None)
+			.create_identity("test", "Test", None, None, None)
 			.await
 			.unwrap();
 		let _ = target_node
@@ -2687,7 +2687,7 @@ mod tests {
 		source_node.node.remember_relay_node(&relay_node_info).await;
 
 		let profile = source_node
-			.fetch_profile_info(&actor_address)
+			.find_profile_info(&actor_address)
 			.await
 			.unwrap()
 			.expect("no actor profile found");

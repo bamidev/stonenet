@@ -12,7 +12,7 @@ pub struct Model {
 	pub object_id: i64,
 	pub in_reply_to_actor_address: Option<ActorAddress>,
 	pub in_reply_to_object_hash: Option<IdType>,
-	pub file_count: i32,
+	pub file_count: u32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

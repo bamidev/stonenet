@@ -81,7 +81,7 @@ async fn actor_get(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 	Query(query): Query<PaginationQuery>,
 ) -> Response {
-	let profile = match g.api.fetch_profile_info(&address).await {
+	let profile = match g.api.find_profile_info(&address).await {
 		Ok(p) => p,
 		Err(e) => return server_error_response(e, "Unable to fetch profile"),
 	};

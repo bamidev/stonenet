@@ -127,7 +127,7 @@ async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Res
 	// Create the identity
 	match g
 		.api
-		.create_my_identity(
+		.create_identity(
 			&label,
 			&name,
 			avatar.as_ref(),

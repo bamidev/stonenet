@@ -77,6 +77,8 @@ pub enum Error {
 	FileMissingBlock(i64, i64),
 
 	MissingIdentity(ActorAddress),
+	/// Something in the database is not how it is expected to be.
+	UnexpectedState(String),
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -156,137 +158,6 @@ pub trait PersistenceHandle {
 
 	fn backend(&self) -> DatabaseBackend { self.inner().get_database_backend() }
 
-
-	/// Creates a file by doing the following:
-	/// * Compress the data if the file type isn't known to use compression
-	///   already
-	/// * Devide the (possibly compressed) data into blocks
-	/// * Encrypt & store all blocks
-	/// * Store file
-	/// Returns the file id, the hash & the list of block hashes
-	async fn create_file(
-		&self, tx: &Transaction, file_data: &FileData,
-	) -> Result<(i64, IdType, Vec<IdType>)> {
-		self.create_file2(tx, &file_data.mime_type, &file_data.data)
-			.await
-	}
-
-	/// Same as `create_file`.
-	async fn create_file2(
-		&self, tx: &Transaction, mime_type: &str, data: &[u8],
-	) -> Result<(i64, IdType, Vec<IdType>)> {
-		debug_assert!(data.len() <= u64::MAX as usize, "data too large");
-		debug_assert!(data.len() > 0, "data can not be empty");
-		let compressed_data;
-		let mut compression_type = if mime_type_use_compression(mime_type) {
-			CompressionType::Brotli
-		} else {
-			CompressionType::None
-		};
-
-		// Compress the data first, but only if it actually turns out significantly
-		// smaller than the original data blob
-		let file_data = if compression_type == CompressionType::Brotli {
-			compressed_data = compress(compression_type, data);
-			if compressed_data.len() <= (data.len() as f32 * 0.95) as usize {
-				&compressed_data
-			} else {
-				compression_type = CompressionType::None;
-				data
-			}
-		} else {
-			data
-		};
-
-		// Use an appropriate block size that is not too small to overload the network
-		// with blocks.
-		let mut block_count =
-			file_data.len() / BLOCK_SIZE + ((file_data.len() % BLOCK_SIZE) > 0) as usize;
-		let block_size = if block_count <= 100 {
-			BLOCK_SIZE
-		} else {
-			let bs = file_data.len() / 100 + (file_data.len() % 100 > 0) as usize;
-			block_count = file_data.len() / bs + ((file_data.len() % bs) > 0) as usize;
-			bs
-		};
-		let mut block_hashes = Vec::with_capacity(block_count);
-		let mut block_ids = Vec::with_capacity(block_count);
-
-		// Devide data into blocks, and store them already
-		let plain_hash = IdType::hash(data);
-		let mut i = 0;
-		let mut block_index = 0;
-		loop {
-			let slice = &file_data[i..];
-			let actual_block_size = min(block_size, slice.len());
-			let mut block = slice[..actual_block_size].to_vec();
-			encrypt_block(block_index, &plain_hash, &mut block);
-			let block_hash = IdType::hash(&block);
-			block_hashes.push(block_hash.clone());
-
-			// Store block with an invalid file_id
-			// When PostgreSQL & MySQL are available, use a unique temporary file_id because
-			// there may be multiple files stored at once. For SQLite it should not be an
-			// issue.
-			let insert = block::ActiveModel {
-				id: NotSet,
-				hash: Set(block_hash),
-				size: Set(actual_block_size as _),
-				data: Set(block),
-			};
-			let block_id = block::Entity::insert(insert)
-				.exec(tx.inner())
-				.await?
-				.last_insert_id;
-			block_ids.push(block_id);
-
-			block_index += 1;
-			i += block_size;
-			if i >= file_data.len() {
-				break;
-			}
-		}
-
-		// Calculate the file hash
-		let file_hash = IdType::hash(
-			&binserde::serialize(&File {
-				plain_hash: plain_hash.clone(),
-				mime_type: mime_type.to_string(),
-				compression_type: compression_type as u8,
-				blocks: block_hashes.clone(),
-			})
-			.unwrap(),
-		);
-
-		// Create the file record
-		let file_record = file::ActiveModel {
-			id: NotSet,
-			hash: Set(file_hash.clone()),
-			compression_type: Set(compression_type as u8),
-			mime_type: Set(mime_type.to_string()),
-			block_count: Set(block_count as _),
-			plain_hash: Set(plain_hash),
-		};
-		let file_id = file::Entity::insert(file_record)
-			.exec(tx.inner())
-			.await?
-			.last_insert_id;
-
-		// Create the file_block records
-		let mut seq = 0;
-		for block_hash in &block_hashes {
-			let insert = file_block::ActiveModel {
-				id: NotSet,
-				file_id: Set(file_id),
-				block_hash: Set(block_hash.clone()),
-				sequence: Set(seq),
-			};
-			file_block::Entity::insert(insert).exec(tx.inner()).await?;
-			seq += 1;
-		}
-
-		Ok((file_id as _, file_hash, block_hashes))
-	}
 
 	async fn ensure_actor_id(&self, address: &ActorAddress, info: &ActorInfo) -> Result<i64> {
 		if let Some(record) = actor::Entity::find()
@@ -778,7 +649,8 @@ pub trait PersistenceHandle {
 			.build(DatabaseBackend::Sqlite);
 
 		if let Some(result) = self.inner().query_one(stat).await? {
-			Ok(result.try_get_by_index::<i64>(0)? as u64)
+			let r = result.try_get_by_index::<Option<i64>>(0)?;
+			Ok(r.unwrap_or(0) as u64)
 		} else {
 			Ok(0)
 		}
@@ -910,9 +782,9 @@ pub trait PersistenceHandle {
 			LEFT JOIN file AS df ON po.description_file_hash = df.hash
 			WHERE i.address = ?
 			ORDER BY sequence DESC
-			LIMIT 1
+			
 		"#,
-				[actor_address.into()],
+				[actor_address.to_bytes().into()],
 			))
 			.await?;
 		Ok(if let Some(r) = result {
@@ -1917,7 +1789,7 @@ impl Connection {
 		Ok(())
 	}
 
-	pub(crate) fn _store_file_data(
+	/*pub(crate) fn _store_file_data(
 		tx: &impl DerefConnection, mime_type: &str, compression_type: u8, data: &[u8],
 	) -> Result<(i64, IdType, Vec<IdType>)> {
 		debug_assert!(data.len() <= u64::MAX as usize, "data too large");
@@ -1976,7 +1848,7 @@ impl Connection {
 			Self::_store_file_block(tx, file_id, i as _, block_hash, block_data)?;
 		}
 		Ok((file_id as _, file_hash, block_hashes))
-	}
+	}*/
 
 	pub(crate) fn _store_file(
 		tx: &impl Deref<Target = rusqlite::Connection>, id: &IdType, plain_hash: &IdType,
@@ -2014,7 +1886,6 @@ impl Connection {
 		tx: &impl DerefConnection, file_id: i64, sequence: u64, hash: &IdType, data: &[u8],
 	) -> Result<()> {
 		Self::_store_block(tx, file_id, hash, data)?;
-
 		tx.execute(
 			r#"
 			INSERT INTO file_block (file_id, block_hash, sequence) VALUES (?,?,?)
@@ -2324,34 +2195,6 @@ impl Connection {
 			&payload.wallpaper,
 			&payload.description,
 		])?;
-		Ok(())
-	}
-
-	pub fn _create_my_identity(
-		tx: &impl DerefConnection, label: &str, private_key: &ActorPrivateKeyV1,
-		first_object_hash: &IdType, first_object: &Object, name: &str,
-		avatar_hash: Option<&IdType>, wallpaper_hash: Option<&IdType>,
-		description_hash: Option<&IdType>,
-	) -> Result<()> {
-		let actor_id = Self::_store_my_identity(
-			tx,
-			label,
-			private_key,
-			&first_object_hash,
-			ACTOR_TYPE_BLOGCHAIN.to_string(),
-		)?;
-
-		Self::_store_profile_object(
-			tx,
-			actor_id,
-			first_object_hash,
-			&first_object,
-			name,
-			avatar_hash,
-			wallpaper_hash,
-			description_hash,
-		)?;
-
 		Ok(())
 	}
 
@@ -2791,7 +2634,7 @@ impl Connection {
 			INNER JOIN object AS o ON po.object_id = o.id
 			INNER JOIN actor AS i ON o.actor_id = i.id
 			WHERE i.address = ?
-			ORDER BY o.id DESC LIMIT 1
+			ORDER BY o.sequence DESC LIMIT 1
 		"#,
 		)?;
 		let mut rows = stat.query(params![actor_id])?;
@@ -2999,7 +2842,7 @@ impl Connection {
 		)
 	}
 
-	pub fn store_file_data(
+	/*pub fn store_file_data(
 		&mut self, compression_type: CompressionType, file_data: &FileData,
 	) -> Result<IdType> {
 		let (_, file_hash, _) = Self::_store_file_data(
@@ -3017,7 +2860,7 @@ impl Connection {
 		let (_, file_hash, _) =
 			Self::_store_file_data(self, mime_type, compression_type as _, data)?;
 		Ok(file_hash)
-	}
+	}*/
 
 	pub fn store_file2(
 		&mut self, id: &IdType, plain_hash: &IdType, mime_type: &str,
@@ -3256,6 +3099,7 @@ impl fmt::Display for Error {
 				None => write!(f, "invalid public key size"),
 			},
 			Self::MissingIdentity(hash) => write!(f, "identity {:?} is missing", &hash),
+			Self::UnexpectedState(msg) => write!(f, "unexpected database state: {}", msg),
 		}
 	}
 }
@@ -3324,6 +3168,318 @@ pub fn encrypt_block(index: u64, key: &IdType, data: &mut [u8]) {
 }
 
 
+impl ObjectPayloadInfo {
+	// Returns true if the payload contains enough information to at least show the
+	// main content.
+	pub fn has_main_content(&self) -> bool {
+		match self {
+			Self::Post(post) => post.message.is_some() && post.mime_type.is_some(),
+			Self::Share(share) =>
+				if let Some(op) = &share.original_post {
+					op.message.is_some() && op.actor_name.is_some()
+				} else {
+					false
+				},
+			Self::Profile(profile) => profile.description.is_some(),
+		}
+	}
+}
+
+impl Transaction {
+	/// Creates a file by doing the following:
+	/// * Compress the data if the file type isn't known to use compression
+	///   already
+	/// * Devide the (possibly compressed) data into blocks
+	/// * Encrypt & store all blocks
+	/// * Store file
+	/// Returns the file id, the hash & the list of block hashes
+	pub async fn create_file(&self, file_data: &FileData) -> Result<(i64, IdType, Vec<IdType>)> {
+		self.create_file2(&file_data.mime_type, &file_data.data)
+			.await
+	}
+
+	/// Same as `create_file`.
+	pub async fn create_file2(
+		&self, mime_type: &str, data: &[u8],
+	) -> Result<(i64, IdType, Vec<IdType>)> {
+		debug_assert!(data.len() <= u64::MAX as usize, "data too large");
+		debug_assert!(data.len() > 0, "data can not be empty");
+		let compressed_data;
+		let mut compression_type = if mime_type_use_compression(mime_type) {
+			CompressionType::Brotli
+		} else {
+			CompressionType::None
+		};
+
+		// Compress the data first, but only if it actually turns out significantly
+		// smaller than the original data blob
+		let file_data = if compression_type == CompressionType::Brotli {
+			compressed_data = compress(compression_type, data);
+			if compressed_data.len() <= (data.len() as f32 * 0.95) as usize {
+				&compressed_data
+			} else {
+				compression_type = CompressionType::None;
+				data
+			}
+		} else {
+			data
+		};
+
+		// Use an appropriate block size that is not too small to overload the network
+		// with blocks.
+		let mut block_count =
+			file_data.len() / BLOCK_SIZE + ((file_data.len() % BLOCK_SIZE) > 0) as usize;
+		let block_size = if block_count <= 100 {
+			BLOCK_SIZE
+		} else {
+			let bs = file_data.len() / 100 + (file_data.len() % 100 > 0) as usize;
+			block_count = file_data.len() / bs + ((file_data.len() % bs) > 0) as usize;
+			bs
+		};
+		let mut block_hashes = Vec::with_capacity(block_count);
+		let mut block_ids = Vec::with_capacity(block_count);
+
+		// Devide data into blocks, and store them if they don't yet exist
+		let plain_hash = IdType::hash(data);
+		let mut i = 0;
+		let mut block_index = 0;
+		loop {
+			let slice = &file_data[i..];
+			let actual_block_size = min(block_size, slice.len());
+			let mut block = slice[..actual_block_size].to_vec();
+			encrypt_block(block_index, &plain_hash, &mut block);
+			let block_hash = IdType::hash(&block);
+			block_hashes.push(block_hash.clone());
+
+			// Store block with an invalid file_id
+			// When PostgreSQL & MySQL are available, use a unique temporary file_id because
+			// there may be multiple files stored at once. For SQLite it should not be an
+			// issue.
+			let block_id = if let Some(record) = block::Entity::find()
+				.filter(block::Column::Hash.eq(&block_hash))
+				.one(self.inner())
+				.await?
+			{
+				record.id
+			} else {
+				let insert = block::ActiveModel {
+					id: NotSet,
+					hash: Set(block_hash),
+					size: Set(actual_block_size as _),
+					data: Set(block),
+				};
+				block::Entity::insert(insert)
+					.exec(self.inner())
+					.await?
+					.last_insert_id
+			};
+			block_ids.push(block_id);
+
+			block_index += 1;
+			i += block_size;
+			if i >= file_data.len() {
+				break;
+			}
+		}
+
+		// Calculate the file hash
+		let file_hash = IdType::hash(
+			&binserde::serialize(&File {
+				plain_hash: plain_hash.clone(),
+				mime_type: mime_type.to_string(),
+				compression_type: compression_type as u8,
+				blocks: block_hashes.clone(),
+			})
+			.unwrap(),
+		);
+
+		// Create or find the file record
+		let file_id = if let Some(record) = file::Entity::find()
+			.filter(file::Column::Hash.eq(&file_hash))
+			.one(self.inner())
+			.await?
+		{
+			record.id
+		} else {
+			let file_record = file::ActiveModel {
+				id: NotSet,
+				hash: Set(file_hash.clone()),
+				compression_type: Set(compression_type as u8),
+				mime_type: Set(mime_type.to_string()),
+				block_count: Set(block_count as _),
+				plain_hash: Set(plain_hash),
+			};
+			let file_id = file::Entity::insert(file_record)
+				.exec(self.inner())
+				.await?
+				.last_insert_id;
+
+			// Create the file_block records
+			let mut seq = 0;
+			for block_hash in &block_hashes {
+				let insert = file_block::ActiveModel {
+					id: NotSet,
+					file_id: Set(file_id),
+					block_hash: Set(block_hash.clone()),
+					sequence: Set(seq),
+				};
+				file_block::Entity::insert(insert)
+					.exec(self.inner())
+					.await?;
+				seq += 1;
+			}
+			file_id
+		};
+
+		Ok((file_id as _, file_hash, block_hashes))
+	}
+
+	pub async fn create_identity(
+		&self, label: &str, address: &ActorAddress, public_key: &ActorPublicKeyV1,
+		private_key: &ActorPrivateKeyV1, is_private: bool, first_object_hash: &IdType,
+	) -> Result<i64> {
+		let model = actor::ActiveModel {
+			id: NotSet,
+			address: Set(address.clone()),
+			public_key: Set(public_key.clone().to_bytes().to_vec()),
+			first_object: Set(first_object_hash.clone()),
+			r#type: Set(ACTOR_TYPE_BLOGCHAIN.to_string()),
+		};
+		let actor_id = actor::Entity::insert(model)
+			.exec(self.inner())
+			.await?
+			.last_insert_id;
+		let model = identity::ActiveModel {
+			label: Set(label.to_string()),
+			actor_id: Set(actor_id),
+			private_key: Set(private_key.as_bytes().to_vec()),
+			is_private: Set(is_private),
+		};
+		identity::Entity::insert(model).exec(self.inner()).await?;
+		Ok(actor_id)
+	}
+
+	async fn store_object(
+		&self, actor_id: i64, created: u64, hash: &IdType, previous_hash: &IdType, object_type: u8,
+		signature: &ActorSignatureV1, verified_from_start: bool,
+	) -> Result<i64> {
+		let next_sequence = self.find_next_object_sequence(actor_id).await?;
+		let record = object::ActiveModel {
+			id: NotSet,
+			actor_id: Set(actor_id),
+			hash: Set(hash.clone()),
+			sequence: Set(next_sequence as _),
+			previous_hash: Set(previous_hash.clone()),
+			created: Set(created as _),
+			found: Set(created as _),
+			r#type: Set(object_type),
+			signature: Set(signature.clone()),
+			verified_from_start: Set(verified_from_start),
+			published_on_fediverse: Set(false),
+		};
+		Ok(object::Entity::insert(record)
+			.exec(self.inner())
+			.await?
+			.last_insert_id)
+	}
+
+	pub async fn store_post(
+		&self, actor_id: i64, created: u64, hash: &IdType, previous_hash: &IdType,
+		signature: &ActorSignatureV1, verified_from_start: bool, tags: &[String], files: &[IdType],
+		in_reply_to: Option<(ActorAddress, IdType)>,
+	) -> Result<()> {
+		let object_id = self
+			.store_object(
+				actor_id,
+				created,
+				hash,
+				previous_hash,
+				OBJECT_TYPE_POST,
+				signature,
+				verified_from_start,
+			)
+			.await?;
+
+		let (a, o) = match in_reply_to {
+			None => (None, None),
+			Some((actor, object)) => (Some(actor), Some(object)),
+		};
+		let record = post_object::ActiveModel {
+			object_id: Set(object_id),
+			file_count: Set(files.len() as _),
+			in_reply_to_actor_address: Set(a),
+			in_reply_to_object_hash: Set(o),
+		};
+		post_object::Entity::insert(record)
+			.exec(self.inner())
+			.await?;
+
+		// Store all tags & files
+		self.store_post_tags(object_id, tags).await?;
+		self.store_post_files(object_id, files).await?;
+		Ok(())
+	}
+
+	pub async fn store_profile(
+		&self, actor_id: i64, created: u64, hash: &IdType, previous_hash: &IdType,
+		signature: &ActorSignatureV1, verified_from_start: bool, name: &str,
+		avatar_hash: Option<IdType>, wallpaper_hash: Option<IdType>,
+		description_hash: Option<IdType>,
+	) -> Result<()> {
+		let object_id = self
+			.store_object(
+				actor_id,
+				created,
+				hash,
+				previous_hash,
+				OBJECT_TYPE_PROFILE,
+				signature,
+				verified_from_start,
+			)
+			.await?;
+
+		let record = profile_object::ActiveModel {
+			object_id: Set(object_id),
+			name: Set(name.to_string()),
+			avatar_file_hash: Set(avatar_hash),
+			wallpaper_file_hash: Set(wallpaper_hash),
+			description_file_hash: Set(description_hash),
+		};
+		profile_object::Entity::insert(record)
+			.exec(self.inner())
+			.await?;
+		Ok(())
+	}
+
+	async fn store_post_tags(&self, object_id: i64, tags: &[String]) -> Result<()> {
+		for tag in tags {
+			let record = post_tag::ActiveModel {
+				id: NotSet,
+				object_id: Set(object_id),
+				tag: Set(tag.clone()),
+			};
+			post_tag::Entity::insert(record).exec(self.inner()).await?;
+		}
+		Ok(())
+	}
+
+	async fn store_post_files(&self, object_id: i64, files: &[IdType]) -> Result<()> {
+		let mut seq = 0;
+		for hash in files {
+			let record = post_file::ActiveModel {
+				id: NotSet,
+				object_id: Set(object_id),
+				hash: Set(hash.clone()),
+				sequence: Set(seq),
+			};
+			post_file::Entity::insert(record).exec(self.inner()).await?;
+			seq += 1;
+		}
+		Ok(())
+	}
+}
+
+
 #[cfg(test)]
 mod tests {
 	use rand::RngCore;
@@ -3347,8 +3503,8 @@ mod tests {
 			data: "This is some text.".as_bytes().to_vec(),
 		};
 		let tx = db.transaction().await.unwrap();
-		let (_, hash1, _) = db.create_file(&tx, &file_data1).await.unwrap();
-		let (_, hash2, _) = db.create_file(&tx, &file_data2).await.unwrap();
+		let (_, hash1, _) = tx.create_file(&file_data1).await.unwrap();
+		let (_, hash2, _) = tx.create_file(&file_data2).await.unwrap();
 		tx.commit().await.unwrap();
 
 		let fetched_file1 = db.load_file_data(&hash1).await.unwrap().unwrap();
@@ -3363,22 +3519,5 @@ mod tests {
 			"corrupted mime type"
 		);
 		assert_eq!(fetched_file2.data, file_data2.data, "corrupted file data");
-	}
-}
-
-impl ObjectPayloadInfo {
-	// Returns true if the payload contains enough information to at least show the
-	// main content.
-	pub fn has_main_content(&self) -> bool {
-		match self {
-			Self::Post(post) => post.message.is_some() && post.mime_type.is_some(),
-			Self::Share(share) =>
-				if let Some(op) = &share.original_post {
-					op.message.is_some() && op.actor_name.is_some()
-				} else {
-					false
-				},
-			Self::Profile(profile) => profile.description.is_some(),
-		}
 	}
 }

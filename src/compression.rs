@@ -24,10 +24,7 @@ fn compress_brotli(input: &[u8]) -> Vec<u8> {
 			// Add 10% capacity if needed
 			EncodeStatus::NeedOutput => output.reserve(max(input.len() / 10, 1024)),
 			EncodeStatus::Error => panic!("encode error"),
-			EncodeStatus::Finished => {
-				log::error!("compress brotli {} -> {}", input.len(), output.len());
-				return output;
-			}
+			EncodeStatus::Finished => return output,
 		}
 	}
 }

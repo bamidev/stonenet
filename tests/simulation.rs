@@ -100,7 +100,7 @@ Hoi ik ben Kees!
 		data: profile_description.as_bytes().to_vec(),
 	};
 	let (actor_id, actor_info) = node1
-		.create_my_identity(
+		.create_identity(
 			"kees",
 			"Kees",
 			Some(&avatar_file_data),
@@ -166,7 +166,7 @@ Hoi ik ben Kees!
 
 	// Check if all profile data came through correctly
 	let profile = node2
-		.fetch_profile_info(&actor_id)
+		.find_profile_info(&actor_id)
 		.await
 		.expect("unable to fetch profile object from node")
 		.expect("got empty profile object");

@@ -43,28 +43,27 @@ pub struct Api {
 impl Api {
 	pub async fn close(self) { self.node.close().await; }
 
-	pub async fn create_my_identity(
+	pub async fn create_identity(
 		&self, label: &str, name: &str, avatar: Option<&FileData>, wallpaper: Option<&FileData>,
 		description: Option<&FileData>,
 	) -> db::Result<(ActorAddress, ActorInfo)> {
-		// Prepare profile files
 		let tx = self.db.transaction().await?;
+		// Prepare profile files
 		let avatar_hash = if let Some(f) = avatar {
-			Some(self.db.create_file(&tx, f).await?.1)
+			Some(tx.create_file(f).await?.1)
 		} else {
 			None
 		};
 		let wallpaper_hash = if let Some(f) = wallpaper {
-			Some(self.db.create_file(&tx, f).await?.1)
+			Some(tx.create_file(f).await?.1)
 		} else {
 			None
 		};
 		let description_hash = if let Some(f) = description {
-			Some(self.db.create_file(&tx, f).await?.1)
+			Some(tx.create_file(f).await?.1)
 		} else {
 			None
 		};
-		tx.commit().await?;
 
 		let profile = ProfileObject {
 			name: name.to_string(),
@@ -107,33 +106,42 @@ impl Api {
 		// Create the identity on disk
 		// TODO: Remove old code and create the identity with the same transaction as
 		// used for the files
-		self.db.perform(|c| {
-			db::Connection::_create_my_identity(
-				&c,
+		let actor_id = tx
+			.create_identity(
 				label,
+				&actor_address,
+				&actor_info.public_key,
 				&private_key,
+				false,
 				&object_hash,
-				&object,
-				name,
-				avatar_hash.as_ref(),
-				wallpaper_hash.as_ref(),
-				description_hash.as_ref(),
-			)?;
-
-			Ok((actor_address, actor_info))
-		})
+			)
+			.await?;
+		tx.store_profile(
+			actor_id,
+			object.created,
+			&object_hash,
+			&IdType::default(),
+			&object.signature,
+			true,
+			name,
+			avatar_hash,
+			wallpaper_hash,
+			description_hash,
+		)
+		.await?;
+		tx.commit().await?;
+		Ok((actor_address, actor_info))
 	}
 
 	pub async fn create_share(
-		&self, connection: &db::Database, identity: &ActorAddress, private_key: &ActorPrivateKeyV1,
-		share: &ShareObject,
+		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, share: &ShareObject,
 	) -> db::Result<(i64, IdType, Object)> {
-		let tx = connection.transaction().await?;
+		let tx = self.db.transaction().await?;
 
 		// Construct fields for the share object
 		let identity_record = actor::Entity::find()
 			.filter(actor::Column::Address.eq(identity))
-			.one(&tx.0)
+			.one(tx.inner())
 			.await?
 			.expect("identity doesn't exist");
 
@@ -173,7 +181,7 @@ impl Api {
 			r#type: Set(OBJECT_TYPE_SHARE),
 			published_on_fediverse: Set(false),
 		})
-		.exec(&tx.0)
+		.exec(tx.inner())
 		.await?;
 		let object_id = result.last_insert_id;
 
@@ -183,7 +191,7 @@ impl Api {
 			actor_address: Set(share.actor_address.clone()),
 			object_hash: Set(share.object_hash.clone()),
 		})
-		.exec(&tx.0)
+		.exec(tx.inner())
 		.await?;
 
 		tx.commit().await?;
@@ -365,7 +373,7 @@ impl Api {
 		Ok(objects.unwrap())
 	}*/
 
-	pub async fn fetch_profile_info(
+	pub async fn find_profile_info(
 		&self, actor_address: &ActorAddress,
 	) -> db::Result<Option<ProfileObjectInfo>> {
 		let profile = self.db.find_profile_info(actor_address).await?;
@@ -375,6 +383,7 @@ impl Api {
 
 		// Try to get the profile from the actor network
 		if let Some(_) = self.node.find_actor_profile_info(actor_address).await {
+			// TODO: Contruct the profile info from the object
 			let profile = self.db.find_profile_info(actor_address).await?;
 			return Ok(profile);
 		}
@@ -514,74 +523,86 @@ impl Api {
 	}
 
 	pub async fn publish_post(
-		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, message: &str,
+		&self, actor_address: &ActorAddress, private_key: &ActorPrivateKeyV1, message: &str,
 		tags: Vec<String>, attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> db::Result<IdType> {
-		let (hash, object) = self.db.perform(|mut c| {
-			let tx = c.transaction_old()?;
-			let identity_id =
-				db::Connection::_find_identity(&tx, identity)?.expect("unknown identity");
+		let tx = self.db.transaction().await?;
+		let actor = actor::Entity::find()
+			.filter(actor::Column::Address.eq(actor_address))
+			.one(tx.inner())
+			.await?;
+		assert!(actor.is_some(), "actor address not known");
+		let actor_id = actor.unwrap().id;
 
-			// Store all files
-			let mut files = Vec::with_capacity(attachments.len() + 1);
-			let (_, file_hash, _) =
-				db::Connection::_store_file_data(&tx, "text/markdown", 0, message.as_bytes())?;
+		// Store all files
+		let mut files = Vec::with_capacity(attachments.len() + 1);
+		let (_, file_hash, _) = tx.create_file2("text/markdown", message.as_bytes()).await?;
+		files.push(file_hash);
+		for FileData { mime_type, data } in attachments {
+			let (_, file_hash, _) = tx.create_file2(mime_type, data).await?;
 			files.push(file_hash);
-			for FileData { mime_type, data } in attachments {
-				let (_, file_hash, _) = db::Connection::_store_file_data(&tx, mime_type, 0, data)?;
-				files.push(file_hash);
-			}
+		}
 
-			// Sign the post
-			let next_object_sequence = db::Connection::_next_object_sequence_old(&tx, identity_id)?;
-			let object_payload = ObjectPayload::Post(PostObject {
-				in_reply_to: in_reply_to.clone(),
-				data: PostObjectCryptedData::Plain(PostObjectDataPlain {
-					tags: tags.clone(),
-					files: files.clone(),
-				}),
-			});
-			let created = Utc::now().timestamp_millis() as u64;
-			let previous_hash = db::Connection::_fetch_object_hash_by_sequence(
-				&tx,
-				identity,
+		// Sign the post
+		let next_object_sequence = tx.find_next_object_sequence(actor_id).await?;
+		if next_object_sequence == 0 {
+			Err(db::Error::UnexpectedState(
+				"actor has not objects".to_string(),
+			))?;
+		}
+		let object_payload = ObjectPayload::Post(PostObject {
+			in_reply_to: in_reply_to.clone(),
+			data: PostObjectCryptedData::Plain(PostObjectDataPlain {
+				tags: tags.clone(),
+				files: files.clone(),
+			}),
+		});
+		let created = Utc::now().timestamp_millis() as u64;
+		let previous_hash = if let Some(object) = object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.filter(object::Column::Sequence.eq(next_object_sequence - 1))
+			.one(tx.inner())
+			.await?
+		{
+			object.hash
+		} else {
+			return Err(db::Error::UnexpectedState(format!(
+				"can't find object sequence {} for actor {}",
 				next_object_sequence - 1,
-			)?;
-			let (hash, signature) = Self::sign_object(
-				next_object_sequence,
-				&previous_hash,
-				created,
-				&object_payload,
-				&private_key,
-			);
+				actor_id
+			)))?;
+		};
+		let (hash, signature) = Self::sign_object(
+			next_object_sequence,
+			&previous_hash,
+			created,
+			&object_payload,
+			&private_key,
+		);
 
-			db::Connection::_store_post(
-				&tx,
-				identity_id,
-				created,
-				&previous_hash,
-				true,
-				&tags,
-				&files,
-				&hash,
-				&signature,
-				in_reply_to,
-			)?;
-			tx.commit()?;
+		tx.store_post(
+			actor_id,
+			created,
+			&hash,
+			&previous_hash,
+			&signature,
+			true,
+			&tags,
+			&files,
+			in_reply_to,
+		)
+		.await?;
+		tx.commit().await?;
 
-			Ok((
-				hash,
-				Object {
-					created,
-					sequence: next_object_sequence,
-					previous_hash,
-					signature,
-					payload: object_payload,
-				},
-			))
-		})?;
+		let object = Object {
+			created,
+			sequence: next_object_sequence,
+			previous_hash,
+			signature,
+			payload: object_payload,
+		};
 
-		if let Some(actor_node) = self.node.get_actor_node(&identity.as_id()).await {
+		if let Some(actor_node) = self.node.get_actor_node(&actor_address.as_id()).await {
 			actor_node
 				.publish_object(&self.node, &hash, &object, &[], 0)
 				.await;
@@ -596,10 +617,7 @@ impl Api {
 		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: &ShareObject,
 	) -> db::Result<IdType> {
 		// Store the share object
-		let (_, hash, object) = {
-			self.create_share(&self.db, identity, private_key, object)
-				.await?
-		};
+		let (_, hash, object) = { self.create_share(identity, private_key, object).await? };
 
 		// Publish the object into the network
 		if let Some(actor_node) = self.node.get_actor_node(&identity.as_id()).await {
@@ -634,14 +652,99 @@ impl Api {
 	}
 }
 
-/*impl From<db::Error> for Error {
-	fn from(other: db::Error) -> Self {
-		Self::DatabaseError(other)
+
+#[cfg(test)]
+mod tests {
+	use rand::RngCore;
+
+	use super::*;
+	use crate::test;
+
+	#[tokio::test]
+	async fn test_create_identity() {
+		let mut rng = test::initialize_rng();
+		let db = test::load_database("api").await;
+		let node = test::empty_node(db.clone(), &mut rng).await;
+		let api = Api {
+			node,
+			db: db.clone(),
+		};
+
+		let label = "Label";
+		let name = "Display name";
+		let mut avatar_data = vec![0u8; 1024];
+		rng.fill_bytes(&mut avatar_data);
+		let avatar = FileData {
+			mime_type: "image/png".to_string(),
+			data: avatar_data,
+		};
+		let mut wallpaper_data = vec![0u8; 10240];
+		rng.fill_bytes(&mut wallpaper_data);
+		let wallpaper = FileData {
+			mime_type: "image/jpeg".to_string(),
+			data: wallpaper_data,
+		};
+		let description_data = "Actor description";
+		let description = FileData {
+			mime_type: "text/plain".to_string(),
+			data: description_data.as_bytes().to_vec(),
+		};
+
+		// Create the files already so that we know the hashes beforehand
+		let tx = db.transaction().await.unwrap();
+		let (_, avatar_hash, _) = tx.create_file(&avatar).await.unwrap();
+		let (_, wallpaper_hash, _) = tx.create_file(&wallpaper).await.unwrap();
+		let (_, description_hash, _) = tx.create_file(&description).await.unwrap();
+		tx.commit().await.unwrap();
+
+		let (address, _) = api
+			.create_identity(
+				label,
+				name,
+				Some(&avatar),
+				Some(&wallpaper),
+				Some(&description),
+			)
+			.await
+			.unwrap();
+
+		actor::Entity::find()
+			.filter(actor::Column::Address.eq(&address))
+			.one(db.inner())
+			.await
+			.unwrap()
+			.expect("actor not found");
+		identity::Entity::find()
+			.filter(identity::Column::Label.eq(label))
+			.one(db.inner())
+			.await
+			.unwrap()
+			.expect("identity not found");
+		let object = object::Entity::find()
+			.filter(object::Column::Sequence.eq(0))
+			.one(db.inner())
+			.await
+			.unwrap()
+			.expect("profile object not found");
+		let profile = db
+			.load_profile_object_payload(object.id)
+			.await
+			.unwrap()
+			.expect("profile object payload not found");
+		assert_eq!(&profile.name, name);
+		assert_eq!(profile.avatar, Some(avatar_hash.clone()));
+		assert_eq!(profile.wallpaper, Some(wallpaper_hash.clone()));
+		assert_eq!(profile.description, Some(description_hash));
+
+		let profile_info = db
+			.find_profile_info(&address)
+			.await
+			.unwrap()
+			.expect("profile info not found");
+		assert_eq!(profile_info.actor.address, address.to_string());
+		assert_eq!(profile_info.actor.name, name.to_string());
+		assert_eq!(profile_info.actor.avatar_id, Some(avatar_hash));
+		assert_eq!(profile_info.actor.wallpaper_id, Some(wallpaper_hash));
+		assert_eq!(profile_info.description, Some(description_data.to_string()));
 	}
 }
-
-impl From<io::Error> for Error {
-	fn from(other: io::Error) -> Self {
-		Self::NetworkError(other)
-	}
-}*/

@@ -7,6 +7,7 @@ use std::{
 use async_trait::async_trait;
 use base58::*;
 use num::bigint::BigUint;
+use rand::Rng;
 use rusqlite::types::*;
 use sea_orm::{DbErr, TryGetError};
 use serde::{Deserialize, Serialize, Serializer};
@@ -138,6 +139,12 @@ impl IdType {
 	pub fn into_bytes(self) -> [u8; 32] { self.0 }
 
 	pub fn new(bytes: [u8; 32]) -> Self { Self(bytes.into()) }
+
+	pub fn random(rng: &mut impl Rng) -> Self {
+		let mut buffer = [0u8; 32];
+		rng.fill_bytes(&mut buffer);
+		Self(buffer)
+	}
 }
 
 impl ops::BitXor<&IdType> for IdType {
@@ -225,7 +232,7 @@ impl Into<sea_orm::Value> for IdType {
 }
 
 impl sea_orm::sea_query::Nullable for IdType {
-	fn null() -> sea_orm::Value { IdType::default().into() }
+	fn null() -> sea_orm::Value { sea_orm::Value::String(None) }
 }
 
 impl sea_orm::sea_query::ValueType for IdType {
@@ -235,7 +242,7 @@ impl sea_orm::sea_query::ValueType for IdType {
 				let id = if let Some(string) = s {
 					IdType::from_base58(&string).map_err(|_| sea_orm::sea_query::ValueTypeErr)?
 				} else {
-					IdType::default()
+					return Err(sea_orm::sea_query::ValueTypeErr);
 				};
 				Ok(id)
 			}
