@@ -64,11 +64,10 @@ pub const OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_RESPONSE: u8 = 81;
 pub struct ConnectActorIter<'a> {
 	base: FindActorIter<'a>,
 	actor_info: Option<ActorInfo>,
-	state: u8,
-	pi: usize,
-	ri: usize,
-	punchable_nodes: Vec<(NodeContactInfo, ContactOption, bool)>,
-	relayable_nodes: Vec<NodeContactInfo>,
+	has_contacts_to_process: bool,
+	open_nodes_iter: <Vec<(NodeContactInfo, ContactOption)> as IntoIterator>::IntoIter,
+	punchable_nodes_iter: <Vec<(NodeContactInfo, ContactOption, bool)> as IntoIterator>::IntoIter,
+	relayable_nodes_iter: <Vec<NodeContactInfo> as IntoIterator>::IntoIter,
 }
 pub struct FindActorIter<'a>(FindValueIter<'a, OverlayInterface>);
 
@@ -224,6 +223,121 @@ impl<'a> AsyncIterator for FindActorIter<'a> {
 
 impl<'a> ConnectActorIter<'a> {
 	pub fn visited(&self) -> &[(IdType, ContactOption)] { self.base.visited() }
+
+	/// Gathers new contacts
+	async fn gather_new_contacts(&mut self) -> bool {
+		while let Some(result) = self.base.next().await {
+			let (ai, actor_nodes) = *result;
+			if self.actor_info.is_none() {
+				self.actor_info = Some(ai);
+			}
+			if actor_nodes.len() == 0 {
+				continue;
+			}
+
+			// Sort all nodes into 3 different collections, to try one collection at the
+			// time
+			let mut open_nodes: Vec<(NodeContactInfo, ContactOption)> =
+				Vec::with_capacity(actor_nodes.len());
+			let mut punchable_nodes: Vec<(NodeContactInfo, ContactOption, bool)> =
+				Vec::with_capacity(actor_nodes.len());
+			let mut relayable_nodes: Vec<NodeContactInfo> = Vec::with_capacity(actor_nodes.len());
+			for node in actor_nodes {
+				if &node.node_id == self.base.0.node.node_id() {
+					continue;
+				}
+
+				if let Some(strategy) = self.base.0.node.pick_contact_strategy(&node.contact_info) {
+					match strategy.method {
+						ContactStrategyMethod::Relay =>
+							if relayable_nodes
+								.iter()
+								.position(|n| &n.node_id == &node.node_id)
+								.is_none()
+							{
+								relayable_nodes.push(node);
+							},
+						ContactStrategyMethod::PunchHole =>
+							if punchable_nodes
+								.iter()
+								.position(|(n, ..)| &n.node_id == &node.node_id)
+								.is_none()
+							{
+								punchable_nodes.push((node.clone(), strategy.contact, false));
+							},
+						ContactStrategyMethod::Reversed =>
+							if punchable_nodes
+								.iter()
+								.position(|(n, ..)| &n.node_id == &node.node_id)
+								.is_none()
+							{
+								punchable_nodes.push((node.clone(), strategy.contact, true));
+							},
+						ContactStrategyMethod::Direct =>
+							if open_nodes
+								.iter()
+								.position(|(n, _)| &n.node_id == &node.node_id)
+								.is_none()
+							{
+								open_nodes.push((node.clone(), strategy.contact));
+							},
+					}
+				}
+			}
+
+			self.open_nodes_iter = open_nodes.into_iter();
+			self.punchable_nodes_iter = punchable_nodes.into_iter();
+			self.relayable_nodes_iter = relayable_nodes.into_iter();
+			return true;
+		}
+		false
+	}
+
+	async fn try_contacts(&mut self) -> Option<(Box<Connection>, ActorInfo)> {
+		// First try all the open nodes
+		while let Some((node_info, contact_option)) = self.open_nodes_iter.next() {
+			if let Some((connection, _)) = self
+				.base
+				.0
+				.node
+				.connect(&contact_option, Some(&node_info.node_id), None)
+				.await
+			{
+				return Some((connection, self.actor_info.clone().unwrap()));
+			}
+		}
+
+		// Then try the punchable nodes
+		while let Some((node_info, contact_option, reversed)) = self.punchable_nodes_iter.next() {
+			let strategy = ContactStrategy {
+				method: if reversed {
+					ContactStrategyMethod::Reversed
+				} else {
+					ContactStrategyMethod::PunchHole
+				},
+				contact: contact_option.clone(),
+			};
+			// TODO: There needs to be a "self.base.connect_through_hole_punching"
+			// function or something like that...
+			if let Some((connection, _)) = self
+				.base
+				.0
+				.node
+				.connect_by_strategy(&node_info, &strategy, None, None)
+				.await
+			{
+				return Some((connection, self.actor_info.as_ref().unwrap().clone()));
+			}
+		}
+
+		// Then, try all relayable nodes as a last resort
+		while let Some(node_info) = self.relayable_nodes_iter.next() {
+			if let Some(connection) = self.base.0.overlay_node.open_relay(&node_info).await {
+				return Some((connection, self.actor_info.as_ref().unwrap().clone()));
+			}
+		}
+		None
+	}
 }
 
 #[async_trait]
@@ -231,91 +345,22 @@ impl<'a> AsyncIterator for ConnectActorIter<'a> {
 	type Item = (Box<Connection>, ActorInfo);
 
 	async fn next(&mut self) -> Option<Self::Item> {
-		// At first, just try bidirectional nodes only
-		if self.state == 0 {
-			while let Some(result) = self.base.next().await {
-				let (ai, actor_nodes) = *result;
-				if self.actor_info.is_none() {
-					self.actor_info = Some(ai);
+		// Try new contacts as long as we can gather new ones
+		loop {
+			// At first, just try bidirectional nodes only
+			if !self.has_contacts_to_process {
+				if !self.gather_new_contacts().await {
+					return None;
 				}
-
-				// Try all unidirectional nodes first, just remember the others
-				for node in actor_nodes {
-					if &node.node_id == self.base.0.node.node_id() {
-						continue;
-					}
-
-					if let Some(strategy) =
-						self.base.0.node.pick_contact_strategy(&node.contact_info)
-					{
-						match strategy.method {
-							ContactStrategyMethod::Relay => {
-								self.relayable_nodes.push(node);
-							}
-							ContactStrategyMethod::PunchHole => {
-								self.punchable_nodes
-									.push((node.clone(), strategy.contact, false));
-							}
-							ContactStrategyMethod::Reversed => {
-								self.punchable_nodes
-									.push((node.clone(), strategy.contact, true));
-							}
-							ContactStrategyMethod::Direct => {
-								if let Some((connection, _)) = self
-									.base
-									.0
-									.node
-									.connect(&strategy.contact, Some(&node.node_id), None)
-									.await
-								{
-									return Some((connection, self.actor_info.clone().unwrap()));
-								}
-							}
-						}
-					}
-				}
+				self.has_contacts_to_process = true;
 			}
-			self.state = 1;
+
+			// Then, consume & try all the nodes we've just received
+			if let Some(result) = self.try_contacts().await {
+				return Some(result);
+			}
+			self.has_contacts_to_process = false;
 		}
-
-		// Then, try all the punchable nodes we've encountered
-		if self.state == 1 {
-			for i in self.pi..self.punchable_nodes.len() {
-				let (node_info, contact_option, reversed) = &self.punchable_nodes[i];
-				let strategy = ContactStrategy {
-					method: if *reversed {
-						ContactStrategyMethod::Reversed
-					} else {
-						ContactStrategyMethod::PunchHole
-					},
-					contact: contact_option.clone(),
-				};
-				// FIXME: There needs to be a "self.base.connect_through_hole_punching"
-				// function or something like that...
-				if let Some((connection, _)) = self
-					.base
-					.0
-					.node
-					.connect_by_strategy(&node_info, &strategy, None, None)
-					.await
-				{
-					self.pi = i + 1;
-					return Some((connection, self.actor_info.as_ref().unwrap().clone()));
-				}
-			}
-			self.pi = self.punchable_nodes.len();
-
-			for i in self.ri..self.relayable_nodes.len() {
-				let node_info = &self.relayable_nodes[i];
-				if let Some(connection) = self.base.0.overlay_node.open_relay(node_info).await {
-					self.ri = i + 1;
-					return Some((connection, self.actor_info.as_ref().unwrap().clone()));
-				}
-			}
-			self.ri = self.relayable_nodes.len();
-		}
-
-		None
 	}
 }
 
@@ -907,11 +952,10 @@ impl OverlayNode {
 		ConnectActorIter {
 			base: self.find_actor_iter(actor_id, 100, true).await,
 			actor_info: None,
-			state: 0,
-			pi: 0,
-			ri: 0,
-			punchable_nodes: Vec::new(),
-			relayable_nodes: Vec::new(),
+			has_contacts_to_process: false,
+			open_nodes_iter: Vec::new().into_iter(),
+			punchable_nodes_iter: Vec::new().into_iter(),
+			relayable_nodes_iter: Vec::new().into_iter(),
 		}
 	}
 
