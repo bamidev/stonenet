@@ -10,7 +10,7 @@ use std::{
 use chrono::*;
 use log::*;
 use rand::rngs::OsRng;
-use sea_orm::{prelude::*, NotSet, QueryOrder, Set};
+use sea_orm::{prelude::*, NotSet, Set};
 use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -825,6 +825,7 @@ mod tests {
 			.await
 			.unwrap()
 			.expect("profile object not found");
+		assert_eq!(object.r#type, OBJECT_TYPE_PROFILE);
 		let profile = db
 			.load_profile_object_payload(object.id)
 			.await
