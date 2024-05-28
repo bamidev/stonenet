@@ -2,8 +2,18 @@
 {% block title %}New Identity{% endblock %}
 
 {% block before_profile %}
-	{% set avatar_url = "/static/default_wallpaper.jpg" -%}
+	{% set avatar_url = "/static/default_avatar.jpg" -%}
 	{% set wallpaper_url = "/static/default_wallpaper.jpg" -%}
+	{% if profile %}
+		{% set name = profile.actor.name %}
+		{% set description = profile.description %}
+		{% if profile.actor.avatar_id %}
+			{% set avatar_url = "/actor/" ~ profile.actor.address ~ "/file/" ~ profile.actor.avatar_id -%}
+		{% endif %}
+		{% if profile.actor.wallpaper_id %}
+			{% set wallpaper_url = "/actor/" ~ profile.actor.address ~ "/file/" ~ profile.actor.wallpaper_id  -%}
+		{% endif %}
+	{% endif %}
 	<style>
 		.wallpaper {
 			background-image: url('{{wallpaper_url | safe}}');
@@ -12,7 +22,13 @@
 		}
 	</style>
 
-	<h2>Create Identity</h2>
+	<h2>
+		{% if not profile %}
+			Create identity
+		{% else %}
+			Edit identity
+		{% endif %}
+	</h2>
 
 	<form method="post" enctype="multipart/form-data">
 		<p>
@@ -22,7 +38,7 @@
 						<label for="label">Label:</label>
 					</div>
 					<div class="col">
-						<input id="label" class="form-control form-control-m" name="label" type="text" placeholder="A name to distinguish it from your other identities" />
+						<input id="label" class="form-control form-control-m" name="label" type="text" placeholder="A name to distinguish it from your other identities" value="{{label}}" />
 					</div>
 				</div>
 				<div class="mb-1 row">
@@ -46,18 +62,24 @@
 {% endblock before_profile %}
 
 {% block name %}
-	<input type="text" name="name" class="form-control form-control-m" placeholder="Display name..." />
+	<input type="text" name="name" class="form-control form-control-m" placeholder="Display name..." value="{{name}}" />
 {% endblock name %}
 
 {% block description %}
 	<div id="description" class="mt-5">
-		<div id="editor" style="min-width: 50px;"></div>
-		<textarea class="default-editor" name="description"></textarea>
+		<!--<div id="editor" style="min-width: 50px;"></div>-->
+		<textarea class="default-editor" name="description">{{description}}</textarea>
 	</div>
 {% endblock description %}
 
 {% block after_profile %}
-		<button class="btn btn-primary float-end" type="submit">Create</button>
+		<button class="btn btn-primary float-end" type="submit">
+			{% if not profile %}
+				Create
+			{% else %}
+				Save
+			{% endif %}
+		</button>
 	</form>
 
 	<script type="text/javascript">

@@ -18,7 +18,7 @@
 				{% for identity in identities %}
 					<tr>
 						<td>{{ identity.label }}</td>
-						<td><a href="/actor/{{identity.address}}">{{ identity.address }}</a></td>
+						<td><a href="/identity/{{identity.label}}">{{ identity.address }}</a></td>
 					</tr>
 				{% endfor %}
 			</tbody>

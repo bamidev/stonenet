@@ -5,14 +5,13 @@
 {% block before_profile %}
 	{% set avatar_url = "/static/default_avatar.jpg" -%}
 	{% set wallpaper_url = "/static/default_wallpaper.jpg" -%}
-	{% set name = address -%}
 	{% if profile %}
 		{% set name = profile.actor.name %}
 		{% if profile.actor.avatar_id %}
-			{% set avatar_url = "/actor/" ~ address ~ "/file/" ~ profile.actor.avatar_id -%}
+			{% set avatar_url = "/actor/" ~ profile.actor.address ~ "/file/" ~ profile.actor.avatar_id -%}
 		{% endif %}
 		{% if profile.actor.wallpaper_id %}
-			{% set wallpaper_url = "/actor/" ~ address ~ "/file/" ~ profile.actor.wallpaper_id  -%}
+			{% set wallpaper_url = "/actor/" ~ profile.actor.address ~ "/file/" ~ profile.actor.wallpaper_id  -%}
 		{% endif %}
 	{% endif %}
 	<style>

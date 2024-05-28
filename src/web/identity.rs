@@ -1,15 +1,26 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use axum::{body::*, extract::*, response::Response, routing::*};
+use axum::{
+	body::*,
+	extract::*,
+	middleware::{from_fn_with_state, Next},
+	response::Response,
+	routing::*,
+	RequestExt,
+};
 use log::*;
 use sea_orm::{prelude::*, QuerySelect, QueryTrait};
 use serde::{Deserialize, Serialize};
 use tera::Context;
 
-use super::{server_error_response, server_error_response2, FileData, Global};
+use super::{
+	not_found_error_response, server_error_response, server_error_response2, ActorAddress,
+	FileData, Global,
+};
 use crate::{
 	db::{self, Database, PersistenceHandle},
 	entity::*,
+	identity::ActorPrivateKeyV1,
 };
 
 
@@ -26,20 +37,95 @@ struct SelectFormData {
 
 
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
-	let mut new_methods = get(new);
-	if !g.server_info.is_exposed {
-		new_methods = new_methods.post(new_post);
+	if g.server_info.is_exposed {
+		return Router::new();
 	}
 
-	let mut router = Router::new()
+	Router::new()
+		.route("/:label", get(profile_get).post(profile_post))
+		.route_layer(from_fn_with_state(g, identity_middleware))
 		.route("/", get(index))
-		.route("/new", new_methods);
-	if !g.server_info.is_exposed {
-		router = router.route("/select", post(select_post));
-	}
-	router
+		.route("/new", post(new_post))
+		.route("/select", get(new).post(select_post))
 }
 
+async fn identity_middleware(
+	State(g): State<Arc<Global>>, mut request: Request, next: Next,
+) -> Response {
+	let params = request
+		.extract_parts::<Path<HashMap<String, String>>>()
+		.await
+		.unwrap()
+		.0;
+	let label = params.get("label").unwrap();
+
+	let identity_opt = match identity::Entity::find()
+		.filter(identity::Column::Label.eq(label))
+		.one(g.api.db.inner())
+		.await
+	{
+		Err(e) => return server_error_response(e, "Unable to load identity"),
+		Ok(a) => a,
+	};
+
+	if let Some(identity) = identity_opt {
+		request.extensions_mut().insert(label.clone());
+		request.extensions_mut().insert(identity);
+	} else {
+		return not_found_error_response("Unknown identity");
+	}
+
+	next.run(request).await
+}
+
+async fn profile_get(
+	State(g): State<Arc<Global>>, Extension(label): Extension<String>,
+	Extension(identity): Extension<identity::Model>,
+) -> Response {
+	let profile = match g.api.db.find_profile_info2(identity.actor_id).await {
+		Ok(p) => p,
+		Err(e) => return server_error_response(e, "Unable to fetch profile"),
+	};
+
+	let mut context = Context::new();
+	context.insert("label", &label);
+	context.insert("profile", &profile);
+	context.insert("is_following", &true);
+	g.render("identity/profile.html.tera", context).await
+}
+
+async fn profile_post(
+	State(g): State<Arc<Global>>, Extension(old_label): Extension<String>,
+	Extension(identity): Extension<identity::Model>, multipart: Multipart,
+) -> Response {
+	let (new_label, name, avatar, wallpaper, description) = parse_identity_form(multipart).await;
+	if name.len() == 0 {
+		return server_error_response2("Display name can not be empty");
+	}
+
+	let private_key = ActorPrivateKeyV1::from_bytes(identity.private_key.try_into().unwrap());
+	if let Err(e) = g
+		.api
+		.update_profile(
+			&private_key,
+			identity.actor_id,
+			&old_label,
+			&new_label,
+			&name,
+			avatar,
+			wallpaper,
+			description,
+		)
+		.await
+	{
+		return server_error_response(e, "Unable to update profile");
+	}
+	Response::builder()
+		.status(303)
+		.header("Location", "/identity")
+		.body(Body::empty())
+		.unwrap()
+}
 
 async fn index(State(g): State<Arc<Global>>) -> Response {
 	let identities = match g.api.fetch_my_identities() {
@@ -63,10 +149,18 @@ async fn index(State(g): State<Arc<Global>>) -> Response {
 }
 
 async fn new(State(g): State<Arc<Global>>) -> Response {
-	g.render("identity/new.html.tera", Context::new()).await
+	g.render("identity/profile.html.tera", Context::new()).await
 }
 
-async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Response {
+async fn parse_identity_form(
+	mut multipart: Multipart,
+) -> (
+	String,
+	String,
+	Option<FileData>,
+	Option<FileData>,
+	Option<FileData>,
+) {
 	// Collect all data from the multipart post request
 	let mut label_buf = Vec::new();
 	let mut name_buf = Vec::new();
@@ -87,9 +181,7 @@ async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Res
 			}
 			"wallpaper" => {
 				wallpaper_mime_type = field.content_type().map(|s| s.to_string());
-				let b = field.bytes().await;
-				println!("TEST: {:?}", &b);
-				wallpaper_buf = b.unwrap().to_vec();
+				wallpaper_buf = field.bytes().await.unwrap().to_vec();
 			}
 			"description" => description_buf = field.bytes().await.unwrap().to_vec(),
 			other => warn!("Unrecognized profile form field: {}", other),
@@ -123,6 +215,12 @@ async fn new_post(State(g): State<Arc<Global>>, mut multipart: Multipart) -> Res
 	} else {
 		None
 	};
+
+	(label, name, avatar, wallpaper, description)
+}
+
+async fn new_post(State(g): State<Arc<Global>>, multipart: Multipart) -> Response {
+	let (label, name, avatar, wallpaper, description) = parse_identity_form(multipart).await;
 
 	// Create the identity
 	match g

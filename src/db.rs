@@ -794,6 +794,31 @@ pub trait PersistenceHandle {
 		})
 	}
 
+	async fn find_profile_info2(&self, actor_id: i64) -> Result<Option<ProfileObjectInfo>> {
+		let result = self
+			.inner()
+			.query_one(Statement::from_sql_and_values(
+				self.inner().get_database_backend(),
+				r#"
+			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
+				df.plain_hash, df.block_count
+			FROM profile_object AS po
+			LEFT JOIN object AS o ON po.object_id = o.id
+			LEFT JOIN actor AS i ON o.actor_id = i.id
+			LEFT JOIN file AS df ON po.description_file_hash = df.hash
+			WHERE i.id = ?
+			ORDER BY sequence DESC
+		"#,
+				[actor_id.into()],
+			))
+			.await?;
+		Ok(if let Some(r) = result {
+			self._parse_profile_info(r).await?
+		} else {
+			None
+		})
+	}
+
 	async fn find_profile_object_info(&self, object_id: i64) -> Result<Option<ProfileObjectInfo>> {
 		let result = self
 			.inner()
@@ -1025,6 +1050,32 @@ pub trait PersistenceHandle {
 		}
 	}
 
+	async fn find_profile_files(
+		&self, actor_id: i64,
+	) -> Result<(Option<IdType>, Option<IdType>, Option<IdType>)> {
+		// TODO: Merge the following two queries:
+		if let Some(object) = object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.filter(object::Column::Type.eq(OBJECT_TYPE_PROFILE))
+			.order_by_desc(object::Column::Sequence)
+			.one(self.inner())
+			.await?
+		{
+			if let Some(payload) = profile_object::Entity::find()
+				.filter(profile_object::Column::ObjectId.eq(object.id))
+				.one(self.inner())
+				.await?
+			{
+				return Ok((
+					payload.avatar_file_hash,
+					payload.wallpaper_file_hash,
+					payload.description_file_hash,
+				));
+			}
+		}
+		Ok((None, None, None))
+	}
+
 	/// Finds the mime-type and avatar file hash of the latest known profile
 	/// object for the given `actor_id`.
 	async fn find_profile_limited(
@@ -1047,6 +1098,17 @@ pub trait PersistenceHandle {
 			(None, None)
 		};
 		Ok(values)
+	}
+
+	async fn update_identity_label(&self, old_label: &str, new_label: &str) -> Result<()> {
+		let mut model = <identity::ActiveModel as std::default::Default>::default();
+		model.label = Set(new_label.to_string());
+		identity::Entity::update_many()
+			.set(model)
+			.filter(identity::Column::Label.eq(old_label))
+			.exec(self.inner())
+			.await?;
+		Ok(())
 	}
 
 	async fn _load_object_info_from_result(

@@ -10,7 +10,7 @@ use std::{
 use chrono::*;
 use log::*;
 use rand::rngs::OsRng;
-use sea_orm::{prelude::*, NotSet, Set};
+use sea_orm::{prelude::*, NotSet, QueryOrder, Set};
 use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -43,6 +43,42 @@ pub struct Api {
 impl Api {
 	pub async fn close(self) { self.node.close().await; }
 
+	fn compose_profile_object(
+		private_key: &ActorPrivateKeyV1, sequence: u64, name: &str, avatar_hash: &Option<IdType>,
+		wallpaper_hash: &Option<IdType>, description_hash: &Option<IdType>,
+	) -> (IdType, Object) {
+		let profile = ProfileObject {
+			name: name.to_string(),
+			avatar: avatar_hash.clone(),
+			wallpaper: wallpaper_hash.clone(),
+			description: description_hash.clone(),
+		};
+
+		// Sign the profile object and construct an object out of it
+		let payload = ObjectPayload::Profile(profile);
+		let sign_data = ObjectSignData {
+			sequence,
+			previous_hash: IdType::default(),
+			created: SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.unwrap()
+				.as_millis() as u64,
+			payload: &payload,
+		};
+
+		let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
+		let object_hash = signature.hash();
+		let object = Object {
+			signature,
+			previous_hash: IdType::default(),
+			sequence: 0,
+			created: sign_data.created,
+			payload,
+		};
+
+		(object_hash, object)
+	}
+
 	pub async fn create_identity(
 		&self, label: &str, name: &str, avatar: Option<&FileData>, wallpaper: Option<&FileData>,
 		description: Option<&FileData>,
@@ -65,7 +101,16 @@ impl Api {
 			None
 		};
 
-		let profile = ProfileObject {
+		let private_key = ActorPrivateKeyV1::generate_with_rng(&mut OsRng);
+		let (object_hash, object) = Self::compose_profile_object(
+			&private_key,
+			0,
+			name,
+			&avatar_hash,
+			&wallpaper_hash,
+			&description_hash,
+		);
+		/*let profile = ProfileObject {
 			name: name.to_string(),
 			avatar: avatar_hash.clone(),
 			wallpaper: wallpaper_hash.clone(),
@@ -92,7 +137,7 @@ impl Api {
 			sequence: 0,
 			created: sign_data.created,
 			payload,
-		};
+		};*/
 
 		// Generate an actor ID with our new object hash.
 		let actor_info = ActorInfo::V1(ActorInfoV1 {
@@ -649,6 +694,60 @@ impl Api {
 		let hash = signature.hash();
 
 		(hash, signature)
+	}
+
+	pub async fn update_profile(
+		&self, private_key: &ActorPrivateKeyV1, actor_id: i64, old_label: &str, new_label: &str,
+		name: &str, avatar: Option<FileData>, wallpaper: Option<FileData>,
+		description: Option<FileData>,
+	) -> db::Result<()> {
+		let tx = self.db.transaction().await?;
+
+		// Prepare profile files
+		let (old_avatar_hash, old_wallpaper_hash, old_description_hash) =
+			tx.find_profile_files(actor_id).await?;
+		let avatar_hash = if let Some(f) = avatar {
+			Some(tx.create_file(&f).await?.1)
+		} else {
+			old_avatar_hash
+		};
+		let wallpaper_hash = if let Some(f) = wallpaper {
+			Some(tx.create_file(&f).await?.1)
+		} else {
+			old_wallpaper_hash
+		};
+		let description_hash = if let Some(f) = description {
+			Some(tx.create_file(&f).await?.1)
+		} else {
+			old_description_hash
+		};
+
+		// Construct the profle object & store it
+		let next_sequence = tx.find_next_object_sequence(actor_id).await?;
+		let (object_hash, object) = Self::compose_profile_object(
+			private_key,
+			next_sequence,
+			name,
+			&avatar_hash,
+			&wallpaper_hash,
+			&description_hash,
+		);
+		tx.store_profile(
+			actor_id,
+			object.created,
+			&object_hash,
+			&object.previous_hash,
+			&object.signature,
+			true,
+			name,
+			avatar_hash,
+			wallpaper_hash,
+			description_hash,
+		)
+		.await?;
+		tx.update_identity_label(old_label, new_label).await?;
+
+		tx.commit().await
 	}
 }
 
