@@ -592,7 +592,7 @@ impl Api {
 		let next_object_sequence = tx.find_next_object_sequence(actor_id).await?;
 		if next_object_sequence == 0 {
 			Err(db::Error::UnexpectedState(
-				"actor has not objects".to_string(),
+				"actor has no objects".to_string(),
 			))?;
 		}
 		let object_payload = ObjectPayload::Post(PostObject {
@@ -603,9 +603,10 @@ impl Api {
 			}),
 		});
 		let created = Utc::now().timestamp_millis() as u64;
+		let current_object_sequence = next_object_sequence - 1;
 		let previous_hash = if let Some(object) = object::Entity::find()
 			.filter(object::Column::ActorId.eq(actor_id))
-			.filter(object::Column::Sequence.eq(next_object_sequence - 1))
+			.filter(object::Column::Sequence.eq(current_object_sequence))
 			.one(tx.inner())
 			.await?
 		{
@@ -613,8 +614,7 @@ impl Api {
 		} else {
 			return Err(db::Error::UnexpectedState(format!(
 				"can't find object sequence {} for actor {}",
-				next_object_sequence - 1,
-				actor_id
+				current_object_sequence, actor_id
 			)))?;
 		};
 		let (hash, signature) = Self::sign_object(

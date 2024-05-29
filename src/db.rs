@@ -644,9 +644,10 @@ pub trait PersistenceHandle {
 
 	async fn find_next_object_sequence(&self, actor_id: i64) -> Result<u64> {
 		let stat = object::Entity::find()
+			.select_only()
 			.column_as(object::Column::Sequence.max(), "max")
 			.filter(object::Column::ActorId.eq(actor_id))
-			.build(DatabaseBackend::Sqlite);
+			.build(self.backend());
 
 		if let Some(result) = self.inner().query_one(stat).await? {
 			let r = result.try_get_by_index::<Option<i64>>(0)?;
