@@ -9,7 +9,7 @@ pub mod bootstrap_id;
 pub mod file;
 pub mod file_block;
 pub mod following;
-pub mod friend;
+pub mod trusted_node;
 pub mod identity;
 pub mod node_identity;
 pub mod object;

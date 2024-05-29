@@ -5,23 +5,28 @@ use sea_orm::entity::prelude::*;
 use crate::core::NodeAddress;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "friend")]
+#[sea_orm(table_name = "trusted_node")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = true)]
 	pub id: i64,
-	/// If the node is an 'indirect friend', this field is set.
+	/// If the node is trusted indirectly, this field is set.
 	pub parent_id: Option<i64>,
 	#[sea_orm(unique)]
 	pub address: NodeAddress,
-	#[sea_orm(unique)]
-	pub label: String,
+	pub trust: u8,
 	pub last_seen_socket_address: String,
-	/// Timestamp of the last moment that this node's actor list has been
-	/// checked.
-	pub last_actor_list_update: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+	#[sea_orm(
+		belongs_to = "super::trusted_node::Entity",
+		from = "Column::ParentId",
+		to = "super::trusted_node::Column::Id",
+		on_update = "NoAction",
+		on_delete = "NoAction"
+	)]
+	TrustedNode
+}
 
 impl ActiveModelBehavior for ActiveModel {}
