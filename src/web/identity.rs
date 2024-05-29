@@ -14,8 +14,7 @@ use serde::{Deserialize, Serialize};
 use tera::Context;
 
 use super::{
-	not_found_error_response, server_error_response, server_error_response2, ActorAddress,
-	FileData, Global,
+	not_found_error_response, server_error_response, server_error_response2, FileData, Global,
 };
 use crate::{
 	db::{self, Database, PersistenceHandle},

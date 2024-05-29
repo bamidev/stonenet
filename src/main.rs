@@ -49,11 +49,13 @@ use tokio::{spawn, time::sleep};
 use crate::{config::CONFIG, migration::Migrations};
 
 
+/// Gets the latest version, and whether it is required or not
 #[allow(dead_code)]
-async fn check_version() -> Option<String> {
+async fn check_version() -> Option<(String, bool)> {
 	info!("Checking version...");
 
-	let url = "https://get.stonenet.org/windows/latest-version.txt";
+	// TODO: move latest_version.txt to the root
+	let url = "https://get.stonenet.org/version.txt";
 	let response = match reqwest::get(url).await {
 		Ok(r) => r,
 		Err(e) => {
@@ -62,13 +64,14 @@ async fn check_version() -> Option<String> {
 		}
 	};
 
-	let latest_version_str = match response.text().await {
+	let versions_str = match response.text().await {
 		Ok(r) => r,
 		Err(e) => {
 			error!("Unable to download latest version file: {}", e);
 			return None;
 		}
 	};
+	let (latest_version_str, min_required_version_str) = parse_versions(&versions_str);
 	let latest_version = match Version::parse(&latest_version_str) {
 		Ok(v) => v,
 		Err(e) => {
@@ -81,17 +84,36 @@ async fn check_version() -> Option<String> {
 	let current_version = match Version::parse(&current_version_str) {
 		Ok(v) => v,
 		Err(e) => {
-			error!("Unable to parse latest version string: {}", e);
+			error!("Unable to parse minimum required version string: {}", e);
 			return None;
 		}
 	};
 
+	if let Some(string) = min_required_version_str {
+		let required_version = match Version::parse(string) {
+			Ok(v) => v,
+			Err(e) => {
+				error!("Unable to parse latest version string: {}", e);
+				return None;
+			}
+		};
+
+		if required_version > current_version {
+			warn!("Stonenet is out of date!");
+			return Some((latest_version_str.to_owned(), true));
+		}
+	}
+	error!(
+		"HOI {:?} {:?} {}",
+		&latest_version,
+		&current_version,
+		latest_version > current_version
+	);
 	if latest_version > current_version {
 		info!("New version available!");
-		Some(latest_version_str.to_owned())
-	} else {
-		None
+		return Some((latest_version_str.to_owned(), false));
 	}
+	None
 }
 
 #[cfg(not(target_family = "windows"))]
@@ -205,6 +227,20 @@ fn load_install_dir() -> io::Result<PathBuf> {
 	Ok(install_dir)
 }
 
+fn parse_versions(string: &str) -> (&str, Option<&str>) {
+	if let Some(i) = string.find('\n') {
+		let latest_version = &string[..i];
+		let required_version = if let Some(j) = string[(i + 1)..].find('\n') {
+			&string[(i + 1)..(i + 1 + j)]
+		} else {
+			&string[(i + 1)..]
+		};
+		(latest_version, Some(required_version))
+	} else {
+		(string, None)
+	}
+}
+
 #[cfg(package_manager = "apt")]
 #[allow(dead_code)]
 fn version_message(_version_str: &str) -> String {
@@ -289,8 +325,8 @@ async fn main() {
 		#[cfg(not(debug_assertions))]
 		let update_message = {
 			let new_version_opt = check_version().await;
-			if let Some(new_version) = new_version_opt {
-				Some(version_message(&new_version))
+			if let Some((new_version, required)) = new_version_opt {
+				Some((version_message(&new_version), required))
 			} else {
 				None
 			}

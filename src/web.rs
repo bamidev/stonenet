@@ -51,7 +51,7 @@ pub struct ServerInfo {
 	pub is_exposed: bool,
 	pub federation_domain: String,
 	pub url_base: String,
-	pub update_message: Option<String>,
+	pub update_message: Option<(String, bool)>,
 }
 
 
