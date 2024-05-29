@@ -968,10 +968,10 @@ pub trait PersistenceHandle {
 						);
 						let results = self.inner().query_all(query).await?;
 						for row in results {
-							let hash: IdType = row.try_get_by_index(0)?;
-							let mime_type_opt: Option<String> = row.try_get_by_index(3)?;
+							let hash: IdType = row.try_get_by("hash")?;
+							let mime_type_opt: Option<String> = row.try_get_by("mime_type")?;
 							let attachment = if let Some(mime_type) = mime_type_opt {
-								let block_count: u32 = row.try_get_by_index(4)?;
+								let block_count: u32 = row.try_get_by("block_count")?;
 
 								PossiblyKnownFileHeader::Known(FileHeader {
 									hash,
