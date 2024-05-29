@@ -1441,7 +1441,7 @@ impl Connection {
 
 	fn _fetch_object(
 		this: &impl DerefConnection, hash: &IdType,
-	) -> Result<Option<(IdType, Object, bool)>> {
+	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		let mut stat = this.prepare(
 			r#"
 			SELECT o.id, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
@@ -1455,7 +1455,7 @@ impl Connection {
 
 	fn _fetch_object_by_sequence_old(
 		this: &impl DerefConnection, actor_id: &ActorAddress, sequence: u64,
-	) -> Result<Option<(IdType, Object, bool)>> {
+	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		let mut stat = this.prepare(
 			r#"
 			SELECT o.id, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
@@ -1506,7 +1506,7 @@ impl Connection {
 		}
 	}
 
-	fn _fetch_head<C>(tx: &C, actor_id: &ActorAddress) -> Result<Option<(IdType, Object, bool)>>
+	fn _fetch_head<C>(tx: &C, actor_id: &ActorAddress) -> Result<Option<(IdType, BlogchainObject, bool)>>
 	where
 		C: DerefConnection,
 	{
@@ -1525,7 +1525,7 @@ impl Connection {
 
 	fn _fetch_last_verified_object<C>(
 		tx: &C, actor_address: &ActorAddress,
-	) -> Result<Option<(IdType, Object, bool)>>
+	) -> Result<Option<(IdType, BlogchainObject, bool)>>
 	where
 		C: DerefConnection,
 	{
@@ -1790,7 +1790,7 @@ impl Connection {
 
 	fn _parse_object(
 		tx: &impl DerefConnection, rows: &mut Rows<'_>,
-	) -> Result<Option<(IdType, Object, bool)>> {
+	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		if let Some(row) = rows.next()? {
 			let object_id = row.get(0)?;
 			let sequence = row.get(1)?;
@@ -1814,7 +1814,7 @@ impl Connection {
 				o.map(|p| {
 					(
 						hash,
-						Object {
+						BlogchainObject {
 							sequence,
 							previous_hash: previous_hash.unwrap_or_default(),
 							created,
@@ -2041,7 +2041,7 @@ impl Connection {
 	}
 
 	pub fn _store_object(
-		tx: &impl DerefConnection, actor_address: &ActorAddress, id: &IdType, object: &Object,
+		tx: &impl DerefConnection, actor_address: &ActorAddress, id: &IdType, object: &BlogchainObject,
 		verified_from_start: bool,
 	) -> Result<i64> {
 		let mut stat = tx.prepare(
@@ -2190,7 +2190,7 @@ impl Connection {
 	}
 
 	fn _store_profile_object(
-		tx: &impl DerefConnection, actor_id: i64, object_id: &IdType, object: &Object, name: &str,
+		tx: &impl DerefConnection, actor_id: i64, object_id: &IdType, object: &BlogchainObject, name: &str,
 		avatar_file_id: Option<&IdType>, wallpaper_file_id: Option<&IdType>,
 		description_hash: Option<&IdType>,
 	) -> Result<()> {
@@ -2462,7 +2462,7 @@ impl Connection {
 		Ok(list)
 	}
 
-	pub fn fetch_object(&self, object_hash: &IdType) -> Result<Option<(Object, bool)>> {
+	pub fn fetch_object(&self, object_hash: &IdType) -> Result<Option<(BlogchainObject, bool)>> {
 		if let Some((_, object, verified)) = Self::_fetch_object(self, object_hash)? {
 			Ok(Some((object, verified)))
 		} else {
@@ -2472,13 +2472,13 @@ impl Connection {
 
 	pub fn fetch_object_by_sequence(
 		&self, actor_id: &ActorAddress, sequence: u64,
-	) -> Result<Option<(IdType, Object, bool)>> {
+	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		Self::_fetch_object_by_sequence_old(self, actor_id, sequence)
 	}
 
 	pub fn fetch_previous_object(
 		&mut self, actor_id: &ActorAddress, hash: &IdType,
-	) -> Result<Option<(IdType, Object, bool)>> {
+	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		let tx = self.old.transaction()?;
 
 		let mut stat = tx.prepare(
@@ -2504,7 +2504,7 @@ impl Connection {
 
 	pub fn fetch_next_object(
 		&mut self, actor_address: &ActorAddress, hash: &IdType,
-	) -> Result<Option<(IdType, Object, bool)>> {
+	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		let tx = self.old.transaction()?;
 		let mut stat = tx.prepare(
 			r#"
@@ -2533,13 +2533,13 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_head(&self, actor_id: &ActorAddress) -> Result<Option<(IdType, Object, bool)>> {
+	pub fn fetch_head(&self, actor_id: &ActorAddress) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		Self::_fetch_head(self, actor_id)
 	}
 
 	pub fn fetch_last_verified_object(
 		&self, actor_id: &ActorAddress,
-	) -> Result<Option<(IdType, Object)>> {
+	) -> Result<Option<(IdType, BlogchainObject)>> {
 		if let Some((hash, object, _)) = Self::_fetch_last_verified_object(self, actor_id)? {
 			Ok(Some((hash, object)))
 		} else {
@@ -2689,7 +2689,7 @@ impl Connection {
 
 	pub fn fetch_profile_object(
 		&self, actor_id: &ActorAddress,
-	) -> Result<Option<(IdType, Object)>> {
+	) -> Result<Option<(IdType, BlogchainObject)>> {
 		let mut stat = self.prepare(
 			r#"
 			SELECT o.id, o.sequence, o.created, o.signature, o.hash, o.type, o.previous_hash, o.verified_from_start
@@ -2998,7 +2998,7 @@ impl Connection {
 	}
 
 	pub fn store_object(
-		&mut self, actor_id: &ActorAddress, id: &IdType, object: &Object, verified_from_start: bool,
+		&mut self, actor_id: &ActorAddress, id: &IdType, object: &BlogchainObject, verified_from_start: bool,
 	) -> self::Result<bool> {
 		let tx = self.old.transaction()?;
 

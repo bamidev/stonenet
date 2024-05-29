@@ -211,7 +211,7 @@ impl ActorNode {
 
 	pub async fn collect_object(
 		self: &Arc<Self>, connection: &mut Connection, hash: &IdType,
-	) -> db::Result<Option<(Object, bool)>> {
+	) -> db::Result<Option<(BlogchainObject, bool)>> {
 		if let Some(result) = self
 			.exchange_find_object_on_connection(connection, hash)
 			.await
@@ -229,7 +229,7 @@ impl ActorNode {
 	/// Attempts to collect as much files and their blocks on the given
 	/// connection.
 	pub(super) fn complete_object<'a, 'b: 'a>(
-		self: &'a Arc<Self>, connection: &'b mut Connection, object: Object,
+		self: &'a Arc<Self>, connection: &'b mut Connection, object: BlogchainObject,
 	) -> BoxFuture<'a, db::Result<bool>> {
 		async move {
 			match object.payload {
@@ -350,7 +350,7 @@ impl ActorNode {
 
 	pub(super) async fn exchange_profile_on_connection(
 		&self, connection: &mut Connection,
-	) -> Option<(IdType, Object)> {
+	) -> Option<(IdType, BlogchainObject)> {
 		let request = GetProfileRequest {};
 		let raw_response = self
 			.base
@@ -535,7 +535,7 @@ impl ActorNode {
 	/// Returns a list of file hashes that we'd like to have based on the
 	/// already stored objects.
 	async fn investigate_missing_files(
-		&self, head: &Object, object_limit: u64, file_limit: u64,
+		&self, head: &BlogchainObject, object_limit: u64, file_limit: u64,
 	) -> db::Result<Vec<IdType>> {
 		let mut results = Vec::new();
 		let start = if head.sequence >= object_limit {
@@ -570,7 +570,7 @@ impl ActorNode {
 	}
 
 	#[allow(dead_code)]
-	fn investigate_missing_object_files(&self, object: &Object) -> db::Result<Vec<IdType>> {
+	fn investigate_missing_object_files(&self, object: &BlogchainObject) -> db::Result<Vec<IdType>> {
 		tokio::task::block_in_place(|| {
 			let c = self.db().connect_old()?;
 			let mut results = Vec::new();
@@ -721,7 +721,7 @@ impl ActorNode {
 	/// After a new head is received and stored, will try to synchronize any
 	/// files & blocks for it, as well as any missing objects.
 	async fn process_new_head_on_connection(
-		self: &Arc<Self>, connection: &mut Connection, hash: &IdType, head: Object,
+		self: &Arc<Self>, connection: &mut Connection, hash: &IdType, head: BlogchainObject,
 	) -> db::Result<()> {
 		self.collect_object(connection, hash).await?;
 		self.synchronize_missed_objects_on_connection(connection, head)
@@ -940,7 +940,7 @@ impl ActorNode {
 		true
 	}*/
 
-	fn verify_object(&self, id: &IdType, object: &Object, public_key: &ActorPublicKeyV1) -> bool {
+	fn verify_object(&self, id: &IdType, object: &BlogchainObject, public_key: &ActorPublicKeyV1) -> bool {
 		if object.created as u128
 			> SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -978,7 +978,7 @@ impl ActorNode {
 	}
 
 	async fn republish_object(
-		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &Object,
+		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &BlogchainObject,
 		source_node_id: &IdType,
 	) {
 		if let Some(bucket_offset) = self.base.differs_at_bit(source_node_id) {
@@ -990,7 +990,7 @@ impl ActorNode {
 	}
 
 	pub async fn publish_object(
-		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &Object,
+		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &BlogchainObject,
 		skip_node_ids: &[IdType], bucket_offset: u8,
 	) {
 		// TODO: When republishing, only publish the object to nodes below the sender's
@@ -1018,7 +1018,7 @@ impl ActorNode {
 
 	pub async fn publish_object_on_connection(
 		self: &Arc<Self>, _overlay_node: Arc<OverlayNode>, mut connection: Box<Connection>,
-		id: &IdType, object: &Object,
+		id: &IdType, object: &BlogchainObject,
 	) {
 		if let Some(wants_it) = self
 			.exchange_publish_object_on_connection(&mut connection, id)
@@ -1094,7 +1094,7 @@ impl ActorNode {
 	}
 
 	fn store_object(
-		&self, id: &IdType, object: &Object, verified_from_start: bool,
+		&self, id: &IdType, object: &BlogchainObject, verified_from_start: bool,
 	) -> db::Result<bool> {
 		self.db()
 			.perform(|mut c| c.store_object(self.actor_address(), id, object, verified_from_start))
@@ -1205,7 +1205,7 @@ impl ActorNode {
 	/// many of our missing objects (including their files and blocks) as
 	/// possible.
 	pub async fn synchronize_missed_objects_on_connection(
-		self: &Arc<Self>, connection: &mut Connection, up_to_object: Object,
+		self: &Arc<Self>, connection: &mut Connection, up_to_object: BlogchainObject,
 	) -> db::Result<()> {
 		let up_to_sequence = up_to_object.sequence;
 		let mut i = up_to_object.sequence as i128;
@@ -1251,7 +1251,7 @@ impl ActorNode {
 	/// which are already up to date.
 	async fn synchronize_head(
 		self: &Arc<Self>,
-	) -> db::Result<Option<(IdType, Object, Vec<IdType>, bool, bool)>> {
+	) -> db::Result<Option<(IdType, BlogchainObject, Vec<IdType>, bool, bool)>> {
 		let mut up_to_date_nodes = Vec::with_capacity(4);
 		let our_head_info = self.db().perform(|c| c.fetch_head(self.actor_address()))?;
 		let our_head_sequence = if let Some((_, o, _)) = &our_head_info {
@@ -1332,7 +1332,7 @@ impl ActorNode {
 	/// previous objects.
 	async fn synchronize_head_on_connection(
 		self: &Arc<Self>, connection: &mut Connection,
-	) -> db::Result<Option<(IdType, Object)>> {
+	) -> db::Result<Option<(IdType, BlogchainObject)>> {
 		if let Some(response) = self.exchange_head_on_connection(connection).await {
 			let stored = self.db().perform(|mut c| {
 				c.store_object(
@@ -1357,7 +1357,7 @@ impl ActorNode {
 	}
 
 	pub(super) async fn synchronize_files(
-		&self, head: &Object, object_limit: u64, file_limit: u64,
+		&self, head: &BlogchainObject, object_limit: u64, file_limit: u64,
 	) -> db::Result<()> {
 		let missing_files = self
 			.investigate_missing_files(head, object_limit, file_limit)
@@ -1375,7 +1375,7 @@ impl ActorNode {
 
 	#[allow(dead_code)]
 	async fn synchronize_object(
-		&self, connection: &mut Connection, object: &Object,
+		&self, connection: &mut Connection, object: &BlogchainObject,
 	) -> db::Result<()> {
 		let missing_files = self.investigate_missing_object_files(object)?;
 		for file_id in &missing_files {
@@ -1385,7 +1385,7 @@ impl ActorNode {
 	}
 
 	/// Attempts to synchonize the few objects before our known head object
-	async fn synchronize_objects_from_head(&self, head: &Object, count: u64) -> db::Result<bool> {
+	async fn synchronize_objects_from_head(&self, head: &BlogchainObject, count: u64) -> db::Result<bool> {
 		let stop_sequence = if head.sequence as u64 >= count {
 			head.sequence as u64 - count
 		} else {
@@ -1556,7 +1556,7 @@ impl ActorNode {
 impl PublishObjectToDo {
 	async fn receive_object(
 		&self, c: &mut Connection, object_id: &IdType, public_key: &ActorPublicKeyV1,
-	) -> Option<Object> {
+	) -> Option<BlogchainObject> {
 		let buffer = match c.receive().await {
 			Ok(v) => Arc::new(v),
 			Err(e) => {

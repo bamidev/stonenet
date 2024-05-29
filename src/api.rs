@@ -46,7 +46,7 @@ impl Api {
 	fn compose_profile_object(
 		private_key: &ActorPrivateKeyV1, sequence: u64, name: &str, avatar_hash: &Option<IdType>,
 		wallpaper_hash: &Option<IdType>, description_hash: &Option<IdType>,
-	) -> (IdType, Object) {
+	) -> (IdType, BlogchainObject) {
 		let profile = ProfileObject {
 			name: name.to_string(),
 			avatar: avatar_hash.clone(),
@@ -68,7 +68,7 @@ impl Api {
 
 		let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
 		let object_hash = signature.hash();
-		let object = Object {
+		let object = BlogchainObject {
 			signature,
 			previous_hash: IdType::default(),
 			sequence: 0,
@@ -180,7 +180,7 @@ impl Api {
 
 	pub async fn create_share(
 		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, share: &ShareObject,
-	) -> db::Result<(i64, IdType, Object)> {
+	) -> db::Result<(i64, IdType, BlogchainObject)> {
 		let tx = self.db.transaction().await?;
 
 		// Construct fields for the share object
@@ -241,7 +241,7 @@ impl Api {
 
 		tx.commit().await?;
 
-		let object = Object {
+		let object = BlogchainObject {
 			signature,
 			sequence: next_object_sequence,
 			previous_hash,
@@ -639,7 +639,7 @@ impl Api {
 		.await?;
 		tx.commit().await?;
 
-		let object = Object {
+		let object = BlogchainObject {
 			created,
 			sequence: next_object_sequence,
 			previous_hash,

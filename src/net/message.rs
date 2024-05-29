@@ -19,7 +19,7 @@ pub struct GetAssistantNodeResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BroadcastNewObject {
 	pub hash: IdType,
-	pub object: Object,
+	pub object: BlogchainObject,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -115,7 +115,7 @@ pub struct HeadRequest {}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HeadResponse {
 	pub hash: IdType,
-	pub object: Object,
+	pub object: BlogchainObject,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -134,13 +134,13 @@ pub struct FindObjectRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FindObjectResult {
-	pub object: Object,
+	pub object: BlogchainObject,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FindNextObjectResult {
 	pub hash: IdType,
-	pub object: Object,
+	pub object: BlogchainObject,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -183,7 +183,7 @@ pub struct FindValueRequest {
 /// store up to date up to this object.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ObjectStoreRequest {
-	pub object: Object,
+	pub object: BlogchainObject,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -204,7 +204,7 @@ pub struct FileUploadMessage {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PublishObjectMessage {
-	pub object: Object,
+	pub object: BlogchainObject,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -212,7 +212,7 @@ pub struct GetProfileRequest {}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetProfileResponse {
-	pub object: Option<(IdType, Object)>,
+	pub object: Option<(IdType, BlogchainObject)>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

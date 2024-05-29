@@ -710,7 +710,7 @@ impl OverlayNode {
 	/// a part of it.
 	pub async fn find_actor_profile_info(
 		self: &Arc<Self>, actor_address: &ActorAddress,
-	) -> Option<Object> {
+	) -> Option<BlogchainObject> {
 		let mut iter = self.connect_actor_iter(actor_address).await;
 		let (node, object) = loop {
 			if let Some((mut connection, actor_info)) = iter.next().await {

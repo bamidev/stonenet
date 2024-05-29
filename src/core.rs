@@ -144,7 +144,7 @@ pub struct ProfileObject {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Object {
+pub struct BlogchainObject {
 	pub signature: ActorSignatureV1,
 	pub sequence: u64,
 	pub previous_hash: IdType,
