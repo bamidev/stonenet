@@ -6,7 +6,9 @@
 	<p>
 		{{macros::object(object=object, footer=false)}}
 	</p>
-	<p>
-		{{macros::post_form(title="Reply")}}
-	</p>
+	{% if "Post" in object.payload %}
+		<p>
+			{{macros::post_form(title="Reply")}}
+		</p>
+	{% endif %}
 {% endblock content %}
