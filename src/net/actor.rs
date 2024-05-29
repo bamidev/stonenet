@@ -570,7 +570,9 @@ impl ActorNode {
 	}
 
 	#[allow(dead_code)]
-	fn investigate_missing_object_files(&self, object: &BlogchainObject) -> db::Result<Vec<IdType>> {
+	fn investigate_missing_object_files(
+		&self, object: &BlogchainObject,
+	) -> db::Result<Vec<IdType>> {
 		tokio::task::block_in_place(|| {
 			let c = self.db().connect_old()?;
 			let mut results = Vec::new();
@@ -940,7 +942,9 @@ impl ActorNode {
 		true
 	}*/
 
-	fn verify_object(&self, id: &IdType, object: &BlogchainObject, public_key: &ActorPublicKeyV1) -> bool {
+	fn verify_object(
+		&self, id: &IdType, object: &BlogchainObject, public_key: &ActorPublicKeyV1,
+	) -> bool {
 		if object.created as u128
 			> SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -1385,7 +1389,9 @@ impl ActorNode {
 	}
 
 	/// Attempts to synchonize the few objects before our known head object
-	async fn synchronize_objects_from_head(&self, head: &BlogchainObject, count: u64) -> db::Result<bool> {
+	async fn synchronize_objects_from_head(
+		&self, head: &BlogchainObject, count: u64,
+	) -> db::Result<bool> {
 		let stop_sequence = if head.sequence as u64 >= count {
 			head.sequence as u64 - count
 		} else {

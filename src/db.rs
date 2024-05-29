@@ -1506,7 +1506,9 @@ impl Connection {
 		}
 	}
 
-	fn _fetch_head<C>(tx: &C, actor_id: &ActorAddress) -> Result<Option<(IdType, BlogchainObject, bool)>>
+	fn _fetch_head<C>(
+		tx: &C, actor_id: &ActorAddress,
+	) -> Result<Option<(IdType, BlogchainObject, bool)>>
 	where
 		C: DerefConnection,
 	{
@@ -2041,8 +2043,8 @@ impl Connection {
 	}
 
 	pub fn _store_object(
-		tx: &impl DerefConnection, actor_address: &ActorAddress, id: &IdType, object: &BlogchainObject,
-		verified_from_start: bool,
+		tx: &impl DerefConnection, actor_address: &ActorAddress, id: &IdType,
+		object: &BlogchainObject, verified_from_start: bool,
 	) -> Result<i64> {
 		let mut stat = tx.prepare(
 			r#"
@@ -2190,8 +2192,8 @@ impl Connection {
 	}
 
 	fn _store_profile_object(
-		tx: &impl DerefConnection, actor_id: i64, object_id: &IdType, object: &BlogchainObject, name: &str,
-		avatar_file_id: Option<&IdType>, wallpaper_file_id: Option<&IdType>,
+		tx: &impl DerefConnection, actor_id: i64, object_id: &IdType, object: &BlogchainObject,
+		name: &str, avatar_file_id: Option<&IdType>, wallpaper_file_id: Option<&IdType>,
 		description_hash: Option<&IdType>,
 	) -> Result<()> {
 		// FIXME: Use _store_object instead of the following redundant code
@@ -2533,7 +2535,9 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_head(&self, actor_id: &ActorAddress) -> Result<Option<(IdType, BlogchainObject, bool)>> {
+	pub fn fetch_head(
+		&self, actor_id: &ActorAddress,
+	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		Self::_fetch_head(self, actor_id)
 	}
 
@@ -2998,7 +3002,8 @@ impl Connection {
 	}
 
 	pub fn store_object(
-		&mut self, actor_id: &ActorAddress, id: &IdType, object: &BlogchainObject, verified_from_start: bool,
+		&mut self, actor_id: &ActorAddress, id: &IdType, object: &BlogchainObject,
+		verified_from_start: bool,
 	) -> self::Result<bool> {
 		let tx = self.old.transaction()?;
 
@@ -3244,6 +3249,23 @@ impl ObjectPayloadInfo {
 					false
 				},
 			Self::Profile(profile) => profile.description.is_some(),
+		}
+	}
+
+	pub fn to_text(&self) -> String {
+		match self {
+			Self::Post(post) => post.message.clone().unwrap_or("".to_string()),
+			Self::Share(share) =>
+				if let Some(op) = &share.original_post {
+					if let Some((_, content)) = &op.message {
+						content.clone()
+					} else {
+						"[Message not synchronized yet]".to_string()
+					}
+				} else {
+					"[Post not synchronized yet]".to_string()
+				},
+			Self::Profile(_) => "[Profile updated]".to_string(),
 		}
 	}
 }

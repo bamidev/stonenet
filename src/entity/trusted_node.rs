@@ -26,7 +26,7 @@ pub enum Relation {
 		on_update = "NoAction",
 		on_delete = "NoAction"
 	)]
-	TrustedNode
+	TrustedNode,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

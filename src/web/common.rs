@@ -14,13 +14,13 @@ use crate::db::{ObjectInfo, ObjectPayloadInfo};
 
 #[derive(Debug, Serialize)]
 pub struct ObjectDisplayInfo {
-	hash: IdType,
-	actor_address: String,
-	actor_name: String,
-	actor_avatar: Option<String>,
-	created: String,
-	time_ago: String,
-	payload: ObjectPayloadInfo,
+	pub hash: IdType,
+	pub actor_address: String,
+	pub actor_name: String,
+	pub actor_avatar: Option<String>,
+	pub created: String,
+	pub time_ago: String,
+	pub payload: ObjectPayloadInfo,
 }
 
 pub fn into_object_display_info(object: ObjectInfo) -> ObjectDisplayInfo {
@@ -194,4 +194,32 @@ where
 pub fn server_error_response2(message: &str) -> Response {
 	error!("{}", message);
 	error_response(500, format!("{}", message))
+}
+
+
+impl ObjectDisplayInfo {
+	pub fn type_title(&self) -> String {
+		match &self.payload {
+			ObjectPayloadInfo::Profile(_) => "Profile update".to_string(),
+			ObjectPayloadInfo::Post(post) =>
+				if let Some(irt) = &post.in_reply_to {
+					if let Some(to_name) = &irt.actor_name {
+						format!("Reply from {} to {}", &self.actor_name, to_name)
+					} else {
+						format!("Reply from {}", &self.actor_name)
+					}
+				} else {
+					format!("Post by {}", &self.actor_name)
+				},
+			ObjectPayloadInfo::Share(share) => {
+				if let Some(op) = &share.original_post {
+					if let Some(from_name) = &op.actor_name {
+						return format!("Post from {} shared by {}", from_name, &self.actor_name);
+					}
+				}
+
+				format!("Post shared by {}", &self.actor_name)
+			}
+		}
+	}
 }

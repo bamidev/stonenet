@@ -12,6 +12,9 @@ use std::{
 
 use ::serde::*;
 use axum::{body::Body, extract::*, response::Response, routing::get, Router};
+#[cfg(debug_assertions)]
+use rss::validation::Validate;
+use rss::{ChannelBuilder, ItemBuilder};
 use tera::{Context, Tera};
 use tokio::{sync::Mutex, time::sleep};
 use tower_http::services::ServeDir;
@@ -127,6 +130,7 @@ pub async fn serve(
 		.nest_service("/static", ServeDir::new("static"))
 		.nest("/actor", actor::router(global.clone()))
 		.nest("/identity", identity::router(global.clone()))
+		.route("/rss", get(rss_feed))
 		.route("/search", get(search))
 		.route("/.well-known/webfinger", get(activity_pub::webfinger))
 		.route("/.well-known/x-nodeinfo2", get(activity_pub::nodeinfo))
@@ -172,6 +176,49 @@ async fn home_post(State(g): State<Arc<Global>>, form: Multipart) -> Response {
 	}
 
 	home(State(g), Query(PaginationQuery::default())).await
+}
+
+async fn rss_feed(State(g): State<Arc<Global>>) -> Response {
+	let objects: Vec<ObjectDisplayInfo> = match g.api.load_home_feed(20, 0).await {
+		Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
+		Err(e) => return server_error_response(e, "unable to fetch home feed"),
+	};
+
+	let mut channel_builder = ChannelBuilder::default();
+	channel_builder
+		.title("Stonenet RSS feed")
+		.link(&g.server_info.url_base);
+	if g.server_info.is_exposed {
+		channel_builder.description("An RSS feed of this Stonenet bridge.");
+	} else {
+		channel_builder.description("An RSS feed of your Stonenet home feed.");
+	}
+
+	// Prepare RSS feed items
+	let mut items = Vec::with_capacity(objects.len());
+	for object in objects {
+		if object.payload.has_main_content() {
+			let item = ItemBuilder::default()
+				.title(object.type_title())
+				.link(format!(
+					"{}/actor/{}/object/{}",
+					&g.server_info.url_base, &object.actor_address, &object.hash
+				))
+				.description(object.payload.to_text())
+				.build();
+			items.push(item);
+		}
+	}
+	channel_builder.items(items);
+	let channel = channel_builder.build();
+
+	#[cfg(debug_assertions)]
+	channel.validate().expect("RSS feed validation error");
+
+	Response::builder()
+		.header("Content-Type", "application/rss+xml")
+		.body(Body::from(channel.to_string()))
+		.unwrap()
 }
 
 #[derive(Deserialize)]
