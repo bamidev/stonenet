@@ -651,7 +651,7 @@ pub trait PersistenceHandle {
 
 		if let Some(result) = self.inner().query_one(stat).await? {
 			let r = result.try_get_by_index::<Option<i64>>(0)?;
-			Ok(r.unwrap_or(0) as u64)
+			Ok(r.map(|r| r + 1).unwrap_or(0) as u64)
 		} else {
 			Ok(0)
 		}
