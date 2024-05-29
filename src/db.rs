@@ -718,6 +718,7 @@ pub trait PersistenceHandle {
 		&self, actor_address: &ActorAddress, hash: &IdType,
 	) -> Result<Option<ObjectInfo>> {
 		let result = object::Entity::find()
+			.join(JoinType::InnerJoin, object::Relation::Actor.def())
 			.filter(object::Column::Hash.eq(hash))
 			.filter(actor::Column::Address.eq(actor_address))
 			.one(self.inner())
