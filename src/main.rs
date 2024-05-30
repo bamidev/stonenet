@@ -46,7 +46,12 @@ use semver::Version;
 use signal_hook::flag;
 use tokio::{spawn, time::sleep};
 
-use crate::{config::CONFIG, migration::Migrations};
+use crate::{
+	config::CONFIG,
+	core::{Address, NodeAddress},
+	db::PersistenceHandle,
+	migration::Migrations,
+};
 
 
 /// Gets the latest version, and whether it is required or not
@@ -227,6 +232,30 @@ fn load_install_dir() -> io::Result<PathBuf> {
 	Ok(install_dir)
 }
 
+async fn load_trusted_node_config(db: &Database, config: &Config) -> db::Result<()> {
+	// I know this code bad but its temporary anyway
+	let trusted_node_list = config.trusted_nodes.clone().unwrap_or(Vec::new());
+	let mut trusted_node_ids = Vec::with_capacity(trusted_node_list.len());
+	for string in trusted_node_list {
+		match Address::from_str(&string) {
+			Err(e) => error!(
+				"A node address in the `trusted_nodes` list is invalid: {}",
+				e
+			),
+			Ok(address) => match address {
+				Address::Node(node_address) => {
+					let id = db.ensure_trusted_node(&node_address, 255).await?;
+					trusted_node_ids.push(id);
+				}
+				_ =>
+					error!("An address in the `trusted_nodes` list is not actually a node address."),
+			},
+		}
+	}
+
+	db.clear_trusted_nodes_except(trusted_node_ids).await
+}
+
 fn parse_versions(string: &str) -> (&str, Option<&str>) {
 	if let Some(i) = string.find('\n') {
 		let latest_version = &string[..i];
@@ -313,8 +342,18 @@ async fn main() {
 			migrations.run(&db).await.expect("migration issue");
 		}
 
+		// Load configured trusted nodes into database
+		if let Err(e) = load_trusted_node_config(&db, &config).await {
+			error!("Unable to load trusted node list: {}", e);
+			return;
+		}
+
 		// Load node
 		let node = load_node(stop_flag.clone(), db.clone(), &config).await;
+		info!(
+			"Loaded node with address {}",
+			Address::Node(NodeAddress::V1(node.node_id().clone()))
+		);
 
 		// Test openness
 		let api = Api { node, db };

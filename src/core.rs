@@ -290,12 +290,7 @@ impl Address {
 
 		let type_id = buffer[0];
 		match type_id {
-			0 => {
-				if buffer.len() != 33 {
-					return Err(FromBytesAddressError::InvalidSize(buffer.len()));
-				}
-				Ok(Address::Node(NodeAddress::from_bytes(&buffer[1..])?))
-			}
+			0 => Ok(Address::Node(NodeAddress::from_bytes(&buffer[1..])?)),
 			1 => Ok(Address::Actor(ActorAddress::from_bytes(&buffer[1..])?)),
 			_ => Err(FromBytesAddressError::UnknownType(type_id)),
 		}

@@ -13,8 +13,8 @@ pub struct Model {
 	pub parent_id: Option<i64>,
 	#[sea_orm(unique)]
 	pub address: NodeAddress,
-	pub trust: u8,
-	pub last_seen_socket_address: String,
+	pub score: u8,
+	pub last_seen_socket_address: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -23,8 +23,8 @@ pub enum Relation {
 		belongs_to = "super::trusted_node::Entity",
 		from = "Column::ParentId",
 		to = "super::trusted_node::Column::Id",
-		on_update = "NoAction",
-		on_delete = "NoAction"
+		on_update = "Cascade",
+		on_delete = "Cascade"
 	)]
 	TrustedNode,
 }

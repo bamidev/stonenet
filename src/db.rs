@@ -159,6 +159,20 @@ pub trait PersistenceHandle {
 	fn backend(&self) -> DatabaseBackend { self.inner().get_database_backend() }
 
 
+	async fn clear_trusted_nodes_except(
+		&self, trusted_nodes_ids: impl IntoIterator<Item = i64> + Send + std::fmt::Debug,
+	) -> Result<()> {
+		trusted_node::Entity::delete_many()
+			.filter(trusted_node::Column::ParentId.is_null())
+			.filter(
+				Expr::col((trusted_node::Entity, trusted_node::Column::Id))
+					.is_not_in(trusted_nodes_ids),
+			)
+			.exec(self.inner())
+			.await?;
+		Ok(())
+	}
+
 	async fn ensure_actor_id(&self, address: &ActorAddress, info: &ActorInfo) -> Result<i64> {
 		if let Some(record) = actor::Entity::find()
 			.filter(actor::Column::Address.eq(address))
@@ -175,6 +189,28 @@ pub trait PersistenceHandle {
 				r#type: Set(info.actor_type.clone()),
 			};
 			Ok(actor::Entity::insert(model)
+				.exec(self.inner())
+				.await?
+				.last_insert_id)
+		}
+	}
+
+	async fn ensure_trusted_node(&self, address: &NodeAddress, score: u8) -> Result<i64> {
+		if let Some(record) = trusted_node::Entity::find()
+			.filter(trusted_node::Column::Address.eq(address))
+			.one(self.inner())
+			.await?
+		{
+			Ok(record.id)
+		} else {
+			let model = trusted_node::ActiveModel {
+				id: NotSet,
+				parent_id: Set(None),
+				address: Set(address.clone()),
+				score: Set(score),
+				last_seen_socket_address: Set(None),
+			};
+			Ok(trusted_node::Entity::insert(model)
 				.exec(self.inner())
 				.await?
 				.last_insert_id)

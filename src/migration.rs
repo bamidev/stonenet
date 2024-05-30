@@ -14,8 +14,8 @@ use crate::db::{self, PersistenceHandle};
 /// The latest database version.
 pub const LATEST_VERSION: Version = Version {
 	major: 0,
-	minor: 4,
-	patch: 1,
+	minor: 5,
+	patch: 0,
 };
 
 
@@ -47,6 +47,7 @@ impl Migrations {
 				(Version::new(0, 3, 0), Box::new(v0::v3::v0::Migration)),
 				(Version::new(0, 4, 0), Box::new(v0::v4::v0::Migration)),
 				(Version::new(0, 4, 1), Box::new(v0::v4::v1::Migration)),
+				(Version::new(0, 5, 0), Box::new(v0::v5::v0::Migration)),
 			],
 		}
 	}
