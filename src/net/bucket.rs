@@ -48,26 +48,6 @@ impl Bucket {
 		}
 	}
 
-	/*pub fn space_for_connection(
-		&mut self, our_node_id: &IdType, connection_node_id: &IdType,
-	) -> bool {
-		if self.connections.len() < self.connections.limit() {
-			return true;
-		}
-
-		let new_distance = distance(our_node_id, connection_node_id);
-		if self
-			.connections
-			.iter()
-			.position(|(n, _)| new_distance < distance(our_node_id, &n.node_id))
-			.is_some()
-		{
-			true
-		} else {
-			false
-		}
-	}*/
-
 	/// The fingers that can given to other nodes
 	pub fn public_fingers(&self) -> impl Iterator<Item = &NodeContactInfo> {
 		self.connections
@@ -219,14 +199,6 @@ impl Bucket {
 		}
 	}
 
-	fn pop_front(&mut self) -> bool {
-		if self.fingers.len() == 0 {
-			return false;
-		}
-		self.fingers.pop_front();
-		true
-	}
-
 	pub fn remember(&mut self, node: NodeContactInfo, trusted: bool, is_relay: bool) -> bool {
 		let new_entry = BucketEntry::new(node, trusted, is_relay);
 
@@ -251,38 +223,6 @@ impl Bucket {
 			true
 		} else {
 			false
-		}
-	}
-
-	/// Returns a finger that can be tried out to check if
-	pub fn test_space(&self) -> Option<&NodeContactInfo> {
-		if self.fingers.len() < self.fingers.limit() as usize {
-			return None;
-		}
-
-		Some(&self.fingers[0].node_info)
-	}
-
-	/// Updates the node info currently saved in the bucket.
-	/// Returns (already_existing, updated)
-	pub fn update(&mut self, node_info: &NodeContactInfo) -> (bool, bool) {
-		match self
-			.fingers
-			.iter_mut()
-			.position(|f| f.node_info.node_id == node_info.node_id)
-		{
-			None => (false, false),
-			Some(index) => {
-				let old = self.fingers[index].node_info.contact_info.clone();
-				let different = old != node_info.contact_info;
-				if different {
-					self.fingers[index]
-						.node_info
-						.contact_info
-						.merge(&node_info.contact_info);
-				}
-				(true, different)
-			}
 		}
 	}
 }

@@ -40,13 +40,6 @@ lazy_static! {
 }
 
 
-#[allow(dead_code)]
-#[derive(Default)]
-pub struct IpBindInfo {
-	udp_port: Option<u16>,
-	tcp_port: Option<u16>,
-}
-
 /// All the info that advertises in what way this node is approachable over the
 /// current internet. Could both be very well set to `None`, if the node is
 /// behind a NAT device that allocates different IP addresses to different

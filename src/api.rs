@@ -1,5 +1,4 @@
 // FIXME: Remove when going stable:
-#![allow(dead_code)]
 #![allow(deprecated)]
 
 use std::{
