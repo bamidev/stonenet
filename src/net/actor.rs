@@ -391,16 +391,13 @@ impl ActorNode {
 	}
 
 	pub async fn find_block(&self, id: &IdType) -> Option<FindBlockResult> {
-		let result: Box<FindBlockResult> = self
-			.find_value(BlogchainValueType::Block, id, 100, false)
-			.await?;
+		let result: Box<FindBlockResult> =
+			self.find_value(BlogchainValueType::Block, id, 100, false).await?;
 		Some(*result)
 	}
 
 	pub async fn find_file(&self, id: &IdType) -> Option<FindFileResult> {
-		let result: Box<FindFileResult> = self
-			.find_value(BlogchainValueType::File, id, 100, false)
-			.await?;
+		let result: Box<FindFileResult> = self.find_value(BlogchainValueType::File, id, 100, false).await?;
 		Some(*result)
 	}
 
@@ -413,15 +410,13 @@ impl ActorNode {
 	}
 
 	pub async fn find_object(&self, id: &IdType) -> Option<FindObjectResult> {
-		let result: Box<FindObjectResult> = self
-			.find_value(BlogchainValueType::Object, id, 100, false)
-			.await?;
+		let result: Box<FindObjectResult> =
+			self.find_value(BlogchainValueType::Object, id, 100, false).await?;
 		Some(*result)
 	}
 
 	async fn find_value<V>(
-		&self, value_type: BlogchainValueType, id: &IdType, hop_limit: usize,
-		only_narrow_down: bool,
+		&self, value_type: BlogchainValueType, id: &IdType, hop_limit: usize, only_narrow_down: bool,
 	) -> Option<Box<V>>
 	where
 		V: DeserializeOwned,
