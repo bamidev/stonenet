@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use futures::future::join_all;
 use log::*;
 use serde::de::DeserializeOwned;
-use tokio::{sync::Mutex as EternalMutex, time::sleep};
 
 use super::{bucket::Bucket, message::*, overlay::OverlayNode, sstp::MessageProcessorResult, *};
 use crate::{
@@ -71,7 +70,7 @@ where
 
 	visited: Vec<(IdType, ContactOption)>,
 	candidates: VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
-	open_assistant_connection: Option<(IdType, Arc<EternalMutex<Option<Box<Connection>>>>)>,
+	open_assistant_connection: Option<(IdType, Arc<Mutex<Option<Box<Connection>>>>)>,
 }
 
 pub struct Node<I>
@@ -428,7 +427,7 @@ where
 	}
 
 	pub async fn exchange_find_value_on_connection_and_parse<V>(
-		&self, connection: &mut Connection, value_type: ValueType, id: &IdType,
+		&self, connection: &mut Connection, value_type: BlogchainValueType, id: &IdType,
 		expect_fingers_in_response: bool,
 	) -> Option<(Option<V>, Option<FindNodeResponse>)>
 	where
@@ -1042,28 +1041,6 @@ where
 				.into_iter(),
 			buckets: &self.buckets,
 		}
-	}
-
-	/// Keeps pinging on the connection every second to keep it alive.
-	async fn keep_pinging(
-		self: &Arc<Self>, connection_mutex: Arc<EternalMutex<Option<Box<Connection>>>>,
-	) {
-		loop {
-			sleep(Duration::from_secs(1)).await;
-
-			if let Some(c) = &mut *connection_mutex.lock().await {
-				if !c.is_alive() {
-					break;
-				}
-
-				if self.exchange_ping_on_connection(c).await.is_none() {
-					break;
-				}
-			} else {
-				break;
-			}
-		}
-		trace!("Stopped pinging on connection.");
 	}
 
 	/// Use this if a node is giving a timeout.

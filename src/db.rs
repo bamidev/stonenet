@@ -1,5 +1,4 @@
 // FIXME: Remove when going stable:
-#![allow(dead_code)]
 #![allow(deprecated)]
 
 mod install;
@@ -35,7 +34,6 @@ use crate::{
 };
 
 
-const DATABASE_VERSION: (u8, u16, u16) = (0, 0, 0);
 pub(crate) const BLOCK_SIZE: usize = 0x100000; // 1 MiB
 
 #[derive(Clone)]
@@ -50,7 +48,6 @@ pub struct Connection {
 	// not need a mutex, that it is already thread-safe. For some reason it was
 	// not marked as Send and Sync.
 	old: UnsafeSendSync<rusqlite::Connection>,
-	backend: DatabaseBackend,
 }
 
 // TODO: Make the sea_orm::DatabaseTransaction inside private
@@ -1309,10 +1306,6 @@ impl Database {
 
 	fn install(conn: &Connection) -> Result<()> { Ok(conn.execute_batch(install::QUERY)?) }
 
-	fn is_outdated(major: u8, minor: u16, patch: u16) -> bool {
-		major < DATABASE_VERSION.0 || minor < DATABASE_VERSION.1 || patch < DATABASE_VERSION.2
-	}
-
 	pub async fn load(path: PathBuf) -> Result<Self> {
 		let connection = Connection::open_old(&path).map_err(|e| Error::SqliteError(e))?;
 
@@ -1349,10 +1342,6 @@ impl Database {
 	pub async fn transaction(&self) -> Result<Transaction> {
 		let tx = self.orm.begin().await?;
 		Ok(Transaction(tx))
-	}
-
-	fn upgrade(_conn: &rusqlite::Connection) {
-		panic!("No database upgrade implemented yet!");
 	}
 }
 
@@ -1711,7 +1700,7 @@ impl Connection {
 		let stat = object::Entity::find()
 			.column_as(object::Column::Sequence.max(), "max")
 			.filter(object::Column::ActorId.eq(actor_id))
-			.build(self.backend);
+			.build(DatabaseBackend::Sqlite);
 
 		if let Some(result) = tx.query_one(stat).await? {
 			Ok(Some(result.try_get_by_index::<i64>(0)? as u64))
@@ -2878,7 +2867,6 @@ impl Connection {
 		let old_connection = rusqlite::Connection::open(&path)?;
 		Ok(Self {
 			old: UnsafeSendSync::new(old_connection),
-			backend: DatabaseBackend::Sqlite,
 		})
 	}
 
@@ -2890,7 +2878,6 @@ impl Connection {
 		c.pragma_update(None, "foreign_keys", false)?;
 		Ok(Self {
 			old: UnsafeSendSync::new(c),
-			backend: DatabaseBackend::Sqlite,
 		})
 	}
 

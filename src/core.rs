@@ -343,9 +343,6 @@ impl ActorInfo {
 			Self::V1(this) => ActorAddress::V1(this.generate_id()),
 		}
 	}
-
-	#[allow(dead_code)]
-	pub fn new_v1(&self, id: IdType) -> ActorAddress { ActorAddress::V1(id) }
 }
 
 impl Deref for ActorInfo {

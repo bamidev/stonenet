@@ -34,7 +34,7 @@ use crate::{
 	db::{self, Database, PersistenceHandle},
 	entity::{block, object},
 	identity::ActorPublicKeyV1,
-	net::{message::ValueType, NodeContactInfo},
+	net::{message::BlogchainValueType, NodeContactInfo},
 	trace::Mutex,
 };
 
@@ -132,10 +132,10 @@ impl NodeInterface for ActorInterface {
 	async fn close(&self) {}
 
 	async fn find_value(&self, value_type: u8, id: &IdType) -> db::Result<Option<Vec<u8>>> {
-		const VALUE_TYPE_BLOCK: u8 = ValueType::Block as _;
-		const VALUE_TYPE_FILE: u8 = ValueType::File as _;
-		const VALUE_TYPE_OBJECT: u8 = ValueType::Object as _;
-		const VALUE_TYPE_NEXT_OBJECT: u8 = ValueType::NextObject as _;
+		const VALUE_TYPE_BLOCK: u8 = BlogchainValueType::Block as _;
+		const VALUE_TYPE_FILE: u8 = BlogchainValueType::File as _;
+		const VALUE_TYPE_OBJECT: u8 = BlogchainValueType::Object as _;
+		const VALUE_TYPE_NEXT_OBJECT: u8 = BlogchainValueType::NextObject as _;
 		match value_type {
 			VALUE_TYPE_BLOCK => self.find_block(id).await,
 			VALUE_TYPE_FILE => self.find_file(id).await,
@@ -317,26 +317,26 @@ impl ActorNode {
 	pub async fn exchange_find_block_on_connection(
 		&self, connection: &mut Connection, id: &IdType,
 	) -> Option<FindBlockResult> {
-		self.exchange_find_value_on_connection_and_parse(connection, ValueType::Block, id)
+		self.exchange_find_value_on_connection_and_parse(connection, BlogchainValueType::Block, id)
 			.await
 	}
 
 	pub async fn exchange_find_file_on_connection(
 		&self, connection: &mut Connection, id: &IdType,
 	) -> Option<FindFileResult> {
-		self.exchange_find_value_on_connection_and_parse(connection, ValueType::File, id)
+		self.exchange_find_value_on_connection_and_parse(connection, BlogchainValueType::File, id)
 			.await
 	}
 
 	pub async fn exchange_find_object_on_connection(
 		&self, connection: &mut Connection, id: &IdType,
 	) -> Option<FindObjectResult> {
-		self.exchange_find_value_on_connection_and_parse(connection, ValueType::Object, id)
+		self.exchange_find_value_on_connection_and_parse(connection, BlogchainValueType::Object, id)
 			.await
 	}
 
 	async fn exchange_find_value_on_connection_and_parse<V>(
-		&self, connection: &mut Connection, value_type: ValueType, id: &IdType,
+		&self, connection: &mut Connection, value_type: BlogchainValueType, id: &IdType,
 	) -> Option<V>
 	where
 		V: DeserializeOwned,
@@ -391,32 +391,37 @@ impl ActorNode {
 	}
 
 	pub async fn find_block(&self, id: &IdType) -> Option<FindBlockResult> {
-		let result: Box<FindBlockResult> =
-			self.find_value(ValueType::Block, id, 100, false).await?;
+		let result: Box<FindBlockResult> = self
+			.find_value(BlogchainValueType::Block, id, 100, false)
+			.await?;
 		Some(*result)
 	}
 
 	pub async fn find_file(&self, id: &IdType) -> Option<FindFileResult> {
-		let result: Box<FindFileResult> = self.find_value(ValueType::File, id, 100, false).await?;
+		let result: Box<FindFileResult> = self
+			.find_value(BlogchainValueType::File, id, 100, false)
+			.await?;
 		Some(*result)
 	}
 
 	pub async fn find_next_object(&self, id: &IdType) -> Option<FindNextObjectResult> {
 		let result: Box<FindNextObjectResult> = self
-			.find_value(ValueType::NextObject, id, 100, false)
+			.find_value(BlogchainValueType::NextObject, id, 100, false)
 			.await?;
 
 		Some(*result)
 	}
 
 	pub async fn find_object(&self, id: &IdType) -> Option<FindObjectResult> {
-		let result: Box<FindObjectResult> =
-			self.find_value(ValueType::Object, id, 100, false).await?;
+		let result: Box<FindObjectResult> = self
+			.find_value(BlogchainValueType::Object, id, 100, false)
+			.await?;
 		Some(*result)
 	}
 
 	async fn find_value<V>(
-		&self, value_type: ValueType, id: &IdType, hop_limit: usize, only_narrow_down: bool,
+		&self, value_type: BlogchainValueType, id: &IdType, hop_limit: usize,
+		only_narrow_down: bool,
 	) -> Option<Box<V>>
 	where
 		V: DeserializeOwned,
