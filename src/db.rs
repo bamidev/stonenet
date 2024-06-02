@@ -1221,7 +1221,7 @@ pub trait PersistenceHandle {
 		// Otherwise, try to get the highest score available from anywhere
 		let stat = trusted_node_trust_item::Entity::find()
 			.select_only()
-			.column_as(trusted_node_trust_item::Column::Score.max(), "max")
+			.column_as(trusted_node_trust_item::Column::OurScore.max(), "max")
 			.filter(trusted_node_trust_item::Column::Address.eq(address))
 			.order_by_desc(trusted_node_trust_item::Column::Score)
 			.build(self.backend());

@@ -106,8 +106,10 @@ async fn update_node_trust_web(node: &Arc<OverlayNode>) -> db::Result<()> {
 /// Replaces the whole trust list for a particular trusted node
 async fn update_trust_list(
 	node: &Arc<OverlayNode>, trusted_node_id: i64, recursion_level: u8,
-	trust_list: &[(NodeAddress, u8)],
+	trust_list: &[(NodeAddress, u8)], trust_modifier: f32,
 ) -> db::Result<()> {
+	debug_assert!(trust_modifier <= 1.0 && trust_modifier >= 0.0);
+
 	// Clear the previous list
 	trusted_node_trust_item::Entity::delete_many()
 		.filter(trusted_node_trust_item::Column::TrustedNodeId.eq(trusted_node_id))
@@ -117,12 +119,14 @@ async fn update_trust_list(
 
 	// Insert new trust list
 	for (address, score) in trust_list {
+		let our_score = (*score as f32 * trust_modifier).round() as u8;
 		let record = trusted_node_trust_item::ActiveModel {
 			id: NotSet,
 			trusted_node_id: Set(trusted_node_id),
 			recursion_level: Set(recursion_level),
 			address: Set(address.clone()),
 			score: Set(*score),
+			our_score: Set(our_score),
 		};
 		trusted_node_trust_item::Entity::insert(record)
 			.exec(node.db().inner())
@@ -163,7 +167,15 @@ async fn update_trusted_node_trust_list(
 
 		// Only update trust list when we're actually behind
 		let our_recursion_level = recursion_level + 1;
-		update_trust_list(node, trusted_node.id, our_recursion_level, &list).await?;
+		let trust_modifier = trusted_node.score as f32 / 255f32;
+		update_trust_list(
+			node,
+			trusted_node.id,
+			our_recursion_level,
+			&list,
+			trust_modifier,
+		)
+		.await?;
 		remember_trust_list_update(
 			node.db(),
 			trusted_node.id,

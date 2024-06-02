@@ -11,6 +11,7 @@ pub struct Model {
 	pub recursion_level: u8,
 	pub address: NodeAddress,
 	pub score: u8,
+	pub our_score: u8,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

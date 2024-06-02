@@ -32,6 +32,7 @@ impl MigrationTrait for Migration {
 					"recursion_level" integer NOT NULL,
 					"address" blob NOT NULL,
 					"score" integer NOT NULL,
+					"our_score" integer NOT NULL,
 					UNIQUE(trusted_node_id, address)
 				);
 				CREATE TABLE "trusted_node_update" (
