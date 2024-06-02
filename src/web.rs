@@ -223,11 +223,11 @@ async fn rss_feed(State(g): State<Arc<Global>>) -> Response {
 
 #[derive(Deserialize)]
 struct SearchQuery {
-	address: String,
+	query: String,
 }
 
 async fn search(Query(query): Query<SearchQuery>) -> Response {
-	match Address::from_str(&query.address) {
+	match Address::from_str(&query.query) {
 		Err(e) => server_error_response(e, "Invalid address"),
 		Ok(address) => Response::builder()
 			.status(303)

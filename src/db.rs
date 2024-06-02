@@ -66,12 +66,12 @@ pub enum Error {
 	/// An invalid hash has been found in the database
 	InvalidHash(IdFromBase58Error),
 	InvalidSignature(NodeSignatureError),
-	//InvalidPrivateKey(PrivateKeyError),
+	InvalidPrivateKey(usize),
 	InvalidPublicKey(Option<NodePublicKeyError>),
 	/// The data that is stored for a block is corrupt
 	BlockDataCorrupt(i64),
 	PostMissingFiles(i64),
-	FileMissingBlock(i64, i64),
+	FileMissingBlock(i64, u32),
 
 	MissingIdentity(ActorAddress),
 	/// Something in the database is not how it is expected to be.
@@ -156,6 +156,19 @@ pub trait PersistenceHandle {
 	fn backend(&self) -> DatabaseBackend { self.inner().get_database_backend() }
 
 
+	async fn clear_trusted_nodes_except(
+		&self, trusted_nodes_ids: impl IntoIterator<Item = i64> + Send + std::fmt::Debug,
+	) -> Result<()> {
+		trusted_node::Entity::delete_many()
+			.filter(
+				Expr::col((trusted_node::Entity, trusted_node::Column::Id))
+					.is_not_in(trusted_nodes_ids),
+			)
+			.exec(self.inner())
+			.await?;
+		Ok(())
+	}
+
 	async fn ensure_actor_id(&self, address: &ActorAddress, info: &ActorInfo) -> Result<i64> {
 		if let Some(record) = actor::Entity::find()
 			.filter(actor::Column::Address.eq(address))
@@ -172,6 +185,53 @@ pub trait PersistenceHandle {
 				r#type: Set(info.actor_type.clone()),
 			};
 			Ok(actor::Entity::insert(model)
+				.exec(self.inner())
+				.await?
+				.last_insert_id)
+		}
+	}
+
+	async fn ensure_bootstrap_node_id(
+		&self, socket_address: &SocketAddr, node_id: &NodeAddress,
+	) -> Result<()> {
+		let model = bootstrap_node_id::ActiveModel {
+			address: NotSet,
+			node_id: Set(node_id.clone()),
+		};
+		let affected = bootstrap_node_id::Entity::update_many()
+			.set(model)
+			.filter(bootstrap_node_id::Column::Address.eq(socket_address.to_string()))
+			.exec(self.inner())
+			.await?
+			.rows_affected;
+
+		if affected == 0 {
+			let model = bootstrap_node_id::ActiveModel {
+				address: Set(socket_address.to_string()),
+				node_id: Set(node_id.clone()),
+			};
+			bootstrap_node_id::Entity::insert(model)
+				.exec(self.inner())
+				.await?;
+		}
+		Ok(())
+	}
+
+	async fn ensure_trusted_node(&self, address: &NodeAddress, score: u8) -> Result<i64> {
+		if let Some(record) = trusted_node::Entity::find()
+			.filter(trusted_node::Column::Address.eq(address))
+			.one(self.inner())
+			.await?
+		{
+			Ok(record.id)
+		} else {
+			let model = trusted_node::ActiveModel {
+				id: NotSet,
+				label: Set(address.to_string()),
+				address: Set(address.clone()),
+				score: Set(score),
+			};
+			Ok(trusted_node::Entity::insert(model)
 				.exec(self.inner())
 				.await?
 				.last_insert_id)
@@ -255,6 +315,27 @@ pub trait PersistenceHandle {
 		Ok(objects)
 	}
 
+	async fn load_file_blocks(&self, file_id: i64, block_count: u32) -> Result<Vec<IdType>> {
+		let results = file_block::Entity::find()
+			.filter(file_block::Column::FileId.eq(file_id))
+			.order_by_asc(file_block::Column::Sequence)
+			.all(self.inner())
+			.await?;
+
+		// Verify if all blocks are all there
+		for i in 0..results.len() as u32 {
+			if results[i as usize].sequence != i {
+				Err(Error::FileMissingBlock(file_id, i))?;
+			}
+		}
+		if (results.len() as u32) < block_count {
+			Err(Error::FileMissingBlock(file_id, results.len() as u32))?;
+		}
+
+		Ok(results.into_iter().map(|r| r.block_hash).collect())
+	}
+
+	#[allow(dead_code)]
 	async fn load_file_data(&self, hash: &IdType) -> Result<Option<FileData>> {
 		Ok(
 			if let Some(file) = file::Entity::find()
@@ -285,6 +366,7 @@ pub trait PersistenceHandle {
 		)
 	}
 
+	#[allow(dead_code)]
 	async fn load_file_data2(
 		&self, file_id: i64, compression_type: CompressionType, plain_hash: &IdType,
 		block_count: u32,
@@ -321,7 +403,7 @@ pub trait PersistenceHandle {
 		let mut buffer = Vec::with_capacity(capacity);
 		let mut i = 0;
 		for row in results {
-			let sequence: i64 = row.try_get_by_index(1)?;
+			let sequence: u32 = row.try_get_by_index(1)?;
 			if sequence != i {
 				Err(Error::FileMissingBlock(file_id, sequence))?;
 			}
@@ -426,6 +508,33 @@ pub trait PersistenceHandle {
 			}
 		}
 		Ok(objects)
+	}
+
+	async fn load_node_identity(&self) -> Result<(NodeAddress, NodePrivateKey)> {
+		let result = match node_identity::Entity::find().one(self.inner()).await? {
+			Some(m) => {
+				let key_len = m.private_key.len();
+				match m.private_key.try_into() {
+					Ok(buffer) => (m.address, NodePrivateKey::from_bytes(buffer)),
+					Err(_) => Err(Error::InvalidPrivateKey(key_len))?,
+				}
+			}
+			None => {
+				let private_key = NodePrivateKey::generate();
+				let address = NodeAddress::V1(IdType::hash(&private_key.public().to_bytes()));
+
+				let record = node_identity::ActiveModel {
+					id: NotSet,
+					address: Set(address.clone()),
+					private_key: Set(private_key.as_bytes().to_vec()),
+				};
+				node_identity::Entity::insert(record)
+					.exec(self.inner())
+					.await?;
+				(address, private_key)
+			}
+		};
+		Ok(result)
 	}
 
 	async fn load_post_object_payload(&self, object_id: i64) -> Result<Option<PostObject>> {
@@ -774,7 +883,7 @@ pub trait PersistenceHandle {
 				self.inner().get_database_backend(),
 				r#"
 			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-				df.plain_hash, df.block_count
+				df.compression_type, df.plain_hash, df.block_count
 			FROM profile_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.id
 			LEFT JOIN actor AS i ON o.actor_id = i.id
@@ -800,7 +909,7 @@ pub trait PersistenceHandle {
 				self.inner().get_database_backend(),
 				r#"
 			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-				df.plain_hash, df.block_count
+				df.compression_type, df.plain_hash, df.block_count
 			FROM profile_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.id
 			LEFT JOIN actor AS i ON o.actor_id = i.id
@@ -825,7 +934,7 @@ pub trait PersistenceHandle {
 				self.inner().get_database_backend(),
 				r#"
 			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-			       df.plain_hash, df.block_count
+			       df.compression_type, df.plain_hash, df.block_count
 			FROM profile_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.id
 			LEFT JOIN actor AS i ON o.actor_id = i.id
@@ -1099,6 +1208,31 @@ pub trait PersistenceHandle {
 		Ok(values)
 	}
 
+	async fn load_trust_score(&self, address: &NodeAddress) -> Result<u8> {
+		// Try our own list of trusted nodes first
+		let result = trusted_node::Entity::find()
+			.filter(trusted_node::Column::Address.eq(address))
+			.one(self.inner())
+			.await?;
+		if let Some(r) = result {
+			return Ok(r.score);
+		}
+
+		// Otherwise, try to get the highest score available from anywhere
+		let stat = trusted_node_trust_item::Entity::find()
+			.select_only()
+			.column_as(trusted_node_trust_item::Column::OurScore.max(), "max")
+			.filter(trusted_node_trust_item::Column::Address.eq(address))
+			.order_by_desc(trusted_node_trust_item::Column::Score)
+			.build(self.backend());
+		if let Some(r) = self.inner().query_one(stat).await? {
+			let score_opt: Option<u8> = r.try_get_by_index(0)?;
+			Ok(score_opt.unwrap_or(0))
+		} else {
+			Ok(0)
+		}
+	}
+
 	async fn update_identity_label(&self, old_label: &str, new_label: &str) -> Result<()> {
 		let mut model = <identity::ActiveModel as std::default::Default>::default();
 		model.label = Set(new_label.to_string());
@@ -1146,16 +1280,25 @@ pub trait PersistenceHandle {
 		let avatar_id: Option<IdType> = result.try_get_by_index(2)?;
 		let wallpaper_id: Option<IdType> = result.try_get_by_index(3)?;
 		let description_id: Option<i64> = result.try_get_by_index(4)?;
-		let description_plain_hash: Option<IdType> = result.try_get_by_index(5)?;
-		let description_block_count: Option<i64> = result.try_get_by_index(6)?;
+		let description_compression_type: Option<u8> = result.try_get_by_index(5)?;
+		let description_plain_hash: Option<IdType> = result.try_get_by_index(6)?;
+		let description_block_count: Option<i64> = result.try_get_by_index(7)?;
 
 		let description = if let Some(file_id) = description_id {
-			self.find_file_data(
-				file_id,
-				&description_plain_hash.unwrap(),
-				description_block_count.unwrap() as _,
+			let data = self
+				.find_file_data(
+					file_id,
+					&description_plain_hash.unwrap(),
+					description_block_count.unwrap() as _,
+				)
+				.await?;
+
+			data.map(
+				|d| match CompressionType::from_u8(description_compression_type.unwrap()) {
+					Some(t) => decompress(t, &d).expect("decompression error"),
+					None => panic!("unsupported compression type"),
+				},
 			)
-			.await?
 		} else {
 			None
 		};
@@ -1172,6 +1315,7 @@ pub trait PersistenceHandle {
 }
 
 
+#[allow(dead_code)]
 fn query_actor_id(address: &ActorAddress) -> SelectStatement {
 	Query::select()
 		.column(actor::Column::Id)
@@ -1844,67 +1988,6 @@ impl Connection {
 		Ok(())
 	}
 
-	/*pub(crate) fn _store_file_data(
-		tx: &impl DerefConnection, mime_type: &str, compression_type: u8, data: &[u8],
-	) -> Result<(i64, IdType, Vec<IdType>)> {
-		debug_assert!(data.len() <= u64::MAX as usize, "data too large");
-		debug_assert!(data.len() > 0, "data can not be empty");
-		let block_count = data.len() / BLOCK_SIZE + ((data.len() % BLOCK_SIZE) > 0) as usize;
-		let mut blocks = Vec::with_capacity(block_count);
-		let mut block_hashes = Vec::with_capacity(block_count);
-
-		// Devide data into blocks
-		let plain_hash = IdType::hash(data);
-		let mut i = 0;
-		let mut block_index = 0;
-		loop {
-			let slice = &data[i..];
-			let actual_block_size = min(BLOCK_SIZE, slice.len());
-			let mut block = slice[..actual_block_size].to_vec();
-			encrypt_block(block_index, &plain_hash, &mut block);
-			let block_hash = IdType::hash(&block);
-			blocks.push(block);
-			block_hashes.push(block_hash);
-
-			block_index += 1;
-			i += BLOCK_SIZE;
-			if i >= data.len() {
-				break;
-			}
-		}
-
-		// Calculate the file hash
-		let file_hash = IdType::hash(
-			&binserde::serialize(&File {
-				plain_hash: plain_hash.clone(),
-				mime_type: mime_type.to_string(),
-				compression_type,
-				blocks: block_hashes.clone(),
-			})
-			.unwrap(),
-		);
-		// FIXME: Prevent the unnecessary cloning just to calculate the file hash
-
-		// Create the file record
-		let file_id = Self::_store_file_record(
-			tx,
-			&file_hash,
-			&plain_hash,
-			mime_type,
-			compression_type,
-			block_count as _,
-		)?;
-
-		// Create block records
-		for i in 0..block_count {
-			let block_data = &blocks[i];
-			let block_hash = &block_hashes[i];
-
-			Self::_store_file_block(tx, file_id, i as _, block_hash, block_data)?;
-		}
-		Ok((file_id as _, file_hash, block_hashes))
-	}*/
-
 	pub(crate) fn _store_file(
 		tx: &impl Deref<Target = rusqlite::Connection>, id: &IdType, plain_hash: &IdType,
 		mime_type: &str, compression_type: u8, blocks: &[IdType],
@@ -2328,26 +2411,6 @@ impl Connection {
 		Ok(results)
 	}
 
-	pub fn fetch_file_blocks(&self, file_hash: &IdType, size: usize) -> Result<Vec<IdType>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT block_hash
-			FROM file_block AS fb
-			INNER JOIN file AS f ON fb.file_id = f.id
-			WHERE f.hash = ?
-			ORDER BY fb.sequence ASC
-		"#,
-		)?;
-
-		let mut result = Vec::with_capacity(size);
-		let mut rows = stat.query([file_hash])?;
-		if let Some(row) = rows.next()? {
-			let block_hash: IdType = row.get(0)?;
-			result.push(block_hash);
-		}
-		Ok(result)
-	}
-
 	pub fn fetch_block(&self, id: &IdType) -> Result<Option<Vec<u8>>> {
 		let mut stat = self.prepare(
 			r#"
@@ -2369,13 +2432,6 @@ impl Connection {
 			Ok(None)
 		}
 	}
-
-	/*pub fn fetch_file_data(&self, id: &IdType) -> Result<Option<FileData>> {
-		match Self::_fetch_file(self, id)? {
-			None => Ok(None),
-			Some((mime_type, data)) => Ok(Some(FileData { mime_type, data })),
-		}
-	}*/
 
 	pub fn fetch_file(&self, id: &IdType) -> Result<Option<File>> {
 		let mut stat = self.prepare(
@@ -2400,12 +2456,12 @@ impl Connection {
 			"#,
 			)?;
 			let mut rows = stat.query([file_id])?;
-			let mut i = 0i64;
+			let mut i = 0u32;
 			let mut blocks = Vec::with_capacity(block_count as _);
 			while let Some(row) = rows.next()? {
-				let sequence: i64 = row.get(0)?;
+				let sequence: u32 = row.get(0)?;
 				if sequence != i {
-					Err(Error::FileMissingBlock(file_id, i))?;
+					Err(Error::FileMissingBlock(file_id, sequence))?;
 				}
 				let block_hash: IdType = row.get(1)?;
 
@@ -2466,32 +2522,6 @@ impl Connection {
 		&self, actor_id: &ActorAddress, sequence: u64,
 	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		Self::_fetch_object_by_sequence_old(self, actor_id, sequence)
-	}
-
-	pub fn fetch_previous_object(
-		&mut self, actor_id: &ActorAddress, hash: &IdType,
-	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
-		let tx = self.old.transaction()?;
-
-		let mut stat = tx.prepare(
-			r#"
-			SELECT o.sequence
-			FROM object AS o
-			INNER JOIN actor AS i ON o.actor_id = i.id
-			WHERE i.address = ? AND i.actor_version = ? AND o.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_id, hash.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let sequence: u64 = row.get(0)?;
-			if sequence > 0 {
-				Self::_fetch_object_by_sequence_old(&tx, actor_id, sequence - 1)
-			} else {
-				Ok(None)
-			}
-		} else {
-			Ok(None)
-		}
 	}
 
 	pub fn fetch_next_object(
@@ -2649,38 +2679,6 @@ impl Connection {
 		Ok(ids)
 	}
 
-	pub fn fetch_node_identity(&mut self) -> Result<(IdType, NodePrivateKey)> {
-		let tx = self.old.transaction()?;
-
-		let result = {
-			let mut stat = tx.prepare(
-				r#"
-				SELECT address, private_key FROM node_identity LIMIT 1
-			"#,
-			)?;
-			let mut rows = stat.query([])?;
-
-			if let Some(row) = rows.next()? {
-				let address: IdType = row.get(0)?;
-				let private_key: NodePrivateKey = row.get(1)?;
-				(address, private_key)
-			} else {
-				let private_key = NodePrivateKey::generate();
-				let address = IdType::hash(&private_key.public().to_bytes());
-				tx.execute(
-					r#"
-					INSERT INTO node_identity (address, private_key) VALUES (?,?)
-				"#,
-					params![address, private_key],
-				)?;
-				(address, private_key)
-			}
-		};
-
-		tx.commit()?;
-		Ok(result)
-	}
-
 	pub fn fetch_profile_object(
 		&self, actor_id: &ActorAddress,
 	) -> Result<Option<(IdType, BlogchainObject)>> {
@@ -2700,21 +2698,6 @@ impl Connection {
 		} else {
 			Ok(None)
 		}
-	}
-
-	pub fn fetch_remembered_node(&mut self, address: &SocketAddr) -> Result<(IdType, i32)> {
-		let result = self.query_row(
-			r#"
-			SELECT node_id, success_score FROM remembered_nodes WHERE address = ?
-		"#,
-			params![address.to_string()],
-			|row| {
-				let node_id: IdType = row.get(0)?;
-				let score: i32 = row.get(1)?;
-				Ok((node_id, score))
-			},
-		)?;
-		Ok(result)
 	}
 
 	pub fn follow(&mut self, actor_id: &ActorAddress, actor_info: &ActorInfo) -> Result<()> {
@@ -2809,21 +2792,6 @@ impl Connection {
 		Ok(rows.next()?.is_some())
 	}
 
-	pub fn is_identity_available(&self, address: &ActorAddress) -> rusqlite::Result<bool> {
-		let mut stat = self.old.prepare(
-			r#"
-			SELECT address FROM actor AS i
-			WHERE address = ? AND id IN (
-				SELECT actor_id FROM identity
-			) OR id IN (
-				SELECT actor_id FROM feed_followed
-			)
-		"#,
-		)?;
-		let mut rows = stat.query(params![address])?;
-		Ok(rows.next()?.is_some())
-	}
-
 	pub fn is_following(&self, actor_id: &ActorAddress) -> Result<bool> {
 		let mut stat = self.prepare(
 			r#"
@@ -2837,38 +2805,9 @@ impl Connection {
 		Ok(rows.next()?.is_some())
 	}
 
-	/// Returns the lastest object sequence for an actor if available.
-	pub fn max_object_sequence(&self, actor_id: i64) -> Result<Option<u64>> {
-		let mut stat = self.old.prepare(
-			r#"
-			SELECT MAX(sequence) FROM object WHERE actor_id = ?
-		"#,
-		)?;
-		let mut rows = stat.query([actor_id])?;
-		match rows.next()? {
-			None => Ok(None),
-			Some(row) => Ok(row.get(0)?),
-		}
-	}
-
-	/// Returns the sequence that the next object would use.
-	pub fn next_object_sequence(&self, actor_id: i64) -> Result<u64> {
-		match self.max_object_sequence(actor_id)? {
-			None => Ok(0),
-			Some(s) => Ok(s + 1),
-		}
-	}
-
 	pub fn old(&self) -> &rusqlite::Connection { &self.old.0 }
 
 	pub fn old_mut(&mut self) -> &mut rusqlite::Connection { &mut self.old.0 }
-
-	pub async fn open(path: &Path) -> self::Result<Self> {
-		let old_connection = rusqlite::Connection::open(&path)?;
-		Ok(Self {
-			old: UnsafeSendSync::new(old_connection),
-		})
-	}
 
 	pub fn open_old(path: &Path) -> rusqlite::Result<Self> {
 		let c = rusqlite::Connection::open(&path)?;
@@ -2897,41 +2836,6 @@ impl Connection {
 		)
 	}
 
-	/*pub fn store_file_data(
-		&mut self, compression_type: CompressionType, file_data: &FileData,
-	) -> Result<IdType> {
-		let (_, file_hash, _) = Self::_store_file_data(
-			self,
-			&file_data.mime_type,
-			compression_type as _,
-			&file_data.data,
-		)?;
-		Ok(file_hash)
-	}
-
-	pub fn store_file_data2(
-		&mut self, mime_type: &str, compression_type: CompressionType, data: &[u8],
-	) -> Result<IdType> {
-		let (_, file_hash, _) =
-			Self::_store_file_data(self, mime_type, compression_type as _, data)?;
-		Ok(file_hash)
-	}*/
-
-	pub fn store_file2(
-		&mut self, id: &IdType, plain_hash: &IdType, mime_type: &str,
-		compression_type: CompressionType, blocks: &[IdType],
-	) -> Result<()> {
-		Self::_store_file(
-			self,
-			id,
-			plain_hash,
-			mime_type,
-			compression_type as _,
-			blocks,
-		)?;
-		Ok(())
-	}
-
 	pub fn store_identity(
 		&mut self, address: &ActorAddress, public_key: &ActorPublicKeyV1, first_object: &IdType,
 	) -> Result<()> {
@@ -2946,46 +2850,6 @@ impl Connection {
 			first_object,
 			ACTOR_TYPE_BLOGCHAIN
 		])?;
-		Ok(())
-	}
-
-	pub fn store_my_identity(
-		&mut self, label: &str, address: &IdType, private_key: &NodePrivateKey,
-		first_object: &IdType,
-	) -> rusqlite::Result<()> {
-		let tx = self.old.transaction()?;
-
-		let mut stat = tx.prepare(
-			r#"
-			INSERT INTO actor (address, public_key, first_object) VALUES(?,?,?)
-		"#,
-		)?;
-		let new_id = stat.insert(rusqlite::params![
-			address.to_string(),
-			private_key.public().as_bytes(),
-			first_object.to_string()
-		])?;
-		stat = tx
-			.prepare(
-				r#"
-			INSERT INTO identity (label, actor_id, private_key) VALUES (?,?,?)
-		"#,
-			)
-			.unwrap();
-		stat.insert(rusqlite::params![label, new_id, private_key.as_bytes()])?;
-
-		drop(stat);
-		tx.commit()?;
-		Ok(())
-	}
-
-	pub fn store_node_identity(&self, node_id: &IdType, node_key: &NodePrivateKey) -> Result<()> {
-		self.execute(
-			r#"
-			UPDATE node_identity SET address = ?, private_key = ?
-		"#,
-			params![node_id, node_key],
-		)?;
 		Ok(())
 	}
 
@@ -3013,69 +2877,6 @@ impl Connection {
 		};
 		tx.commit()?;
 		Ok(true)
-	}
-
-	pub fn fetch_bootstrap_node_id(&mut self, address: &SocketAddr) -> Result<Option<IdType>> {
-		let mut stat = self.old.prepare(
-			r#"
-			SELECT node_id FROM bootstrap_id WHERE address = ?
-		"#,
-		)?;
-		let mut rows = stat.query([address.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let node_id = row.get(0)?;
-			Ok(Some(node_id))
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn remember_bootstrap_node_id(
-		&mut self, address: &SocketAddr, node_id: &IdType,
-	) -> Result<bool> {
-		let tx = self.old.transaction()?;
-		let updated = tx.execute(
-			"UPDATE bootstrap_id SET node_id = ? WHERE address = ?",
-			params![node_id, address.to_string()],
-		)?;
-		if updated == 0 {
-			tx.execute(
-				"INSERT INTO bootstrap_id (address, node_id) VALUES (?,?)",
-				params![address.to_string(), node_id],
-			)?;
-		}
-		tx.commit()?;
-		Ok(updated == 0)
-	}
-
-	pub fn remember_node(&mut self, address: &SocketAddr, node_id: &IdType) -> Result<()> {
-		let tx = self.old.transaction()?;
-
-		let mut stat = tx.prepare(
-			r#"
-			SELECT success_score FROM remembered_nodes WHERE address = ?
-		"#,
-		)?;
-		let mut rows = stat.query([address.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let score: i32 = row.get(0)?;
-
-			let affected = tx.execute(
-				r#"UPDATE remembered_nodes SET success_score = ? WHERE address = ?"#,
-				params![score + 1, address.to_string()],
-			)?;
-			debug_assert!(affected > 0);
-		} else {
-			tx.execute(
-				r#"INSERT INTO remembered_nodes (address, node_id, success_score) VALUES (?, ?, ?)"#,
-				params![address.to_string(), node_id, 1],
-			)?;
-		}
-		Ok(())
-	}
-
-	pub fn transaction_old(&mut self) -> Result<rusqlite::Transaction<'_>> {
-		Ok(self.old.transaction()?)
 	}
 
 	pub fn unfollow(&mut self, actor_id: &ActorAddress) -> Result<bool> {
@@ -3150,6 +2951,7 @@ impl fmt::Display for Error {
 			Self::FileMissingBlock(file_id, sequence) => {
 				write!(f, "file {} missing block sequence {}", file_id, sequence)
 			}
+			Self::InvalidPrivateKey(len) => write!(f, "invalid private key (size={})", len),
 			Self::InvalidPublicKey(oe) => match oe {
 				Some(e) => write!(f, "invalid public key: {}", e),
 				None => write!(f, "invalid public key size"),
@@ -3189,7 +2991,7 @@ impl From<NodeSignatureError> for Error {
 }
 
 impl From<IdFromBase58Error> for Error {
-	fn from(other: IdFromBase58Error) -> Self { Self::InvalidHash(other) }
+	fn from(other: IdFromBase58Error) -> Self { other.to_db() }
 }
 
 impl From<NodePublicKeyError> for Error {

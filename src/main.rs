@@ -40,13 +40,15 @@ use std::{
 use api::Api;
 use config::Config;
 use db::Database;
+use entity::bootstrap_node_id;
 use log::*;
 use net::{overlay::OverlayNode, resolve_bootstrap_addresses, Openness};
+use sea_orm::{prelude::*, Set};
 use semver::Version;
 use signal_hook::flag;
 use tokio::{spawn, time::sleep};
 
-use crate::{config::CONFIG, migration::Migrations};
+use crate::{config::CONFIG, core::Address, db::PersistenceHandle, migration::Migrations};
 
 
 /// Gets the latest version, and whether it is required or not
@@ -227,6 +229,30 @@ fn load_install_dir() -> io::Result<PathBuf> {
 	Ok(install_dir)
 }
 
+async fn load_trusted_node_config(db: &Database, config: &Config) -> db::Result<()> {
+	// I know this code bad but its temporary anyway
+	let trusted_node_list = config.trusted_nodes.clone().unwrap_or(Vec::new());
+	let mut trusted_node_ids = Vec::with_capacity(trusted_node_list.len());
+	for string in trusted_node_list {
+		match Address::from_str(&string) {
+			Err(e) => error!(
+				"A node address in the `trusted_nodes` list is invalid: {}",
+				e
+			),
+			Ok(address) => match address {
+				Address::Node(node_address) => {
+					let id = db.ensure_trusted_node(&node_address, 255).await?;
+					trusted_node_ids.push(id);
+				}
+				_ =>
+					error!("An address in the `trusted_nodes` list is not actually a node address."),
+			},
+		}
+	}
+
+	db.clear_trusted_nodes_except(trusted_node_ids).await
+}
+
 fn parse_versions(string: &str) -> (&str, Option<&str>) {
 	if let Some(i) = string.find('\n') {
 		let latest_version = &string[..i];
@@ -313,8 +339,23 @@ async fn main() {
 			migrations.run(&db).await.expect("migration issue");
 		}
 
+		// Load configured trusted nodes into database
+		if let Err(e) = load_trusted_node_config(&db, &config).await {
+			error!("Unable to load trusted node list: {}", e);
+			return;
+		}
+
 		// Load node
-		let node = load_node(stop_flag.clone(), db.clone(), &config).await;
+		let node = if let Some(n) = load_node(stop_flag.clone(), db.clone(), &config).await {
+			n
+		} else {
+			info!("Node not loaded, exiting...");
+			return;
+		};
+		info!(
+			"Loaded node with address {}",
+			Address::Node(node.node_id().clone())
+		);
 
 		// Test openness
 		let api = Api { node, db };
@@ -396,17 +437,23 @@ async fn main() {
 	}
 }
 
-async fn load_node(stop_flag: Arc<AtomicBool>, db: Database, config: &Config) -> Arc<OverlayNode> {
-	let mut c = db.connect_old().expect("Unable to connect to database.");
-	let (node_id, keypair) = c
-		.fetch_node_identity()
-		.expect("Unable to load node identity");
-	match net::overlay::OverlayNode::start(stop_flag, config, node_id, keypair, db).await {
+async fn load_node(
+	stop_flag: Arc<AtomicBool>, db: Database, config: &Config,
+) -> Option<Arc<OverlayNode>> {
+	let (address, private_key) = match db.load_node_identity().await {
+		Ok(r) => r,
+		Err(e) => {
+			error!("Unable to load node identity from database: {}", e);
+			return None;
+		}
+	};
+
+	match net::overlay::OverlayNode::start(stop_flag, config, address, private_key, db).await {
 		Err(e) => {
 			error!("Unable to bind socket: {}", e);
 			process::exit(1)
 		}
-		Ok(s) => s,
+		Ok(s) => Some(s),
 	}
 }
 
@@ -438,13 +485,11 @@ async fn test_bootstrap_nodes(g: &Api, config: &Config) -> bool {
 	let mut updated = 0;
 	for bootstrap_node in &bootstrap_nodes {
 		if let Some(bootstrap_id) = g.node.obtain_id(&bootstrap_node).await {
-			g.db.perform(|mut c| {
-				if c.remember_bootstrap_node_id(&bootstrap_node, &bootstrap_id)? {
-					updated += 1;
-				}
-				Ok(())
-			})
-			.expect("database error");
+			g.db.ensure_bootstrap_node_id(bootstrap_node, &bootstrap_id)
+				.await
+				.unwrap();
+			// FIXME: Properly handle database error
+			updated += 1;
 		}
 	}
 	updated > 0

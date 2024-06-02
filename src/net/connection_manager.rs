@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use super::{sstp::Connection, NodeContactInfo};
 use crate::{
 	common::*,
+	core::NodeAddress,
 	trace::{Mutex, MutexGuard},
 };
 
@@ -13,7 +14,7 @@ use crate::{
 /// the new connection's node ID.
 pub struct ConnectionManager {
 	center: IdType,
-	map: Mutex<HashMap<IdType, ConnectionManagerEntry>>,
+	map: Mutex<HashMap<NodeAddress, ConnectionManagerEntry>>,
 	limit: usize,
 }
 
@@ -21,8 +22,8 @@ pub struct ConnectionManager {
 /// to insert a connection into it.
 pub struct ConnectionSpace<'a> {
 	node_info: NodeContactInfo,
-	guard: MutexGuard<'a, HashMap<IdType, ConnectionManagerEntry>>,
-	to_remove: Option<IdType>,
+	guard: MutexGuard<'a, HashMap<NodeAddress, ConnectionManagerEntry>>,
+	to_remove: Option<NodeAddress>,
 }
 
 pub type ConnectionManagerEntry = (NodeContactInfo, Arc<Mutex<Box<Connection>>>);
@@ -51,10 +52,10 @@ impl ConnectionManager {
 			})
 		} else {
 			// Remove a connection if it is further away.
-			let mut highest_distance = node_info.node_id.distance(&self.center);
+			let mut highest_distance = node_info.address.as_id().as_ref().distance(&self.center);
 			let mut remove_node_id = None;
 			for id in map.keys() {
-				let this_distance = id.distance(&self.center);
+				let this_distance = id.as_id().as_ref().distance(&self.center);
 				if this_distance > highest_distance {
 					highest_distance = this_distance;
 					remove_node_id = Some(id.clone());
@@ -72,25 +73,9 @@ impl ConnectionManager {
 		}
 	}
 
-	pub async fn find(&self, target: &IdType) -> Option<ConnectionManagerEntry> {
-		match self.center.differs_at_bit(target) {
-			None => None,
-			Some(bit) => self.find_near(bit).await,
-		}
-	}
-
-	pub async fn find_near(&self, bit: u8) -> Option<ConnectionManagerEntry> {
+	pub async fn find(&self, target: &NodeAddress) -> Option<ConnectionManagerEntry> {
 		let map = self.map.lock().await;
-		for (node_id, (node_info, c)) in map.iter() {
-			let is_near = match self.center.differs_at_bit(node_id) {
-				None => true,
-				Some(b) => b >= bit,
-			};
-			if is_near {
-				return Some((node_info.clone(), c.clone()));
-			}
-		}
-		None
+		map.get(target).map(|x| x.clone())
 	}
 
 	pub fn new(center: IdType, limit: usize) -> Self {
@@ -101,7 +86,7 @@ impl ConnectionManager {
 		}
 	}
 
-	pub async fn remove(&self, node_id: &IdType) -> bool {
+	pub async fn remove(&self, node_id: &NodeAddress) -> bool {
 		self.map.lock().await.remove(node_id).is_some()
 	}
 }
@@ -109,7 +94,7 @@ impl ConnectionManager {
 impl<'a> ConnectionSpace<'a> {
 	/// Puts the given connection in place, and returns the node ID of the
 	/// connection that has been removed.
-	pub fn put(mut self, connection: Arc<Mutex<Box<Connection>>>) -> Option<IdType> {
+	pub fn put(mut self, connection: Arc<Mutex<Box<Connection>>>) -> Option<NodeAddress> {
 		if let Some(to_remove) = &self.to_remove {
 			let _removed = self.guard.remove(to_remove);
 			debug_assert!(_removed.is_some(), "nothing was removed");
@@ -120,7 +105,7 @@ impl<'a> ConnectionSpace<'a> {
 			node_info,
 			to_remove,
 		} = self;
-		guard.insert(node_info.node_id.clone(), (node_info, connection));
+		guard.insert(node_info.address.clone(), (node_info, connection));
 		to_remove
 	}
 }

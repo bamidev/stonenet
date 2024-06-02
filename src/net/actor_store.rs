@@ -25,7 +25,7 @@ impl ActorStoreEntry {
 		if self
 			.available_nodes
 			.iter()
-			.find(|c| &contact.node_id == &c.node_id)
+			.find(|c| &contact.address == &c.address)
 			.is_none()
 		{
 			self.available_nodes.push_back(contact);

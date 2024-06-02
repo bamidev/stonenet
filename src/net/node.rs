@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use super::{bucket::Bucket, message::*, overlay::OverlayNode, sstp::MessageProcessorResult, *};
 use crate::{
 	common::*,
-	db,
+	db::{self, Database, PersistenceHandle},
 	trace::{self, Mutex, Traced},
 };
 
@@ -68,7 +68,7 @@ where
 	narrow_down: bool,
 	use_relays: bool,
 
-	visited: Vec<(IdType, ContactOption)>,
+	visited: Vec<(NodeAddress, ContactOption)>,
 	candidates: VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
 	open_assistant_connection: Option<(IdType, Arc<Mutex<Option<Box<Connection>>>>)>,
 }
@@ -78,7 +78,8 @@ where
 	I: NodeInterface,
 {
 	pub(super) stop_flag: Arc<AtomicBool>,
-	pub(super) node_id: IdType,
+	pub(super) db: Database,
+	pub(super) address: NodeAddress,
 	pub(super) buckets: Vec<Mutex<Bucket>>,
 	pub(super) interface: I,
 	pub(super) packet_server: Arc<sstp::Server>,
@@ -182,7 +183,7 @@ impl<'a, I> FindValueIter<'a, I>
 where
 	I: NodeInterface + Send + Sync,
 {
-	pub fn visited(&self) -> &[(IdType, ContactOption)] { &self.visited }
+	pub fn visited(&self) -> &[(NodeAddress, ContactOption)] { &self.visited }
 }
 
 impl<I> Node<I>
@@ -198,8 +199,8 @@ where
 		}
 	}
 
-	pub(super) async fn bucket_for(&self, node_id: &IdType) -> Option<&Mutex<Bucket>> {
-		if let Some(bucket_index) = self.differs_at_bit(node_id) {
+	pub(super) async fn bucket_for(&self, node_id: &NodeAddress) -> Option<&Mutex<Bucket>> {
+		if let Some(bucket_index) = self.differs_at_bit(&node_id.as_id()) {
 			Some(&self.buckets[bucket_index as usize])
 		} else {
 			None
@@ -214,12 +215,12 @@ where
 	pub async fn select_direct_connection(
 		&self, target: &NodeContactInfo, request: Option<&[u8]>,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
-		self.select_direct_connection2(&target.contact_info, Some(&target.node_id), request)
+		self.select_direct_connection2(&target.contact_info, Some(&target.address), request)
 			.await
 	}
 
 	pub async fn select_direct_connection2(
-		&self, target: &ContactInfo, node_id: Option<&IdType>, request: Option<&[u8]>,
+		&self, target: &ContactInfo, node_id: Option<&NodeAddress>, request: Option<&[u8]>,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
 		if let Some((option, _)) = self.pick_contact_option(target) {
 			self.connect(&option, node_id, request).await
@@ -229,7 +230,7 @@ where
 	}
 
 	pub async fn connect(
-		&self, target: &ContactOption, node_id: Option<&IdType>, request: Option<&[u8]>,
+		&self, target: &ContactOption, node_id: Option<&NodeAddress>, request: Option<&[u8]>,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
 		match self.packet_server.connect(target, node_id, request).await {
 			Ok(c) => Some(c),
@@ -249,7 +250,7 @@ where
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
 		match &strategy.method {
 			ContactStrategyMethod::Direct =>
-				self.connect(&strategy.contact, Some(&node_info.node_id), request)
+				self.connect(&strategy.contact, Some(&node_info.address), request)
 					.await,
 			ContactStrategyMethod::PunchHole => Some((
 				self.initiate_assisted_connection(
@@ -280,7 +281,7 @@ where
 	}
 
 	pub async fn connect_with_timeout(
-		&self, stop_flag: Arc<AtomicBool>, target: &ContactOption, node_id: Option<&IdType>,
+		&self, stop_flag: Arc<AtomicBool>, target: &ContactOption, node_id: Option<&NodeAddress>,
 		request: Option<&[u8]>, timeout: Duration,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
 		match self
@@ -302,7 +303,7 @@ where
 	pub fn contact_info(&self) -> ContactInfo { self.packet_server.our_contact_info() }
 
 	pub fn differs_at_bit(&self, other_id: &IdType) -> Option<u8> {
-		differs_at_bit(&self.node_id, other_id)
+		differs_at_bit(&self.address.as_id(), other_id)
 	}
 
 	pub async fn exchange(
@@ -328,7 +329,7 @@ where
 
 	/// Exchanges a request with a response with the given contact.
 	pub async fn exchange_at(
-		&self, node_id: &IdType, target: &ContactOption, message_type: u8, buffer: &[u8],
+		&self, node_id: &NodeAddress, target: &ContactOption, message_type: u8, buffer: &[u8],
 	) -> Option<(Vec<u8>, Box<Connection>)> {
 		// TODO: Use an existing connection if possible.
 		let first_buffer = self.interface.prepare(message_type, buffer);
@@ -363,7 +364,7 @@ where
 	}
 
 	pub async fn exchange_find_node_at(
-		&self, target: &ContactOption, target_node_id: &IdType, request: &FindNodeRequest,
+		&self, target: &ContactOption, target_node_id: &NodeAddress, request: &FindNodeRequest,
 	) -> Option<(FindNodeResponse, Box<Connection>)> {
 		let raw_request = binserde::serialize(&request).unwrap();
 		let (raw_response, connection) = self
@@ -485,7 +486,7 @@ where
 
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
 	/// RPC.
-	async fn exchange_ping_at(&self, target: &ContactOption, node_id: &IdType) -> Option<()> {
+	async fn exchange_ping_at(&self, target: &ContactOption, node_id: &NodeAddress) -> Option<()> {
 		self.exchange_at(node_id, target, NETWORK_MESSAGE_TYPE_PING_REQUEST, &[])
 			.await?;
 		Some(())
@@ -500,7 +501,7 @@ where
 	/// Extracts a list of fingers to contact, and the corresponding strategy to
 	/// contact the node.
 	fn extract_fingers_from_response(
-		&self, response: &FindNodeResponse, visited: &[(IdType, ContactOption)],
+		&self, response: &FindNodeResponse, visited: &[(NodeAddress, ContactOption)],
 	) -> Vec<(NodeContactInfo, ContactStrategy)> {
 		let mut new_fingers =
 			Vec::with_capacity(response.fingers.len() + response.connected.len() as usize);
@@ -538,17 +539,17 @@ where
 	}
 
 	pub async fn find_finger_or_connection(
-		&self, id: &IdType,
+		&self, id: &NodeAddress,
 	) -> Option<(NodeContactInfo, Option<Arc<Mutex<Box<sstp::Connection>>>>)> {
-		let bucket_pos = match self.differs_at_bit(id) {
+		let bucket_pos = match self.differs_at_bit(id.as_id().as_ref()) {
 			// If ID is the same as ours, don't give any other contacts
 			None => return None,
 			Some(p) => p as usize,
 		};
 		let bucket = self.buckets[bucket_pos].lock().await;
 		// First check if we have an active connection to it
-		if let Some(node_info) = bucket.connections.iter().find(|c| &c.node_id == id) {
-			if &node_info.node_id == id {
+		if let Some(node_info) = bucket.connections.iter().find(|c| &c.address == id) {
+			if &node_info.address == id {
 				if let Some((_, connection)) =
 					self.overlay_node().connection_manager().find(id).await
 				{
@@ -651,10 +652,10 @@ where
 	pub async fn find_node_from_fingers(
 		&self, id: &IdType, fingers: &[NodeContactInfo], result_limit: usize, visit_limit: usize,
 	) -> Vec<NodeContactInfo> {
-		let mut visited = Vec::<(IdType, ContactOption)>::new();
+		let mut visited = Vec::<(NodeAddress, ContactOption)>::new();
 		let mut candidates = VecDeque::with_capacity(fingers.len());
 		for (d, n) in Self::sort_fingers(id, fingers).into_iter() {
-			if n.node_id != self.node_id {
+			if n.address != self.address {
 				match self.pick_contact_strategy(&n.contact_info) {
 					None => {}
 					Some(strategy) => candidates.push_back((d, n, strategy)),
@@ -671,22 +672,22 @@ where
 			let (candidate_dist, candidate_contact, strategy) = candidates[0].clone();
 			if visited
 				.iter()
-				.find(|(id, _)| id == &candidate_contact.node_id)
+				.find(|(id, _)| id == &candidate_contact.address)
 				.is_some()
 			{
 				candidates.pop_front();
 				continue;
 			}
-			visited.push((candidate_contact.node_id.clone(), strategy.contact.clone()));
+			visited.push((candidate_contact.address.clone(), strategy.contact.clone()));
 
 			let request = FindNodeRequest {
 				node_id: id.clone(),
 			};
 			match self
-				.exchange_find_node_at(&strategy.contact, &candidate_contact.node_id, &request)
+				.exchange_find_node_at(&strategy.contact, &candidate_contact.address, &request)
 				.await
 			{
-				None => info!("Disregarding finger {},", &candidate_contact.node_id),
+				None => info!("Disregarding finger {},", &candidate_contact.address),
 				Some((response, _)) => {
 					if response.is_relay_node && strategy.method == ContactStrategyMethod::Direct {
 						self.overlay_node()
@@ -695,13 +696,13 @@ where
 					}
 					let mut new_fingers = self.extract_fingers_from_response(&response, &visited);
 					new_fingers.retain(|(f, strat)| {
-						if f.node_id == self.node_id {
+						if f.address == self.address {
 							return false;
 						}
 						if strat.method != ContactStrategyMethod::Direct {
 							return false;
 						}
-						let finger_dist = distance(id, &f.node_id);
+						let finger_dist = distance(id, &f.address.as_id());
 						finger_dist < candidate_dist
 					});
 					Self::append_candidates(id, &mut found, &new_fingers);
@@ -709,7 +710,11 @@ where
 						found.pop_back();
 					}
 					// If the exact ID has been found, we stop
-					if new_fingers.iter().find(|f| &f.0.node_id == id).is_some() {
+					if new_fingers
+						.iter()
+						.find(|f| f.0.address.as_id().as_ref() == id)
+						.is_some()
+					{
 						break;
 					}
 					Self::append_candidates(id, &mut candidates, &new_fingers);
@@ -798,12 +803,12 @@ where
 				match &*e {
 					sstp::Error::Timeout(_) => {
 						warn!("Problematic node {}: {:?}", node_info, e);
-						self.mark_node_problematic(&node_info.node_id).await;
+						self.mark_node_problematic(&node_info.address).await;
 					}
 					_ =>
 						if !e.forgivable() {
 							warn!("Problematic node {}: {:?}", node_info, e);
-							self.reject_node(&node_info.node_id).await;
+							self.reject_node(&node_info.address).await;
 						} else {
 							warn!("Connection issue with node {}: {:?}", node_info, e);
 						},
@@ -825,12 +830,12 @@ where
 				match &*e {
 					sstp::Error::Timeout(_) => {
 						warn!("Problematic node {}: {:?}", node_info, e);
-						self.mark_node_problematic(&node_info.node_id).await;
+						self.mark_node_problematic(&node_info.address).await;
 					}
 					_ =>
 						if !e.forgivable() {
 							warn!("Problematic node {}: {:?}", node_info, e);
-							self.reject_node(&node_info.node_id).await;
+							self.reject_node(&node_info.address).await;
 						} else {
 							warn!("Connection issue with node {}: {:?}", node_info, e);
 						},
@@ -896,7 +901,7 @@ where
 			overlay_node
 				.initiate_indirect_connection(
 					relay_connection,
-					&node_info.node_id,
+					&node_info.address,
 					&strategy.contact,
 					&contact_me_option,
 					reversed,
@@ -914,7 +919,7 @@ where
 			if let Some((_, existing_connection)) = self
 				.overlay_node()
 				.connection_manager()
-				.find(&node_info.node_id)
+				.find(&node_info.address)
 				.await
 			{
 				// FIXME: contact option should be obtainable without having to lock the
@@ -924,13 +929,13 @@ where
 					c.contact_option()
 				};
 				return self
-					.connect(&contact_option, Some(&node_info.node_id), None)
+					.connect(&contact_option, Some(&node_info.address), None)
 					.await
 					.map(|r| r.0);
 			}
 
 			if let Some((mut relay_connection, _)) = overlay_node
-				.find_assistant_connection_for_node(&node_info.node_id)
+				.find_assistant_connection_for_node(&node_info.address)
 				.await
 			{
 				let my_contact_info = self.contact_info();
@@ -945,7 +950,7 @@ where
 				overlay_node
 					.initiate_indirect_connection(
 						&mut relay_connection,
-						&node_info.node_id,
+						&node_info.address,
 						&strategy.contact,
 						&contact_me_option,
 						reversed,
@@ -963,7 +968,7 @@ where
 		id: &IdType, candidates: &mut VecDeque<(BigUint, NodeContactInfo, ContactStrategy)>,
 		finger: &(NodeContactInfo, ContactStrategy),
 	) {
-		let distance = distance(id, &finger.0.node_id);
+		let distance = distance(id, &finger.0.address.as_id());
 		for i in 0..candidates.len() {
 			let candidate_distance = &candidates[i].0;
 			if &distance < candidate_distance {
@@ -988,7 +993,7 @@ where
 		};
 		let first_contact = NodeContactInfo {
 			contact_info: node_address.clone(),
-			node_id,
+			address: node_id,
 		};
 		self.mark_node_helpful(&first_contact).await;
 
@@ -998,7 +1003,7 @@ where
 		let fingers = vec![first_contact; 1];
 		let neighbours = self
 			.find_node_from_fingers(
-				&self.node_id,
+				&self.address.as_id(),
 				&*fingers,
 				self.bucket_size,
 				100, // TODO: Make configuration variable
@@ -1011,7 +1016,7 @@ where
 			if self.test_id(&n).await == true {
 				self.mark_node_helpful(&n).await;
 			} else {
-				warn!("Connecting to neighbour {} failed", &n.node_id);
+				warn!("Connecting to neighbour {} failed", &n.address);
 			}
 		});
 		join_all(futs).await;
@@ -1043,44 +1048,56 @@ where
 		}
 	}
 
+	async fn load_trust_score(&self, address: &NodeAddress) -> u8 {
+		match self.db.load_trust_score(address).await {
+			Ok(r) => r,
+			Err(e) => {
+				error!("Unable to load trust score for {}: {}", address, e);
+				0
+			}
+		}
+	}
+
 	/// Use this if a node is giving a timeout.
-	pub(super) async fn mark_node_problematic(&self, node_id: &IdType) {
-		if let Some(bucket_index) = self.differs_at_bit(node_id) {
+	pub(super) async fn mark_node_problematic(&self, address: &NodeAddress) {
+		if let Some(bucket_index) = self.differs_at_bit(&address.as_id()) {
 			let removed = {
 				let mut bucket = self.buckets[bucket_index as usize].lock().await;
-				bucket.mark_problematic(node_id)
+				bucket.mark_problematic(address)
 			};
 			if removed {
-				warn!("Node {} has been removed.", node_id);
+				warn!("Node {} has been removed.", address);
 			}
 		}
 	}
 
 	pub(super) async fn mark_node_helpful(&self, node_info: &NodeContactInfo) {
-		if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
+		if let Some(bucket_index) = self.differs_at_bit(&node_info.address.as_id()) {
+			let trust_score = self.load_trust_score(&node_info.address).await;
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
-			bucket.mark_helpful(node_info, false, false);
+			bucket.mark_helpful(node_info, trust_score, false);
 		}
 	}
 
 	pub(super) async fn mark_node_helpful_relay(
 		&self, node_info: &NodeContactInfo, is_relay: bool,
 	) {
-		if let Some(bucket_index) = self.differs_at_bit(&node_info.node_id) {
+		if let Some(bucket_index) = self.differs_at_bit(&node_info.address.as_id()) {
+			let trust_score = self.load_trust_score(&node_info.address).await;
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
-			bucket.mark_helpful(node_info, false, is_relay);
+			bucket.mark_helpful(node_info, trust_score, is_relay);
 		}
 	}
 
-	async fn mark_obtained_value(&self, node_id: &IdType) {
-		if let Some(mutex) = self.find_bucket(node_id).await {
+	async fn mark_obtained_value(&self, node_id: &NodeAddress) {
+		if let Some(mutex) = self.find_bucket(&node_id.as_id()).await {
 			mutex.lock().await.mark_obtained_value(node_id);
 		}
 	}
 
 	pub fn new(
-		stop_flag: Arc<AtomicBool>, node_id: IdType, socket: Arc<sstp::Server>, interface: I,
-		bucket_size: usize, leak_first_request: bool,
+		stop_flag: Arc<AtomicBool>, db: Database, node_id: NodeAddress, socket: Arc<sstp::Server>,
+		interface: I, bucket_size: usize, leak_first_request: bool,
 	) -> Self {
 		let mut buckets = Vec::with_capacity(KADEMLIA_BITS);
 		for _ in 0..KADEMLIA_BITS {
@@ -1089,7 +1106,8 @@ where
 
 		Self {
 			stop_flag,
-			node_id,
+			db,
+			address: node_id,
 			buckets,
 			interface,
 			packet_server: socket,
@@ -1098,7 +1116,7 @@ where
 		}
 	}
 
-	pub fn node_id(&self) -> &IdType { &self.node_id }
+	pub fn node_id(&self) -> &NodeAddress { &self.address }
 
 	pub fn overlay_node(&self) -> Arc<OverlayNode> { self.interface.overlay_node() }
 
@@ -1300,7 +1318,7 @@ where
 	}
 
 	/// Pings a node and returns its latency and node ID.
-	pub async fn ping_at(&self, target: &ContactOption, node_id: &IdType) -> Option<u32> {
+	pub async fn ping_at(&self, target: &ContactOption, node_id: &NodeAddress) -> Option<u32> {
 		let start = SystemTime::now();
 		self.exchange_ping_at(target, node_id).await?;
 		let stop = SystemTime::now();
@@ -1309,8 +1327,8 @@ where
 	}
 
 	/// Removes the node from our buckets.
-	async fn reject_node(&self, node_id: &IdType) {
-		if let Some(bucket_index) = self.differs_at_bit(node_id) {
+	async fn reject_node(&self, node_id: &NodeAddress) {
+		if let Some(bucket_index) = self.differs_at_bit(node_id.as_id().as_ref()) {
 			let mut bucket = self.buckets[bucket_index as usize].lock().await;
 			bucket.reject(node_id);
 		}
@@ -1355,7 +1373,7 @@ where
 		let mut fingers2: Vec<_> = fingers
 			.into_iter()
 			.map(|f| {
-				let dist = distance(id, &f.node_id);
+				let dist = distance(id, &f.address.as_id().as_ref());
 				(dist, f.clone())
 			})
 			.collect();
@@ -1365,7 +1383,7 @@ where
 		candidates
 	}
 
-	pub async fn obtain_id(&self, target: &ContactInfo) -> Option<IdType> {
+	pub async fn obtain_id(&self, target: &ContactInfo) -> Option<NodeAddress> {
 		let first_buffer = self
 			.interface
 			.prepare(NETWORK_MESSAGE_TYPE_PING_REQUEST, &[]);
@@ -1390,7 +1408,7 @@ where
 	pub async fn test_id(&self, contact: &NodeContactInfo) -> bool {
 		match self.obtain_id(&contact.contact_info).await {
 			None => false,
-			Some(id) => id == contact.node_id,
+			Some(id) => id == contact.address,
 		}
 	}
 }
@@ -1458,7 +1476,7 @@ where
 			let (dist, candidate_contact, strategy) = self.candidates.pop_front().unwrap();
 			let contact_option = strategy.contact.clone();
 			// If we ourselves are listed as a candidate, ignore it.
-			if &candidate_contact.node_id == self.node.node_id() {
+			if &candidate_contact.address == self.node.node_id() {
 				continue;
 			}
 
@@ -1472,7 +1490,7 @@ where
 				continue;
 			}
 			self.visited
-				.push((candidate_contact.node_id.clone(), contact_option));
+				.push((candidate_contact.address.clone(), contact_option));
 
 			// Use the already found contact option to exchange the find value request.
 			if strategy.method == ContactStrategyMethod::Relay && !self.use_relays {
@@ -1518,8 +1536,9 @@ where
 									&self.visited,
 								);
 								if self.narrow_down {
-									new_fingers
-										.retain(|(f, _)| &distance(&self.id, &f.node_id) < &dist);
+									new_fingers.retain(|(f, _)| {
+										&distance(&self.id, &f.address.as_id()) < &dist
+									});
 								}
 
 								Node::<I>::append_candidates(
@@ -1566,7 +1585,7 @@ where
 									(self.do_verify)(&self.id, &candidate_contact, &value)
 								{
 									self.node
-										.mark_obtained_value(&candidate_contact.node_id)
+										.mark_obtained_value(&candidate_contact.address)
 										.await;
 									return Some(result);
 								}

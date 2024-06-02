@@ -91,10 +91,14 @@ pub enum NodeAddress {
 
 #[derive(Debug, Error)]
 pub enum ParseAddressError {
+	#[error("empty string")]
+	Empty,
 	#[error("invalid base58")]
 	FromBase58(FromBase58Error),
 	#[error("{0}")]
 	FromBytes(#[from] FromBytesAddressError),
+	#[error("unknown prefix: {0}")]
+	InvalidPrefix(char),
 }
 
 #[derive(Debug, Error)]
@@ -226,10 +230,14 @@ impl ActorAddress {
 	pub fn version(&self) -> u8 { 0 }
 }
 
+impl ToBase58 for ActorAddress {
+	fn to_base58(&self) -> String { self.to_bytes().to_base58() }
+}
+
 impl Display for ActorAddress {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let addr = Address::Actor(self.clone());
-		f.write_str(&addr.to_base58())
+		addr.fmt(f)
 	}
 }
 
@@ -290,17 +298,27 @@ impl Address {
 
 		let type_id = buffer[0];
 		match type_id {
-			0 => {
-				if buffer.len() != 33 {
-					return Err(FromBytesAddressError::InvalidSize(buffer.len()));
-				}
-				Ok(Address::Node(NodeAddress::from_bytes(&buffer[1..])?))
-			}
+			0 => Ok(Address::Node(NodeAddress::from_bytes(&buffer[1..])?)),
 			1 => Ok(Address::Actor(ActorAddress::from_bytes(&buffer[1..])?)),
 			_ => Err(FromBytesAddressError::UnknownType(type_id)),
 		}
 	}
 
+	pub fn parse_new(string: &str) -> Result<Self, ParseAddressError> {
+		if string.len() == 0 {
+			return Err(ParseAddressError::Empty);
+		}
+
+		let first_char = string.chars().next().unwrap();
+		let address = match first_char {
+			'a' => Address::Actor(ActorAddress::from_bytes(&string[1..].from_base58()?)?),
+			'n' => Address::Node(NodeAddress::from_bytes(&string[1..].from_base58()?)?),
+			other => return Err(ParseAddressError::InvalidPrefix(other)),
+		};
+		Ok(address)
+	}
+
+	#[allow(dead_code)]
 	pub fn to_bytes(&self) -> Vec<u8> {
 		match self {
 			Self::Node(address) => {
@@ -315,16 +333,14 @@ impl Address {
 			}
 		}
 	}
-
-	pub fn to_base58(&self) -> String {
-		let buffer = self.to_bytes();
-		buffer.to_base58()
-	}
 }
 
 impl Display for Address {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(&self.to_base58())
+		match self {
+			Self::Actor(addr) => write!(f, "a{}", addr.to_base58()),
+			Self::Node(addr) => write!(f, "n{}", addr.to_base58()),
+		}
 	}
 }
 
@@ -332,8 +348,19 @@ impl FromStr for Address {
 	type Err = ParseAddressError;
 
 	fn from_str(string: &str) -> Result<Self, ParseAddressError> {
-		let buffer = string.from_base58()?;
-		Ok(Self::from_bytes(&buffer)?)
+		if string.len() == 0 {
+			return Err(ParseAddressError::Empty);
+		}
+
+		// Old-style addresses
+		let first_char = string.chars().next().unwrap();
+		if first_char == '1' || first_char == '2' {
+			let buffer = string.from_base58()?;
+			Ok(Self::from_bytes(&buffer)?)
+		// New-style addresses
+		} else {
+			Self::parse_new(string)
+		}
 	}
 }
 
@@ -381,6 +408,12 @@ impl CompressionType {
 }
 
 impl NodeAddress {
+	pub fn as_id<'a>(&'a self) -> Cow<'a, IdType> {
+		match self {
+			Self::V1(id) => Cow::Borrowed(id),
+		}
+	}
+
 	pub fn to_bytes(&self) -> Vec<u8> { binserde::serialize(&self).unwrap() }
 
 	pub fn from_bytes(buffer: &[u8]) -> Result<Self, FromBytesAddressError> {
@@ -395,11 +428,19 @@ impl NodeAddress {
 	}
 }
 
+impl ToBase58 for NodeAddress {
+	fn to_base58(&self) -> String { self.to_bytes().to_base58() }
+}
+
 impl Display for NodeAddress {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let addr = Address::Node(self.clone());
-		f.write_str(&addr.to_base58())
+		addr.fmt(f)
 	}
+}
+
+impl Into<sea_orm::Value> for NodeAddress {
+	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
 }
 
 impl Into<sea_orm::Value> for &NodeAddress {
@@ -423,10 +464,6 @@ impl sea_orm::TryGetable for NodeAddress {
 			})
 		})?)
 	}
-}
-
-impl Into<sea_orm::Value> for NodeAddress {
-	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
 }
 
 impl sea_orm::sea_query::ValueType for NodeAddress {

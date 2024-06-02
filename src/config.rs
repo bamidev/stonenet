@@ -39,7 +39,7 @@ pub struct Config {
 	pub relay_node: Option<bool>,
 	pub leak_first_request: Option<bool>,
 	pub web_url_base: Option<String>,
-	pub publicize_friends_list: Option<bool>,
+	pub trusted_nodes: Option<Vec<String>>,
 
 	pub track: Option<Vec<String>>,
 
@@ -117,9 +117,9 @@ impl Default for Config {
 			load_user_interface: None,
 			load_web_interface: None,
 			node_ping_interval: None,
-			publicize_friends_list: None,
 			relay_node: None,
 			track: None,
+			trusted_nodes: None,
 			user_interface_port: None,
 			web_interface_port: None,
 			web_url_base: None,

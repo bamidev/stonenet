@@ -179,7 +179,7 @@ Hoi ik ben Kees!
 		.expect("actor node not found");
 	let avatar = node2
 		.find_file_data(
-			&actor_node,
+			Some(&actor_node),
 			&profile.actor.avatar_id.expect("missing avatar ID"),
 		)
 		.await
@@ -187,7 +187,7 @@ Hoi ik ben Kees!
 		.expect("unable to get avatar file");
 	let wallpaper = node2
 		.find_file_data(
-			&actor_node,
+			Some(&actor_node),
 			&profile.actor.wallpaper_id.expect("missing wallpaper ID"),
 		)
 		.await
