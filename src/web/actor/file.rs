@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use axum::{extract::*, middleware::*, routing::*, *};
 
-use crate::web::*;
+use crate::{api::PossibleFileStream, web::*};
 
 
 pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
@@ -42,32 +42,25 @@ async fn file_get(
 	State(g): State<Arc<Global>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(file_hash): Extension<IdType>,
 ) -> Response {
-	let (mime_type, loader) = match g.api.stream_file(actor_address, file_hash).await {
+	match g.api.stream_file(actor_address, file_hash).await {
 		Ok(x) => match x {
-			Some(r) => r,
-			None => return server_error_response2("File doesn't exist"),
-		},
-		Err(e) => return server_error_response(e, "database issue"),
-	};
-
-	let body = Body::from_stream(loader);
-	Response::builder()
-		.header("Content-Type", mime_type)
-		.body(body)
-		.unwrap()
-
-	/*Ok((
-		ContentType(media_type),
-		ByteStream! {
-			while let Some(result) = loader.next().await {
-				match result {
-					Ok(block) => yield block,
-					Err(e) => {
-						warn!("Unable to load file block: {}", e);
-						break;
+			/*PossibleFileStream::Full(FileData { mime_type, data }) => {
+				let body = Body::from(data);
+				(mime_type, body)
+			}*/
+			PossibleFileStream::Stream((mime_type, compression_type, loader)) => {
+				let body = Body::from_stream(loader);
+				let mut response = Response::builder().header("Content-Type", mime_type);
+				match compression_type {
+					CompressionType::None => {}
+					CompressionType::Brotli => {
+						response = response.header("Content-Encoding", "bz");
 					}
 				}
+				response.body(body).unwrap()
 			}
+			PossibleFileStream::None => server_error_response2("File doesn't exist"),
 		},
-	))*/
+		Err(e) => server_error_response(e, "database issue"),
+	}
 }

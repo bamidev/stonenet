@@ -485,14 +485,9 @@ async fn test_bootstrap_nodes(g: &Api, config: &Config) -> bool {
 	let mut updated = 0;
 	for bootstrap_node in &bootstrap_nodes {
 		if let Some(bootstrap_id) = g.node.obtain_id(&bootstrap_node).await {
-			let record = bootstrap_node_id::ActiveModel {
-				address: Set(bootstrap_node.to_string()),
-				node_id: Set(bootstrap_id.clone()),
-			};
-			bootstrap_node_id::Entity::insert(record)
-				.exec(g.db.inner())
+			g.db.ensure_bootstrap_node_id(bootstrap_node, &bootstrap_id)
 				.await
-				.expect("database error");
+				.unwrap();
 			// FIXME: Properly handle database error
 			updated += 1;
 		}

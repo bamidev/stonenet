@@ -3,7 +3,7 @@
 
 mod install;
 
-use std::{cmp::min, fmt, ops::*, path::*, str, time::Duration};
+use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration};
 
 use ::serde::Serialize;
 use async_trait::async_trait;
@@ -71,7 +71,7 @@ pub enum Error {
 	/// The data that is stored for a block is corrupt
 	BlockDataCorrupt(i64),
 	PostMissingFiles(i64),
-	FileMissingBlock(i64, i64),
+	FileMissingBlock(i64, u32),
 
 	MissingIdentity(ActorAddress),
 	/// Something in the database is not how it is expected to be.
@@ -191,6 +191,32 @@ pub trait PersistenceHandle {
 		}
 	}
 
+	async fn ensure_bootstrap_node_id(
+		&self, socket_address: &SocketAddr, node_id: &NodeAddress,
+	) -> Result<()> {
+		let model = bootstrap_node_id::ActiveModel {
+			address: NotSet,
+			node_id: Set(node_id.clone()),
+		};
+		let affected = bootstrap_node_id::Entity::update_many()
+			.set(model)
+			.filter(bootstrap_node_id::Column::Address.eq(socket_address.to_string()))
+			.exec(self.inner())
+			.await?
+			.rows_affected;
+
+		if affected == 0 {
+			let model = bootstrap_node_id::ActiveModel {
+				address: Set(socket_address.to_string()),
+				node_id: Set(node_id.clone()),
+			};
+			bootstrap_node_id::Entity::insert(model)
+				.exec(self.inner())
+				.await?;
+		}
+		Ok(())
+	}
+
 	async fn ensure_trusted_node(&self, address: &NodeAddress, score: u8) -> Result<i64> {
 		if let Some(record) = trusted_node::Entity::find()
 			.filter(trusted_node::Column::Address.eq(address))
@@ -289,6 +315,27 @@ pub trait PersistenceHandle {
 		Ok(objects)
 	}
 
+	async fn load_file_blocks(&self, file_id: i64, block_count: u32) -> Result<Vec<IdType>> {
+		let results = file_block::Entity::find()
+			.filter(file_block::Column::FileId.eq(file_id))
+			.order_by_asc(file_block::Column::Sequence)
+			.all(self.inner())
+			.await?;
+
+		// Verify if all blocks are all there
+		for i in 0..results.len() as u32 {
+			if results[i as usize].sequence != i {
+				Err(Error::FileMissingBlock(file_id, i))?;
+			}
+		}
+		if (results.len() as u32) < block_count {
+			Err(Error::FileMissingBlock(file_id, results.len() as u32))?;
+		}
+
+		Ok(results.into_iter().map(|r| r.block_hash).collect())
+	}
+
+	#[allow(dead_code)]
 	async fn load_file_data(&self, hash: &IdType) -> Result<Option<FileData>> {
 		Ok(
 			if let Some(file) = file::Entity::find()
@@ -319,6 +366,7 @@ pub trait PersistenceHandle {
 		)
 	}
 
+	#[allow(dead_code)]
 	async fn load_file_data2(
 		&self, file_id: i64, compression_type: CompressionType, plain_hash: &IdType,
 		block_count: u32,
@@ -355,7 +403,7 @@ pub trait PersistenceHandle {
 		let mut buffer = Vec::with_capacity(capacity);
 		let mut i = 0;
 		for row in results {
-			let sequence: i64 = row.try_get_by_index(1)?;
+			let sequence: u32 = row.try_get_by_index(1)?;
 			if sequence != i {
 				Err(Error::FileMissingBlock(file_id, sequence))?;
 			}
@@ -1258,6 +1306,7 @@ pub trait PersistenceHandle {
 }
 
 
+#[allow(dead_code)]
 fn query_actor_id(address: &ActorAddress) -> SelectStatement {
 	Query::select()
 		.column(actor::Column::Id)
@@ -2398,12 +2447,12 @@ impl Connection {
 			"#,
 			)?;
 			let mut rows = stat.query([file_id])?;
-			let mut i = 0i64;
+			let mut i = 0u32;
 			let mut blocks = Vec::with_capacity(block_count as _);
 			while let Some(row) = rows.next()? {
-				let sequence: i64 = row.get(0)?;
+				let sequence: u32 = row.get(0)?;
 				if sequence != i {
-					Err(Error::FileMissingBlock(file_id, i))?;
+					Err(Error::FileMissingBlock(file_id, sequence))?;
 				}
 				let block_hash: IdType = row.get(1)?;
 

@@ -21,15 +21,10 @@ use super::{
 	net::{actor::ActorNode, binserde, overlay::OverlayNode},
 };
 use crate::{
-	db::{Database, ObjectInfo, ProfileObjectInfo},
+	db::{decrypt_block, Database, ObjectInfo, ProfileObjectInfo},
 	entity::*,
 };
 
-/*#[derive(Debug)]
-pub enum Error {
-	DatabaseError(db::Error),
-	NetworkError(io::Error)
-}*/
 
 #[derive(Clone)]
 pub struct Api {
@@ -37,7 +32,12 @@ pub struct Api {
 	pub db: Database,
 }
 
-//pub type Result<T> = std::result::Result<T, self::Error>;
+pub enum PossibleFileStream {
+	None,
+	//Full(FileData),
+	Stream((String, CompressionType, ReceiverStream<db::Result<Vec<u8>>>)),
+}
+
 
 impl Api {
 	pub async fn close(self) { self.node.close().await; }
@@ -251,40 +251,81 @@ impl Api {
 	}
 
 	pub async fn find_block(
-		&self, actor_node: &ActorNode, id: &IdType,
+		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
 	) -> db::Result<Option<Vec<u8>>> {
 		let result = tokio::task::block_in_place(|| {
 			let c = self.db.connect_old()?;
-			c.fetch_block(id)
+			c.fetch_block(hash)
 		})?;
 
 		Ok(match result {
 			Some(b) => Some(b),
-			None => actor_node.find_block(id).await.map(|r| r.data),
+			None =>
+				if let Some(actor_node) = actor_node_opt {
+					actor_node.find_block(hash).await.map(|r| r.data)
+				} else {
+					None
+				},
 		})
 	}
 
+	pub async fn find_file(
+		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
+	) -> db::Result<Option<File>> {
+		let mut result = if let Some(record) = file::Entity::find()
+			.filter(file::Column::Hash.eq(hash))
+			.one(self.db.inner())
+			.await?
+		{
+			let blocks = self
+				.db
+				.load_file_blocks(record.id, record.block_count)
+				.await?;
+			Some(File {
+				plain_hash: record.plain_hash,
+				mime_type: record.mime_type,
+				compression_type: record.compression_type,
+				blocks,
+			})
+		} else {
+			None
+		};
+
+		if result.is_none() {
+			if let Some(actor_node) = actor_node_opt {
+				result = actor_node.find_file(hash).await.map(|r| r.file)
+			}
+		}
+
+		Ok(result)
+	}
+
+	/// Loads the (undecompressed) file data
+	#[allow(dead_code)]
 	pub async fn find_file_data(
-		&self, actor_node: &ActorNode, id: &IdType,
+		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
 	) -> db::Result<Option<FileData>> {
-		let file_result = match self.db.load_file_data(id).await? {
-			Some(b) => return Ok(Some(b)),
-			None => match actor_node.find_file(id).await {
-				None => return Ok(None),
-				Some(f) => f,
-			},
+		let file = if let Some(f) = self.find_file(actor_node_opt, hash).await? {
+			f
+		} else {
+			return Ok(None);
 		};
 
 		// Fill a buffer with all the data
-		let file = file_result.file;
 		let mut buffer = Vec::with_capacity(file.blocks.len() * db::BLOCK_SIZE);
+		let mut i = 0;
 		for block_id in &file.blocks {
-			let block_result = self.find_block(&actor_node, block_id).await?;
+			let block_result = self.find_block(actor_node_opt, block_id).await?;
 			match block_result {
 				None => return Ok(None),
-				Some(block) => buffer.extend(block),
+				Some(mut block) => {
+					decrypt_block(i, &file.plain_hash, &mut block);
+					buffer.extend(block);
+					i += 1;
+				}
 			}
 		}
+
 		Ok(Some(FileData {
 			mime_type: file.mime_type,
 			data: buffer,
@@ -401,15 +442,41 @@ impl Api {
 	// are being loaded in another thread.
 	pub async fn stream_file(
 		&self, actor_address: ActorAddress, file_hash: IdType,
-	) -> db::Result<Option<(String, ReceiverStream<db::Result<Vec<u8>>>)>> {
+	) -> db::Result<PossibleFileStream> {
 		let db = self.db.clone();
 		let r: Option<(i64, File)> = db.find_file(&file_hash).await?;
 
-		let (tx, rx) = mpsc::channel(1);
+		// TODO: Don't decompress the file, but let the browser do that.
 		if let Some((file_id, file)) = r {
+			let compression_type = match CompressionType::from_u8(file.compression_type) {
+				Some(t) => t,
+				None => {
+					error!(
+						"Unable to stream file with unknown compression type {}",
+						file.compression_type
+					);
+					return Ok(PossibleFileStream::None);
+				}
+			};
+
+			/*if file.compression_type != CompressionType::None as u8 {
+				// TODO: Make sure that the file meta data isn't searched over the network
+				// twice.
+				let actor_node_opt = self.node.get_actor_node_or_lurker(&actor_address).await;
+				if let Some(file_data) = self
+					.find_file_data(actor_node_opt.as_ref(), &file_hash)
+					.await?
+				{
+					return Ok(PossibleFileStream::Full(file_data));
+				} else {
+					return Ok(PossibleFileStream::None);
+				}
+			}*/
+
+			let (tx, rx) = mpsc::channel(1);
 			// Asynchronously start loading the blocks one by one, from disk preferably,
 			// from the network otherwise
-			let node = self.node.clone();
+			let node: Arc<OverlayNode> = self.node.clone();
 			spawn(async move {
 				let mut actor_node: Option<Arc<ActorNode>> = None;
 				let mut loaded_actor_node = false;
@@ -460,9 +527,13 @@ impl Api {
 					}
 				}
 			});
-			Ok(Some((file.mime_type, ReceiverStream::new(rx))))
+			Ok(PossibleFileStream::Stream((
+				file.mime_type,
+				compression_type,
+				ReceiverStream::new(rx),
+			)))
 		} else {
-			Ok(None)
+			Ok(PossibleFileStream::None)
 		}
 	}
 
