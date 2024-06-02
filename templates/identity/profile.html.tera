@@ -2,8 +2,11 @@
 {% block title %}New Identity{% endblock %}
 
 {% block before_profile %}
+	{% set label = '' %}
+	{% set name = '' %}
 	{% set avatar_url = "/static/default_avatar.jpg" -%}
 	{% set wallpaper_url = "/static/default_wallpaper.jpg" -%}
+	{% set description = '' %}
 	{% if profile %}
 		{% set name = profile.actor.name %}
 		{% set description = profile.description %}

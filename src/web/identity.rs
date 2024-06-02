@@ -44,8 +44,8 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 		.route("/:label", get(profile_get).post(profile_post))
 		.route_layer(from_fn_with_state(g, identity_middleware))
 		.route("/", get(index))
-		.route("/new", post(new_post))
-		.route("/select", get(new).post(select_post))
+		.route("/new", get(new).post(new_post))
+		.route("/select", post(select_post))
 }
 
 async fn identity_middleware(
