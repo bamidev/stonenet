@@ -376,6 +376,12 @@ impl CompressionType {
 }
 
 impl NodeAddress {
+	pub fn as_id<'a>(&'a self) -> Cow<'a, IdType> {
+		match self {
+			Self::V1(id) => Cow::Borrowed(id),
+		}
+	}
+
 	pub fn to_bytes(&self) -> Vec<u8> { binserde::serialize(&self).unwrap() }
 
 	pub fn from_bytes(buffer: &[u8]) -> Result<Self, FromBytesAddressError> {
@@ -395,6 +401,10 @@ impl Display for NodeAddress {
 		let addr = Address::Node(self.clone());
 		f.write_str(&addr.to_base58())
 	}
+}
+
+impl Into<sea_orm::Value> for NodeAddress {
+	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
 }
 
 impl Into<sea_orm::Value> for &NodeAddress {
@@ -418,10 +428,6 @@ impl sea_orm::TryGetable for NodeAddress {
 			})
 		})?)
 	}
-}
-
-impl Into<sea_orm::Value> for NodeAddress {
-	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
 }
 
 impl sea_orm::sea_query::ValueType for NodeAddress {

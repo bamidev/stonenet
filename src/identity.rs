@@ -17,7 +17,7 @@ use serde_big_array::BigArray;
 use sha3::{Digest, Sha3_256};
 use zeroize::Zeroize;
 
-use crate::common::*;
+use crate::{common::*, core::NodeAddress};
 
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -155,7 +155,9 @@ impl NodePublicKey {
 		))
 	}
 
-	pub fn generate_address(&self) -> IdType {
+	pub fn generate_address(&self) -> NodeAddress { NodeAddress::V1(self.generate_address_v1()) }
+
+	pub fn generate_address_v1(&self) -> IdType {
 		let mut hasher = Sha3_256::new();
 		hasher.update(self.0.to_bytes());
 		let buffer: [u8; 32] = hasher.finalize().into();

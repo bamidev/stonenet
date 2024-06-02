@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use super::{distance, NodeContactInfo};
-use crate::{common::*, limited_store::LimitedVec};
+use crate::{core::NodeAddress, limited_store::LimitedVec};
 
 
 pub struct Bucket {
@@ -13,7 +13,7 @@ pub struct Bucket {
 #[derive(Clone)]
 struct BucketEntry {
 	node_info: NodeContactInfo,
-	trusted: bool,
+	trust_score: u8,
 	is_relay: bool,
 	values_obtained: u32,
 }
@@ -27,14 +27,14 @@ pub struct BucketReplacementEntry {
 
 impl Bucket {
 	pub fn add_connection(
-		&mut self, connection_node_info: &NodeContactInfo, our_node_id: &IdType,
+		&mut self, connection_node_info: &NodeContactInfo, our_node_id: &NodeAddress,
 	) -> bool {
-		let new_distance = distance(our_node_id, &connection_node_info.node_id);
+		let new_distance = distance(&our_node_id.as_id(), &connection_node_info.address.as_id());
 
 		if let Some(pos) = self
 			.connections
 			.iter()
-			.position(|n| new_distance < distance(our_node_id, &n.node_id))
+			.position(|n| new_distance < distance(&our_node_id.as_id(), &n.address.as_id()))
 		{
 			let node_info = connection_node_info.clone();
 			self.connections.insert(pos, node_info);
@@ -61,11 +61,15 @@ impl Bucket {
 		self.fingers.iter().map(|e| &e.node_info)
 	}
 
-	pub fn find(&self, id: &IdType) -> Option<&NodeContactInfo> {
-		if let Some(index) = self.connections.iter().position(|n| &n.node_id == id) {
+	pub fn find(&self, address: &NodeAddress) -> Option<&NodeContactInfo> {
+		if let Some(index) = self.connections.iter().position(|n| &n.address == address) {
 			return Some(&self.connections[index]);
 		}
-		if let Some(index) = self.fingers.iter().position(|f| &f.node_info.node_id == id) {
+		if let Some(index) = self
+			.fingers
+			.iter()
+			.position(|f| &f.node_info.address == address)
+		{
 			return Some(&self.fingers[index].node_info);
 		}
 		None
@@ -83,21 +87,21 @@ impl Bucket {
 		self.private_fingers().map(|f| f.clone()).collect()
 	}
 
-	pub fn mark_obtained_value(&mut self, node_id: &IdType) {
+	pub fn mark_obtained_value(&mut self, address: &NodeAddress) {
 		if let Some(entry) = self
 			.fingers
 			.iter_mut()
-			.find(|e| &e.node_info.node_id == node_id)
+			.find(|e| &e.node_info.address == address)
 		{
 			entry.values_obtained += 1;
 		}
 	}
 
-	pub fn mark_helpful(&mut self, node_info: &NodeContactInfo, trusted: bool, is_relay: bool) {
+	pub fn mark_helpful(&mut self, node_info: &NodeContactInfo, trust_score: u8, is_relay: bool) {
 		match self
 			.fingers
 			.iter()
-			.position(|f| f.node_info.node_id == node_info.node_id)
+			.position(|f| f.node_info.address == node_info.address)
 		{
 			// If the finger already exists in this bucket, just update its contact info with the
 			// latest contact info
@@ -112,29 +116,29 @@ impl Bucket {
 				match self
 					.replacement_cache
 					.iter()
-					.position(|f| &f.finger.node_info.node_id == &node_info.node_id)
+					.position(|f| &f.finger.node_info.address == &node_info.address)
 				{
 					// If not in the replacement cache, just add it to our bucket
 					None => {
-						self.remember(node_info.clone(), trusted, is_relay);
+						self.remember(node_info.clone(), trust_score, is_relay);
 					}
 					// If it is in our replacement cache, add it back
 					Some(index) => {
 						let finger = self.replacement_cache.remove(index).unwrap().finger;
-						self.remember(
-							finger.node_info,
-							finger.trusted || trusted,
-							finger.is_relay || is_relay,
-						);
+						self.remember(finger.node_info, trust_score, is_relay);
 					}
 				}
 			}
 		}
 	}
 
-	pub fn mark_problematic(&mut self, id: &IdType) -> bool {
+	pub fn mark_problematic(&mut self, address: &NodeAddress) -> bool {
 		let mut removed = false;
-		match self.fingers.iter().position(|f| &f.node_info.node_id == id) {
+		match self
+			.fingers
+			.iter()
+			.position(|f| &f.node_info.address == address)
+		{
 			None => {}
 			Some(index) => {
 				// Move contact to the replacement cache if there is room
@@ -150,7 +154,7 @@ impl Bucket {
 				else if let Some(index) = self
 					.replacement_cache
 					.iter()
-					.position(|e| &e.finger.node_info.node_id == id)
+					.position(|e| &e.finger.node_info.address == address)
 				{
 					let entry = &mut self.replacement_cache[index];
 					entry.failed_attempts += 1;
@@ -164,15 +168,19 @@ impl Bucket {
 		removed
 	}
 
-	pub fn reject(&mut self, id: &IdType) {
-		match self.connections.iter().position(|n| &n.node_id == id) {
+	pub fn reject(&mut self, address: &NodeAddress) {
+		match self.connections.iter().position(|n| &n.address == address) {
 			None => {}
 			Some(index) => {
 				self.connections.remove(index);
 			}
 		}
 
-		match self.fingers.iter().position(|f| &f.node_info.node_id == id) {
+		match self
+			.fingers
+			.iter()
+			.position(|f| &f.node_info.address == address)
+		{
 			None => {}
 			Some(index) => {
 				self.fingers.remove(index);
@@ -182,7 +190,7 @@ impl Bucket {
 		match self
 			.replacement_cache
 			.iter()
-			.position(|f| &f.finger.node_info.node_id == id)
+			.position(|f| &f.finger.node_info.address == address)
 		{
 			None => {}
 			Some(index) => {
@@ -199,8 +207,8 @@ impl Bucket {
 		}
 	}
 
-	pub fn remember(&mut self, node: NodeContactInfo, trusted: bool, is_relay: bool) -> bool {
-		let new_entry = BucketEntry::new(node, trusted, is_relay);
+	pub fn remember(&mut self, node: NodeContactInfo, trust_score: u8, is_relay: bool) -> bool {
+		let new_entry = BucketEntry::new(node, trust_score, is_relay);
 
 		// Try to add it above an exististing entry if it has higher priority
 		if let Some(pos) = self.fingers.iter().rev().position(|e| &new_entry < e) {
@@ -217,8 +225,8 @@ impl Bucket {
 		false
 	}
 
-	pub fn remove_connection(&mut self, node_id: &IdType) -> bool {
-		if let Some(index) = self.connections.iter().position(|n| &n.node_id == node_id) {
+	pub fn remove_connection(&mut self, address: &NodeAddress) -> bool {
+		if let Some(index) = self.connections.iter().position(|n| &n.address == address) {
 			self.connections.remove(index);
 			true
 		} else {
@@ -228,10 +236,10 @@ impl Bucket {
 }
 
 impl BucketEntry {
-	pub fn new(finger: NodeContactInfo, trusted: bool, is_relay: bool) -> Self {
+	pub fn new(finger: NodeContactInfo, trust_score: u8, is_relay: bool) -> Self {
 		Self {
 			node_info: finger,
-			trusted,
+			trust_score,
 			values_obtained: 0,
 			is_relay,
 		}
@@ -240,21 +248,17 @@ impl BucketEntry {
 
 impl PartialEq for BucketEntry {
 	fn eq(&self, other: &Self) -> bool {
-		self.trusted == other.trusted && self.values_obtained == other.values_obtained
+		self.trust_score == other.trust_score && self.values_obtained == other.values_obtained
 	}
 }
 
 impl PartialOrd for BucketEntry {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
 		// Trusted > untrusted
-		if self.trusted {
-			if !other.trusted {
-				return Some(Ordering::Greater);
-			}
-		} else {
-			if other.trusted {
-				return Some(Ordering::Less);
-			}
+		if self.trust_score > other.trust_score {
+			return Some(Ordering::Greater);
+		} else if self.trust_score < other.trust_score {
+			return Some(Ordering::Less);
 		}
 
 		// Compare connection options

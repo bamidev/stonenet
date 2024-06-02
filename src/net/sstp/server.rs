@@ -50,7 +50,7 @@ pub struct RelayHelloPacket {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct RelayHelloPacketBody {
-	target_node_id: IdType,
+	target_node_id: NodeAddress,
 	base: HelloPacketBody,
 }
 
@@ -166,7 +166,7 @@ pub struct HelloPacketHeader {
 
 type HelloReceiver = mpsc::Receiver<HelloResult>;
 pub struct HelloResult {
-	node_id: IdType,
+	node_id: NodeAddress,
 	contact_info: ContactInfo,
 	encrypt_session_id: u16,
 	dest_session_id: u16,
@@ -184,7 +184,7 @@ pub struct Server {
 	sockets: SocketCollection,
 	our_contact_info: StdMutex<ContactInfo>,
 	pub(super) sessions: Mutex<Sessions>,
-	node_id: IdType,
+	node_id: NodeAddress,
 	private_key: identity::NodePrivateKey,
 	default_timeout: Duration,
 	// TODO: Remove pub in following line:
@@ -193,7 +193,7 @@ pub struct Server {
 
 pub(super) struct SessionData {
 	hello_ack_channel: Option<Sender<()>>,
-	their_node_id: Option<IdType>,
+	their_node_id: Option<NodeAddress>,
 	last_activity: Arc<StdMutex<SystemTime>>,
 	transport_data: SessionTransportData,
 	pub(super) keep_alive_timeout: Duration,
@@ -211,7 +211,7 @@ struct SessionTransportDataDirect {
 	hello_channel: Option<HelloSender>,
 	hello_relay_ack_sender: Option<Sender<u16>>,
 	packet_processor: mpsc::UnboundedSender<CryptedPacket>,
-	relay_node_id: Option<IdType>,
+	relay_node_id: Option<NodeAddress>,
 	relay_public_key: Option<NodePublicKey>,
 }
 
@@ -222,7 +222,7 @@ struct SessionTransportDataRelay {
 	source_sender: Arc<dyn LinkSocketSender>,
 	target_session_id: u16,
 	target_addr: SocketAddr,
-	target_node_id: IdType,
+	target_node_id: NodeAddress,
 	target_public_key: Option<NodePublicKey>,
 	target_sender: Option<Arc<dyn LinkSocketSender>>,
 	relay_hello_sender: Sender<RelayHelloAckPacket>,
@@ -285,8 +285,8 @@ impl Server {
 	/// default_timeout: The timeout that incomming connection will be
 	/// configured for
 	pub async fn bind(
-		stop_flag: Arc<AtomicBool>, config: &Config, node_id: IdType, private_key: NodePrivateKey,
-		default_timeout: Duration,
+		stop_flag: Arc<AtomicBool>, config: &Config, node_id: NodeAddress,
+		private_key: NodePrivateKey, default_timeout: Duration,
 	) -> StdResult<Arc<Self>, SocketBindError> {
 		let contact_info = ContactInfo::from_config(config);
 		Ok(Arc::new(Self {
@@ -330,8 +330,8 @@ impl Server {
 
 	pub async fn complete_outgoing_relay(
 		self: &Arc<Server>, sender: Arc<dyn LinkSocketSender>,
-		initiation_data: RelayInitiationInfo, establish_info: HelloResult, target_node_id: &IdType,
-		target_addr: SocketAddr, timeout: Duration,
+		initiation_data: RelayInitiationInfo, establish_info: HelloResult,
+		target_node_id: &NodeAddress, target_addr: SocketAddr, timeout: Duration,
 	) -> Result<Box<Connection>> {
 		debug_assert!(establish_info.opt_response.is_none());
 
@@ -366,7 +366,7 @@ impl Server {
 			keep_alive_timeout: DEFAULT_KEEP_ALIVE_IDLE_TIME,
 			peer_address: target_addr,
 			peer_node_info: NodeContactInfo {
-				node_id: establish_info.node_id,
+				address: establish_info.node_id,
 				contact_info: establish_info.contact_info,
 			},
 			dest_session_id: establish_info.dest_session_id,
@@ -425,7 +425,8 @@ impl Server {
 	}
 
 	pub async fn connect(
-		self: &Arc<Self>, target: &ContactOption, node_id: Option<&IdType>, request: Option<&[u8]>,
+		self: &Arc<Self>, target: &ContactOption, node_id: Option<&NodeAddress>,
+		request: Option<&[u8]>,
 	) -> Result<(Box<Connection>, Option<Vec<u8>>)> {
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		self.connect_with_timeout(stop_flag, target, node_id, request, DEFAULT_TIMEOUT)
@@ -434,7 +435,7 @@ impl Server {
 
 	pub async fn connect_with_timeout(
 		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, target: &ContactOption,
-		node_id: Option<&IdType>, request: Option<&[u8]>, timeout: Duration,
+		node_id: Option<&NodeAddress>, request: Option<&[u8]>, timeout: Duration,
 	) -> Result<(Box<Connection>, Option<Vec<u8>>)> {
 		let sender = self.link_connect(target, timeout).await?;
 
@@ -519,7 +520,7 @@ impl Server {
 						keep_alive_timeout: DEFAULT_KEEP_ALIVE_IDLE_TIME,
 						peer_address: target.target.clone(),
 						peer_node_info: NodeContactInfo {
-							node_id: establish_info.node_id,
+							address: establish_info.node_id,
 							contact_info: establish_info.contact_info,
 						},
 						dest_session_id: establish_info.dest_session_id,
@@ -707,8 +708,8 @@ impl Server {
 
 	async fn new_relay_session(
 		&self, source_session_id: u16, source_addr: SocketAddr, source_public_key: NodePublicKey,
-		source_sender: Arc<dyn LinkSocketSender>, target_node_id: IdType, target_addr: SocketAddr,
-		hello_sender: Sender<RelayedHelloAckPacket>,
+		source_sender: Arc<dyn LinkSocketSender>, target_node_id: NodeAddress,
+		target_addr: SocketAddr, hello_sender: Sender<RelayedHelloAckPacket>,
 		relay_hello_ack_ack_sender: Option<Sender<u16>>, keep_alive_timeout: Duration,
 	) -> Result<(u16, Arc<Mutex<SessionData>>)> {
 		let transport_data = SessionTransportData::Relay(SessionTransportDataRelay {
@@ -740,8 +741,9 @@ impl Server {
 	}
 
 	async fn new_incomming_session(
-		&self, alive_flag: Arc<AtomicBool>, their_node_id: IdType, their_public_key: NodePublicKey,
-		dest_session_id: u16, packet_sender: UnboundedSender<CryptedPacket>, timeout: Duration,
+		&self, alive_flag: Arc<AtomicBool>, their_node_id: NodeAddress,
+		their_public_key: NodePublicKey, dest_session_id: u16,
+		packet_sender: UnboundedSender<CryptedPacket>, timeout: Duration,
 	) -> Result<(u16, bool, Arc<Mutex<SessionData>>)> {
 		// Check if session doesn't already exists
 		let mut sessions = self.sessions.lock().await;
@@ -779,7 +781,7 @@ impl Server {
 	}
 
 	async fn new_outgoing_session(
-		&self, their_node_id: Option<IdType>, transport_data: SessionTransportData,
+		&self, their_node_id: Option<NodeAddress>, transport_data: SessionTransportData,
 		timeout: Duration,
 	) -> Option<(u16, Arc<Mutex<SessionData>>)> {
 		let session_data = Arc::new(Mutex::new(SessionData::new(
@@ -798,7 +800,7 @@ impl Server {
 	}
 
 	pub fn new_relay_hello_packet(
-		&self, target_node_id: IdType, target: &SocketAddr, local_session_id: u16,
+		&self, target_node_id: NodeAddress, target: &SocketAddr, local_session_id: u16,
 		dh_public_key: x25519::PublicKey,
 	) -> RelayHelloPacket {
 		let target2: SocketAddrSstp = target.clone().into();
@@ -1102,11 +1104,11 @@ impl Server {
 	}
 
 	async fn process_first_request(
-		&self, buffer: Vec<u8>, contact: ContactOption, node_id: &IdType,
+		&self, buffer: Vec<u8>, contact: ContactOption, node_id: &NodeAddress,
 		contact_info: &ContactInfo,
 	) -> Option<(Vec<u8>, Option<Box<dyn MessageWorkToDo>>)> {
 		let node_info = NodeContactInfo {
-			node_id: node_id.clone(),
+			address: node_id.clone(),
 			contact_info: contact_info.clone(),
 		};
 		if let Some((processor, _)) = self.message_processors.get() {
@@ -1378,7 +1380,7 @@ impl Server {
 
 		// Transporter is running, set up the connection object and pass it along
 		let peer_node_info = NodeContactInfo {
-			node_id: their_node_id,
+			address: their_node_id,
 			contact_info,
 		};
 		let connection = Box::new(Connection {
@@ -1725,8 +1727,8 @@ impl Server {
 	/// blocked by their firewall somehow.
 	#[allow(dead_code)]
 	pub async fn relay(
-		self: &Arc<Self>, relay: &ContactOption, relay_node_id: IdType, target: SocketAddr,
-		target_node_id: &IdType,
+		self: &Arc<Self>, relay: &ContactOption, relay_node_id: NodeAddress, target: SocketAddr,
+		target_node_id: &NodeAddress,
 	) -> Result<Box<Connection>> {
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		self.relay_with_timeout(
@@ -1741,8 +1743,9 @@ impl Server {
 	}
 
 	pub async fn relay_with_timeout(
-		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, relay: &ContactOption, relay_node_id: IdType,
-		target_addr: SocketAddr, target_node_id: &IdType, timeout: Duration,
+		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, relay: &ContactOption,
+		relay_node_id: NodeAddress, target_addr: SocketAddr, target_node_id: &NodeAddress,
+		timeout: Duration,
 	) -> Result<Box<Connection>> {
 		let sender = self.link_connect(relay, timeout).await?;
 
@@ -1920,7 +1923,7 @@ impl Server {
 	pub async fn set_next_session_id(&self, id: u16) { self.sessions.lock().await.next_id = id; }
 
 	pub async fn setup_outgoing_relay(
-		&self, relay_node_id: IdType, target_node_id: IdType, target: &SocketAddr,
+		&self, relay_node_id: NodeAddress, target_node_id: NodeAddress, target: &SocketAddr,
 		timeout: Duration, hello_relay_ack_sender: Option<Sender<u16>>,
 	) -> Result<RelayInitiationInfo> {
 		let (packet_sender, packet_receiver) = mpsc::unbounded_channel();
@@ -2002,10 +2005,10 @@ impl Server {
 	}
 
 	fn verify_hello_ack_packet_raw(
-		node_id: &IdType, public_key: &NodePublicKey, signature: &NodeSignature, buffer: &[u8],
+		node_id: &NodeAddress, public_key: &NodePublicKey, signature: &NodeSignature, buffer: &[u8],
 	) -> Result<()> {
 		// Verify node ID
-		if &public_key.generate_address() != node_id {
+		if &public_key.generate_address_v1() != node_id.as_id().as_ref() {
 			return trace::err(Error::InvalidNodeId);
 		}
 
@@ -2214,7 +2217,7 @@ impl SocketCollection {
 
 impl SessionData {
 	fn new(
-		their_node_id: Option<IdType>, transport_data: SessionTransportData, timeout: Duration,
+		their_node_id: Option<NodeAddress>, transport_data: SessionTransportData, timeout: Duration,
 	) -> Self {
 		Self {
 			hello_ack_channel: None,
@@ -2228,7 +2231,7 @@ impl SessionData {
 
 impl Sessions {
 	pub async fn find_their_session(
-		&self, their_node_id: &IdType, their_session_id: u16,
+		&self, their_node_id: &NodeAddress, their_session_id: u16,
 	) -> Option<(u16, Arc<Mutex<SessionData>>)> {
 		for (our_session_id, session_data_mutex) in self.map.iter() {
 			let session_data = session_data_mutex.lock().await;

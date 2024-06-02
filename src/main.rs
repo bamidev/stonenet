@@ -40,18 +40,15 @@ use std::{
 use api::Api;
 use config::Config;
 use db::Database;
+use entity::bootstrap_node_id;
 use log::*;
 use net::{overlay::OverlayNode, resolve_bootstrap_addresses, Openness};
+use sea_orm::{prelude::*, Set};
 use semver::Version;
 use signal_hook::flag;
 use tokio::{spawn, time::sleep};
 
-use crate::{
-	config::CONFIG,
-	core::{Address, NodeAddress},
-	db::PersistenceHandle,
-	migration::Migrations,
-};
+use crate::{config::CONFIG, core::Address, db::PersistenceHandle, migration::Migrations};
 
 
 /// Gets the latest version, and whether it is required or not
@@ -349,10 +346,15 @@ async fn main() {
 		}
 
 		// Load node
-		let node = load_node(stop_flag.clone(), db.clone(), &config).await;
+		let node = if let Some(n) = load_node(stop_flag.clone(), db.clone(), &config).await {
+			n
+		} else {
+			info!("Node not loaded, exiting...");
+			return;
+		};
 		info!(
 			"Loaded node with address {}",
-			Address::Node(NodeAddress::V1(node.node_id().clone()))
+			Address::Node(node.node_id().clone())
 		);
 
 		// Test openness
@@ -435,17 +437,23 @@ async fn main() {
 	}
 }
 
-async fn load_node(stop_flag: Arc<AtomicBool>, db: Database, config: &Config) -> Arc<OverlayNode> {
-	let mut c = db.connect_old().expect("Unable to connect to database.");
-	let (node_id, keypair) = c
-		.fetch_node_identity()
-		.expect("Unable to load node identity");
-	match net::overlay::OverlayNode::start(stop_flag, config, node_id, keypair, db).await {
+async fn load_node(
+	stop_flag: Arc<AtomicBool>, db: Database, config: &Config,
+) -> Option<Arc<OverlayNode>> {
+	let (address, private_key) = match db.load_node_identity().await {
+		Ok(r) => r,
+		Err(e) => {
+			error!("Unable to load node identity from database: {}", e);
+			return None;
+		}
+	};
+
+	match net::overlay::OverlayNode::start(stop_flag, config, address, private_key, db).await {
 		Err(e) => {
 			error!("Unable to bind socket: {}", e);
 			process::exit(1)
 		}
-		Ok(s) => s,
+		Ok(s) => Some(s),
 	}
 }
 
@@ -477,13 +485,16 @@ async fn test_bootstrap_nodes(g: &Api, config: &Config) -> bool {
 	let mut updated = 0;
 	for bootstrap_node in &bootstrap_nodes {
 		if let Some(bootstrap_id) = g.node.obtain_id(&bootstrap_node).await {
-			g.db.perform(|mut c| {
-				if c.remember_bootstrap_node_id(&bootstrap_node, &bootstrap_id)? {
-					updated += 1;
-				}
-				Ok(())
-			})
-			.expect("database error");
+			let record = bootstrap_node_id::ActiveModel {
+				address: Set(bootstrap_node.to_string()),
+				node_id: Set(bootstrap_id.clone()),
+			};
+			bootstrap_node_id::Entity::insert(record)
+				.exec(g.db.inner())
+				.await
+				.expect("database error");
+			// FIXME: Properly handle database error
+			updated += 1;
 		}
 	}
 	updated > 0

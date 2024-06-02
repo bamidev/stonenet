@@ -62,9 +62,9 @@ pub(super) struct TransporterInner {
 
 	// Non-temporary vars
 	encrypt_session_id: u16,
-	node_id: IdType,
+	node_id: NodeAddress,
 	local_session_id: u16,
-	peer_node_id: IdType,
+	peer_node_id: NodeAddress,
 	timeout: Duration,
 	dest_session_id: u16,
 
@@ -265,8 +265,8 @@ impl KeyStateManager {
 impl Transporter {
 	pub(super) fn new_with_receiver(
 		alive_flag: Arc<AtomicBool>, encrypt_session_id: u16, our_session_id: u16,
-		their_session_id: u16, socket_sender: Arc<dyn LinkSocketSender>, node_id: IdType,
-		peer_node_id: IdType, timeout: Duration, private_key: x25519::StaticSecret,
+		their_session_id: u16, socket_sender: Arc<dyn LinkSocketSender>, node_id: NodeAddress,
+		peer_node_id: NodeAddress, timeout: Duration, private_key: x25519::StaticSecret,
 		public_key: x25519::PublicKey, receiver: UnboundedReceiver<CryptedPacket>,
 	) -> Self {
 		Self {
@@ -704,8 +704,8 @@ impl TransporterInner {
 	pub fn new(
 		encrypt_session_id: u16, our_session_id: u16, their_session_id: u16,
 		socket_sender: Arc<dyn LinkSocketSender>,
-		packet_receiver: UnboundedReceiver<CryptedPacket>, node_id: IdType, peer_node_id: IdType,
-		timeout: Duration,
+		packet_receiver: UnboundedReceiver<CryptedPacket>, node_id: NodeAddress,
+		peer_node_id: NodeAddress, timeout: Duration,
 	) -> Self {
 		Self {
 			close_received: false,
@@ -1553,7 +1553,7 @@ impl TransporterInner {
 			0, /* Send with seq 0 because we don't know what packets the other side received,
 			    * however, we should keep track of what the other side already received as
 			    * mentioned in their last ack packet. */
-			self.node_id.as_bytes(),
+			&self.node_id.to_bytes(),
 		)
 		.await
 	}
@@ -1563,7 +1563,7 @@ impl TransporterInner {
 			key_state,
 			CRYPTED_PACKET_TYPE_CLOSE_ACK,
 			0,
-			self.node_id.as_bytes(),
+			&self.node_id.to_bytes(),
 		)
 		.await
 	}
@@ -1573,7 +1573,7 @@ impl TransporterInner {
 			key_state,
 			CRYPTED_PACKET_TYPE_CLOSE,
 			0,
-			self.node_id.as_bytes(),
+			&self.node_id.to_bytes(),
 		)
 		.await
 	}
@@ -1767,13 +1767,15 @@ impl TransporterInner {
 	}
 
 	fn verify_peer_node_id(&self, buffer: &[u8]) -> bool {
-		if buffer.len() < 32 {
-			warn!("Malformed close packet: too small.");
-			return false;
-		}
+		let node_addr = match NodeAddress::from_bytes(buffer) {
+			Ok(a) => a,
+			Err(e) => {
+				warn!("Malformed close packet: {}", e);
+				return false;
+			}
+		};
 
-		let node_id = IdType::from_bytes(array_ref![buffer, 0, 32]);
-		if node_id != self.peer_node_id {
+		if node_addr != self.peer_node_id {
 			warn!("Malformed close packet: invalid node ID");
 			return false;
 		}

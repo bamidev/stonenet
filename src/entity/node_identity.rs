@@ -2,12 +2,15 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::core::NodeAddress;
+
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "node_identity")]
 pub struct Model {
-	#[sea_orm(primary_key, auto_increment = false)]
-	pub address: String,
+	#[sea_orm(primary_key, auto_increment = true)]
+	pub id: i64,
+	pub address: NodeAddress,
 	pub private_key: Vec<u8>,
 }
 

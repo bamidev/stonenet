@@ -66,7 +66,7 @@ pub enum Error {
 	/// An invalid hash has been found in the database
 	InvalidHash(IdFromBase58Error),
 	InvalidSignature(NodeSignatureError),
-	//InvalidPrivateKey(PrivateKeyError),
+	InvalidPrivateKey(usize),
 	InvalidPublicKey(Option<NodePublicKeyError>),
 	/// The data that is stored for a block is corrupt
 	BlockDataCorrupt(i64),
@@ -160,7 +160,6 @@ pub trait PersistenceHandle {
 		&self, trusted_nodes_ids: impl IntoIterator<Item = i64> + Send + std::fmt::Debug,
 	) -> Result<()> {
 		trusted_node::Entity::delete_many()
-			.filter(trusted_node::Column::ParentId.is_null())
 			.filter(
 				Expr::col((trusted_node::Entity, trusted_node::Column::Id))
 					.is_not_in(trusted_nodes_ids),
@@ -202,10 +201,9 @@ pub trait PersistenceHandle {
 		} else {
 			let model = trusted_node::ActiveModel {
 				id: NotSet,
-				parent_id: Set(None),
+				label: Set(address.to_string()),
 				address: Set(address.clone()),
 				score: Set(score),
-				last_seen_socket_address: Set(None),
 			};
 			Ok(trusted_node::Entity::insert(model)
 				.exec(self.inner())
@@ -462,6 +460,33 @@ pub trait PersistenceHandle {
 			}
 		}
 		Ok(objects)
+	}
+
+	async fn load_node_identity(&self) -> Result<(NodeAddress, NodePrivateKey)> {
+		let result = match node_identity::Entity::find().one(self.inner()).await? {
+			Some(m) => {
+				let key_len = m.private_key.len();
+				match m.private_key.try_into() {
+					Ok(buffer) => (m.address, NodePrivateKey::from_bytes(buffer)),
+					Err(_) => Err(Error::InvalidPrivateKey(key_len))?,
+				}
+			}
+			None => {
+				let private_key = NodePrivateKey::generate();
+				let address = NodeAddress::V1(IdType::hash(&private_key.public().to_bytes()));
+
+				let record = node_identity::ActiveModel {
+					id: NotSet,
+					address: Set(address.clone()),
+					private_key: Set(private_key.as_bytes().to_vec()),
+				};
+				node_identity::Entity::insert(record)
+					.exec(self.inner())
+					.await?;
+				(address, private_key)
+			}
+		};
+		Ok(result)
 	}
 
 	async fn load_post_object_payload(&self, object_id: i64) -> Result<Option<PostObject>> {
@@ -1133,6 +1158,31 @@ pub trait PersistenceHandle {
 			(None, None)
 		};
 		Ok(values)
+	}
+
+	async fn load_trust_score(&self, address: &NodeAddress) -> Result<u8> {
+		// Try our own list of trusted nodes first
+		let result = trusted_node::Entity::find()
+			.filter(trusted_node::Column::Address.eq(address))
+			.one(self.inner())
+			.await?;
+		if let Some(r) = result {
+			return Ok(r.score);
+		}
+
+		// Otherwise, try to get the highest score available from anywhere
+		let stat = trusted_node_trust_item::Entity::find()
+			.select_only()
+			.column_as(trusted_node_trust_item::Column::Score.max(), "max")
+			.filter(trusted_node_trust_item::Column::Address.eq(address))
+			.order_by_desc(trusted_node_trust_item::Column::Score)
+			.build(self.backend());
+		if let Some(r) = self.inner().query_one(stat).await? {
+			let score_opt: Option<u8> = r.try_get_by_index(0)?;
+			Ok(score_opt.unwrap_or(0))
+		} else {
+			Ok(0)
+		}
 	}
 
 	async fn update_identity_label(&self, old_label: &str, new_label: &str) -> Result<()> {
@@ -3051,39 +3101,6 @@ impl Connection {
 		Ok(true)
 	}
 
-	pub fn fetch_bootstrap_node_id(&mut self, address: &SocketAddr) -> Result<Option<IdType>> {
-		let mut stat = self.old.prepare(
-			r#"
-			SELECT node_id FROM bootstrap_id WHERE address = ?
-		"#,
-		)?;
-		let mut rows = stat.query([address.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let node_id = row.get(0)?;
-			Ok(Some(node_id))
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn remember_bootstrap_node_id(
-		&mut self, address: &SocketAddr, node_id: &IdType,
-	) -> Result<bool> {
-		let tx = self.old.transaction()?;
-		let updated = tx.execute(
-			"UPDATE bootstrap_id SET node_id = ? WHERE address = ?",
-			params![node_id, address.to_string()],
-		)?;
-		if updated == 0 {
-			tx.execute(
-				"INSERT INTO bootstrap_id (address, node_id) VALUES (?,?)",
-				params![address.to_string(), node_id],
-			)?;
-		}
-		tx.commit()?;
-		Ok(updated == 0)
-	}
-
 	pub fn remember_node(&mut self, address: &SocketAddr, node_id: &IdType) -> Result<()> {
 		let tx = self.old.transaction()?;
 
@@ -3186,6 +3203,7 @@ impl fmt::Display for Error {
 			Self::FileMissingBlock(file_id, sequence) => {
 				write!(f, "file {} missing block sequence {}", file_id, sequence)
 			}
+			Self::InvalidPrivateKey(len) => write!(f, "invalid private key (size={})", len),
 			Self::InvalidPublicKey(oe) => match oe {
 				Some(e) => write!(f, "invalid public key: {}", e),
 				None => write!(f, "invalid public key size"),
@@ -3225,7 +3243,7 @@ impl From<NodeSignatureError> for Error {
 }
 
 impl From<IdFromBase58Error> for Error {
-	fn from(other: IdFromBase58Error) -> Self { Self::InvalidHash(other) }
+	fn from(other: IdFromBase58Error) -> Self { other.to_db() }
 }
 
 impl From<NodePublicKeyError> for Error {

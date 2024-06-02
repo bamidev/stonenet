@@ -296,7 +296,7 @@ impl ActorNode {
 		.boxed()
 	}
 
-	fn db(&self) -> &db::Database { &self.base.interface.db }
+	fn db(&self) -> &db::Database { &self.base.db }
 
 	pub async fn exchange_head_on_connection(
 		&self, connection: &mut Connection,
@@ -391,13 +391,16 @@ impl ActorNode {
 	}
 
 	pub async fn find_block(&self, id: &IdType) -> Option<FindBlockResult> {
-		let result: Box<FindBlockResult> =
-			self.find_value(BlogchainValueType::Block, id, 100, false).await?;
+		let result: Box<FindBlockResult> = self
+			.find_value(BlogchainValueType::Block, id, 100, false)
+			.await?;
 		Some(*result)
 	}
 
 	pub async fn find_file(&self, id: &IdType) -> Option<FindFileResult> {
-		let result: Box<FindFileResult> = self.find_value(BlogchainValueType::File, id, 100, false).await?;
+		let result: Box<FindFileResult> = self
+			.find_value(BlogchainValueType::File, id, 100, false)
+			.await?;
 		Some(*result)
 	}
 
@@ -410,13 +413,15 @@ impl ActorNode {
 	}
 
 	pub async fn find_object(&self, id: &IdType) -> Option<FindObjectResult> {
-		let result: Box<FindObjectResult> =
-			self.find_value(BlogchainValueType::Object, id, 100, false).await?;
+		let result: Box<FindObjectResult> = self
+			.find_value(BlogchainValueType::Object, id, 100, false)
+			.await?;
 		Some(*result)
 	}
 
 	async fn find_value<V>(
-		&self, value_type: BlogchainValueType, id: &IdType, hop_limit: usize, only_narrow_down: bool,
+		&self, value_type: BlogchainValueType, id: &IdType, hop_limit: usize,
+		only_narrow_down: bool,
 	) -> Option<Box<V>>
 	where
 		V: DeserializeOwned,
@@ -608,7 +613,7 @@ impl ActorNode {
 	) -> Option<bool> {
 		let response = self
 			.base
-			.exchange_find_node_on_connection(&mut connection, self.base.node_id())
+			.exchange_find_node_on_connection(&mut connection, &self.base.node_id().as_id())
 			.await?;
 		let mut fingers = response.fingers.clone();
 		fingers.push(connection.their_node_info().clone());
@@ -619,7 +624,7 @@ impl ActorNode {
 		// synchronize at least the latest 10 objects.
 		if !fingers.iter().any(|f| {
 			if let Some(strategy) = self.base.pick_contact_strategy(&f.contact_info) {
-				&f.node_id != &self.base.node_id && strategy.method != ContactStrategyMethod::Relay
+				&f.address != &self.base.address && strategy.method != ContactStrategyMethod::Relay
 			} else {
 				false
 			}
@@ -630,7 +635,7 @@ impl ActorNode {
 
 		let neighbours = self
 			.base
-			.find_node_from_fingers(self.base.node_id(), &fingers, 4, 100)
+			.find_node_from_fingers(&self.base.node_id().as_id(), &fingers, 4, 100)
 			.await;
 		if neighbours.len() > 0 {
 			self.initialize(&neighbours).await;
@@ -657,13 +662,14 @@ impl ActorNode {
 	}
 
 	pub fn new(
-		stop_flag: Arc<AtomicBool>, overlay_node: Arc<OverlayNode>, node_id: IdType,
+		stop_flag: Arc<AtomicBool>, overlay_node: Arc<OverlayNode>, node_id: NodeAddress,
 		socket: Arc<sstp::Server>, actor_address: ActorAddress, actor_id: i64,
 		actor_info: ActorInfo, db: Database, bucket_size: usize, leak_first_request: bool,
 		is_lurker: bool,
 	) -> Self {
 		let interface = ActorInterface {
 			overlay_node,
+			db: db.clone(),
 			actor_id,
 			actor_info,
 			// TODO: Load head sequence from parameter in new, and create an async method `load`
@@ -674,13 +680,13 @@ impl ActorNode {
 					.map(|o| o.1.sequence),
 			),
 			actor_address,
-			db,
 			is_lurker,
 		};
 		Self {
 			is_synchonizing: Arc::new(AtomicBool::new(false)),
 			base: Arc::new(Node::new(
 				stop_flag,
+				db,
 				node_id,
 				socket,
 				interface,
@@ -995,14 +1001,14 @@ impl ActorNode {
 
 	pub async fn publish_object(
 		self: &Arc<Self>, overlay_node: &Arc<OverlayNode>, id: &IdType, object: &BlogchainObject,
-		skip_node_ids: &[IdType], bucket_offset: u8,
+		skip_node_ids: &[NodeAddress], bucket_offset: u8,
 	) {
 		// TODO: When republishing, only publish the object to nodes below the sender's
 		// bit position on the binary tree.
 		let mut iter = self.base.iter_all_fingers_top_down(bucket_offset).await;
 		let mut futs = Vec::new();
 		while let Some(finger) = iter.next().await {
-			if skip_node_ids.contains(&finger.node_id) {
+			if skip_node_ids.contains(&finger.address) {
 				continue;
 			}
 
@@ -1255,7 +1261,7 @@ impl ActorNode {
 	/// which are already up to date.
 	async fn synchronize_head(
 		self: &Arc<Self>,
-	) -> db::Result<Option<(IdType, BlogchainObject, Vec<IdType>, bool, bool)>> {
+	) -> db::Result<Option<(IdType, BlogchainObject, Vec<NodeAddress>, bool, bool)>> {
 		let mut up_to_date_nodes = Vec::with_capacity(4);
 		let our_head_info = self.db().perform(|c| c.fetch_head(self.actor_address()))?;
 		let our_head_sequence = if let Some((_, o, _)) = &our_head_info {
@@ -1306,15 +1312,15 @@ impl ActorNode {
 									if other_latest.sequence < object.sequence {
 										latest_object = Some(object);
 										latest_hash = hash;
-										up_to_date_nodes = vec![finger.node_id.clone(); 1];
+										up_to_date_nodes = vec![finger.address.clone(); 1];
 										updated = true;
 									} else if other_latest.sequence == object.sequence {
-										up_to_date_nodes.push(finger.node_id.clone());
+										up_to_date_nodes.push(finger.address.clone());
 									}
 								} else {
 									latest_object = Some(object);
 									latest_hash = hash;
-									up_to_date_nodes = vec![finger.node_id.clone(); 1];
+									up_to_date_nodes = vec![finger.address.clone(); 1];
 									updated = true;
 								}
 							}
@@ -1646,7 +1652,7 @@ impl MessageWorkToDo for PublishObjectToDo {
 							&node.base.overlay_node(),
 							&hash,
 							&object,
-							&source_node_id,
+							&source_node_id.as_id(),
 						)
 						.await;
 					});

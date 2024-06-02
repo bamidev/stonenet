@@ -26,7 +26,7 @@ use num::BigUint;
 use serde::{Deserialize, Serialize};
 use sstp::Connection;
 
-use crate::{common::*, config::Config};
+use crate::{common::*, config::Config, core::NodeAddress};
 
 //pub type KADEMLIA_K_AL = U4;
 /// Number of bits in a Kademlia ID. It is specified as 160 bits in the paper,
@@ -96,8 +96,7 @@ pub struct LinkProtocol {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NodeContactInfo {
-	// TODO: Change this type in NodeAddress:
-	pub node_id: IdType,
+	pub address: NodeAddress,
 	pub contact_info: ContactInfo,
 }
 
@@ -505,7 +504,7 @@ impl NodeContactInfo {
 
 impl fmt::Display for NodeContactInfo {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}: {}", self.node_id, self.contact_info)
+		write!(f, "{}: {}", self.address, self.contact_info)
 	}
 }
 

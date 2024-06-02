@@ -115,16 +115,26 @@ pub struct ListActorsResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ListTrustedNodesRequest {}
+pub struct ListTrustedNodesRequest {
+	pub recursion_level: u8,
+	pub checksum: Option<IdType>,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ListTrustedNodesResponse {
-	address: NodeAddress,
+	pub result: ListTrustedNodesResult,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub enum ListTrustedNodesResult {
+	None,
+	ValidChecksum,
+	List(Vec<(NodeAddress, u8)>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenRelayRequest {
-	pub target_node_id: IdType,
+	pub target_node_id: NodeAddress,
 	pub protocol: LinkProtocol,
 	pub assistant_node: NodeContactInfo,
 	pub hello_packet: RelayHelloPacket,
@@ -151,7 +161,7 @@ pub struct OpenRelayStatusMessage {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PassPunchHoleRequest {
-	pub target: IdType,
+	pub target: NodeAddress,
 	pub contact_option: ContactOption,
 	pub request_connection: bool,
 }
@@ -163,7 +173,7 @@ pub struct PassPunchHoleResponse {
 
 #[derive(Serialize, Deserialize)]
 pub struct PassRelayRequestRequest {
-	pub target_node_id: IdType,
+	pub target_node_id: NodeAddress,
 	pub base: RelayRequestRequest,
 }
 
@@ -195,7 +205,7 @@ pub struct PublishObjectMessage {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PunchHoleRequest {
-	pub source_node_id: IdType,
+	pub source_node_id: NodeAddress,
 	pub source_contact_option: ContactOption,
 	pub request_connection: bool,
 }

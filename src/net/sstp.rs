@@ -53,7 +53,6 @@ use super::{
 	},
 };
 use crate::{
-	common::*,
 	config::Config,
 	identity::{self, *},
 	net::*,
@@ -317,7 +316,7 @@ impl Connection {
 
 	pub fn their_node_info(&self) -> &NodeContactInfo { &self.peer_node_info }
 
-	pub fn their_node_id(&self) -> &IdType { &self.peer_node_info.node_id }
+	pub fn their_node_id(&self) -> &NodeAddress { &self.peer_node_info.address }
 
 	#[allow(dead_code)]
 	pub fn dest_session_id(&self) -> u16 { self.dest_session_id }
