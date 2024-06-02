@@ -1930,67 +1930,6 @@ impl Connection {
 		Ok(())
 	}
 
-	/*pub(crate) fn _store_file_data(
-		tx: &impl DerefConnection, mime_type: &str, compression_type: u8, data: &[u8],
-	) -> Result<(i64, IdType, Vec<IdType>)> {
-		debug_assert!(data.len() <= u64::MAX as usize, "data too large");
-		debug_assert!(data.len() > 0, "data can not be empty");
-		let block_count = data.len() / BLOCK_SIZE + ((data.len() % BLOCK_SIZE) > 0) as usize;
-		let mut blocks = Vec::with_capacity(block_count);
-		let mut block_hashes = Vec::with_capacity(block_count);
-
-		// Devide data into blocks
-		let plain_hash = IdType::hash(data);
-		let mut i = 0;
-		let mut block_index = 0;
-		loop {
-			let slice = &data[i..];
-			let actual_block_size = min(BLOCK_SIZE, slice.len());
-			let mut block = slice[..actual_block_size].to_vec();
-			encrypt_block(block_index, &plain_hash, &mut block);
-			let block_hash = IdType::hash(&block);
-			blocks.push(block);
-			block_hashes.push(block_hash);
-
-			block_index += 1;
-			i += BLOCK_SIZE;
-			if i >= data.len() {
-				break;
-			}
-		}
-
-		// Calculate the file hash
-		let file_hash = IdType::hash(
-			&binserde::serialize(&File {
-				plain_hash: plain_hash.clone(),
-				mime_type: mime_type.to_string(),
-				compression_type,
-				blocks: block_hashes.clone(),
-			})
-			.unwrap(),
-		);
-		// FIXME: Prevent the unnecessary cloning just to calculate the file hash
-
-		// Create the file record
-		let file_id = Self::_store_file_record(
-			tx,
-			&file_hash,
-			&plain_hash,
-			mime_type,
-			compression_type,
-			block_count as _,
-		)?;
-
-		// Create block records
-		for i in 0..block_count {
-			let block_data = &blocks[i];
-			let block_hash = &block_hashes[i];
-
-			Self::_store_file_block(tx, file_id, i as _, block_hash, block_data)?;
-		}
-		Ok((file_id as _, file_hash, block_hashes))
-	}*/
-
 	pub(crate) fn _store_file(
 		tx: &impl Deref<Target = rusqlite::Connection>, id: &IdType, plain_hash: &IdType,
 		mime_type: &str, compression_type: u8, blocks: &[IdType],
@@ -2435,13 +2374,6 @@ impl Connection {
 			Ok(None)
 		}
 	}
-
-	/*pub fn fetch_file_data(&self, id: &IdType) -> Result<Option<FileData>> {
-		match Self::_fetch_file(self, id)? {
-			None => Ok(None),
-			Some((mime_type, data)) => Ok(Some(FileData { mime_type, data })),
-		}
-	}*/
 
 	pub fn fetch_file(&self, id: &IdType) -> Result<Option<File>> {
 		let mut stat = self.prepare(
