@@ -2156,7 +2156,7 @@ impl OverlayNode {
 
 		let response = ListTrustedNodesResponse { result };
 		self.base
-			.simple_result(OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_RESPONSE, &response)
+			.simple_result(OVERLAY_MESSAGE_TYPE_TRUST_LIST_RESPONSE, &response)
 	}
 
 	pub(super) async fn process_request(
