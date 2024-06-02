@@ -9,7 +9,7 @@ pub fn compress(type_: CompressionType, data: &[u8]) -> Vec<u8> {
 	debug_assert!(type_ != CompressionType::None);
 	match type_ {
 		CompressionType::Brotli => compress_brotli(data),
-		CompressionType::None => Vec::new(),
+		CompressionType::None => data.to_vec(),
 	}
 }
 
@@ -30,10 +30,9 @@ fn compress_brotli(input: &[u8]) -> Vec<u8> {
 }
 
 pub fn decompress(type_: CompressionType, data: &[u8]) -> Result<Vec<u8>, DecodeError> {
-	debug_assert!(type_ != CompressionType::None);
 	match type_ {
 		CompressionType::Brotli => decompress_brotli(data),
-		CompressionType::None => Ok(Vec::new()),
+		CompressionType::None => Ok(data.to_vec()),
 	}
 }
 

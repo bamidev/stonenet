@@ -304,7 +304,7 @@ impl Api {
 	#[allow(dead_code)]
 	pub async fn find_file_data(
 		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
-	) -> db::Result<Option<FileData>> {
+	) -> db::Result<Option<FileData>> {	// TODO: Optionally decompress data
 		let file = if let Some(f) = self.find_file(actor_node_opt, hash).await? {
 			f
 		} else {

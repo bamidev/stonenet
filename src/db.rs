@@ -883,7 +883,7 @@ pub trait PersistenceHandle {
 				self.inner().get_database_backend(),
 				r#"
 			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-				df.plain_hash, df.block_count
+				df.compression_type, df.plain_hash, df.block_count
 			FROM profile_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.id
 			LEFT JOIN actor AS i ON o.actor_id = i.id
@@ -909,7 +909,7 @@ pub trait PersistenceHandle {
 				self.inner().get_database_backend(),
 				r#"
 			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-				df.plain_hash, df.block_count
+				df.compression_type, df.plain_hash, df.block_count
 			FROM profile_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.id
 			LEFT JOIN actor AS i ON o.actor_id = i.id
@@ -934,7 +934,7 @@ pub trait PersistenceHandle {
 				self.inner().get_database_backend(),
 				r#"
 			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-			       df.plain_hash, df.block_count
+			       df.compression_type, df.plain_hash, df.block_count
 			FROM profile_object AS po
 			LEFT JOIN object AS o ON po.object_id = o.id
 			LEFT JOIN actor AS i ON o.actor_id = i.id
@@ -1280,16 +1280,25 @@ pub trait PersistenceHandle {
 		let avatar_id: Option<IdType> = result.try_get_by_index(2)?;
 		let wallpaper_id: Option<IdType> = result.try_get_by_index(3)?;
 		let description_id: Option<i64> = result.try_get_by_index(4)?;
-		let description_plain_hash: Option<IdType> = result.try_get_by_index(5)?;
-		let description_block_count: Option<i64> = result.try_get_by_index(6)?;
+		let description_compression_type: Option<u8> = result.try_get_by_index(5)?;
+		let description_plain_hash: Option<IdType> = result.try_get_by_index(6)?;
+		let description_block_count: Option<i64> = result.try_get_by_index(7)?;
 
 		let description = if let Some(file_id) = description_id {
-			self.find_file_data(
-				file_id,
-				&description_plain_hash.unwrap(),
-				description_block_count.unwrap() as _,
+			let data = self
+				.find_file_data(
+					file_id,
+					&description_plain_hash.unwrap(),
+					description_block_count.unwrap() as _,
+				)
+				.await?;
+
+			data.map(
+				|d| match CompressionType::from_u8(description_compression_type.unwrap()) {
+					Some(t) => decompress(t, &d).expect("decompression error"),
+					None => panic!("unsupported compression type"),
+				},
 			)
-			.await?
 		} else {
 			None
 		};
