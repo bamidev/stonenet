@@ -1065,7 +1065,7 @@ impl OverlayNode {
 		let stored = self
 			.store_actor_at_contacts(&actor_address.as_id(), 4, actor_info, &last_two_visited)
 			.await;
-		debug!("Stored actor {:?} at {} nodes.", actor_address, stored);
+		debug!("Stored actor {} at {} nodes.", actor_address, stored);
 
 		Some(node)
 	}
