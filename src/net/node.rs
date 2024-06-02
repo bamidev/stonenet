@@ -8,7 +8,6 @@ use serde::de::DeserializeOwned;
 use super::{bucket::Bucket, message::*, overlay::OverlayNode, sstp::MessageProcessorResult, *};
 use crate::{
 	common::*,
-	core::NodeAddress,
 	db::{self, Database, PersistenceHandle},
 	trace::{self, Mutex, Traced},
 };

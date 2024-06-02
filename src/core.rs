@@ -318,6 +318,7 @@ impl Address {
 		Ok(address)
 	}
 
+	#[allow(dead_code)]
 	pub fn to_bytes(&self) -> Vec<u8> {
 		match self {
 			Self::Node(address) => {
@@ -331,11 +332,6 @@ impl Address {
 				buffer
 			}
 		}
-	}
-
-	pub fn to_base58(&self) -> String {
-		let buffer = self.to_bytes();
-		buffer.to_base58()
 	}
 }
 

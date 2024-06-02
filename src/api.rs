@@ -18,7 +18,7 @@ use super::{
 	core::*,
 	db::{self, PersistenceHandle},
 	identity::*,
-	net::{actor::ActorNode, binserde, message::*, overlay::OverlayNode},
+	net::{actor::ActorNode, binserde, overlay::OverlayNode},
 };
 use crate::{
 	db::{Database, ObjectInfo, ProfileObjectInfo},
@@ -264,18 +264,6 @@ impl Api {
 		})
 	}
 
-	pub async fn find_file(&self, actor_node: &ActorNode, id: &IdType) -> db::Result<Option<File>> {
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.fetch_file(id)
-		})?;
-
-		Ok(match result {
-			Some(r) => Some(r),
-			None => actor_node.find_file(id).await.map(|r| r.file),
-		})
-	}
-
 	pub async fn find_file_data(
 		&self, actor_node: &ActorNode, id: &IdType,
 	) -> db::Result<Option<FileData>> {
@@ -303,20 +291,6 @@ impl Api {
 		}))
 	}
 
-	pub async fn find_object(
-		&self, actor_node: &ActorNode, id: &IdType,
-	) -> db::Result<Option<FindObjectResult>> {
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.fetch_object(id)
-		})?;
-
-		Ok(match result {
-			Some((object, _)) => Some(FindObjectResult { object }),
-			None => actor_node.find_object(id).await,
-		})
-	}
-
 	pub fn fetch_my_identity(
 		&self, address: &ActorAddress,
 	) -> db::Result<Option<(String, ActorPrivateKeyV1)>> {
@@ -324,16 +298,6 @@ impl Api {
 		tokio::task::block_in_place(|| {
 			let c = this.db.connect_old()?;
 			c.fetch_my_identity(address)
-		})
-	}
-
-	pub fn fetch_my_identity_by_label(
-		&self, label: &str,
-	) -> db::Result<Option<(ActorAddress, ActorPrivateKeyV1)>> {
-		let this = self.clone();
-		tokio::task::block_in_place(|| {
-			let c = this.db.connect_old()?;
-			c.fetch_my_identity_by_label(label)
 		})
 	}
 
@@ -347,75 +311,11 @@ impl Api {
 		})
 	}
 
-	/*pub async fn fetch_latest_objects_with_preview_data(&self,
-		actor_id: &IdType,
-		count: usize,
-		offset: usize
-	) -> db::Result<Vec<Option<(Object)>>> {
-		Ok(match self.node.lurk_actor_network(actor_id).await {
-			Some(actor_node) => {
-				match actor_node.fetch_head().await {
-					Some(latest_object_index) => {
-						let object_result = self.fetch_objects(
-							&actor_node,
-							latest_object_index,
-							5
-						).await?;
-
-						match object_result {
-							None => {},
-							Some(object) => {
-								if object.files.len() > 0 &&
-								   object.files[0].mime_type == "text/plain"
-								{
-									let file_hash = &object.files[0].hash;
-									self.fetch_file(file_hash).await?;
-								}
-							}
-						}
-					},
-					None => Vec::new()
-				}
-			},
-			None => Vec::new()
-		})
-	}*/
-
 	pub async fn fetch_object_info(
 		&self, actor_address: &ActorAddress, hash: &IdType,
 	) -> db::Result<Option<ObjectInfo>> {
 		self.db.load_object_info(actor_address, hash).await
 	}
-
-	/*pub async fn fetch_objects(
-		&self, actor_node: &Arc<ActorNode>, last_post_sequence: u64, count: u64,
-	) -> Vec<Option<Object>> {
-		debug_assert!(last_post_sequence >= count, "last_post_sequence can not be less than count");
-		let objects = Arc::new(Mutex::new(Vec::with_capacity(count as _)));
-
-		let mut futs = Vec::with_capacity(count as _);
-		for i in 0..count {
-			let post_sequence = last_post_sequence - i;
-			let node = actor_node.clone();
-			let objects2 = objects.clone();
-			futs.append(async move {
-				let result = tokio::task::block_in_place(|| {
-					let mut c = self.db.connect_old()?;
-					c.fetch_object_by_sequence(node.actor_id(), post_sequence)
-				})?;
-				let final_result = match result.0 {
-					Some(o) => Some(o),
-					None => {
-						node.find_object(id).await
-					}
-				};
-				objects2.lock().await.push(result);
-			});
-		}
-		join_all!(futs).await;
-
-		Ok(objects.unwrap())
-	}*/
 
 	pub async fn find_profile_info(
 		&self, actor_address: &ActorAddress,

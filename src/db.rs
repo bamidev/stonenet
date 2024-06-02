@@ -3,7 +3,7 @@
 
 mod install;
 
-use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration};
+use std::{cmp::min, fmt, ops::*, path::*, str, time::Duration};
 
 use ::serde::Serialize;
 use async_trait::async_trait;
@@ -2414,26 +2414,6 @@ impl Connection {
 		Ok(results)
 	}
 
-	pub fn fetch_file_blocks(&self, file_hash: &IdType, size: usize) -> Result<Vec<IdType>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT block_hash
-			FROM file_block AS fb
-			INNER JOIN file AS f ON fb.file_id = f.id
-			WHERE f.hash = ?
-			ORDER BY fb.sequence ASC
-		"#,
-		)?;
-
-		let mut result = Vec::with_capacity(size);
-		let mut rows = stat.query([file_hash])?;
-		if let Some(row) = rows.next()? {
-			let block_hash: IdType = row.get(0)?;
-			result.push(block_hash);
-		}
-		Ok(result)
-	}
-
 	pub fn fetch_block(&self, id: &IdType) -> Result<Option<Vec<u8>>> {
 		let mut stat = self.prepare(
 			r#"
@@ -2552,32 +2532,6 @@ impl Connection {
 		&self, actor_id: &ActorAddress, sequence: u64,
 	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
 		Self::_fetch_object_by_sequence_old(self, actor_id, sequence)
-	}
-
-	pub fn fetch_previous_object(
-		&mut self, actor_id: &ActorAddress, hash: &IdType,
-	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
-		let tx = self.old.transaction()?;
-
-		let mut stat = tx.prepare(
-			r#"
-			SELECT o.sequence
-			FROM object AS o
-			INNER JOIN actor AS i ON o.actor_id = i.id
-			WHERE i.address = ? AND i.actor_version = ? AND o.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_id, hash.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let sequence: u64 = row.get(0)?;
-			if sequence > 0 {
-				Self::_fetch_object_by_sequence_old(&tx, actor_id, sequence - 1)
-			} else {
-				Ok(None)
-			}
-		} else {
-			Ok(None)
-		}
 	}
 
 	pub fn fetch_next_object(
@@ -2735,38 +2689,6 @@ impl Connection {
 		Ok(ids)
 	}
 
-	pub fn fetch_node_identity(&mut self) -> Result<(IdType, NodePrivateKey)> {
-		let tx = self.old.transaction()?;
-
-		let result = {
-			let mut stat = tx.prepare(
-				r#"
-				SELECT address, private_key FROM node_identity LIMIT 1
-			"#,
-			)?;
-			let mut rows = stat.query([])?;
-
-			if let Some(row) = rows.next()? {
-				let address: IdType = row.get(0)?;
-				let private_key: NodePrivateKey = row.get(1)?;
-				(address, private_key)
-			} else {
-				let private_key = NodePrivateKey::generate();
-				let address = IdType::hash(&private_key.public().to_bytes());
-				tx.execute(
-					r#"
-					INSERT INTO node_identity (address, private_key) VALUES (?,?)
-				"#,
-					params![address, private_key],
-				)?;
-				(address, private_key)
-			}
-		};
-
-		tx.commit()?;
-		Ok(result)
-	}
-
 	pub fn fetch_profile_object(
 		&self, actor_id: &ActorAddress,
 	) -> Result<Option<(IdType, BlogchainObject)>> {
@@ -2786,21 +2708,6 @@ impl Connection {
 		} else {
 			Ok(None)
 		}
-	}
-
-	pub fn fetch_remembered_node(&mut self, address: &SocketAddr) -> Result<(IdType, i32)> {
-		let result = self.query_row(
-			r#"
-			SELECT node_id, success_score FROM remembered_nodes WHERE address = ?
-		"#,
-			params![address.to_string()],
-			|row| {
-				let node_id: IdType = row.get(0)?;
-				let score: i32 = row.get(1)?;
-				Ok((node_id, score))
-			},
-		)?;
-		Ok(result)
 	}
 
 	pub fn follow(&mut self, actor_id: &ActorAddress, actor_info: &ActorInfo) -> Result<()> {
@@ -2895,21 +2802,6 @@ impl Connection {
 		Ok(rows.next()?.is_some())
 	}
 
-	pub fn is_identity_available(&self, address: &ActorAddress) -> rusqlite::Result<bool> {
-		let mut stat = self.old.prepare(
-			r#"
-			SELECT address FROM actor AS i
-			WHERE address = ? AND id IN (
-				SELECT actor_id FROM identity
-			) OR id IN (
-				SELECT actor_id FROM feed_followed
-			)
-		"#,
-		)?;
-		let mut rows = stat.query(params![address])?;
-		Ok(rows.next()?.is_some())
-	}
-
 	pub fn is_following(&self, actor_id: &ActorAddress) -> Result<bool> {
 		let mut stat = self.prepare(
 			r#"
@@ -2923,38 +2815,9 @@ impl Connection {
 		Ok(rows.next()?.is_some())
 	}
 
-	/// Returns the lastest object sequence for an actor if available.
-	pub fn max_object_sequence(&self, actor_id: i64) -> Result<Option<u64>> {
-		let mut stat = self.old.prepare(
-			r#"
-			SELECT MAX(sequence) FROM object WHERE actor_id = ?
-		"#,
-		)?;
-		let mut rows = stat.query([actor_id])?;
-		match rows.next()? {
-			None => Ok(None),
-			Some(row) => Ok(row.get(0)?),
-		}
-	}
-
-	/// Returns the sequence that the next object would use.
-	pub fn next_object_sequence(&self, actor_id: i64) -> Result<u64> {
-		match self.max_object_sequence(actor_id)? {
-			None => Ok(0),
-			Some(s) => Ok(s + 1),
-		}
-	}
-
 	pub fn old(&self) -> &rusqlite::Connection { &self.old.0 }
 
 	pub fn old_mut(&mut self) -> &mut rusqlite::Connection { &mut self.old.0 }
-
-	pub async fn open(path: &Path) -> self::Result<Self> {
-		let old_connection = rusqlite::Connection::open(&path)?;
-		Ok(Self {
-			old: UnsafeSendSync::new(old_connection),
-		})
-	}
 
 	pub fn open_old(path: &Path) -> rusqlite::Result<Self> {
 		let c = rusqlite::Connection::open(&path)?;
@@ -2983,41 +2846,6 @@ impl Connection {
 		)
 	}
 
-	/*pub fn store_file_data(
-		&mut self, compression_type: CompressionType, file_data: &FileData,
-	) -> Result<IdType> {
-		let (_, file_hash, _) = Self::_store_file_data(
-			self,
-			&file_data.mime_type,
-			compression_type as _,
-			&file_data.data,
-		)?;
-		Ok(file_hash)
-	}
-
-	pub fn store_file_data2(
-		&mut self, mime_type: &str, compression_type: CompressionType, data: &[u8],
-	) -> Result<IdType> {
-		let (_, file_hash, _) =
-			Self::_store_file_data(self, mime_type, compression_type as _, data)?;
-		Ok(file_hash)
-	}*/
-
-	pub fn store_file2(
-		&mut self, id: &IdType, plain_hash: &IdType, mime_type: &str,
-		compression_type: CompressionType, blocks: &[IdType],
-	) -> Result<()> {
-		Self::_store_file(
-			self,
-			id,
-			plain_hash,
-			mime_type,
-			compression_type as _,
-			blocks,
-		)?;
-		Ok(())
-	}
-
 	pub fn store_identity(
 		&mut self, address: &ActorAddress, public_key: &ActorPublicKeyV1, first_object: &IdType,
 	) -> Result<()> {
@@ -3032,46 +2860,6 @@ impl Connection {
 			first_object,
 			ACTOR_TYPE_BLOGCHAIN
 		])?;
-		Ok(())
-	}
-
-	pub fn store_my_identity(
-		&mut self, label: &str, address: &IdType, private_key: &NodePrivateKey,
-		first_object: &IdType,
-	) -> rusqlite::Result<()> {
-		let tx = self.old.transaction()?;
-
-		let mut stat = tx.prepare(
-			r#"
-			INSERT INTO actor (address, public_key, first_object) VALUES(?,?,?)
-		"#,
-		)?;
-		let new_id = stat.insert(rusqlite::params![
-			address.to_string(),
-			private_key.public().as_bytes(),
-			first_object.to_string()
-		])?;
-		stat = tx
-			.prepare(
-				r#"
-			INSERT INTO identity (label, actor_id, private_key) VALUES (?,?,?)
-		"#,
-			)
-			.unwrap();
-		stat.insert(rusqlite::params![label, new_id, private_key.as_bytes()])?;
-
-		drop(stat);
-		tx.commit()?;
-		Ok(())
-	}
-
-	pub fn store_node_identity(&self, node_id: &IdType, node_key: &NodePrivateKey) -> Result<()> {
-		self.execute(
-			r#"
-			UPDATE node_identity SET address = ?, private_key = ?
-		"#,
-			params![node_id, node_key],
-		)?;
 		Ok(())
 	}
 
@@ -3099,36 +2887,6 @@ impl Connection {
 		};
 		tx.commit()?;
 		Ok(true)
-	}
-
-	pub fn remember_node(&mut self, address: &SocketAddr, node_id: &IdType) -> Result<()> {
-		let tx = self.old.transaction()?;
-
-		let mut stat = tx.prepare(
-			r#"
-			SELECT success_score FROM remembered_nodes WHERE address = ?
-		"#,
-		)?;
-		let mut rows = stat.query([address.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let score: i32 = row.get(0)?;
-
-			let affected = tx.execute(
-				r#"UPDATE remembered_nodes SET success_score = ? WHERE address = ?"#,
-				params![score + 1, address.to_string()],
-			)?;
-			debug_assert!(affected > 0);
-		} else {
-			tx.execute(
-				r#"INSERT INTO remembered_nodes (address, node_id, success_score) VALUES (?, ?, ?)"#,
-				params![address.to_string(), node_id, 1],
-			)?;
-		}
-		Ok(())
-	}
-
-	pub fn transaction_old(&mut self) -> Result<rusqlite::Transaction<'_>> {
-		Ok(self.old.transaction()?)
 	}
 
 	pub fn unfollow(&mut self, actor_id: &ActorAddress) -> Result<bool> {

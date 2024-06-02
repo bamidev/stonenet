@@ -78,20 +78,6 @@ impl ConnectionManager {
 		map.get(target).map(|x| x.clone())
 	}
 
-	pub async fn find_near(&self, bit: u8) -> Option<ConnectionManagerEntry> {
-		let map = self.map.lock().await;
-		for (node_id, (node_info, c)) in map.iter() {
-			let is_near = match self.center.differs_at_bit(&node_id.as_id()) {
-				None => true,
-				Some(b) => b >= bit,
-			};
-			if is_near {
-				return Some((node_info.clone(), c.clone()));
-			}
-		}
-		None
-	}
-
 	pub fn new(center: IdType, limit: usize) -> Self {
 		Self {
 			center,
