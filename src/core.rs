@@ -133,6 +133,18 @@ pub struct PostObjectDataPlain {
 	pub files: Vec<IdType>,
 }
 
+// An idea for a better layout of the `PostObjectDataPlain` struct could be as
+// follows:
+/*
+struct PostObjectDataPlain {
+	pub tags: Vec<String>,
+	pub content: Vec<IdType>,
+	pub attachments: Vec<IdType>,
+}
+*/
+// The list of files named `content` represents a number of versions for which
+// one can be picked that has the most desirable mimetype.
+
 #[derive(Clone, Deserialize, Serialize)]
 pub struct PostObjectInfo {
 	base: PostObject,
