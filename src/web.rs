@@ -128,6 +128,7 @@ pub async fn serve(
 	let app = Router::new()
 		.route("/", get(home).post(home_post))
 		.nest_service("/static", ServeDir::new("static"))
+		.nest("/activity-pub", activity_pub::router(global.clone()))
 		.nest("/actor", actor::router(global.clone()))
 		.nest("/identity", identity::router(global.clone()))
 		.route("/rss", get(rss_feed))
@@ -227,6 +228,16 @@ struct SearchQuery {
 }
 
 async fn search(Query(query): Query<SearchQuery>) -> Response {
+	if let Some(first_char) = query.query.chars().next() {
+		if first_char == '@' {
+			return Response::builder()
+				.status(303)
+				.header("Location", format!("/activity-pub/actor/{}", query.query))
+				.body(Body::empty())
+				.unwrap();
+		}
+	}
+
 	match Address::from_str(&query.query) {
 		Err(e) => server_error_response(e, "Invalid address"),
 		Ok(address) => Response::builder()

@@ -19,6 +19,8 @@ use axum::{
 };
 use base64::prelude::*;
 use chrono::{SecondsFormat, Utc};
+use email_address_parser::EmailAddress;
+use extract::Path;
 use lazy_static::lazy_static;
 use log::*;
 use reqwest::Url;
@@ -37,12 +39,13 @@ use sea_orm::{
 };
 use serde::*;
 use stonenetd::core::OBJECT_TYPE_PROFILE;
+use tera::Context;
 use tokio::{spawn, time::sleep};
 use zeroize::Zeroizing;
 
 use super::{common::*, current_timestamp, ActorAddress, Address, IdType};
 use crate::{
-	db::{self, ObjectPayloadInfo, PersistenceHandle},
+	db::{self, ObjectPayloadInfo, PersistenceHandle, ProfileObjectInfo, TargetedActorInfo},
 	entity::*,
 	util::read_text_file,
 	web::Global,
@@ -55,6 +58,11 @@ const DEFAULT_CONTEXT: ActivityPubDocumentContext = ActivityPubDocumentContext(&
 ]);
 const SEND_QUEUE_DEFAULT_CAPACITY: u64 = 100000;
 
+
+#[derive(Deserialize)]
+struct ActorActions {
+	follow: Option<String>,
+}
 
 #[derive(Serialize)]
 struct AcceptActivity {
@@ -417,6 +425,111 @@ impl WebFingerDocument {
 	}
 }
 
+
+async fn activity_pub_actor_post(
+	State(g): State<Arc<Global>>, Path(address): Path<String>, Form(form_data): Form<ActorActions>,
+) -> Response {
+	if let Some(follow) = &form_data.follow {
+		// Follow
+		if follow == "1" {
+			//activity_pub_following::Entity::insert().exec(g.db.inner()).
+			// await.unwrap();
+		// Unfollow
+		} else {
+			//activity_pub_following::Entity::delete().exec(g.db.inner()).
+			// await.unwrap();
+		}
+	}
+
+	activity_pub_actor_get(State(g), Path(address)).await
+}
+
+async fn activity_pub_actor_get(
+	State(g): State<Arc<Global>>, Path(address): Path<String>,
+) -> Response {
+	let fedi_addr = match EmailAddress::parse(&address[1..], None) {
+		Some(r) => r,
+		None => return server_error_response2("Invalid fediverse address"),
+	};
+	let actor_json_result = match fetch_actor_from_webfinger(&fedi_addr, &address[1..]).await {
+		Ok(r) => r,
+		Err(e) => {
+			return server_error_response(e, "Unable to fetch actor URL from webfinger");
+		}
+	};
+	let actor_json = if let Some(r) = actor_json_result {
+		r
+	} else {
+		return server_error_response2("Actor URL not found from webfinger");
+	};
+
+	let name = if let Some(v) = actor_json.get("name") {
+		match v {
+			serde_json::Value::String(s) => s.clone(),
+			_ => String::new(),
+		}
+	} else {
+		String::new()
+	};
+	let summary = if let Some(v) = actor_json.get("summary") {
+		match v {
+			serde_json::Value::String(s) => Some(s.clone()),
+			_ => None,
+		}
+	} else {
+		None
+	};
+	let avatar_url = if let Some(v) = actor_json.get("icon") {
+		match v {
+			serde_json::Value::Object(o) =>
+				if let Some(p) = o.get("url") {
+					match p {
+						serde_json::Value::String(s) => Some(s.clone()),
+						_ => None,
+					}
+				} else {
+					None
+				},
+			_ => None,
+		}
+	} else {
+		None
+	};
+	let wallpaper_url = if let Some(v) = actor_json.get("image") {
+		match v {
+			serde_json::Value::Object(o) =>
+				if let Some(p) = o.get("url") {
+					match p {
+						serde_json::Value::String(s) => Some(s.clone()),
+						_ => None,
+					}
+				} else {
+					None
+				},
+			_ => None,
+		}
+	} else {
+		None
+	};
+
+	let profile = ProfileObjectInfo {
+		actor: TargetedActorInfo {
+			address: address.clone(),
+			name,
+			avatar_id: None,
+			wallpaper_id: None,
+		},
+		description: summary,
+	};
+
+	let mut context = Context::new();
+	context.insert("address", &address);
+	context.insert("profile", &profile);
+	context.insert("is_following", &false);
+	context.insert("avatar_url", &avatar_url);
+	context.insert("wallpaper_url", &wallpaper_url);
+	g.render("activity_pub/actor.html.tera", context).await
+}
 
 pub async fn actor_followers(
 	State(g): State<Arc<Global>>, Extension(actor): Extension<actor::Model>,
@@ -835,21 +948,15 @@ fn compose_object_payload(payload: &ObjectPayloadInfo) -> String {
 	}
 }
 
-async fn fetch_actor(
-	server: &str, actor_path: &str,
-) -> Result<Option<serde_json::Value>, reqwest::Error> {
-	let actor_url = server.to_string() + actor_path;
-	let response = HTTP_CLIENT.get(&actor_url).send().await?;
+async fn fetch_actor(url: &Url) -> Result<Option<serde_json::Value>, reqwest::Error> {
+	let response = HTTP_CLIENT.get(url.clone()).send().await?;
 
 	// Test content type
 	let content_type = if let Some(value) = response.headers().get("content-type") {
 		match value.to_str() {
 			Ok(v) => v,
 			Err(e) => {
-				warn!(
-					"Content-Type header is not a string for {}: {}",
-					&actor_url, e
-				);
+				warn!("Content-Type header is not a string for {}: {}", url, e);
 				return Ok(None);
 			}
 		}
@@ -861,7 +968,7 @@ async fn fetch_actor(
 	{
 		warn!(
 			"Unexpected Content-Type header received for {}: {}",
-			&actor_url, content_type
+			url, content_type
 		);
 		return Ok(None);
 	}
@@ -871,11 +978,90 @@ async fn fetch_actor(
 	let response_json = match serde_json::from_str(&response_body) {
 		Ok(r) => r,
 		Err(e) => {
-			warn!("Malformed JSON response for {}: {}", &actor_url, e);
+			warn!("Malformed JSON response for {}: {}", url, e);
 			return Ok(None);
 		}
 	};
 	Ok(response_json)
+}
+
+async fn fetch_actor2(
+	server: &str, actor_path: &str,
+) -> Result<Option<serde_json::Value>, reqwest::Error> {
+	let actor_url = server.to_string() + actor_path;
+	let url = match Url::from_str(&actor_url) {
+		Ok(r) => r,
+		Err(e) => {
+			warn!("Constructed invalid actor URL {}: {}", actor_url, e);
+			return Ok(None);
+		}
+	};
+	fetch_actor(&url).await
+}
+
+async fn fetch_actor_from_webfinger(
+	address: &EmailAddress, raw_address: &str,
+) -> Result<Option<serde_json::Value>, reqwest::Error> {
+	let response = HTTP_CLIENT
+		.get(format!(
+			"https://{}/.well-known/webfinger?resource=acct:{}",
+			address.get_domain(),
+			raw_address
+		))
+		.send()
+		.await?;
+	let body = response.text().await?;
+	let json = match serde_json::Value::from_str(&body) {
+		Ok(r) => r,
+		Err(e) => {
+			warn!(
+				"Unable to parse webfinger response for ActivityPub address {}: {}",
+				raw_address, e
+			);
+			return Ok(None);
+		}
+	};
+	println!("TEST {:?}", &json);
+	if let Some(links) = json.get("links") {
+		match links {
+			serde_json::Value::Array(array) => {
+				for item in array {
+					println!("LINK {:?}", item);
+					if let Some(actor_url) = parse_webfinger_link(item) {
+						let url = match Url::parse(actor_url) {
+							Ok(r) => r,
+							Err(_) => {
+								warn!(
+									"Unable to parse webfinger response for ActivityPub address \
+									 {}: invalid actor URL {}",
+									raw_address, actor_url
+								);
+								continue;
+							}
+						};
+
+						return fetch_actor(&url).await;
+					}
+				}
+				Ok(None)
+			}
+			_ => {
+				warn!(
+					"Unable to parse webfinger response for ActivityPub address {}: links \
+					 property is not an array",
+					raw_address
+				);
+				return Ok(None);
+			}
+		}
+	} else {
+		warn!(
+			"Unable to parse webfinger response for ActivityPub address {}: links property not \
+			 found",
+			raw_address
+		);
+		Ok(None)
+	}
 }
 
 // Tries to find the relevant inbox
@@ -907,7 +1093,7 @@ async fn find_inbox(
 		.one(g.api.db.inner())
 		.await?;
 	if let Some(record) = result {
-		let result2 = match fetch_actor(recipient_server, &record.path).await {
+		let result2 = match fetch_actor2(recipient_server, &record.path).await {
 			Ok(r) => r,
 			Err(e) => {
 				warn!(
@@ -1105,6 +1291,35 @@ fn parse_account_name(resource: &str) -> Option<&str> {
 
 	if let Some(i) = resource.find('@') {
 		return Some(&resource[5..i]);
+	}
+	None
+}
+
+fn parse_webfinger_link(link: &serde_json::Value) -> Option<&str> {
+	if link.get("rel") == Some(&serde_json::Value::String("self".to_string())) {
+		if let Some(link_type) = link.get("type") {
+			match link_type {
+				serde_json::Value::String(mime_type) => {
+					if mime_type.starts_with("application/activity+json")
+						|| mime_type.starts_with("application/jd+json")
+					{
+						if let Some(v) = link.get("href") {
+							return match v {
+								serde_json::Value::String(url) => Some(url),
+								_ => {
+									warn!("Unable to parse webfinger link href: not a string");
+									None
+								}
+							};
+						}
+					}
+				}
+				_ => {
+					warn!("Unable to parse webfinger link type: not a string");
+					return None;
+				}
+			}
+		}
 	}
 	None
 }
@@ -1344,6 +1559,13 @@ async fn queue_activity(
 }
 
 pub fn router(_: Arc<Global>) -> Router<Arc<Global>> {
+	Router::new().route(
+		"/actor/:address",
+		get(activity_pub_actor_get).post(activity_pub_actor_post),
+	)
+}
+
+pub fn actor_router(_: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
 		.route("/follower", get(actor_followers))
 		.route("/inbox", get(actor_inbox_get).post(actor_inbox_post))
