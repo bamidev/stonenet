@@ -1,6 +1,6 @@
 [package]
 name = "stonenet-desktop"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Bamidev"]
 description = "The Stonenet desktop app."
 edition = "2021"
