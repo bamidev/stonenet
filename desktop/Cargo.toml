@@ -38,5 +38,5 @@ assets = [
 	["assets/logo/64x64.png", "usr/share/icons/hicolor/64x64/apps/stonenet.png", "644"],
 	["assets/logo/32x32.png", "usr/share/icons/hicolor/32x32/apps/stonenet.png", "644"],
 ]
-depends = ["$auto", "stonenet", "libwebkit2gtk-4.1-0"]
+depends = ["$auto", "stonenet", "libwebkit2gtk-4.0-37"]
 features = ["browser-window/webkitgtk"]
