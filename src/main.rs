@@ -40,10 +40,8 @@ use std::{
 use api::Api;
 use config::Config;
 use db::Database;
-use entity::bootstrap_node_id;
 use log::*;
 use net::{overlay::OverlayNode, resolve_bootstrap_addresses, Openness};
-use sea_orm::{prelude::*, Set};
 use semver::Version;
 use signal_hook::flag;
 use tokio::{spawn, time::sleep};
@@ -56,7 +54,6 @@ use crate::{config::CONFIG, core::Address, db::PersistenceHandle, migration::Mig
 async fn check_version() -> Option<(String, bool)> {
 	info!("Checking version...");
 
-	// TODO: move latest_version.txt to the root
 	let url = "https://get.stonenet.org/version.txt";
 	let response = match reqwest::get(url).await {
 		Ok(r) => r,

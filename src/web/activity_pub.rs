@@ -421,8 +421,8 @@ impl WebFingerDocument {
 pub async fn actor_followers(
 	State(g): State<Arc<Global>>, Extension(actor): Extension<actor::Model>,
 ) -> Response {
-	let objects = match activity_pub_follow::Entity::find()
-		.filter(activity_pub_follow::Column::ActorId.eq(actor.id))
+	let objects = match activity_pub_follower::Entity::find()
+		.filter(activity_pub_follower::Column::ActorId.eq(actor.id))
 		.all(g.api.db.inner())
 		.await
 	{
@@ -603,10 +603,10 @@ async fn actor_inbox_process_undo(
 						}
 					};
 
-					let deleted = activity_pub_follow::Entity::delete_many()
-						.filter(activity_pub_follow::Column::ActorId.eq(actor.id))
-						.filter(activity_pub_follow::Column::Host.eq(host))
-						.filter(activity_pub_follow::Column::Path.eq(path))
+					let deleted = activity_pub_follower::Entity::delete_many()
+						.filter(activity_pub_follower::Column::ActorId.eq(actor.id))
+						.filter(activity_pub_follower::Column::Host.eq(host))
+						.filter(activity_pub_follower::Column::Path.eq(path))
 						.exec(g.api.db.inner())
 						.await?
 						.rows_affected;
@@ -657,13 +657,13 @@ async fn actor_inbox_register_follow(
 			let server = format!("{}://{}", url.scheme(), domain);
 			let path = url.path().to_string();
 
-			let record = activity_pub_follow::ActiveModel {
+			let record = activity_pub_follower::ActiveModel {
 				id: NotSet,
 				actor_id: Set(actor.id),
 				host: Set(server.clone()),
 				path: Set(path.clone()),
 			};
-			let follow_id = activity_pub_follow::Entity::insert(record)
+			let follow_id = activity_pub_follower::Entity::insert(record)
 				.exec(g.api.db.inner())
 				.await?
 				.last_insert_id;
@@ -902,8 +902,8 @@ async fn find_inbox(
 	}
 
 	// Otherwise, find the relevant inbox from the actor
-	let result = activity_pub_follow::Entity::find()
-		.filter(activity_pub_follow::Column::Host.eq(recipient_server))
+	let result = activity_pub_follower::Entity::find()
+		.filter(activity_pub_follower::Column::Host.eq(recipient_server))
 		.one(g.api.db.inner())
 		.await?;
 	if let Some(record) = result {
@@ -1277,10 +1277,10 @@ async fn process_next_send_queue_item(
 				// Delete all followers of the recipient server, because the server is deemed to
 				// be unresponsive after not responding for a week.
 				let mut delete =
-					<activity_pub_follow::ActiveModel as std::default::Default>::default();
+					<activity_pub_follower::ActiveModel as std::default::Default>::default();
 				delete.actor_id = Set(record.actor_id);
 				delete.host = Set(record.recipient_server);
-				activity_pub_follow::Entity::delete(delete)
+				activity_pub_follower::Entity::delete(delete)
 					.exec(g.api.db.inner())
 					.await?;
 			}

@@ -265,9 +265,9 @@ pub trait PersistenceHandle {
 	async fn load_activity_pub_follower_servers(&self, actor_id: i64) -> Result<Vec<String>> {
 		let (query, vals) = Query::select()
 			.distinct()
-			.column(activity_pub_follow::Column::Host)
-			.from(activity_pub_follow::Entity)
-			.and_where(activity_pub_follow::Column::ActorId.eq(actor_id))
+			.column(activity_pub_follower::Column::Host)
+			.from(activity_pub_follower::Entity)
+			.and_where(activity_pub_follower::Column::ActorId.eq(actor_id))
 			.build_any(&*self.backend().get_query_builder());
 
 		let results = self
