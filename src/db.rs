@@ -510,6 +510,22 @@ pub trait PersistenceHandle {
 		Ok(objects)
 	}
 
+	async fn load_is_following(&self, webfinger_address: &str) -> Result<bool> {
+		let is_following = if let Some(actor) = activity_pub_actor::Entity::find()
+			.filter(activity_pub_actor::Column::Address.eq(webfinger_address.to_string()))
+			.one(self.inner())
+			.await?
+		{
+			activity_pub_following::Entity::find_by_id(actor.id)
+				.one(self.inner())
+				.await?
+				.is_some()
+		} else {
+			false
+		};
+		Ok(is_following)
+	}
+
 	async fn load_node_identity(&self) -> Result<(NodeAddress, NodePrivateKey)> {
 		let result = match node_identity::Entity::find().one(self.inner()).await? {
 			Some(m) => {

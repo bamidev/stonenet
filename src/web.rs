@@ -115,7 +115,9 @@ pub async fn serve(
 
 	// TODO: Only turn this on via a config option that is off by default.
 	if global.server_info.is_exposed {
-		activity_pub::init(stop_flag.clone(), global.clone()).await;
+		super::activity_pub::init(stop_flag.clone(), global.clone()).await;
+	} else {
+		super::activity_pub::maintain_outbox_polls(stop_flag.clone(), global.api.db.clone());
 	}
 
 	let ip = if global.server_info.is_exposed {

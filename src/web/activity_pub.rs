@@ -1,177 +1,38 @@
-use std::{
-	collections::HashMap,
-	io,
-	str::FromStr,
-	sync::{
-		atomic::{AtomicBool, Ordering},
-		Arc, OnceLock,
-	},
-	time::Duration,
-};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use axum::{
 	body::Body,
 	extract::{Query, State},
-	http::HeaderMap,
 	response::Response,
 	routing::*,
 	*,
 };
-use base64::prelude::*;
-use chrono::{SecondsFormat, Utc};
 use email_address_parser::EmailAddress;
 use extract::Path;
-use lazy_static::lazy_static;
 use log::*;
 use reqwest::Url;
-use rsa::{
-	pkcs1v15::{SigningKey, VerifyingKey},
-	pkcs8::{DecodePrivateKey, DecodePublicKey},
-	sha2::{Digest, Sha256},
-	signature::{SignatureEncoding, Signer, Verifier},
-	RsaPrivateKey, RsaPublicKey,
-};
-use sea_orm::{
-	prelude::*,
-	sea_query::{self, Alias},
-	ActiveValue::NotSet,
-	JoinType, Order, QueryOrder, QuerySelect, Set, Statement,
-};
+use sea_orm::{prelude::*, NotSet, Set};
 use serde::*;
-use stonenetd::core::OBJECT_TYPE_PROFILE;
 use tera::Context;
-use tokio::{spawn, time::sleep};
-use zeroize::Zeroizing;
+use tokio::spawn;
 
-use super::{common::*, current_timestamp, ActorAddress, Address, IdType};
+use super::{common::*, ActorAddress, Address};
 use crate::{
-	db::{self, ObjectPayloadInfo, PersistenceHandle, ProfileObjectInfo, TargetedActorInfo},
+	activity_pub::{
+		self, AcceptActivity, AcceptActivityType, ActivityPubDocumentContext, ActorObject,
+		ActorPublicKeyWithContext, CreateActivity, OrderedCollection, OrderedCollectionType,
+		WebFingerDocument,
+	},
+	db::{self, PersistenceHandle, ProfileObjectInfo, TargetedActorInfo},
 	entity::*,
-	util::read_text_file,
+	trace::Traceable,
 	web::Global,
 };
-
-
-const DEFAULT_CONTEXT: ActivityPubDocumentContext = ActivityPubDocumentContext(&[
-	"https://www.w3.org/ns/activitystreams",
-	"https://w3id.org/security/v1",
-]);
-const SEND_QUEUE_DEFAULT_CAPACITY: u64 = 100000;
 
 
 #[derive(Deserialize)]
 struct ActorActions {
 	follow: Option<String>,
-}
-
-#[derive(Serialize)]
-struct AcceptActivity {
-	#[serde(rename(serialize = "@context"), default)]
-	context: ActivityPubDocumentContext,
-	r#type: AcceptActivityType,
-	id: String,
-	actor: String,
-	to: Vec<String>,
-	object: serde_json::Value,
-}
-struct AcceptActivityType;
-
-#[derive(Serialize)]
-struct ActivityObject {
-	id: String,
-	r#type: ActivityObjectType,
-	content: String,
-	source: ActivityObjectSource,
-	published: DateTime,
-}
-
-#[allow(non_snake_case)]
-#[derive(Serialize)]
-struct ActivityObjectSource {
-	content: String,
-	mediaType: MediaType,
-}
-
-#[derive(Serialize)]
-enum ActivityObjectType {
-	Note,
-}
-
-#[derive(Serialize)]
-struct ActivityPubDocumentContext(pub &'static [&'static str]);
-
-#[derive(PartialEq)]
-enum ActivitySendState {
-	Send,
-	Failed,
-	Impossible,
-}
-
-#[allow(non_snake_case)]
-#[derive(Serialize)]
-struct ActorObject {
-	#[serde(rename(serialize = "@context"), default)]
-	context: ActivityPubDocumentContext,
-	id: String,
-	r#type: &'static str,
-	name: String,
-	preferredUsername: String,
-	url: String,
-	inbox: String,
-	outbox: String,
-	followers: String,
-	summary: String,
-
-	publicKey: Option<ActorPublicKey>,
-	icon: Option<ActorObjectIcon>,
-
-	nodeInfo2Url: String,
-}
-
-#[allow(non_snake_case)]
-#[derive(Serialize)]
-struct ActorObjectIcon {
-	r#type: &'static str,
-	url: String,
-}
-
-#[allow(non_snake_case)]
-#[derive(Serialize)]
-struct ActorPublicKey {
-	id: String,
-	owner: String,
-	publicKeyPem: String,
-}
-
-#[allow(non_snake_case)]
-#[derive(Serialize)]
-struct ActorPublicKeyWithContext {
-	#[serde(rename(serialize = "@context"), default)]
-	context: ActivityPubDocumentContext,
-	id: String,
-	owner: String,
-	publicKeyPem: String,
-}
-
-#[derive(Serialize)]
-struct CreateActivity {
-	#[serde(rename(serialize = "@context"), default)]
-	context: ActivityPubDocumentContext,
-	r#type: CreateActivityType,
-	id: String,
-	actor: String,
-	object: ActivityObject,
-	published: DateTime,
-	to: Vec<String>,
-	cc: Option<Vec<String>>,
-}
-
-struct CreateActivityType;
-
-struct DateTime(u64);
-
-enum MediaType {
-	Markdown,
 }
 
 #[allow(non_snake_case)]
@@ -219,172 +80,6 @@ struct NodeInfoUsageUsers {
 
 struct NodeInfoVersion;
 
-#[allow(non_snake_case)]
-#[derive(Serialize)]
-struct OrderedCollection {
-	#[serde(rename(serialize = "@context"), default)]
-	context: ActivityPubDocumentContext,
-	summary: &'static str,
-	r#type: OrderedCollectionType,
-	totalItems: usize,
-	orderedItems: Vec<serde_json::Value>,
-}
-
-struct OrderedCollectionType;
-
-#[derive(Serialize)]
-struct WebFingerDocument {
-	subject: String,
-	aliases: Vec<String>,
-	links: Vec<WebFingerDocumentLink>,
-}
-
-#[derive(Serialize)]
-struct WebFingerDocumentLink {
-	rel: &'static str,
-	r#type: &'static str,
-	href: String,
-}
-
-
-lazy_static! {
-	static ref HTTP_CLIENT: reqwest::Client = {
-		let mut headers = HeaderMap::new();
-		headers.append(
-			"Accept",
-			"application/ld+json,application/activity+json"
-				.parse()
-				.unwrap(),
-		);
-		reqwest::Client::builder()
-			.default_headers(headers)
-			.build()
-			.unwrap()
-	};
-	static ref PUBLIC_KEY: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
-}
-
-
-impl Serialize for AcceptActivityType {
-	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-	where
-		S: Serializer,
-	{
-		serializer.serialize_str("Accept")
-	}
-}
-
-impl ActivityObject {
-	pub fn new(
-		url_base: &str, actor: &ActorAddress, object_hash: &IdType, created: u64, content: String,
-	) -> Self {
-		Self {
-			id: format!(
-				"{}/actor/{}/object/{}/activity-pub",
-				url_base, actor, object_hash
-			),
-			r#type: ActivityObjectType::Note,
-			content: content.clone(),
-			source: ActivityObjectSource {
-				content,
-				mediaType: MediaType::Markdown,
-			},
-			published: DateTime(created),
-		}
-	}
-}
-
-impl Default for ActivityPubDocumentContext {
-	fn default() -> Self { DEFAULT_CONTEXT }
-}
-
-impl ActorObject {
-	fn new(
-		url_base: &str, address: &ActorAddress, name: String, avatar_hash: Option<&IdType>,
-		summary: String, public_key: Option<&str>,
-	) -> Self {
-		let url = format!("{}/actor/{}", url_base, address);
-		let id = format!("{}/activity-pub", &url);
-		Self {
-			context: DEFAULT_CONTEXT,
-			id: id.clone(),
-			nodeInfo2Url: format!("{}/.well-known/x-nodeinfo2", url_base),
-			url,
-			r#type: "Person",
-			name,
-			preferredUsername: address.to_string(),
-			inbox: format!("{}/inbox", &id),
-			outbox: format!("{}/outbox", &id),
-			followers: format!("{}/follower", &id),
-			publicKey: public_key.map(|pk| ActorPublicKey {
-				id: format!("{}#main-key", &id),
-				owner: id.clone(),
-				publicKeyPem: pk.to_string(),
-			}),
-			summary,
-			icon: avatar_hash.map(|hash| ActorObjectIcon {
-				r#type: "Image",
-				url: format!("{}/file/{}", &id, hash),
-			}),
-		}
-	}
-}
-
-impl CreateActivity {
-	pub fn new_public_note(
-		url_base: &str, actor: &ActorAddress, object_hash: &IdType, created: u64, content: String,
-	) -> Self {
-		Self {
-			context: ActivityPubDocumentContext::default(),
-			r#type: CreateActivityType,
-			id: format!(
-				"{}/actor/{}/object/{}/activity-pub",
-				url_base, &actor, &object_hash
-			),
-			actor: format!("{}/actor/{}/activity-pub", url_base, &actor),
-			object: ActivityObject::new(url_base, actor, object_hash, created, content),
-			published: DateTime(created),
-			to: vec![format!(
-				"{}/actor/{}/activity-pub/follower",
-				url_base, actor
-			)],
-			cc: Some(vec![
-				"https://www.w3.org/ns/activitystreams#Public".to_string(),
-			]),
-		}
-	}
-}
-
-impl Serialize for CreateActivityType {
-	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-	where
-		S: Serializer,
-	{
-		serializer.serialize_str("Create")
-	}
-}
-
-impl Serialize for DateTime {
-	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-	where
-		S: Serializer,
-	{
-		let dt = chrono::DateTime::from_timestamp_millis(self.0 as _).unwrap();
-		serializer.serialize_str(&dt.to_rfc3339_opts(SecondsFormat::Millis, true))
-	}
-}
-
-impl Serialize for MediaType {
-	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-	where
-		S: Serializer,
-	{
-		match self {
-			Self::Markdown => serializer.serialize_str("text/markdown"),
-		}
-	}
-}
-
 impl Serialize for NodeInfoVersion {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
 	where
@@ -394,50 +89,109 @@ impl Serialize for NodeInfoVersion {
 	}
 }
 
-impl Serialize for OrderedCollectionType {
-	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-	where
-		S: Serializer,
-	{
-		serializer.serialize_str("OrderedCollection")
-	}
-}
-
-impl WebFingerDocument {
-	fn new(domain: &str, url_base: &str, type_: &str, address: &Address) -> Self {
-		Self {
-			subject: format!("acct:{}@{}", address, domain),
-			aliases: vec![format!("{}/{}/{}", url_base, type_, address)],
-			links: vec![
-				WebFingerDocumentLink {
-					rel: "self",
-					r#type:
-						"application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
-					href: format!("{}/{}/{}/activity-pub", url_base, type_, address),
-				},
-				WebFingerDocumentLink {
-					rel: "http://webfinger.net/rel/profile-page",
-					r#type: "text/html",
-					href: format!("{}/{}/{}", url_base, type_, address),
-				},
-			],
-		}
-	}
-}
-
 
 async fn activity_pub_actor_post(
 	State(g): State<Arc<Global>>, Path(address): Path<String>, Form(form_data): Form<ActorActions>,
 ) -> Response {
+	let webfinger_addr = match EmailAddress::parse(&address[1..], None) {
+		Some(r) => r,
+		None => return server_error_response2("Invalid webfinger address"),
+	};
+
 	if let Some(follow) = &form_data.follow {
 		// Follow
 		if follow == "1" {
-			//activity_pub_following::Entity::insert().exec(g.db.inner()).
-			// await.unwrap();
+			let actor_url = match activity_pub::actor::resolve_webfinger(&webfinger_addr).await {
+				Ok(r) =>
+					if let Some(url) = r {
+						url
+					} else {
+						return server_error_response2(
+							"Webfinger address doesn't have an ActivityPub actor URL",
+						);
+					},
+				Err(e) =>
+					return server_error_response(
+						e,
+						&format!("Error while resolving webfinger {}", &webfinger_addr),
+					),
+			};
+			let actor = match activity_pub::actor::ensure(
+				&g.api.db,
+				&actor_url,
+				Some(&webfinger_addr),
+				&|| {
+					format!(
+						"following ActivityPub actor with webfinger address {}",
+						&webfinger_addr
+					)
+					.into()
+				},
+			)
+			.await
+			{
+				Ok(r) => r,
+				Err(e) => return server_error_response(e, "Error"),
+			};
+			let model = activity_pub_following::ActiveModel {
+				actor_id: Set(actor.id),
+			};
+			if let Err(e) = activity_pub_following::Entity::insert(model)
+				.exec(g.api.db.inner())
+				.await
+			{
+				return server_error_response(e, "Database error while storing following");
+			}
+
+			// Poll the outbox
+			if let Some(outbox_url) = actor.outbox {
+				let db = g.api.db.clone();
+				spawn(async move {
+					if let Err(e) = activity_pub::poll_outbox(&db, &outbox_url).await {
+						warn!(
+							"Unable to poll outbox {} for newly followed actor: {:?}",
+							&outbox_url, e
+						);
+					}
+				});
+			}
 		// Unfollow
 		} else {
-			//activity_pub_following::Entity::delete().exec(g.db.inner()).
-			// await.unwrap();
+			let result = match activity_pub_actor::Entity::find()
+				.filter(activity_pub_actor::Column::Address.eq(webfinger_addr.to_string()))
+				.one(g.api.db.inner())
+				.await
+			{
+				Ok(r) => r,
+				Err(e) =>
+					return server_error_response(
+						e,
+						&format!(
+							"Database error while looking up actor with webfinger address {}",
+							&webfinger_addr
+						),
+					),
+			};
+			if let Some(record) = result {
+				if let Err(e) = activity_pub_following::Entity::delete_many()
+					.filter(activity_pub_following::Column::ActorId.eq(record.id))
+					.exec(g.api.db.inner())
+					.await
+				{
+					return server_error_response(
+						e,
+						&format!(
+							"Database error while unfollowing actor with webfinger address {}",
+							&webfinger_addr
+						),
+					);
+				}
+			} else {
+				return server_error_response2(&format!(
+					"Actor with webfinger address {} not found",
+					webfinger_addr
+				));
+			}
 		}
 	}
 
@@ -447,22 +201,29 @@ async fn activity_pub_actor_post(
 async fn activity_pub_actor_get(
 	State(g): State<Arc<Global>>, Path(address): Path<String>,
 ) -> Response {
-	let fedi_addr = match EmailAddress::parse(&address[1..], None) {
+	let webfinger_addr = match EmailAddress::parse(&address[1..], None) {
 		Some(r) => r,
-		None => return server_error_response2("Invalid fediverse address"),
+		None => return server_error_response2("Invalid webfinger address"),
 	};
-	let actor_json_result = match fetch_actor_from_webfinger(&fedi_addr, &address[1..]).await {
+	let actor_json_result = match activity_pub::actor::fetch_from_webfinger(&webfinger_addr).await {
 		Ok(r) => r,
 		Err(e) => {
 			return server_error_response(e, "Unable to fetch actor URL from webfinger");
 		}
 	};
+	// TODO: Update our activity_pub_actor record or create it if it isn't there yet
 	let actor_json = if let Some(r) = actor_json_result {
 		r
 	} else {
 		return server_error_response2("Actor URL not found from webfinger");
 	};
 
+	let is_following = match g.api.db.load_is_following(&address[1..]).await {
+		Ok(r) => r,
+		Err(e) => return server_error_response(e, "Database error while checking follow status"),
+	};
+
+	// FIXME: Clean up this mess with activity_pub::expect_string & expect_object
 	let name = if let Some(v) = actor_json.get("name") {
 		match v {
 			serde_json::Value::String(s) => s.clone(),
@@ -525,7 +286,7 @@ async fn activity_pub_actor_get(
 	let mut context = Context::new();
 	context.insert("address", &address);
 	context.insert("profile", &profile);
-	context.insert("is_following", &false);
+	context.insert("is_following", &is_following);
 	context.insert("avatar_url", &avatar_url);
 	context.insert("wallpaper_url", &wallpaper_url);
 	g.render("activity_pub/actor.html.tera", context).await
@@ -562,7 +323,7 @@ pub async fn actor_followers(
 pub async fn actor_get(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
-	let public_key = PUBLIC_KEY.get().map(|s| s.as_str());
+	let public_key = activity_pub::PUBLIC_KEY.get().map(|s| s.as_str());
 
 	let profile = match g.api.db.find_profile_info(&address).await {
 		Err(e) => return server_error_response(e, "DB issue"),
@@ -590,7 +351,7 @@ pub async fn actor_get(
 pub async fn actor_inbox_get(
 	State(g): State<Arc<Global>>, Extension(actor): Extension<actor::Model>,
 ) -> Response {
-	let objects = match activity_pub_object::Entity::find()
+	let objects = match activity_pub_inbox_object::Entity::find()
 		.filter(activity_pub_object::Column::ActorId.eq(actor.id))
 		.all(g.api.db.inner())
 		.await
@@ -632,8 +393,13 @@ pub async fn actor_inbox_post(
 			"Create" => actor_inbox_store_object(&g, &actor, object_json).await,
 			"Like" => actor_inbox_store_object(&g, &actor, object_json).await,
 			"Announce" => actor_inbox_store_object(&g, &actor, object_json).await,
-			"Follow" => actor_inbox_register_follow(&g, &actor, object_json).await,
-			"Undo" => actor_inbox_process_undo(&g, &actor, object_json).await,
+			// TODO: Convert db::Error to activity_pub::Error while maintaining the trace
+			"Follow" => actor_inbox_register_follow(&g, &actor, object_json)
+				.await
+				.map_err(|e| activity_pub::Error::from(e.unwrap().0).trace()),
+			"Undo" => actor_inbox_process_undo(&g, &actor, object_json)
+				.await
+				.map_err(|e| activity_pub::Error::from(e.unwrap().0).trace()),
 			other =>
 				return error_response(406, &format!("Object type \"{}\" not supported.", other)),
 		}
@@ -643,7 +409,7 @@ pub async fn actor_inbox_post(
 
 	match result {
 		Ok(r) => r,
-		Err(e) => server_error_response(e, "Database error"),
+		Err(e) => server_error_response(e, "Error"),
 	}
 }
 
@@ -796,7 +562,15 @@ async fn actor_inbox_register_follow(
 				to: vec![follower_string.clone()],
 				object,
 			};
-			queue_activity(g, &g.api.db, actor.id, server, Some(path), &accept_activity).await?;
+			activity_pub::queue_activity(
+				g,
+				&g.api.db,
+				actor.id,
+				server,
+				Some(path),
+				&accept_activity,
+			)
+			.await?;
 		}
 	};
 
@@ -806,35 +580,9 @@ async fn actor_inbox_register_follow(
 
 async fn actor_inbox_store_object(
 	g: &Global, actor: &actor::Model, json: serde_json::Value,
-) -> db::Result<Response> {
-	let record = activity_pub_object::ActiveModel {
-		id: NotSet,
-		actor_id: Set(actor.id),
-		data: Set(json.to_string()),
-	};
-	let result = activity_pub_object::Entity::insert(record)
-		.exec(g.api.db.inner())
-		.await?;
-	let object_id = result.last_insert_id;
-
-	// Immediately clean up old objects in inbox
-	activity_pub_object::Entity::delete_many()
-		.filter(
-			activity_pub_object::Column::Id.in_subquery(
-				sea_query::Query::select()
-					.column(activity_pub_object::Column::Id)
-					.from(Alias::new(
-						activity_pub_object::Entity::default().table_name(),
-					))
-					.and_where(activity_pub_object::Column::ActorId.eq(actor.id))
-					.order_by(activity_pub_object::Column::Id, Order::Desc)
-					.limit(1000)
-					.offset(g.config.activity_pub_inbox_size.unwrap_or(1000) as _)
-					.take(),
-			),
-		)
-		.exec(g.api.db.inner())
-		.await?;
+) -> activity_pub::Result<Response> {
+	let when = || format!("storing object for actor {}", actor.id).into();
+	let object_id = activity_pub::store_inbox_object(&g.api.db, actor.id, &json, &when).await?;
 
 	return Ok(Response::builder()
 		.status(201)
@@ -870,7 +618,7 @@ pub async fn actor_outbox(
 					&address,
 					&object.hash,
 					object.created,
-					compose_object_payload(&object.payload),
+					activity_pub::compose_object_payload(&object.payload),
 				))
 				.unwrap()
 			})
@@ -885,13 +633,13 @@ pub async fn actor_outbox(
 pub async fn actor_public_key(
 	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
-	if let Some(public_key) = PUBLIC_KEY.get() {
+	if let Some(public_key) = activity_pub::PUBLIC_KEY.get() {
 		let actor_id = format!(
 			"{}/actor/{}/activity-pub",
 			&g.server_info.url_base, &address
 		);
 		let key = ActorPublicKeyWithContext {
-			context: DEFAULT_CONTEXT,
+			context: activity_pub::DEFAULT_CONTEXT,
 			id: format!("{}#main-key", &actor_id),
 			owner: actor_id,
 			publicKeyPem: public_key.clone(),
@@ -902,352 +650,6 @@ pub async fn actor_public_key(
 		)
 	} else {
 		not_found_error_response("No public key has been configured.")
-	}
-}
-
-fn compose_object_payload(payload: &ObjectPayloadInfo) -> String {
-	match payload {
-		ObjectPayloadInfo::Post(post) => {
-			let mut content = String::new();
-			if let Some(irt) = &post.in_reply_to {
-				let actor_name: &str = if let Some(name) = irt.actor_name.as_ref() {
-					name
-				} else {
-					"Someone"
-				};
-				content = format!("{} wrote:\n\n", actor_name);
-			}
-
-			if let Some(message) = &post.message {
-				content += message;
-			}
-			content
-		}
-		ObjectPayloadInfo::Share(share) =>
-			if let Some(original_post) = &share.original_post {
-				let actor_name: &str = if let Some(name) = &original_post.actor_name {
-					name
-				} else {
-					"Someone"
-				};
-				format!(
-					"{} wrote:\n\n{}",
-					actor_name,
-					original_post
-						.message
-						.as_ref()
-						.map(|(_, m)| m)
-						.unwrap_or(&"[Unable to load post message]".to_string())
-				)
-			} else {
-				"[Unable to load shared post]".to_string()
-			},
-		ObjectPayloadInfo::Profile(_) => {
-			format!("[Updated my profile]")
-		}
-	}
-}
-
-async fn fetch_actor(url: &Url) -> Result<Option<serde_json::Value>, reqwest::Error> {
-	let response = HTTP_CLIENT.get(url.clone()).send().await?;
-
-	// Test content type
-	let content_type = if let Some(value) = response.headers().get("content-type") {
-		match value.to_str() {
-			Ok(v) => v,
-			Err(e) => {
-				warn!("Content-Type header is not a string for {}: {}", url, e);
-				return Ok(None);
-			}
-		}
-	} else {
-		return Ok(None);
-	};
-	if !content_type.starts_with("application/ld+json")
-		&& !content_type.starts_with("application/activity+json")
-	{
-		warn!(
-			"Unexpected Content-Type header received for {}: {}",
-			url, content_type
-		);
-		return Ok(None);
-	}
-
-	// Parse JSON
-	let response_body = response.text().await.unwrap();
-	let response_json = match serde_json::from_str(&response_body) {
-		Ok(r) => r,
-		Err(e) => {
-			warn!("Malformed JSON response for {}: {}", url, e);
-			return Ok(None);
-		}
-	};
-	Ok(response_json)
-}
-
-async fn fetch_actor2(
-	server: &str, actor_path: &str,
-) -> Result<Option<serde_json::Value>, reqwest::Error> {
-	let actor_url = server.to_string() + actor_path;
-	let url = match Url::from_str(&actor_url) {
-		Ok(r) => r,
-		Err(e) => {
-			warn!("Constructed invalid actor URL {}: {}", actor_url, e);
-			return Ok(None);
-		}
-	};
-	fetch_actor(&url).await
-}
-
-async fn fetch_actor_from_webfinger(
-	address: &EmailAddress, raw_address: &str,
-) -> Result<Option<serde_json::Value>, reqwest::Error> {
-	let response = HTTP_CLIENT
-		.get(format!(
-			"https://{}/.well-known/webfinger?resource=acct:{}",
-			address.get_domain(),
-			raw_address
-		))
-		.send()
-		.await?;
-	let body = response.text().await?;
-	let json = match serde_json::Value::from_str(&body) {
-		Ok(r) => r,
-		Err(e) => {
-			warn!(
-				"Unable to parse webfinger response for ActivityPub address {}: {}",
-				raw_address, e
-			);
-			return Ok(None);
-		}
-	};
-	println!("TEST {:?}", &json);
-	if let Some(links) = json.get("links") {
-		match links {
-			serde_json::Value::Array(array) => {
-				for item in array {
-					println!("LINK {:?}", item);
-					if let Some(actor_url) = parse_webfinger_link(item) {
-						let url = match Url::parse(actor_url) {
-							Ok(r) => r,
-							Err(_) => {
-								warn!(
-									"Unable to parse webfinger response for ActivityPub address \
-									 {}: invalid actor URL {}",
-									raw_address, actor_url
-								);
-								continue;
-							}
-						};
-
-						return fetch_actor(&url).await;
-					}
-				}
-				Ok(None)
-			}
-			_ => {
-				warn!(
-					"Unable to parse webfinger response for ActivityPub address {}: links \
-					 property is not an array",
-					raw_address
-				);
-				return Ok(None);
-			}
-		}
-	} else {
-		warn!(
-			"Unable to parse webfinger response for ActivityPub address {}: links property not \
-			 found",
-			raw_address
-		);
-		Ok(None)
-	}
-}
-
-// Tries to find the relevant inbox
-async fn find_inbox(
-	g: &Global, recipient_server: &str, recipient_path: Option<&str>,
-) -> db::Result<Option<String>> {
-	// Check if we know it already
-	if let Some(path) = recipient_path {
-		let result = activity_pub_actor_inbox::Entity::find()
-			.filter(activity_pub_actor_inbox::Column::Host.eq(recipient_server))
-			.filter(activity_pub_actor_inbox::Column::Host.eq(path))
-			.one(g.api.db.inner())
-			.await?;
-		if let Some(record) = result {
-			return Ok(Some(record.inbox));
-		}
-	} else {
-		let result = activity_pub_shared_inbox::Entity::find_by_id(recipient_server)
-			.one(g.api.db.inner())
-			.await?;
-		if let Some(record) = result {
-			return Ok(record.shared_inbox);
-		}
-	}
-
-	// Otherwise, find the relevant inbox from the actor
-	let result = activity_pub_follower::Entity::find()
-		.filter(activity_pub_follower::Column::Host.eq(recipient_server))
-		.one(g.api.db.inner())
-		.await?;
-	if let Some(record) = result {
-		let result2 = match fetch_actor2(recipient_server, &record.path).await {
-			Ok(r) => r,
-			Err(e) => {
-				warn!(
-					"Unable to fetch actor {}{}: {}",
-					recipient_server, &record.path, e
-				);
-				return Ok(None);
-			}
-		};
-		if let Some(json) = result2 {
-			// Parse inbox URLs
-			let inbox = if recipient_path.is_some() {
-				if let Some(v) = json.get("inbox") {
-					match v {
-						serde_json::Value::String(url) => Some(url.clone()),
-						_ => None,
-					}
-				} else {
-					None
-				}
-			} else {
-				if let Some(e) = json.get("endpoints") {
-					if let Some(v) = e.get("sharedInbox") {
-						match v {
-							serde_json::Value::String(url) => Some(url.clone()),
-							_ => None,
-						}
-					} else {
-						None
-					}
-				} else {
-					None
-				}
-			};
-			Ok(inbox)
-		} else {
-			Ok(None)
-		}
-	} else {
-		Ok(None)
-	}
-}
-
-fn hash_activity(activity: &str) -> String {
-	let mut hashes = Sha256::new();
-	hashes.update(activity);
-	let hash = hashes.finalize();
-	BASE64_STANDARD.encode(&hash)
-}
-
-pub async fn init(stop_flag: Arc<AtomicBool>, global: Arc<Global>) {
-	if let Err(e) = init_public_key(&global.config.activity_pub_public_key).await {
-		error!("Unable to load public key for ActivityPub: {}", e);
-	}
-
-	if let Some(p) = &global.config.activity_pub_private_key {
-		let private_key_path = p.clone();
-		spawn(loop_send_queue(stop_flag, global, private_key_path));
-	}
-}
-
-async fn init_public_key(config: &Option<String>) -> io::Result<()> {
-	if let Some(public_key_filename) = &config {
-		let key = read_text_file(public_key_filename).await?;
-		PUBLIC_KEY.set(key).unwrap();
-	}
-	Ok(())
-}
-
-/// Runs the loop that continually processes the ActivityPub send-queue, sending
-/// activities to their intended recipients.
-///
-/// The sending of activities is being rate limited, in case the server is being
-/// overloaded. This may happen because there is no real limit on the number of
-/// instances that can follow an actor. So if this causes too many activities to
-/// be sent out, at least it is limited so that the network doesn't get
-/// constipated.
-pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>, private_key_path: String) {
-	let mut last_iteration = current_timestamp();
-	while !stop_flag.load(Ordering::Relaxed) {
-		// Generate queue items for any new objects not published on the fediverse yet.
-		let g2 = g.clone();
-		let join_handle = spawn(async move {
-			match populate_send_queue_from_new_objects(&g2, 100).await {
-				Ok(()) => {}
-				Err(e) => {
-					warn!(
-						"Database error while populating AtivityPub send queue for new objects: \
-						 {:?}",
-						e
-					);
-				}
-			}
-		});
-
-		// Not very proud of it, but wanted to make a rate-limiter pretty quick
-		// TODO: Make the rate limit configurable
-		let next_iteration = last_iteration + 10000;
-		let now = current_timestamp();
-		if now < next_iteration {
-			sleep(Duration::from_millis(next_iteration - now)).await;
-		}
-		last_iteration = now;
-
-		// Get the first 100 queue items that have not already failed somewhere in the
-		// last hour TODO: Get the actor address in this query as well
-		let result =
-			activity_pub_send_queue::Entity::find()
-				.filter(activity_pub_send_queue::Column::LastFail.is_null().or(
-					activity_pub_send_queue::Column::LastFail.lt(current_timestamp() - 3600000),
-				))
-				.order_by_asc(activity_pub_send_queue::Column::Id)
-				.limit(100)
-				.all(g.api.db.inner())
-				.await;
-		match result {
-			Err(e) => error!(
-				"Database error while trying to query the ActivityPub send-queue: {:?}",
-				e
-			),
-			Ok(records) =>
-				if records.len() > 0 {
-					let private_key = match read_text_file(&private_key_path).await {
-						Ok(pk) => Arc::new(Zeroizing::<String>::new(pk)),
-						Err(e) => {
-							error!("Unable to load private key file for ActivityPub: {}", e);
-							continue;
-						}
-					};
-					let mut i = 0;
-					let len = records.len();
-					for record in records {
-						let g2 = g.clone();
-						let pk = private_key.clone();
-						spawn(async move {
-							let item_id = record.id;
-							if let Err(e) = process_next_send_queue_item(&g2, record, pk).await {
-								error!(
-									"Unable to process ActivityPub send-queue activity {}: {:?}",
-									item_id, e
-								);
-							}
-						});
-						if i < (len - 1) {
-							sleep(Duration::from_millis(100)).await;
-						}
-						i += 1;
-					}
-				},
-		}
-
-		if let Err(e) = join_handle.await {
-			error!("Send queue join error: {}", e);
-		}
 	}
 }
 
@@ -1284,280 +686,6 @@ pub async fn nodeinfo(State(g): State<Arc<Global>>) -> Response {
 	json_response(&info, Some("application/json"))
 }
 
-fn parse_account_name(resource: &str) -> Option<&str> {
-	if !resource.starts_with("acct:") {
-		return None;
-	}
-
-	if let Some(i) = resource.find('@') {
-		return Some(&resource[5..i]);
-	}
-	None
-}
-
-fn parse_webfinger_link(link: &serde_json::Value) -> Option<&str> {
-	if link.get("rel") == Some(&serde_json::Value::String("self".to_string())) {
-		if let Some(link_type) = link.get("type") {
-			match link_type {
-				serde_json::Value::String(mime_type) => {
-					if mime_type.starts_with("application/activity+json")
-						|| mime_type.starts_with("application/jd+json")
-					{
-						if let Some(v) = link.get("href") {
-							return match v {
-								serde_json::Value::String(url) => Some(url),
-								_ => {
-									warn!("Unable to parse webfinger link href: not a string");
-									None
-								}
-							};
-						}
-					}
-				}
-				_ => {
-					warn!("Unable to parse webfinger link type: not a string");
-					return None;
-				}
-			}
-		}
-	}
-	None
-}
-
-/// Puts the activity in the send queue for each following server, that will be
-/// processed somewhere in the future
-async fn populate_send_queue_from_new_object(
-	g: &Global, actor_address: &ActorAddress, object: object::Model, payload: ObjectPayloadInfo,
-) -> db::Result<()> {
-	// Create the activity
-	let activity_json = serde_json::to_value(CreateActivity::new_public_note(
-		&g.server_info.url_base,
-		&actor_address,
-		&object.hash,
-		object.created as _,
-		compose_object_payload(&payload),
-	))
-	.unwrap();
-
-	// Send the activity to each recipient on the fediverse
-	let follower_servers = g
-		.api
-		.db
-		.load_activity_pub_follower_servers(object.actor_id)
-		.await?;
-
-	let tx = g.api.db.transaction().await?;
-
-	for server in follower_servers {
-		queue_activity(g, &tx, object.actor_id, server, None, &activity_json).await?;
-	}
-
-	// Mark object as 'published on the fediverse'.
-	let mut record = <object::ActiveModel as std::default::Default>::default();
-	record.id = Set(object.id);
-	record.published_on_fediverse = Set(true);
-	object::Entity::update(record).exec(tx.inner()).await?;
-
-	tx.commit().await?;
-	Ok(())
-}
-
-async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db::Result<()> {
-	let objects = object::Entity::find()
-		.join(JoinType::InnerJoin, object::Relation::Actor.def())
-		.filter(object::Column::PublishedOnFediverse.eq(false))
-		.filter(object::Column::Type.ne(OBJECT_TYPE_PROFILE))
-		.order_by_asc(object::Column::Id)
-		.all(g.api.db.inner())
-		.await?;
-	// FIXME: If a lot of objects remain incomplete (without their main content
-	// downloaded too), then this could load many objects into memory which will not
-	// be used. It is better to add another column (e.g. has_main_content) to the
-	// object model so that we don't have to load them into memory and then execute
-	// another query just to find out if the object can be published on the
-	// fediverse.
-
-	let mut i = 0;
-	for object in objects {
-		// Ignore profile update objects
-		if let Some(payload_info) = g
-			.api
-			.db
-			.load_object_payload_info(object.id, object.r#type)
-			.await?
-		{
-			// Ignore objects that don't have enough info on them yet to display them yet
-			if payload_info.has_main_content() {
-				// TODO: Don't query for the address for each object.
-				if let Some(actor) = actor::Entity::find_by_id(object.actor_id)
-					.one(g.api.db.inner())
-					.await?
-				{
-					populate_send_queue_from_new_object(g, &actor.address, object, payload_info)
-						.await?;
-
-					// Enforce max limit on number of objects being put in the send queue
-					i += 1;
-					if i >= limit {
-						break;
-					}
-				}
-			}
-		}
-	}
-	Ok(())
-}
-
-/// Attempts to send the given send-queue activity.
-async fn process_next_send_queue_item(
-	g: &Global, record: activity_pub_send_queue::Model, private_key: Arc<Zeroizing<String>>,
-) -> db::Result<()> {
-	let mut send_state = ActivitySendState::Impossible;
-	if let Some(actor_record) = actor::Entity::find_by_id(record.actor_id)
-		.one(g.api.db.inner())
-		.await?
-	{
-		let actor_address = actor_record.address;
-		info!(
-			"Sending activity {} to {}...",
-			record.id, &record.recipient_server
-		);
-		send_state = match send_activity(
-			g,
-			&actor_address,
-			&record.recipient_server,
-			record.recipient_path.as_ref().map(|p| p.as_str()),
-			record.object.clone(),
-			private_key.as_ref(),
-		)
-		.await
-		{
-			Ok(r) => r,
-			Err(e) => {
-				warn!(
-					"Unable to contact {} to sent activity object to: {}",
-					&record.recipient_server, e
-				);
-				return Ok(());
-			}
-		};
-	}
-
-	let mut recipient = record.recipient_server.clone();
-	if let Some(path) = &record.recipient_path {
-		recipient += path;
-	}
-	match send_state {
-		ActivitySendState::Send => {
-			info!("Sent activity {} to {}.", record.id, recipient);
-			activity_pub_send_queue::Entity::delete_by_id(record.id)
-				.exec(g.api.db.inner())
-				.await?;
-		}
-		ActivitySendState::Impossible => {
-			warn!(
-				"Impossible to send activity {} to {}.",
-				record.id, recipient
-			);
-			activity_pub_send_queue::Entity::delete_by_id(record.id)
-				.exec(g.api.db.inner())
-				.await?;
-		}
-		ActivitySendState::Failed => {
-			if record.failures < 7 * 24 {
-				let attempt = record.failures + 1;
-				warn!(
-					"Failed to send activity {} to {} this time. (Attempt #{})",
-					record.id, recipient, attempt
-				);
-				let mut updated =
-					<activity_pub_send_queue::ActiveModel as std::default::Default>::default();
-				updated.id = Set(record.id);
-				updated.last_fail = Set(Some(current_timestamp() as _));
-				updated.failures = Set(attempt);
-				activity_pub_send_queue::Entity::update(updated)
-					.exec(g.api.db.inner())
-					.await?;
-			} else {
-				warn!(
-					"Failed to sent activity {} to {} after {} retries. Dropping activity from \
-					 send-queue.",
-					record.id,
-					recipient,
-					7 * 24
-				);
-				activity_pub_send_queue::Entity::delete_by_id(record.id)
-					.exec(g.api.db.inner())
-					.await?;
-				// Delete all followers of the recipient server, because the server is deemed to
-				// be unresponsive after not responding for a week.
-				let mut delete =
-					<activity_pub_follower::ActiveModel as std::default::Default>::default();
-				delete.actor_id = Set(record.actor_id);
-				delete.host = Set(record.recipient_server);
-				activity_pub_follower::Entity::delete(delete)
-					.exec(g.api.db.inner())
-					.await?;
-			}
-		}
-	}
-	if send_state == ActivitySendState::Send || send_state == ActivitySendState::Impossible {
-		activity_pub_send_queue::Entity::delete_by_id(record.id)
-			.exec(g.api.db.inner())
-			.await?;
-	} else {
-	}
-	Ok(())
-}
-
-/// Queues the given ActivitySteams object to be sent to the recipient at
-/// somewhere in the future.
-/// If `recipient_path` is `None`, the activity will be send to the server's
-/// shared inbox, otherwise it will be send to the actor's inbox.
-async fn queue_activity(
-	g: &Global, db: &impl PersistenceHandle, actor_id: i64, recipient_server: String,
-	recipient_path: Option<String>, object: &impl Serialize,
-) -> db::Result<bool> {
-	// FIXME: Check if the queue is over capacity, in which case nothing will be
-	// done.
-	let (query, vals) = sea_query::Query::select()
-		.expr(Expr::col(activity_pub_send_queue::Column::Id).count())
-		.from(Alias::new(
-			activity_pub_object::Entity::default().table_name(),
-		))
-		.build_any(&*db.backend().get_query_builder());
-	let result = db
-		.inner()
-		.query_one(Statement::from_sql_and_values(db.backend(), query, vals))
-		.await?
-		.expect("count query returned 0 rows");
-	let count: i64 = result.try_get_by_index(0)?;
-
-	// If send queue isn't overloaded, add to queue
-	if (count as u64)
-		< g.config
-			.activity_pub_send_queue_capacity
-			.unwrap_or(SEND_QUEUE_DEFAULT_CAPACITY)
-	{
-		let record = activity_pub_send_queue::ActiveModel {
-			id: NotSet,
-			actor_id: Set(actor_id),
-			recipient_server: Set(recipient_server),
-			recipient_path: Set(recipient_path),
-			object: Set(serde_json::to_string(object).unwrap()),
-			last_fail: Set(None),
-			failures: Set(0),
-		};
-		activity_pub_send_queue::Entity::insert(record)
-			.exec(db.inner())
-			.await?;
-		Ok(true)
-	} else {
-		warn!("Send queue is full, dropping activity.");
-		Ok(false)
-	}
-}
-
 pub fn router(_: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new().route(
 		"/actor/:address",
@@ -1573,111 +701,11 @@ pub fn actor_router(_: Arc<Global>) -> Router<Arc<Global>> {
 		.route("/public-key", get(actor_public_key))
 }
 
-async fn send_activity(
-	g: &Global, actor_address: &ActorAddress, recipient_server: &str, recipient_path: Option<&str>,
-	activity: String, private_key: &str,
-) -> db::Result<ActivitySendState> {
-	// Get & parse the shared inbox url
-	let inbox_url_raw = if let Some(si) = find_inbox(g, recipient_server, recipient_path).await? {
-		si
-	} else {
-		warn!(
-			"Couldn't find the inbox for: {}{}",
-			recipient_server,
-			recipient_path.unwrap_or("")
-		);
-		return Ok(ActivitySendState::Impossible);
-	};
-	let inbox_url = match Url::parse(&inbox_url_raw) {
-		Ok(r) => r,
-		Err(e) => {
-			warn!("Invalid shared inbox URL {}: {}", &inbox_url_raw, e);
-			return Ok(ActivitySendState::Impossible);
-		}
-	};
-	if inbox_url.domain().is_none() {
-		warn!("No domain in shared inbox URL {}", &inbox_url_raw);
-		return Ok(ActivitySendState::Impossible);
-	}
-
-	// Sign the activity
-	let date_header = format!("{}", Utc::now().format("%a, %d %b %Y %T GMT"));
-	let body_digest = hash_activity(&activity);
-	let digest_header = format!("SHA-256={}", body_digest);
-	let signature = sign_activity(&inbox_url, &date_header, &digest_header, private_key);
-	let signature_header = format!(
-		"keyId=\"{}/actor/{}/activity-pub#main-key\", algorithm=\"rsa-sha256\", \
-		 headers=\"(request-target) host date digest content-type\", signature=\"{}\"",
-		&g.server_info.url_base, actor_address, signature
-	);
-
-	// Exchange request/response
-	let result = HTTP_CLIENT
-		.post(inbox_url)
-		.header(
-			"Content-Type",
-			"application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
-		)
-		.header("Date", date_header)
-		.header("Digest", digest_header)
-		.header("Signature", signature_header)
-		.body(activity)
-		.send()
-		.await;
-	let response = match result {
-		Ok(r) => r,
-		Err(e) => {
-			warn!(
-				"Unable to post activity object at {}: {}",
-				&inbox_url_raw, e
-			);
-			return Ok(ActivitySendState::Failed);
-		}
-	};
-
-	if response.status().as_u16() >= 200 || response.status().as_u16() <= 202 {
-		return Ok(ActivitySendState::Send);
-	}
-	warn!(
-		"Unable to post activity object at {}: response status {}",
-		inbox_url_raw,
-		response.status()
-	);
-	Ok(ActivitySendState::Failed)
-}
-
-fn sign_activity(
-	inbox_url: &Url, date_header: &str, digest_header: &str, private_key: &str,
-) -> String {
-	// Prepare sign data
-	let data = format!(
-		"(request-target): post {}\nhost: {}\ndate: {}\ndigest: {}\ncontent-type: application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
-		inbox_url.path(),
-		inbox_url.domain().unwrap(),
-		date_header,
-		digest_header
-	);
-
-	sign_data(&data, private_key)
-}
-
-fn sign_data(data: &str, key_pem: &str) -> String {
-	// Load key
-	let private_key = RsaPrivateKey::from_pkcs8_pem(key_pem).unwrap();
-	let signing_key = SigningKey::<Sha256>::new(private_key);
-
-	// Sign
-	let signature = signing_key.sign(data.as_bytes());
-
-	// Format with base64
-	BASE64_STANDARD.encode(&signature.to_bytes())
-}
-
 pub async fn webfinger(
 	State(g): State<Arc<Global>>, Query(params): Query<HashMap<String, String>>,
 ) -> Response {
 	if let Some(resource) = params.get("resource") {
-		let account_name = match parse_account_name(resource) {
+		let account_name = match activity_pub::parse_account_name(resource) {
 			Some(n) => n,
 			None => return server_error_response2("invalid resource syntax"),
 		};
@@ -1719,70 +747,5 @@ pub async fn webfinger(
 		json_response(&webfinger, Some("application/jrd+json"))
 	} else {
 		server_error_response2("Missing parameter \"resource\".")
-	}
-}
-
-
-mod tests {
-	#[allow(unused_imports)]
-	use rsa::{
-		pkcs1::DecodeRsaPrivateKey,
-		pkcs8::{EncodePrivateKey, LineEnding},
-		RsaPrivateKey,
-	};
-
-	use super::*;
-
-	#[allow(dead_code)]
-	fn verify_data(data: &str, signature: &str, public_key: &str) -> bool {
-		let raw_signature = BASE64_STANDARD.decode(signature).unwrap();
-		let signature = rsa::pkcs1v15::Signature::try_from(raw_signature.as_slice()).unwrap();
-		let public_key = RsaPublicKey::from_public_key_pem(public_key).unwrap();
-		let verifying_key = VerifyingKey::<Sha256>::new(public_key);
-		verifying_key.verify(data.as_bytes(), &signature).is_ok()
-	}
-
-	#[test]
-	fn test_signature() {
-		// All test data is taken from: https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures#appendix-C.3
-		let public_key_pem = r#"-----BEGIN PUBLIC KEY-----
-MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDCFENGw33yGihy92pDjZQhl0C3
-6rPJj+CvfSC8+q28hxA161QFNUd13wuCTUcq0Qd2qsBe/2hFyc2DCJJg0h1L78+6
-Z4UMR7EOcpfdUE9Hf3m/hs+FUR45uBJeDK1HSFHD8bHKD6kv8FPGfJTotc+2xjJw
-oYi+1hqp1fIekaxsyQIDAQAB
------END PUBLIC KEY-----"#;
-		let private_key_pem = r#"-----BEGIN RSA PRIVATE KEY-----
-MIICXgIBAAKBgQDCFENGw33yGihy92pDjZQhl0C36rPJj+CvfSC8+q28hxA161QF
-NUd13wuCTUcq0Qd2qsBe/2hFyc2DCJJg0h1L78+6Z4UMR7EOcpfdUE9Hf3m/hs+F
-UR45uBJeDK1HSFHD8bHKD6kv8FPGfJTotc+2xjJwoYi+1hqp1fIekaxsyQIDAQAB
-AoGBAJR8ZkCUvx5kzv+utdl7T5MnordT1TvoXXJGXK7ZZ+UuvMNUCdN2QPc4sBiA
-QWvLw1cSKt5DsKZ8UETpYPy8pPYnnDEz2dDYiaew9+xEpubyeW2oH4Zx71wqBtOK
-kqwrXa/pzdpiucRRjk6vE6YY7EBBs/g7uanVpGibOVAEsqH1AkEA7DkjVH28WDUg
-f1nqvfn2Kj6CT7nIcE3jGJsZZ7zlZmBmHFDONMLUrXR/Zm3pR5m0tCmBqa5RK95u
-412jt1dPIwJBANJT3v8pnkth48bQo/fKel6uEYyboRtA5/uHuHkZ6FQF7OUkGogc
-mSJluOdc5t6hI1VsLn0QZEjQZMEOWr+wKSMCQQCC4kXJEsHAve77oP6HtG/IiEn7
-kpyUXRNvFsDE0czpJJBvL/aRFUJxuRK91jhjC68sA7NsKMGg5OXb5I5Jj36xAkEA
-gIT7aFOYBFwGgQAQkWNKLvySgKbAZRTeLBacpHMuQdl1DfdntvAyqpAZ0lY0RKmW
-G6aFKaqQfOXKCyWoUiVknQJAXrlgySFci/2ueKlIE1QqIiLSZ8V8OlpFLRnb1pzI
-7U1yQXnTAEFYM560yJlzUpOb1V4cScGd365tiSMvxLOvTA==
------END RSA PRIVATE KEY-----"#;
-		let private_key_pem_pkcs8 = RsaPrivateKey::from_pkcs1_pem(private_key_pem)
-			.unwrap()
-			.to_pkcs8_pem(LineEnding::LF)
-			.unwrap();
-
-		let data = r#"(request-target): post /foo?param=value&pet=dog
-host: example.com
-date: Sun, 05 Jan 2014 21:31:40 GMT
-content-type: application/json
-digest: SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
-content-length: 18"#;
-
-		let signature = sign_data(data, &*private_key_pem_pkcs8);
-		assert_eq!(
-			signature,
-			"vSdrb+dS3EceC9bcwHSo4MlyKS59iFIrhgYkz8+oVLEEzmYZZvRs8rgOp+63LEM3v+MFHB32NfpB2bEKBIvB1q52LaEUHFv120V01IL+TAD48XaERZFukWgHoBTLMhYS2Gb51gWxpeIq8knRmPnYePbF5MOkR0Zkly4zKH7s1dE="
-		);
-		assert!(verify_data(data, &signature, public_key_pem));
 	}
 }

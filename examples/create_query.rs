@@ -2,7 +2,7 @@ use sea_orm::*;
 
 fn main() {
 	// Change this entity to anything you want to see the CREATE TABLE query from:
-	let entity = stonenetd::entity::trusted_node::Entity;
+	let entity = stonenetd::entity::activity_pub_inbox_object::Entity;
 
 	let backend = DatabaseBackend::Sqlite;
 	let schema = Schema::new(backend);

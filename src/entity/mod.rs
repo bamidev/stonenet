@@ -1,5 +1,7 @@
-pub mod activity_pub_actor_inbox;
+pub mod activity_pub_actor;
 pub mod activity_pub_follower;
+pub mod activity_pub_following;
+pub mod activity_pub_inbox_object;
 pub mod activity_pub_object;
 pub mod activity_pub_send_queue;
 pub mod activity_pub_shared_inbox;

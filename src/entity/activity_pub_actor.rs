@@ -1,13 +1,15 @@
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "activity_pub_actor_inbox")]
+#[sea_orm(table_name = "activity_pub_actor")]
 pub struct Model {
 	#[sea_orm(primary_key)]
 	pub id: i64,
 	pub host: String,
 	pub path: String,
-	pub inbox: String,
+	pub address: Option<String>,
+	pub inbox: Option<String>,
+	pub outbox: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
