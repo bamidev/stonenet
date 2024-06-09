@@ -36,7 +36,7 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 	Router::new()
 		.route("/:actor-address", actor_methods)
 		.route("/:actor-address/activity-pub", get(activity_pub::actor_get))
-		.nest("/:actor-address/activity-pub", activity_pub::router(g.clone()))
+		.nest("/:actor-address/activity-pub", activity_pub::actor_router(g.clone()))
 		.nest("/:actor-address/file", file::router(g.clone()))
 		// A workaround for Mastodon's behavior:
 		.nest("/:actor-address/activity-pub/file", file::router(g.clone()))

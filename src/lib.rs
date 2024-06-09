@@ -2,6 +2,7 @@
 #[macro_use]
 extern crate arrayref;
 
+pub mod activity_pub;
 pub mod api;
 pub mod common;
 pub mod compression;
@@ -15,3 +16,5 @@ pub mod migration;
 pub mod net;
 pub mod test;
 mod trace;
+pub mod util;
+mod web;

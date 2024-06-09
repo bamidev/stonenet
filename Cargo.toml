@@ -17,7 +17,7 @@ async-trait = "0"
 base58 = "0"
 base64 = "0.22"
 bincode = "1"
-chrono = { version = "0", features = ["alloc", "clock"] }
+chrono = { version = "0.4", features = ["alloc", "clock"] }
 compu = { version = "1.1", features = ["brotli-rust"] }
 ctrlc = "3"
 curve25519-dalek = "4.1.1"
@@ -26,6 +26,7 @@ chacha20 = ">=0.9, <1.0"
 ed25519 = { version = "*", features = ["serde"] }
 ed25519-dalek = { version = "2.1", features = ["serde", "rand_core", "std"] }
 ed448-rust = { version = "0.1", git = "https://github.com/pdh11/ed448-rust.git" }
+email-address-parser = "2.0"
 env_logger = "0"
 fallible-iterator = "*"
 format-bytes = "0"
