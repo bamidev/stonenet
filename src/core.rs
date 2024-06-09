@@ -145,12 +145,6 @@ struct PostObjectDataPlain {
 // The list of files named `content` represents a number of versions for which
 // one can be picked that has the most desirable mimetype.
 
-#[derive(Clone, Deserialize, Serialize)]
-pub struct PostObjectInfo {
-	base: PostObject,
-	in_reply_to: Option<String>,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProfileObject {
 	pub name: String,

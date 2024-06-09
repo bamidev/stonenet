@@ -3,7 +3,9 @@
 
 mod install;
 
-use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration};
+use std::{
+	cmp::min, collections::HashMap, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration,
+};
 
 use ::serde::Serialize;
 use async_trait::async_trait;
@@ -526,6 +528,76 @@ pub trait PersistenceHandle {
 		Ok(is_following)
 	}
 
+	async fn load_next_unconsolidated_activity_pub_objects(
+		&self,
+	) -> Result<HashMap<i64, (i64, i64)>> {
+		let stat = activity_pub_object::Entity::find()
+			.select_only()
+			.column(activity_pub_object::Column::Id)
+			.column(activity_pub_object::Column::ActorId)
+			.column(activity_pub_object::Column::Published)
+			.filter(
+				activity_pub_object::Column::Id.not_in_subquery(
+					consolidated_object::Entity::find()
+						.select_only()
+						.column(consolidated_object::Column::ObjectId)
+						.filter(consolidated_object::Column::Type.eq(1))
+						.into_query(),
+				),
+			)
+			.order_by_asc(activity_pub_object::Column::ActorId)
+			.order_by_desc(activity_pub_object::Column::Published)
+			.build(self.backend());
+		let results = self.inner().query_all(stat).await?;
+
+		// Take one object per actor, the earliest one to be specific
+		let mut map = HashMap::new();
+		for result in results {
+			let object_id: i64 = result.try_get_by_index(0)?;
+			let actor_id: i64 = result.try_get_by_index(1)?;
+			let timestamp: i64 = result.try_get_by_index(2)?;
+
+			if !map.contains_key(&actor_id) {
+				map.insert(actor_id, (object_id, timestamp));
+			}
+		}
+		Ok(map)
+	}
+
+	async fn load_next_unconsolidated_objects(&self) -> Result<HashMap<i64, (i64, i64)>> {
+		let stat = object::Entity::find()
+			.select_only()
+			.column(object::Column::Id)
+			.column(object::Column::ActorId)
+			.column(object::Column::Found)
+			.filter(
+				object::Column::Id.not_in_subquery(
+					consolidated_object::Entity::find()
+						.select_only()
+						.column(consolidated_object::Column::ObjectId)
+						.filter(consolidated_object::Column::Type.eq(0))
+						.into_query(),
+				),
+			)
+			.order_by_asc(object::Column::ActorId)
+			.order_by_desc(object::Column::Found)
+			.build(self.backend());
+		let results = self.inner().query_all(stat).await?;
+
+		// Take one object per actor, the earliest one to be specific
+		let mut map = HashMap::new();
+		for result in results {
+			let object_id: i64 = result.try_get_by_index(0)?;
+			let actor_id: i64 = result.try_get_by_index(1)?;
+			let timestamp: i64 = result.try_get_by_index(2)?;
+
+			if !map.contains_key(&actor_id) {
+				map.insert(actor_id, (object_id, timestamp));
+			}
+		}
+		Ok(map)
+	}
+
 	async fn load_node_identity(&self) -> Result<(NodeAddress, NodePrivateKey)> {
 		let result = match node_identity::Entity::find().one(self.inner()).await? {
 			Some(m) => {
@@ -840,7 +912,6 @@ pub trait PersistenceHandle {
 		&self, actor_address: &ActorAddress, hash: &IdType,
 	) -> Result<Option<ObjectInfo>> {
 		let result = object::Entity::find()
-			.join(JoinType::InnerJoin, object::Relation::Actor.def())
 			.filter(object::Column::Hash.eq(hash))
 			.filter(actor::Column::Address.eq(actor_address))
 			.one(self.inner())
@@ -857,6 +928,41 @@ pub trait PersistenceHandle {
 					created: object.created as _,
 					found: object.found as _,
 					actor_address: actor_address.clone(),
+					actor_avatar,
+					actor_name,
+					payload,
+				})
+			} else {
+				None
+			}
+		} else {
+			None
+		};
+		Ok(info)
+	}
+
+	async fn load_object_info2(&self, id: i64) -> Result<Option<ObjectInfo>> {
+		let result = object::Entity::find_by_id(id).one(self.inner()).await?;
+		let info = if let Some(object) = result {
+			let actor_address = if let Some(record) = actor::Entity::find_by_id(object.actor_id)
+				.one(self.inner())
+				.await?
+			{
+				record.address
+			} else {
+				return Ok(None);
+			};
+			let (actor_name, actor_avatar) = self.find_profile_limited(object.actor_id).await?;
+
+			if let Some(payload) = self
+				.load_object_payload_info(object.id, object.r#type)
+				.await?
+			{
+				Some(ObjectInfo {
+					hash: object.hash,
+					created: object.created as _,
+					found: object.found as _,
+					actor_address,
 					actor_avatar,
 					actor_name,
 					payload,
@@ -1244,6 +1350,20 @@ pub trait PersistenceHandle {
 		if let Some(r) = self.inner().query_one(stat).await? {
 			let score_opt: Option<u8> = r.try_get_by_index(0)?;
 			Ok(score_opt.unwrap_or(0))
+		} else {
+			Ok(0)
+		}
+	}
+
+	async fn next_consolidated_feed_batch(&self) -> Result<u64> {
+		let stat = consolidated_object::Entity::find()
+			.select_only()
+			.column_as(consolidated_object::Column::Batch.max(), "max")
+			.build(self.backend());
+		if let Some(result) = self.inner().query_one(stat).await? {
+			let max: Option<i64> = result.try_get_by_index(0)?;
+			let next = if let Some(m) = max { m as u64 + 1 } else { 0 };
+			Ok(next)
 		} else {
 			Ok(0)
 		}
@@ -3055,23 +3175,6 @@ impl ObjectPayloadInfo {
 					false
 				},
 			Self::Profile(profile) => profile.description.is_some(),
-		}
-	}
-
-	pub fn to_text(&self) -> String {
-		match self {
-			Self::Post(post) => post.message.clone().unwrap_or("".to_string()),
-			Self::Share(share) =>
-				if let Some(op) = &share.original_post {
-					if let Some((_, content)) = &op.message {
-						content.clone()
-					} else {
-						"[Message not synchronized yet]".to_string()
-					}
-				} else {
-					"[Post not synchronized yet]".to_string()
-				},
-			Self::Profile(_) => "[Profile updated]".to_string(),
 		}
 	}
 }

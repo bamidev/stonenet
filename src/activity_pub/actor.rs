@@ -5,7 +5,7 @@ use log::*;
 use reqwest::Url;
 use sea_orm::{prelude::*, NotSet, Set};
 
-use super::{expect_url, Error, Result, HTTP_CLIENT};
+use super::{expect_string, expect_url, Error, Result, HTTP_CLIENT};
 use crate::{
 	db::{Database, PersistenceHandle},
 	entity::activity_pub_actor,
@@ -36,6 +36,11 @@ pub async fn ensure(
 		let path = url.path();
 
 		// Get inbox and outbox as well&
+		let name = if let Some(r) = json.get("name") {
+			Some(expect_string(r, when)?.to_string())
+		} else {
+			None
+		};
 		let inbox = if let Some(r) = json.get("inbox") {
 			Some(expect_url(r, when)?.to_string())
 		} else {
@@ -46,6 +51,15 @@ pub async fn ensure(
 		} else {
 			None
 		};
+		let icon_url = if let Some(icon_val) = json.get("icon") {
+			if let Some(url_val) = icon_val.get("url") {
+				Some(expect_url(url_val, when)?.to_string())
+			} else {
+				None
+			}
+		} else {
+			None
+		};
 
 		// Store the actor
 		let model = activity_pub_actor::ActiveModel {
@@ -53,8 +67,10 @@ pub async fn ensure(
 			host: Set(host.to_string()),
 			path: Set(path.to_string()),
 			address: Set(address.map(|s| s.to_string())),
+			name: Set(name.clone()),
 			inbox: Set(inbox.clone()),
 			outbox: Set(outbox.clone()),
+			icon_url: Set(icon_url.clone()),
 		};
 		let result = activity_pub_actor::Entity::insert(model)
 			.exec(db.inner())
@@ -65,8 +81,10 @@ pub async fn ensure(
 			host: host.to_string(),
 			path: path.to_string(),
 			address: address.map(|s| s.to_string()),
+			name,
 			inbox,
 			outbox,
+			icon_url,
 		})
 	} else {
 		return Err(Error::UnexpectedBehavior(

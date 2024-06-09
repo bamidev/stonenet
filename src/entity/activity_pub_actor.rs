@@ -8,8 +8,10 @@ pub struct Model {
 	pub host: String,
 	pub path: String,
 	pub address: Option<String>,
+	pub name: Option<String>,
 	pub inbox: Option<String>,
 	pub outbox: Option<String>,
+	pub icon_url: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

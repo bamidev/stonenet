@@ -23,8 +23,10 @@ impl MigrationTrait for Migration {
 					"host" text NOT NULL,
 					"path" text NOT NULL,
 					"address" text,
+					"name" text,
 					"inbox" text,
-					"outbox" text
+					"outbox" text,
+					"icon_url" text
 				);
 				CREATE TABLE "activity_pub_follower" (
 					"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
@@ -41,6 +43,7 @@ impl MigrationTrait for Migration {
 					"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
 					"actor_id" bigint NOT NULL,
 					"object_id" text NOT NULL UNIQUE,
+					"published" bigint NOT NULL,
 					"data" text NOT NULL,
 					FOREIGN KEY ("actor_id") REFERENCES "activity_pub_actor" ("id")
 				);
@@ -50,6 +53,14 @@ impl MigrationTrait for Migration {
 					"object_id" text NOT NULL UNIQUE,
 					"data" text NOT NULL,
 					FOREIGN KEY ("actor_id") REFERENCES "actor" ("id")
+				);
+				CREATE TABLE "consolidated_object" (
+					"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+					"batch" bigint NOT NULL,
+					"type" integer NOT NULL,
+					"actor_id" bigint NOT NULL,
+					"object_id" bigint NOT NULL,
+					"timestamp" bigint NOT NULL
 				);
 
 				INSERT INTO activity_pub_actor (id, host, path, inbox) SELECT id, host, path, inbox FROM activity_pub_actor_inbox;

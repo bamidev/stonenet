@@ -1,6 +1,6 @@
 mod activity_pub;
 mod actor;
-mod common;
+pub mod common;
 mod identity;
 
 use std::{
@@ -21,7 +21,7 @@ use tower_http::services::ServeDir;
 
 use self::common::*;
 use crate::{
-	api::Api,
+	api::{Api, ObjectDisplayInfo},
 	common::*,
 	config::Config,
 	core::*,
@@ -162,9 +162,23 @@ struct PaginationQuery {
 async fn home(State(g): State<Arc<Global>>, Query(query): Query<PaginationQuery>) -> Response {
 	let p = query.page.unwrap_or(0);
 	let start = p * 5;
-	let objects: Vec<ObjectDisplayInfo> = match g.api.load_home_feed(5, start).await {
-		Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
-		Err(e) => return server_error_response(e, "unable to fetch home feed"),
+
+	let objects: Vec<ObjectDisplayInfo> = if g.server_info.is_exposed {
+		match g.api.load_home_feed(5, start).await {
+			Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
+			Err(e) => return server_error_response(e, "unable to fetch home feed"),
+		}
+	// In your own local UI, view the consolidated home feed
+	} else {
+		if p == 0 {
+			if let Err(e) = g.api.update_consolidated_feed().await {
+				return server_error_response(e, "unable to update consolidated feed");
+			}
+		}
+		match g.api.load_consolidated_feed(5, start).await {
+			Ok(f) => f,
+			Err(e) => return server_error_response(e, "unable to fetch home feed"),
+		}
 	};
 
 	let mut context = Context::new();
@@ -200,17 +214,14 @@ async fn rss_feed(State(g): State<Arc<Global>>) -> Response {
 	// Prepare RSS feed items
 	let mut items = Vec::with_capacity(objects.len());
 	for object in objects {
-		if object.payload.has_main_content() {
-			let item = ItemBuilder::default()
-				.title(object.type_title())
-				.link(format!(
-					"{}/actor/{}/object/{}",
-					&g.server_info.url_base, &object.actor_address, &object.hash
-				))
-				.description(object.payload.to_text())
-				.build();
-			items.push(item);
-		}
+		//if object.payload.has_main_content() {
+		let item = ItemBuilder::default()
+			.title(object.type_title())
+			.link(format!("{}{}", &g.server_info.url_base, &object.url))
+			.description(object.payload.to_text())
+			.build();
+		items.push(item);
+		//}
 	}
 	channel_builder.items(items);
 	let channel = channel_builder.build();

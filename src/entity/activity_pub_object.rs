@@ -8,6 +8,7 @@ pub struct Model {
 	pub actor_id: i64,
 	#[sea_orm(unique)]
 	pub object_id: String,
+	pub published: i64,
 	pub data: String,
 }
 

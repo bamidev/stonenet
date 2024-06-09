@@ -37,6 +37,7 @@ use zeroize::Zeroizing;
 
 use crate::{
 	activity_pub,
+	api::OtherObjectInfo,
 	common::{current_timestamp, IdType},
 	core::{ActorAddress, Address, OBJECT_TYPE_PROFILE},
 	db::{self, Database, ObjectPayloadInfo, PersistenceHandle},
@@ -241,6 +242,14 @@ async fn collect_activity(db: &Database, item: &serde_json::Value, page_url: &st
 			when(),
 		))?;
 	}
+	let object = match item.get("object") {
+		Some(o) => o,
+		None =>
+			return Err(Error::UnexpectedBehavior(
+				"missing object property in activity object".into(),
+				when(),
+			))?,
+	};
 
 	// Collect actor if needed
 	let actor = if let Some(actor_val) = item.get("actor") {
@@ -253,8 +262,25 @@ async fn collect_activity(db: &Database, item: &serde_json::Value, page_url: &st
 		))?;
 	};
 
+	// Parse publish date
+	let published = if let Some(published_val) = item.get("published") {
+		let string = expect_string(published_val, &when)?;
+		match chrono::DateTime::parse_from_rfc3339(string) {
+			Ok(dt) => dt.timestamp_millis() as u64,
+			Err(e) => {
+				warn!(
+					"Couldn't parse published date \"{}\" of ActivityPub object: {}",
+					string, e
+				);
+				current_timestamp()
+			}
+		}
+	} else {
+		current_timestamp()
+	};
+
 	// Collect object property
-	store_object(db, actor.id, item, &when).await?;
+	store_object(db, actor.id, published, object, &when).await?;
 	Ok(())
 }
 
@@ -601,6 +627,42 @@ pub fn parse_account_name(resource: &str) -> Option<&str> {
 		return Some(&resource[5..i]);
 	}
 	None
+}
+
+pub fn parse_post_object(raw_json: &str) -> Result<OtherObjectInfo> {
+	let json = serde_json::Value::from_str(raw_json)
+		.map_err(|e| Error::Deserialization(e, format!("parsing object").into()))?;
+
+	let activity_type = if let Some(activity_type_val) = json.get("type") {
+		expect_string(activity_type_val, &|| {
+			format!("parsing activity type").into()
+		})?
+	} else {
+		return Err(Error::UnexpectedBehavior(
+			"missing type property".into(),
+			"...".into(),
+		))?;
+	};
+	if activity_type != "Note" {
+		return Err(Error::UnexpectedBehavior(
+			format!("unknown activity type: {}", activity_type).into(),
+			"...".into(),
+		))?;
+	}
+
+	let content = if let Some(content_val) = json.get("content") {
+		expect_string(content_val, &|| format!("parsing activity content").into())?
+	} else {
+		return Err(Error::UnexpectedBehavior(
+			"missing content property".into(),
+			"...".into(),
+		))?;
+	};
+
+	Ok(OtherObjectInfo {
+		mime_type: "text/html".to_string(),
+		content: content.clone(),
+	})
 }
 
 pub fn parse_webfinger_link(
@@ -1071,7 +1133,8 @@ pub async fn store_inbox_object(
 /// Stores the object if it hasn't been stored yet, otherwise it returns the
 /// record id of the existing record.
 pub async fn store_object(
-	db: &Database, actor_id: i64, json: &serde_json::Value, when: &impl Fn() -> Cow<'static, str>,
+	db: &Database, actor_id: i64, published: u64, json: &serde_json::Value,
+	when: &impl Fn() -> Cow<'static, str>,
 ) -> Result<i64> {
 	let object_id = match json.get("id") {
 		Some(r) => expect_string(r, when)?,
@@ -1094,6 +1157,7 @@ pub async fn store_object(
 	let record = activity_pub_object::ActiveModel {
 		id: NotSet,
 		actor_id: Set(actor_id),
+		published: Set(published as _),
 		object_id: Set(object_id.clone()),
 		data: Set(json.to_string()),
 	};
