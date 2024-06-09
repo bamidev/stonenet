@@ -147,7 +147,7 @@ async fn activity_pub_actor_post(
 			if let Some(outbox_url) = actor.outbox {
 				let db = g.api.db.clone();
 				spawn(async move {
-					if let Err(e) = activity_pub::poll_outbox(&db, &outbox_url).await {
+					if let Err(e) = activity_pub::poll_box(&db, &outbox_url).await {
 						warn!(
 							"Unable to poll outbox {} for newly followed actor: {:?}",
 							&outbox_url, e

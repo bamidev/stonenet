@@ -39,6 +39,7 @@ use crate::{
 	activity_pub,
 	api::OtherObjectInfo,
 	common::{current_timestamp, IdType},
+	config::Config,
 	core::{ActorAddress, Address, OBJECT_TYPE_PROFILE},
 	db::{self, Database, ObjectPayloadInfo, PersistenceHandle},
 	entity::{self, *},
@@ -284,34 +285,13 @@ async fn collect_activity(db: &Database, item: &serde_json::Value, page_url: &st
 	Ok(())
 }
 
-async fn collect_activities(db: &Database, page_url: &str) -> Result<()> {
-	let response = match HTTP_CLIENT.get(page_url).send().await {
-		Ok(r) => match r.text().await {
-			Ok(r) => r,
-			Err(e) => Err(Error::Network(
-				e,
-				format!("collecting activities on {}", page_url).into(),
-			))?,
-		},
-		Err(e) => Err(Error::Network(
-			e,
-			format!("reaching outbox page on {}", page_url).into(),
-		))?,
-	};
-	let page_json = match serde_json::Value::from_str(&response) {
-		Ok(r) => r,
-		Err(e) => Err(Error::Deserialization(
-			e,
-			format!("parsing JSON for outbox {}", page_url).into(),
-		))?,
-	};
-
-	if let Some(ordered_items_val) = page_json.get("orderedItems") {
+async fn collect_activities(db: &Database, json: &serde_json::Value, url: &str) -> Result<()> {
+	if let Some(ordered_items_val) = json.get("orderedItems") {
 		let items = expect_array(&ordered_items_val, &|| {
-			format!("parsing ordered list on {}", page_url).into()
+			format!("parsing ordered list on {}", url).into()
 		})?;
 		for item in items {
-			collect_activity(db, item, page_url).await?;
+			collect_activity(db, item, url).await?;
 		}
 	}
 	Ok(())
@@ -512,10 +492,16 @@ async fn init_public_key(config: &Option<String>) -> io::Result<()> {
 	Ok(())
 }
 
-async fn loop_outbox_polls(stop_flag: Arc<AtomicBool>, db: Database) {
+async fn loop_box_polls(
+	stop_flag: Arc<AtomicBool>, db: Database,
+	activity_pub_inbox_opt: Option<(String, ActorAddress)>,
+) {
 	while !stop_flag.load(Ordering::Relaxed) {
+		if let Some((activity_pub_inbox_server, actor_address)) = &activity_pub_inbox_opt {
+			poll_inbox(&db, &activity_pub_inbox_server, &actor_address).await;
+		}
 		if let Err(e) = poll_outboxes(stop_flag.clone(), &db).await {
-			error!("Database error while polling outboxes: {}", e);
+			error!("Database error while polling outboxes: {:?}", e);
 		}
 
 		for _ in 0..3600 {
@@ -614,8 +600,34 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>, private
 	}
 }
 
-pub fn maintain_outbox_polls(stop_flag: Arc<AtomicBool>, db: Database) {
-	spawn(loop_outbox_polls(stop_flag, db));
+pub fn maintain_outbox_polls(stop_flag: Arc<AtomicBool>, db: Database, config: &Config) {
+	let inbox_info = if let Some(inbox_server) = &config.activity_pub_inbox_server {
+		if let Some(address_string) = &config.activity_pub_inbox_actor {
+			match Address::from_str(address_string)
+				.expect("Invalid actor address for activity_pub_inbox_actor")
+			{
+				Address::Actor(a) => Some((inbox_server.to_string(), a)),
+				_ => {
+					warn!(
+						"ActivityPub inbox actor {} is not an actor address.",
+						address_string
+					);
+					None
+				}
+			}
+		} else {
+			warn!(
+				"Polling the ActivityPub inbox on {} doesn't work because config \
+				 \"activity_pub_inbox_server\" isn't set.",
+				inbox_server
+			);
+			None
+		}
+	} else {
+		None
+	};
+
+	spawn(loop_box_polls(stop_flag, db, inbox_info));
 }
 
 pub fn parse_account_name(resource: &str) -> Option<&str> {
@@ -689,39 +701,67 @@ pub fn parse_webfinger_link(
 	Ok(None)
 }
 
-pub async fn poll_outbox(db: &Database, outbox_url: &str) -> Result<()> {
-	let response = match HTTP_CLIENT.get(outbox_url).send().await {
+pub async fn poll_box(db: &Database, box_url: &str) -> Result<()> {
+	let response = match HTTP_CLIENT.get(box_url).send().await {
 		Ok(r) => match r.text().await {
 			Ok(r) => r,
 			Err(e) => Err(Error::Network(
 				e,
-				format!("collecting outbox body for {}", outbox_url).into(),
+				format!("collecting outbox body for {}", box_url).into(),
 			))?,
 		},
 		Err(e) => Err(Error::Network(
 			e,
-			format!("reaching outbox {}", outbox_url).into(),
+			format!("reaching outbox {}", box_url).into(),
 		))?,
 	};
-	let outbox_json = match serde_json::Value::from_str(&response) {
+	let box_json = match serde_json::Value::from_str(&response) {
 		Ok(r) => r,
 		Err(e) => Err(Error::Deserialization(
 			e,
-			format!("parsing JSON for outbox {}", outbox_url).into(),
+			format!("parsing JSON for outbox {}", box_url).into(),
 		))?,
 	};
 
-	if let Some(page_url_value) = outbox_json.get("first") {
+	if let Some(page_url_value) = box_json.get("first") {
 		let first_page_url = expect_string(page_url_value, &|| {
-			format!("parsing first outbox page of {}", outbox_url).into()
+			format!("parsing first outbox page of {}", box_url).into()
 		})?;
 
-		collect_activities(db, &first_page_url).await
+		let response = match HTTP_CLIENT.get(first_page_url).send().await {
+			Ok(r) => match r.text().await {
+				Ok(r) => r,
+				Err(e) => Err(Error::Network(
+					e,
+					format!("collecting activities on {}", first_page_url).into(),
+				))?,
+			},
+			Err(e) => Err(Error::Network(
+				e,
+				format!("reaching outbox page on {}", first_page_url).into(),
+			))?,
+		};
+		let first_page_json = match serde_json::Value::from_str(&response) {
+			Ok(r) => r,
+			Err(e) => Err(Error::Deserialization(
+				e,
+				format!("parsing JSON for outbox {}", first_page_url).into(),
+			))?,
+		};
+
+		collect_activities(db, &first_page_json, &first_page_url).await
 	} else {
-		return Err(Error::UnexpectedBehavior(
-			"missing first page".into(),
-			format!("loading the first outbox page of {}", outbox_url).into(),
-		))?;
+		collect_activities(db, &box_json, box_url).await
+	}
+}
+
+async fn poll_inbox(db: &Database, inbox_server: &str, inbox_actor_address: &ActorAddress) {
+	let inbox_url = format!(
+		"https://{}/actor/{}/activity-pub/inbox",
+		inbox_server, inbox_actor_address
+	);
+	if let Err(e) = poll_box(db, &inbox_url).await {
+		warn!("Error while polling outbox {}: {:?}", &inbox_url, e);
 	}
 }
 
@@ -741,7 +781,7 @@ async fn poll_outboxes(stop_flag: Arc<AtomicBool>, db: &Database) -> db::Result<
 	for following in following_actors {
 		if !stop_flag.load(Ordering::Relaxed) {
 			if let Some(outbox_url) = &following.outbox {
-				if let Err(e) = poll_outbox(db, outbox_url).await {
+				if let Err(e) = poll_box(db, outbox_url).await {
 					warn!("Error while polling outbox {}: {:?}", outbox_url, e);
 				}
 			}

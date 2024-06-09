@@ -117,7 +117,11 @@ pub async fn serve(
 	if global.server_info.is_exposed {
 		super::activity_pub::init(stop_flag.clone(), global.clone()).await;
 	} else {
-		super::activity_pub::maintain_outbox_polls(stop_flag.clone(), global.api.db.clone());
+		super::activity_pub::maintain_outbox_polls(
+			stop_flag.clone(),
+			global.api.db.clone(),
+			&global.config,
+		);
 	}
 
 	let ip = if global.server_info.is_exposed {
