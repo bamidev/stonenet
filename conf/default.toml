@@ -76,7 +76,7 @@ node_ping_interval = 60
 # receive connections to contact eachother.
 # However, as a super node you could run the risk of being complicit in sharing
 # illegal data. So only set this to true at your own risk!
-relay_node = false
+relay_node = true
 
 # The number of nodes that can attach themselves to this node.
 # This helps nodes behind restrictive firewalls being able to be contacted by 
