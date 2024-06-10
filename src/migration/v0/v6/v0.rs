@@ -63,7 +63,7 @@ impl MigrationTrait for Migration {
 					"timestamp" bigint NOT NULL
 				);
 
-				INSERT INTO activity_pub_actor (id, host, path, inbox) SELECT id, host, path, inbox FROM activity_pub_actor_inbox;
+				INSERT INTO activity_pub_actor (id, host, path, inbox) SELECT id, server, path, inbox FROM activity_pub_actor_inbox;
 
 				DROP TABLE activity_pub_follow;
 				DROP TABLE activity_pub_actor_inbox;
