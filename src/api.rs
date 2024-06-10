@@ -502,8 +502,8 @@ impl Api {
 		&self, count: u64, offset: u64,
 	) -> web::Result<Vec<ObjectDisplayInfo>> {
 		let consolidated = consolidated_object::Entity::find()
-			.order_by_asc(consolidated_object::Column::Id)
 			.order_by_desc(consolidated_object::Column::Batch)
+			.order_by_asc(consolidated_object::Column::Id)
 			.limit(count)
 			.offset(offset)
 			.all(self.db.inner())
