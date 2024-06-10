@@ -2,7 +2,6 @@
 #[macro_use]
 extern crate arrayref;
 
-pub mod activity_pub;
 pub mod api;
 pub mod common;
 pub mod compression;

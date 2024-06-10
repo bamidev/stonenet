@@ -17,20 +17,23 @@ use crate::{
 	db::PersistenceHandle,
 	entity::object,
 	web::{
-		into_object_display_info, not_found_error_response, post_message, server_error_response,
-		server_error_response2, Global,
+		common::into_object_display_info,
+		server::{
+			not_found_error_response, post_message, server_error_response, server_error_response2,
+			ServerGlobal,
+		},
 	},
 };
 
 
-pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
+pub fn router(g: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
 	let mut object_methods = get(object_get);
-	if !g.server_info.is_exposed {
+	if !g.base.server_info.is_exposed {
 		object_methods = object_methods.post(object_post);
 	}
 
 	let mut router = Router::new().route("/:object-hash", object_methods);
-	if !g.server_info.is_exposed {
+	if !g.base.server_info.is_exposed {
 		router = router.route("/:object-hash/share", post(object_share));
 	}
 
@@ -38,7 +41,7 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 }
 
 async fn object_middleware(
-	State(g): State<Arc<Global>>, mut request: Request, next: Next,
+	State(g): State<Arc<ServerGlobal>>, mut request: Request, next: Next,
 ) -> Response {
 	let params = request
 		.extract_parts::<Path<HashMap<String, String>>>()
@@ -55,7 +58,7 @@ async fn object_middleware(
 	{
 		match object::Entity::find()
 			.filter(object::Column::Hash.contains(hash_str))
-			.one(g.api.db.inner())
+			.one(g.base.api.db.inner())
 			.await
 		{
 			Err(e) => return server_error_response(e, "Unable to load file"),
@@ -69,10 +72,15 @@ async fn object_middleware(
 }
 
 async fn object_get(
-	State(g): State<Arc<Global>>, Extension(actor_address): Extension<ActorAddress>,
+	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(object_hash): Extension<IdType>,
 ) -> Response {
-	let object_info = match g.api.fetch_object_info(&actor_address, &object_hash).await {
+	let object_info = match g
+		.base
+		.api
+		.fetch_object_info(&actor_address, &object_hash)
+		.await
+	{
 		Ok(r) => r,
 		Err(e) => return server_error_response(e, "Unable to load object"),
 	};
@@ -87,10 +95,10 @@ async fn object_get(
 }
 
 async fn object_post(
-	State(g): State<Arc<Global>>, Extension(actor_address): Extension<ActorAddress>,
+	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(object_hash): Extension<IdType>, multipart: Multipart,
 ) -> Response {
-	if let Err(e) = post_message(&g, multipart, Some((actor_address, object_hash))).await {
+	if let Err(e) = post_message(&g.base, multipart, Some((actor_address, object_hash))).await {
 		return e;
 	}
 
@@ -102,10 +110,11 @@ async fn object_post(
 }
 
 async fn object_share(
-	State(g): State<Arc<Global>>, Extension(actor_address): Extension<ActorAddress>,
+	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(object_hash): Extension<IdType>,
 ) -> Response {
 	let identity = g
+		.base
 		.state
 		.lock()
 		.await
@@ -114,7 +123,7 @@ async fn object_share(
 		.unwrap()
 		.1
 		.clone();
-	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
+	let private_key = match g.base.api.db.perform(|c| c.fetch_my_identity(&identity)) {
 		Ok(r) =>
 			if let Some((_, pk)) = r {
 				pk
@@ -128,8 +137,13 @@ async fn object_share(
 		actor_address,
 		object_hash,
 	};
-	if let Err(e) = g.api.publish_share(&identity, &private_key, &share).await {
-		return server_error_response(e, "unable to ");
+	if let Err(e) = g
+		.base
+		.api
+		.publish_share(&identity, &private_key, &share)
+		.await
+	{
+		return server_error_response(e, "unable to publish share");
 	}
 
 	Response::builder()

@@ -3,7 +3,6 @@
 #[macro_use]
 extern crate arrayref;
 
-mod activity_pub;
 mod api;
 mod common;
 mod compression;
@@ -375,7 +374,7 @@ async fn main() {
 
 		// Spawn web servers
 		if config.load_web_interface.unwrap_or(false) {
-			let server_info = web::ServerInfo {
+			let server_info = web::server::ServerInfo {
 				is_exposed: true,
 				federation_domain: config
 					.federation_domain
@@ -388,7 +387,7 @@ async fn main() {
 			let api2 = api.clone();
 			let config2 = config.clone();
 			spawn(async move {
-				web::serve(
+				web::server::serve(
 					stop_flag2,
 					config.web_interface_port.unwrap_or(80),
 					None,
@@ -402,7 +401,7 @@ async fn main() {
 		}
 		if config.load_user_interface.unwrap_or(false) {
 			let port = config.user_interface_port.unwrap_or(37338);
-			let server_info = web::ServerInfo {
+			let server_info = web::server::ServerInfo {
 				is_exposed: false,
 				federation_domain: config
 					.federation_domain
@@ -418,7 +417,7 @@ async fn main() {
 			let api2 = api.clone();
 			let config2 = config.clone();
 			spawn(async move {
-				web::serve(stop_flag2, port, None, api2, server_info, config2)
+				web::server::serve(stop_flag2, port, None, api2, server_info, config2)
 					.await
 					.unwrap();
 			});

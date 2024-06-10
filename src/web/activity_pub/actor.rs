@@ -9,6 +9,7 @@ use super::{expect_string, expect_url, Error, Result, HTTP_CLIENT};
 use crate::{
 	db::{Database, PersistenceHandle},
 	entity::activity_pub_actor,
+	web::webfinger::resolve_webfinger,
 };
 
 
@@ -152,52 +153,6 @@ pub async fn fetch_from_webfinger(address: &EmailAddress) -> Result<Option<serde
 	if let Some(url) = resolve_webfinger(address).await? {
 		Ok(Some(fetch(&url).await?))
 	} else {
-		Ok(None)
-	}
-}
-
-pub async fn resolve_webfinger(address: &EmailAddress) -> Result<Option<Url>> {
-	let when = || format!("fetching actor {} from webfinger", address).into();
-	let response = HTTP_CLIENT
-		.get(format!(
-			"https://{}/.well-known/webfinger?resource=acct:{}",
-			address.get_domain(),
-			address
-		))
-		.send()
-		.await
-		.map_err(|e| Error::Network(e, when()))?;
-	let body = response
-		.text()
-		.await
-		.map_err(|e| Error::Network(e, when()))?;
-	let json = serde_json::Value::from_str(&body).map_err(|e| Error::Deserialization(e, when()))?;
-
-	if let Some(links) = json.get("links") {
-		match links {
-			serde_json::Value::Array(array) => {
-				for item in array {
-					if let Some(url) = super::parse_webfinger_link(item, &when)? {
-						return Ok(Some(url));
-					}
-				}
-				Ok(None)
-			}
-			_ => {
-				warn!(
-					"Unable to parse webfinger response for ActivityPub address {}: links \
-					 property is not an array",
-					address
-				);
-				return Ok(None);
-			}
-		}
-	} else {
-		warn!(
-			"Unable to parse webfinger response for ActivityPub address {}: links property not \
-			 found",
-			address
-		);
 		Ok(None)
 	}
 }

@@ -1,11 +1,24 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
-use axum::{extract::*, middleware::*, routing::*, *};
+use axum::{
+	body::Body,
+	extract::{Path, Request, State},
+	middleware::{from_fn_with_state, Next},
+	response::Response,
+	routing::get,
+	Extension, RequestExt, Router,
+};
 
-use crate::{api::PossibleFileStream, web::*};
+use crate::{
+	api::PossibleFileStream,
+	web::server::{
+		server_error_response, server_error_response2, ActorAddress, CompressionType, IdType,
+		ServerGlobal,
+	},
+};
 
 
-pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
+pub fn router(g: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
 	Router::new()
 		.route("/:file-hash", get(file_get))
 		.route_layer(from_fn_with_state(g, file_middleware))
@@ -39,10 +52,10 @@ async fn file_middleware(mut request: Request, next: Next) -> Response {
 }
 
 async fn file_get(
-	State(g): State<Arc<Global>>, Extension(actor_address): Extension<ActorAddress>,
+	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(file_hash): Extension<IdType>,
 ) -> Response {
-	match g.api.stream_file(actor_address, file_hash).await {
+	match g.base.api.stream_file(actor_address, file_hash).await {
 		Ok(x) => match x {
 			/*PossibleFileStream::Full(FileData { mime_type, data }) => {
 				let body = Body::from(data);

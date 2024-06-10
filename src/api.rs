@@ -23,11 +23,13 @@ use super::{
 	net::{actor::ActorNode, binserde, overlay::OverlayNode},
 };
 use crate::{
-	activity_pub,
 	db::{decrypt_block, Database, ObjectInfo, PostObjectInfo, ProfileObjectInfo, ShareObjectInfo},
 	entity::*,
 	trace::Traceable,
-	web::common::{human_readable_duration, into_object_display_info},
+	web::{
+		self,
+		common::{human_readable_duration, into_object_display_info},
+	},
 };
 
 
@@ -458,18 +460,18 @@ impl Api {
 
 	async fn load_activity_pub_object_info(
 		&self, id: i64,
-	) -> activity_pub::Result<Option<ObjectDisplayInfo>> {
+	) -> web::Result<Option<ObjectDisplayInfo>> {
 		let result = activity_pub_object::Entity::find_by_id(id)
 			//.find_also_related(activity_pub_actor::Entity.ref()) FIXME
 			.one(self.db.inner())
 			.await
-			.map_err(|e| activity_pub::Error::from(e))?;
+			.map_err(|e| web::Error::from(e))?;
 
 		let object_result = if let Some(object) = result {
 			let actor_opt = activity_pub_actor::Entity::find_by_id(object.actor_id)
 				.one(self.db.inner())
 				.await
-				.map_err(|e| activity_pub::Error::from(e))?;
+				.map_err(|e| web::Error::from(e))?;
 			let actor = if let Some(a) = actor_opt {
 				a
 			} else {
@@ -486,7 +488,7 @@ impl Api {
 				actor_avatar_url: actor.icon_url,
 				created: format!("{}", created.format("%Y-%m-%d %H:%M:%S")),
 				time_ago,
-				payload: ObjectPayloadDisplayInfo::Other(activity_pub::parse_post_object(
+				payload: ObjectPayloadDisplayInfo::Other(web::activity_pub::parse_post_object(
 					&object.data,
 				)?),
 			})
@@ -498,7 +500,7 @@ impl Api {
 
 	pub async fn load_consolidated_feed(
 		&self, count: u64, offset: u64,
-	) -> activity_pub::Result<Vec<ObjectDisplayInfo>> {
+	) -> web::Result<Vec<ObjectDisplayInfo>> {
 		let consolidated = consolidated_object::Entity::find()
 			.order_by_asc(consolidated_object::Column::Id)
 			.order_by_desc(consolidated_object::Column::Batch)
@@ -506,7 +508,7 @@ impl Api {
 			.offset(offset)
 			.all(self.db.inner())
 			.await
-			.map_err(|e| activity_pub::Error::from(e))?;
+			.map_err(|e| web::Error::from(e))?;
 
 		let mut objects = Vec::with_capacity(consolidated.len());
 		for consolidated_object in consolidated {
@@ -515,7 +517,7 @@ impl Api {
 					.db
 					.load_object_info2(consolidated_object.object_id)
 					.await
-					.map_err(|e| activity_pub::Error::from(e.unwrap().0).trace())?;
+					.map_err(|e| web::Error::from(e.unwrap().0).trace())?;
 				o.map(|o| into_object_display_info(o))
 			} else if consolidated_object.r#type == 1 {
 				self.load_activity_pub_object_info(consolidated_object.object_id)

@@ -1,6 +1,7 @@
 mod file;
 mod object;
 
+
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use axum::{
@@ -16,7 +17,8 @@ use tera::Context;
 
 use super::{
 	activity_pub, error_response, into_object_display_info, server_error_response,
-	server_error_response2, ActorAddress, Address, Global, ObjectDisplayInfo, PaginationQuery,
+	server_error_response2, ActorAddress, Address, ObjectDisplayInfo, PaginationQuery,
+	ServerGlobal,
 };
 use crate::{db::PersistenceHandle, entity::*};
 
@@ -27,9 +29,9 @@ struct ActorActions {
 }
 
 
-pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
+pub fn router(g: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
 	let mut actor_methods = get(actor_get);
-	if !g.server_info.is_exposed {
+	if !g.base.server_info.is_exposed {
 		actor_methods = actor_methods.post(actor_post);
 	}
 
@@ -45,7 +47,7 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 }
 
 async fn actor_middleware(
-	State(g): State<Arc<Global>>, mut request: Request, next: Next,
+	State(g): State<Arc<ServerGlobal>>, mut request: Request, next: Next,
 ) -> Response {
 	let params = request
 		.extract_parts::<Path<HashMap<String, String>>>()
@@ -60,7 +62,7 @@ async fn actor_middleware(
 	};
 	let actor_opt = match actor::Entity::find()
 		.filter(actor::Column::Address.eq(&address))
-		.one(g.api.db.inner())
+		.one(g.base.api.db.inner())
 		.await
 	{
 		Err(e) => return server_error_response(e, "Unable to load actor"),
@@ -78,14 +80,14 @@ async fn actor_middleware(
 }
 
 async fn actor_get(
-	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
+	State(g): State<Arc<ServerGlobal>>, Extension(address): Extension<ActorAddress>,
 	Query(query): Query<PaginationQuery>,
 ) -> Response {
-	let profile = match g.api.find_profile_info(&address).await {
+	let profile = match g.base.api.find_profile_info(&address).await {
 		Ok(p) => p,
 		Err(e) => return server_error_response(e, "Unable to fetch profile"),
 	};
-	let is_following: bool = match g.api.is_following(&address) {
+	let is_following: bool = match g.base.api.is_following(&address) {
 		Ok(f) => f,
 		Err(e) => return server_error_response(e, "Unable to fetch follow status"),
 	};
@@ -93,10 +95,11 @@ async fn actor_get(
 
 	let p = query.page.unwrap_or(0);
 	let start = p * 5;
-	let objects: Vec<ObjectDisplayInfo> = match g.api.db.load_actor_feed(&address, 5, start).await {
-		Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
-		Err(e) => return server_error_response(e, "unable to fetch home feed"),
-	};
+	let objects: Vec<ObjectDisplayInfo> =
+		match g.base.api.db.load_actor_feed(&address, 5, start).await {
+			Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
+			Err(e) => return server_error_response(e, "unable to fetch home feed"),
+		};
 
 	let mut context = Context::new();
 	context.insert("address", &address.to_string());
@@ -108,13 +111,13 @@ async fn actor_get(
 }
 
 async fn actor_post(
-	State(g): State<Arc<Global>>, Extension(address): Extension<ActorAddress>,
+	State(g): State<Arc<ServerGlobal>>, Extension(address): Extension<ActorAddress>,
 	Form(form_data): Form<ActorActions>,
 ) -> Response {
 	if let Some(follow) = &form_data.follow {
 		// Follow
 		if follow == "1" {
-			match g.api.follow(&address, true).await {
+			match g.base.api.follow(&address, true).await {
 				Ok(success) =>
 					if !success {
 						return server_error_response2(
@@ -125,7 +128,7 @@ async fn actor_post(
 			}
 		// Unfollow
 		} else {
-			match g.api.unfollow(&address).await {
+			match g.base.api.unfollow(&address).await {
 				Ok(_) => {}
 				Err(e) => return server_error_response(e, "Unable to unfollow this actor"),
 			}

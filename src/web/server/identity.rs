@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tera::Context;
 
 use super::{
-	not_found_error_response, server_error_response, server_error_response2, FileData, Global,
+	not_found_error_response, server_error_response, server_error_response2, FileData, ServerGlobal,
 };
 use crate::{
 	db::{self, Database, PersistenceHandle},
@@ -35,8 +35,8 @@ struct SelectFormData {
 }
 
 
-pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
-	if g.server_info.is_exposed {
+pub fn router(g: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
+	if g.base.server_info.is_exposed {
 		return Router::new();
 	}
 
@@ -49,7 +49,7 @@ pub fn router(g: Arc<Global>) -> Router<Arc<Global>> {
 }
 
 async fn identity_middleware(
-	State(g): State<Arc<Global>>, mut request: Request, next: Next,
+	State(g): State<Arc<ServerGlobal>>, mut request: Request, next: Next,
 ) -> Response {
 	let params = request
 		.extract_parts::<Path<HashMap<String, String>>>()
@@ -60,7 +60,7 @@ async fn identity_middleware(
 
 	let identity_opt = match identity::Entity::find()
 		.filter(identity::Column::Label.eq(label))
-		.one(g.api.db.inner())
+		.one(g.base.api.db.inner())
 		.await
 	{
 		Err(e) => return server_error_response(e, "Unable to load identity"),
@@ -78,10 +78,10 @@ async fn identity_middleware(
 }
 
 async fn profile_get(
-	State(g): State<Arc<Global>>, Extension(label): Extension<String>,
+	State(g): State<Arc<ServerGlobal>>, Extension(label): Extension<String>,
 	Extension(identity): Extension<identity::Model>,
 ) -> Response {
-	let profile = match g.api.db.find_profile_info2(identity.actor_id).await {
+	let profile = match g.base.api.db.find_profile_info2(identity.actor_id).await {
 		Ok(p) => p,
 		Err(e) => return server_error_response(e, "Unable to fetch profile"),
 	};
@@ -94,7 +94,7 @@ async fn profile_get(
 }
 
 async fn profile_post(
-	State(g): State<Arc<Global>>, Extension(old_label): Extension<String>,
+	State(g): State<Arc<ServerGlobal>>, Extension(old_label): Extension<String>,
 	Extension(identity): Extension<identity::Model>, multipart: Multipart,
 ) -> Response {
 	let (new_label, name, avatar, wallpaper, description) = parse_identity_form(multipart).await;
@@ -104,6 +104,7 @@ async fn profile_post(
 
 	let private_key = ActorPrivateKeyV1::from_bytes(identity.private_key.try_into().unwrap());
 	if let Err(e) = g
+		.base
 		.api
 		.update_profile(
 			&private_key,
@@ -126,8 +127,8 @@ async fn profile_post(
 		.unwrap()
 }
 
-async fn index(State(g): State<Arc<Global>>) -> Response {
-	let identities = match g.api.fetch_my_identities() {
+async fn index(State(g): State<Arc<ServerGlobal>>) -> Response {
+	let identities = match g.base.api.fetch_my_identities() {
 		Ok(i) => i,
 		Err(e) => return server_error_response(e, "unable to fetch identities:"),
 	};
@@ -147,7 +148,7 @@ async fn index(State(g): State<Arc<Global>>) -> Response {
 	g.render("identity/overview.html.tera", context).await
 }
 
-async fn new(State(g): State<Arc<Global>>) -> Response {
+async fn new(State(g): State<Arc<ServerGlobal>>) -> Response {
 	g.render("identity/profile.html.tera", Context::new()).await
 }
 
@@ -218,11 +219,12 @@ async fn parse_identity_form(
 	(label, name, avatar, wallpaper, description)
 }
 
-async fn new_post(State(g): State<Arc<Global>>, multipart: Multipart) -> Response {
+async fn new_post(State(g): State<Arc<ServerGlobal>>, multipart: Multipart) -> Response {
 	let (label, name, avatar, wallpaper, description) = parse_identity_form(multipart).await;
 
 	// Create the identity
 	match g
+		.base
 		.api
 		.create_identity(
 			&label,
@@ -234,10 +236,15 @@ async fn new_post(State(g): State<Arc<Global>>, multipart: Multipart) -> Respons
 		.await
 	{
 		Ok((address, _)) => {
-			g.state.lock().await.identities.push(super::IdentityData {
-				label,
-				address: address.to_string(),
-			});
+			g.base
+				.state
+				.lock()
+				.await
+				.identities
+				.push(super::IdentityData {
+					label,
+					address: address.to_string(),
+				});
 
 			Response::builder()
 				.status(303)
@@ -265,12 +272,14 @@ async fn find_actor_by_label(db: &Database, label: &str) -> db::Result<Option<ac
 	Ok(r)
 }
 
-async fn select_post(State(g): State<Arc<Global>>, Form(form): Form<SelectFormData>) -> Response {
-	match find_actor_by_label(&g.api.db, &form.identity).await {
+async fn select_post(
+	State(g): State<Arc<ServerGlobal>>, Form(form): Form<SelectFormData>,
+) -> Response {
+	match find_actor_by_label(&g.base.api.db, &form.identity).await {
 		Err(e) => server_error_response(e, "Unable to find selected identity"),
 		Ok(resultset) =>
 			if let Some(record) = resultset {
-				g.state.lock().await.active_identity = Some((form.identity, record.address));
+				g.base.state.lock().await.active_identity = Some((form.identity, record.address));
 				Response::builder()
 					.status(303)
 					.header("Location", "/")
