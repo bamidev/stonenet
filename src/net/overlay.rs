@@ -2091,7 +2091,9 @@ impl OverlayNode {
 			.simple_result(OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_RESPONSE, &())
 	}
 
-	async fn process_trust_list_request(self: &Arc<Self>, buffer: &[u8]) -> MessageProcessorResult {
+	async fn process_trust_list_request(
+		self: &Arc<Self>, buffer: &[u8], node_id: &NodeAddress,
+	) -> MessageProcessorResult {
 		let request: ListTrustedNodesRequest = match binserde::deserialize(buffer) {
 			Ok(r) => r,
 			Err(e) => {
@@ -2109,49 +2111,74 @@ impl OverlayNode {
 			return None;
 		}
 
-		let update_result = match trust_list_checksum::Entity::find_by_id(request.recursion_level)
+		// Permissions check
+		let is_trusted_directly = match trusted_node_trust_item::Entity::find()
+			.filter(trusted_node_trust_item::Column::RecursionLevel.eq(0))
+			.filter(trusted_node_trust_item::Column::Address.eq(node_id))
 			.one(self.db().inner())
 			.await
 		{
-			Ok(r) => r,
+			Ok(r) => r.is_some(),
 			Err(e) => {
-				error!(
-					"Database issue while loading checksum for trust list of level {}: {}",
-					request.recursion_level, e
-				);
+				error!("Database issue: {:?}", e);
 				return None;
 			}
 		};
-		let result = if let Some(update_record) = update_result {
-			let valid_checksum = if let Some(request_checksum) = &request.checksum {
-				request_checksum == &update_record.checksum
-			} else {
-				false
-			};
-			if valid_checksum {
-				ListTrustedNodesResult::ValidChecksum
-			} else {
-				let items = match trusted_node_trust_item::Entity::find()
-					.filter(trusted_node_trust_item::Column::TrustedNodeId.is_null())
-					.filter(
-						trusted_node_trust_item::Column::RecursionLevel.eq(request.recursion_level),
-					)
-					.order_by_asc(trusted_node_trust_item::Column::Id)
-					.all(self.db().inner())
+
+
+		let result = if !is_trusted_directly {
+			info!(
+				"Received trust list request from {}, but we don't trust that node (yet).",
+				node_id
+			);
+			ListTrustedNodesResult::None
+		} else {
+			let update_result =
+				match trust_list_checksum::Entity::find_by_id(request.recursion_level)
+					.one(self.db().inner())
 					.await
 				{
 					Ok(r) => r,
 					Err(e) => {
-						error!("Database error while loading trust list: {}", e);
+						error!(
+							"Database issue while loading checksum for trust list of level {}: {}",
+							request.recursion_level, e
+						);
 						return None;
 					}
 				};
+			if let Some(update_record) = update_result {
+				let valid_checksum = if let Some(request_checksum) = &request.checksum {
+					request_checksum == &update_record.checksum
+				} else {
+					false
+				};
+				if valid_checksum {
+					ListTrustedNodesResult::ValidChecksum
+				} else {
+					let items = match trusted_node_trust_item::Entity::find()
+						.filter(trusted_node_trust_item::Column::TrustedNodeId.is_null())
+						.filter(
+							trusted_node_trust_item::Column::RecursionLevel
+								.eq(request.recursion_level),
+						)
+						.order_by_asc(trusted_node_trust_item::Column::Id)
+						.all(self.db().inner())
+						.await
+					{
+						Ok(r) => r,
+						Err(e) => {
+							error!("Database error while loading trust list: {}", e);
+							return None;
+						}
+					};
 
-				let items = items.into_iter().map(|i| (i.address, i.score)).collect();
-				ListTrustedNodesResult::List(items)
+					let items = items.into_iter().map(|i| (i.address, i.score)).collect();
+					ListTrustedNodesResult::List(items)
+				}
+			} else {
+				ListTrustedNodesResult::None
 			}
-		} else {
-			ListTrustedNodesResult::None
 		};
 
 		let response = ListTrustedNodesResponse { result };
@@ -2186,7 +2213,8 @@ impl OverlayNode {
 			OVERLAY_MESSAGE_TYPE_PASS_RELAY_REQUEST_REQUEST =>
 				self.process_pass_relay_request_request(buffer).await,
 			OVERLAY_MESSAGE_TYPE_TRUST_LIST_REQUEST =>
-				self.process_trust_list_request(buffer).await,
+				self.process_trust_list_request(buffer, &node_info.address)
+					.await,
 			other_id => {
 				warn!(
 					"Unknown overlay message type ID received from {}: {}",
