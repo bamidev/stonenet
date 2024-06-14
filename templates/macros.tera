@@ -5,26 +5,13 @@
 			name=object.actor_name,
 			avatar_url=object.actor_avatar_url,
 			created=object.created,
-			time_ago=object.time_ago,
+			time_ago=object.found_ago,
 		)}}
 		{{macros::compose_object_payload(
 			index=index,
-			actor_url=object.actor_url,
-			payload=object.payload
+			object=object,
+			footer=footer,
 		)}}
-		{% if footer %}
-			{% if "Post" in object.payload %}
-				{{macros::compose_object_footer(
-					actor_url = object.actor_url,
-					hash = object.hash
-				)}}
-			{% elif "Share" in object.payload %}
-				{{macros::compose_object_footer(
-					actor_url = "/actor/" ~ object.payload["Share"].original_post.actor_address,
-					hash = object.hash
-				)}}
-			{% endif %}
-		{% endif %}
 	</div>
 {% endmacro %}
 
@@ -72,12 +59,18 @@
 	</div>
 {% endmacro feed %}
 
-{% macro compose_object_footer(actor_url, hash) %}
+{% macro compose_object_footer(consolidated_type, actor_url, object_id) %}
+	{% if consolidated_type == "Stonenet" %}
+		{% set base_url = actor_url ~ '/object/' ~ object_id %}
+	{% elif consolidated_type == "ActivityPub" %}
+		{% set base_url = '/activity-pub/object/' ~ object_id %}
+	{% endif %}
+
 	<div class="card-footer text-right">
-		<form class="d-inline" method="post" action="/{{actor_url}}/object/{{hash}}/share">
+		<form class="d-inline" method="post" action="{{ base_url }}/share">
 			<button class="btn btn-secondary" type="submit">Share</button>
 		</form>
-		<a class="btn btn-secondary float-end" href="/{{actor_url}}/object/{{hash}}">Open</a>
+		<a class="btn btn-secondary float-end" href="{{ base_url }}">Reply</a>
 	</div>
 {% endmacro %}
 
@@ -99,31 +92,38 @@
 	</div>
 {% endmacro %}
 
-{% macro compose_object_payload(index, actor_url, payload) %}
-	{% for key, value in payload %}
+{% macro compose_object_payload(index, object, footer) %}
+	{% for key, value in object.payload %}
 		{% if key == "Post" %}
-			{{macros::compose_post_object_payload(index=index, actor_url=actor_url, payload=payload["Post"])}}
+			{{macros::compose_post_object_payload(
+				index=index,
+				object=object,
+				payload=object.payload["Post"],
+				footer=footer,
+			)}}
 		{% elif key == "Share" %}
-			{{macros::compose_share_object_payload(index=index, actor_url=actor_url, payload=payload["Share"])}}
+			{{macros::compose_share_object_payload(
+				index=index,
+				object=object,
+				payload=object.payload["Share"],
+				footer=footer,
+			)}}
 		{% elif key == "Profile" %}
-			{{macros::compose_profile_object_payload(payload=payload["Profile"])}}
-		{% elif key == "Other" %}
-			{{macros::compose_other_object_payload(payload=payload["Other"])}}
+			{{macros::compose_profile_object_payload(payload=object.payload["Profile"])}}
 		{% endif %}
 	{% endfor %}
 {% endmacro compose_object %}
 
-{% macro compose_share_object_payload(index, actor_url, payload) %}
+{% macro compose_share_object_payload(index, object, footer) %}
 	<div class="card-body">
-		<a href="/actor/{{payload.original_post.actor_address}}">{{payload.original_post.actor_name}}</a> wrote:
+		<a href="{{payload.original_post.actor_url}}">{{payload.original_post.actor_name}}</a> wrote:
 
 		{% if payload.original_post and payload.original_post.message %}
 			{{macros::compose_post_object_body(
 				index=index,
-				actor_url=actor_url,
-				message=payload.original_post.message[1],
+				actor_url=object.actor_url,
+				message=payload.original_post.message,
 				attachments=payload.original_post.attachments,
-				mime_type=payload.original_post.message[0]
 			)}}
 		{% else %}
 			<div class="alert alert-danger">
@@ -131,30 +131,31 @@
 			</div>
 		{% endif %}
 	</div>
+
+	{% if footer %}
+		{{macros::compose_object_footer(
+			consolidated_type = object.consolidated_type,
+			actor_url = payload["Share"].original_post.actor_url,
+			object_id = object.id
+		)}}
+	{% endif %}
 {% endmacro %}
 
-{% macro compose_other_object_payload(payload) %}
-	<div class="card-body">
-		{{ payload.content | safe }}
-	</div>
-{% endmacro %}
-
-{% macro compose_post_object_payload(index, actor_url, payload) %}
+{% macro compose_post_object_payload(index, object, payload, footer) %}
 	{% if payload.in_reply_to %}
 		<div class="card-body">
 			<div class="card bg-dark-subtle">
 				{{macros::compose_object_header(
-					actor_url = "/actor/" ~ payload.in_reply_to.actor_address,
+					actor_url = payload.in_reply_to.actor_url,
 					name = payload.in_reply_to.actor_name,
-					avatar_url = "/actor/" ~ payload.in_reply_to.actor_address ~ "/file/" ~ payload.in_reply_to.actor_avatar,
+					avatar_url = payload.in_reply_to.actor_avatar_url,
 					small = true
 				)}}
 				{{macros::compose_post_object_body(
 					index=index + 100,
-					actor_url = "/actor/" ~ payload.in_reply_to.actor_address,
-					message=payload.in_reply_to.message[1],
+					actor_url = payload.in_reply_to.actor_url,
+					message=payload.in_reply_to.message,
 					attachments=payload.in_reply_to.attachments,
-					mime_type=payload.in_reply_to.message[0]
 				)}}
 			</div>
 		</div>
@@ -162,18 +163,25 @@
 
 	{{macros::compose_post_object_body(
 		index=index,
-		actor_url=actor_url,
+		actor_url=object.actor_url,
 		message=payload.message,
 		attachments=payload.attachments,
-		mime_type=payload.mime_type
 	)}}
+
+	{% if footer %}
+		{{macros::compose_object_footer(
+			consolidated_type = object.consolidated_type,
+			actor_url = object.actor_url,
+			object_id = object.id
+		)}}
+	{% endif %}
 {% endmacro %}
 
 {% macro compose_profile_object_payload(payload) %}
 	<div class="card-body" 
 		{% if payload.actor.wallpaper_id %}
 			style="
-				background-image: url('/actor/{{payload.actor.address}}/file/{{payload.actor.wallpaper_id}}');
+				background-image: url('{{payload.actor.wallpaper_url}}');
 				background-position: center;
 				background-size: cover;
 				max-height: 200px;
@@ -181,22 +189,17 @@
 		{% endif %}
 	>
 		<span class="m-3 p-1 bg-white bg-opacity-50 text-dark rounded">
-			<a href="/actor/{{payload.actor.address}}" target="_blank">Updated my profile.</a>
+			<a href="{{payload.actor.url}}" target="_blank">Updated my profile.</a>
 		</span>
 	</div>
 {% endmacro %}
 
-{% macro compose_post_object_body(index, actor_url, message, mime_type, attachments) %}
-
-	{% set use_markdown = false %}
-	{% if mime_type == 'text/markdown' %}
-		{% set use_markdown = true %}
-	{% endif %}
+{% macro compose_post_object_body(index, actor_url, message, attachments) %}
 
 	<div class="card-body">
 		<div class="overflow-scroll" style="display: block; max-height: 200px;">
 			<div
-			{% if use_markdown %}
+			{% if message.mime_type == 'text/markdown' %}
 				id="milkdown-content-{{ index }}"
 				class="content-markdown"
 				style="white-space: pre-wrap;"
@@ -204,7 +207,11 @@
 				id="message-{{index}}"
 			>
 				{% if message %}
-					{{message | escape | linebreaksbr | safe}}
+					{% if message.mime_type == 'text/html' %}
+						{{ message.body | safe }}
+					{% else %}
+						{{ message.body | escape | linebreaksbr | safe }}
+					{% endif %}
 				{% else %}
 					<div class="alert alert-danger">
 						The message of this post has not been able to synchronize yet.
@@ -212,7 +219,7 @@
 				{% endif %}
 			</div>
 
-			{% if use_markdown %}
+			{% if message.mime_type == 'text/markdown' %}
 				<div id="milkdown-view-{{ index }}" class="milkdown-view"></div>
 			{% endif %}
 		</div>
