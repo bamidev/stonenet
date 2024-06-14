@@ -3,11 +3,8 @@
 
 mod install;
 
-use std::{
-	cmp::min, collections::HashMap, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration,
-};
+use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration};
 
-use ::serde::Serialize;
 use async_trait::async_trait;
 use chacha20::{
 	cipher::{KeyIvInit, StreamCipher},
@@ -80,71 +77,9 @@ pub enum Error {
 	UnexpectedState(String),
 }
 
-#[derive(Debug, Default, Serialize)]
-pub struct ShareObjectInfo {
-	pub original_post: Option<TargetedPostInfo>,
-}
-
 pub trait DerefConnection: Deref<Target = rusqlite::Connection> {}
 impl<T> DerefConnection for T where T: Deref<Target = rusqlite::Connection> {}
 
-#[derive(Debug, Serialize)]
-pub struct TargetedActorInfo {
-	pub address: String,
-	pub name: String,
-	pub avatar_id: Option<IdType>,
-	pub wallpaper_id: Option<IdType>,
-}
-
-
-#[derive(Clone, Debug, Serialize)]
-pub enum PossiblyKnownFileHeader {
-	Unknown(IdType),
-	Known(FileHeader),
-}
-
-#[derive(Debug, Serialize)]
-pub struct TargetedPostInfo {
-	pub actor_address: String,
-	pub actor_name: Option<String>,
-	pub actor_avatar: Option<IdType>,
-	//pub sequence: u64,
-	pub message: Option<(String, String)>,
-	pub attachments: Vec<PossiblyKnownFileHeader>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PostObjectInfo {
-	pub in_reply_to: Option<TargetedPostInfo>,
-	pub sequence: u64,
-	pub message: Option<String>,
-	pub mime_type: Option<String>,
-	pub attachments: Vec<PossiblyKnownFileHeader>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ProfileObjectInfo {
-	pub actor: TargetedActorInfo,
-	pub description: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct ObjectInfo {
-	pub hash: IdType,
-	pub created: u64,
-	pub found: u64,
-	pub actor_address: ActorAddress,
-	pub actor_name: Option<String>,
-	pub actor_avatar: Option<IdType>,
-	pub payload: ObjectPayloadInfo,
-}
-
-#[derive(Debug, Serialize)]
-pub enum ObjectPayloadInfo {
-	Profile(ProfileObjectInfo),
-	Post(PostObjectInfo),
-	Share(ShareObjectInfo),
-}
 
 pub type Result<T> = trace::Result<T, self::Error>;
 
@@ -284,39 +219,6 @@ pub trait PersistenceHandle {
 		Ok(servers)
 	}
 
-	async fn load_actor_feed(
-		&self, actor: &ActorAddress, limit: u64, offset: u64,
-	) -> Result<Vec<ObjectInfo>> {
-		let query = Query::select()
-			.column((object::Entity, object::Column::Id))
-			.column((object::Entity, object::Column::Type))
-			.column(object::Column::ActorId)
-			.column(object::Column::Hash)
-			.column(object::Column::Created)
-			.column(object::Column::Found)
-			.from(object::Entity)
-			.inner_join(
-				actor::Entity,
-				Expr::col((object::Entity, object::Column::ActorId))
-					.equals((actor::Entity, actor::Column::Id)),
-			)
-			.and_where(actor::Column::Address.eq(actor))
-			.order_by(object::Column::Sequence, Order::Desc)
-			.limit(limit)
-			.offset(offset)
-			.take();
-		let stat = self.backend().build(&query);
-
-		let results = self.inner().query_all(stat).await?;
-		let mut objects = Vec::with_capacity(limit as _);
-		for result in &results {
-			if let Some(object) = self._load_object_info_from_result(actor, result).await? {
-				objects.push(object);
-			}
-		}
-		Ok(objects)
-	}
-
 	async fn load_file_blocks(&self, file_id: i64, block_count: u32) -> Result<Vec<IdType>> {
 		let results = file_block::Entity::find()
 			.filter(file_block::Column::FileId.eq(file_id))
@@ -444,73 +346,6 @@ pub trait PersistenceHandle {
 		})
 	}
 
-	async fn load_home_feed(
-		&self, limit: u64, offset: u64, track: impl Iterator<Item = &ActorAddress> + Send,
-	) -> Result<Vec<ObjectInfo>> {
-		// Build up the part of the query that includes the id's to track additionally
-		let cap = track.size_hint().1.unwrap_or(track.size_hint().0);
-		let mut tuples: Vec<&ActorAddress> = Vec::with_capacity(cap);
-		for t in track {
-			tuples.push(t);
-		}
-
-		// The query
-		let query = object::Entity::find()
-			.column(actor::Column::Address)
-			.join(JoinType::LeftJoin, object::Relation::Actor.def())
-			.filter(
-				Condition::any()
-					.add(
-						object::Column::ActorId.in_subquery(
-							Query::select()
-								.column(actor::Column::Id)
-								.from(Alias::new(actor::Entity::default().table_name()))
-								.and_where(
-									Expr::col((actor::Entity, actor::Column::Address))
-										.in_tuples(tuples),
-								)
-								.take(),
-						),
-					)
-					.add(
-						object::Column::ActorId.in_subquery(
-							Query::select()
-								.column(identity::Column::ActorId)
-								.from(Alias::new(identity::Entity::default().table_name()))
-								.take(),
-						),
-					)
-					.add(
-						object::Column::ActorId.in_subquery(
-							Query::select()
-								.column(following::Column::ActorId)
-								.from(Alias::new(following::Entity::default().table_name()))
-								.take(),
-						),
-					),
-			)
-			.order_by_desc(object::Column::Found)
-			.offset(offset)
-			.limit(limit)
-			.build(self.backend());
-
-		// Process results
-		let results = self.inner().query_all(query).await?;
-		let mut objects = Vec::with_capacity(limit as _);
-		for result in &results {
-			let actor_address_opt: Option<ActorAddress> =
-				result.try_get_by(actor::Column::Address.as_str())?;
-			if let Some(actor_address) = actor_address_opt {
-				if let Some(object) = self
-					._load_object_info_from_result(&actor_address, result)
-					.await?
-				{
-					objects.push(object);
-				}
-			}
-		}
-		Ok(objects)
-	}
 
 	async fn load_is_following(&self, webfinger_address: &str) -> Result<bool> {
 		let is_following = if let Some(actor) = activity_pub_actor::Entity::find()
@@ -526,76 +361,6 @@ pub trait PersistenceHandle {
 			false
 		};
 		Ok(is_following)
-	}
-
-	async fn load_next_unconsolidated_activity_pub_objects(
-		&self,
-	) -> Result<HashMap<i64, (i64, i64)>> {
-		let stat = activity_pub_object::Entity::find()
-			.select_only()
-			.column(activity_pub_object::Column::Id)
-			.column(activity_pub_object::Column::ActorId)
-			.column(activity_pub_object::Column::Published)
-			.filter(
-				activity_pub_object::Column::Id.not_in_subquery(
-					consolidated_object::Entity::find()
-						.select_only()
-						.column(consolidated_object::Column::ObjectId)
-						.filter(consolidated_object::Column::Type.eq(1))
-						.into_query(),
-				),
-			)
-			.order_by_asc(activity_pub_object::Column::ActorId)
-			.order_by_desc(activity_pub_object::Column::Published)
-			.build(self.backend());
-		let results = self.inner().query_all(stat).await?;
-
-		// Take one object per actor, the earliest one to be specific
-		let mut map = HashMap::new();
-		for result in results {
-			let object_id: i64 = result.try_get_by_index(0)?;
-			let actor_id: i64 = result.try_get_by_index(1)?;
-			let timestamp: i64 = result.try_get_by_index(2)?;
-
-			if !map.contains_key(&actor_id) {
-				map.insert(actor_id, (object_id, timestamp));
-			}
-		}
-		Ok(map)
-	}
-
-	async fn load_next_unconsolidated_objects(&self) -> Result<HashMap<i64, (i64, i64)>> {
-		let stat = object::Entity::find()
-			.select_only()
-			.column(object::Column::Id)
-			.column(object::Column::ActorId)
-			.column(object::Column::Found)
-			.filter(
-				object::Column::Id.not_in_subquery(
-					consolidated_object::Entity::find()
-						.select_only()
-						.column(consolidated_object::Column::ObjectId)
-						.filter(consolidated_object::Column::Type.eq(0))
-						.into_query(),
-				),
-			)
-			.order_by_asc(object::Column::ActorId)
-			.order_by_desc(object::Column::Found)
-			.build(self.backend());
-		let results = self.inner().query_all(stat).await?;
-
-		// Take one object per actor, the earliest one to be specific
-		let mut map = HashMap::new();
-		for result in results {
-			let object_id: i64 = result.try_get_by_index(0)?;
-			let actor_id: i64 = result.try_get_by_index(1)?;
-			let timestamp: i64 = result.try_get_by_index(2)?;
-
-			if !map.contains_key(&actor_id) {
-				map.insert(actor_id, (object_id, timestamp));
-			}
-		}
-		Ok(map)
 	}
 
 	async fn load_node_identity(&self) -> Result<(NodeAddress, NodePrivateKey)> {
@@ -851,37 +616,6 @@ pub trait PersistenceHandle {
 		}
 	}
 
-	async fn find_object_info(
-		&self, actor_address: &ActorAddress, hash: &IdType,
-	) -> Result<Option<ObjectInfo>> {
-		let query = Query::select()
-			.column((object::Entity, object::Column::Id))
-			.column((object::Entity, object::Column::Type))
-			.column(object::Column::ActorId)
-			.column(object::Column::Hash)
-			.column(object::Column::Created)
-			.column(object::Column::Found)
-			.from(object::Entity)
-			.inner_join(
-				actor::Entity,
-				Expr::col((object::Entity, object::Column::ActorId))
-					.equals((actor::Entity, actor::Column::Id)),
-			)
-			.and_where(actor::Column::Address.eq(actor_address))
-			.and_where(object::Column::Hash.eq(hash))
-			.take();
-		let stat = self.backend().build(&query);
-
-		if let Some(result) = self.inner().query_one(stat).await? {
-			let object_opt = self
-				._load_object_info_from_result(actor_address, &result)
-				.await?;
-			Ok(object_opt)
-		} else {
-			Ok(None)
-		}
-	}
-
 	async fn find_objects_by_sequence(
 		&self, actor_address: &ActorAddress, sequence: u64,
 	) -> Result<Vec<object::Model>> {
@@ -906,378 +640,6 @@ pub trait PersistenceHandle {
 			.order_by_asc(object::Column::Created)
 			.all(self.inner())
 			.await?)
-	}
-
-	async fn load_object_info(
-		&self, actor_address: &ActorAddress, hash: &IdType,
-	) -> Result<Option<ObjectInfo>> {
-		let result = object::Entity::find()
-			.filter(object::Column::Hash.eq(hash))
-			.filter(actor::Column::Address.eq(actor_address))
-			.one(self.inner())
-			.await?;
-		let info = if let Some(object) = result {
-			let (actor_name, actor_avatar) = self.find_profile_limited(object.actor_id).await?;
-
-			if let Some(payload) = self
-				.load_object_payload_info(object.id, object.r#type)
-				.await?
-			{
-				Some(ObjectInfo {
-					hash: hash.clone(),
-					created: object.created as _,
-					found: object.found as _,
-					actor_address: actor_address.clone(),
-					actor_avatar,
-					actor_name,
-					payload,
-				})
-			} else {
-				None
-			}
-		} else {
-			None
-		};
-		Ok(info)
-	}
-
-	async fn load_object_info2(&self, id: i64) -> Result<Option<ObjectInfo>> {
-		let result = object::Entity::find_by_id(id).one(self.inner()).await?;
-		let info = if let Some(object) = result {
-			let actor_address = if let Some(record) = actor::Entity::find_by_id(object.actor_id)
-				.one(self.inner())
-				.await?
-			{
-				record.address
-			} else {
-				return Ok(None);
-			};
-			let (actor_name, actor_avatar) = self.find_profile_limited(object.actor_id).await?;
-
-			if let Some(payload) = self
-				.load_object_payload_info(object.id, object.r#type)
-				.await?
-			{
-				Some(ObjectInfo {
-					hash: object.hash,
-					created: object.created as _,
-					found: object.found as _,
-					actor_address,
-					actor_avatar,
-					actor_name,
-					payload,
-				})
-			} else {
-				None
-			}
-		} else {
-			None
-		};
-		Ok(info)
-	}
-
-	async fn load_object_payload_info(
-		&self, object_id: i64, object_type: u8,
-	) -> Result<Option<ObjectPayloadInfo>> {
-		Ok(match object_type {
-			OBJECT_TYPE_POST => self
-				.find_post_object_info(object_id)
-				.await?
-				.map(|r| ObjectPayloadInfo::Post(r)),
-			OBJECT_TYPE_SHARE => self
-				.find_share_object_info(object_id)
-				.await?
-				.map(|r| ObjectPayloadInfo::Share(r)),
-			OBJECT_TYPE_PROFILE => self
-				.find_profile_object_info(object_id)
-				.await?
-				.map(|r| ObjectPayloadInfo::Profile(r)),
-			other => panic!("unknown object type: {}", other),
-		})
-	}
-
-	async fn find_profile_info(
-		&self, actor_address: &ActorAddress,
-	) -> Result<Option<ProfileObjectInfo>> {
-		let result = self
-			.inner()
-			.query_one(Statement::from_sql_and_values(
-				self.inner().get_database_backend(),
-				r#"
-			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-				df.compression_type, df.plain_hash, df.block_count
-			FROM profile_object AS po
-			LEFT JOIN object AS o ON po.object_id = o.id
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			LEFT JOIN file AS df ON po.description_file_hash = df.hash
-			WHERE i.address = ?
-			ORDER BY sequence DESC
-			
-		"#,
-				[actor_address.to_bytes().into()],
-			))
-			.await?;
-		Ok(if let Some(r) = result {
-			self._parse_profile_info(r).await?
-		} else {
-			None
-		})
-	}
-
-	async fn find_profile_info2(&self, actor_id: i64) -> Result<Option<ProfileObjectInfo>> {
-		let result = self
-			.inner()
-			.query_one(Statement::from_sql_and_values(
-				self.inner().get_database_backend(),
-				r#"
-			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-				df.compression_type, df.plain_hash, df.block_count
-			FROM profile_object AS po
-			LEFT JOIN object AS o ON po.object_id = o.id
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			LEFT JOIN file AS df ON po.description_file_hash = df.hash
-			WHERE i.id = ?
-			ORDER BY sequence DESC
-		"#,
-				[actor_id.into()],
-			))
-			.await?;
-		Ok(if let Some(r) = result {
-			self._parse_profile_info(r).await?
-		} else {
-			None
-		})
-	}
-
-	async fn find_profile_object_info(&self, object_id: i64) -> Result<Option<ProfileObjectInfo>> {
-		let result = self
-			.inner()
-			.query_one(Statement::from_sql_and_values(
-				self.inner().get_database_backend(),
-				r#"
-			SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-			       df.compression_type, df.plain_hash, df.block_count
-			FROM profile_object AS po
-			LEFT JOIN object AS o ON po.object_id = o.id
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			LEFT JOIN file AS df ON po.description_file_hash = df.hash
-			WHERE o.id = ?
-		"#,
-				[object_id.into()],
-			))
-			.await?;
-		Ok(if let Some(r) = result {
-			self._parse_profile_info(r).await?
-		} else {
-			None
-		})
-	}
-
-	async fn find_share_object_info(&self, object_id: i64) -> Result<Option<ShareObjectInfo>> {
-		let result = self
-			.inner()
-			.query_one(Statement::from_sql_and_values(
-				self.inner().get_database_backend(),
-				r#"
-			SELECT bo.actor_address, bi.id, to_.id
-			FROM object AS o
-			LEFT JOIN share_object AS bo ON bo.object_id = o.id
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			LEFT JOIN actor AS bi ON bo.actor_address = bi.address
-			LEFT JOIN object AS to_ ON to_.hash = bo.object_hash
-			WHERE o.id = ?
-		"#,
-				[object_id.into()],
-			))
-			.await?;
-
-		if let Some(row) = result {
-			let actor_address: ActorAddress = row.try_get_by_index(0)?;
-			let target_actor_id_opt: Option<i64> = row.try_get_by_index(1)?;
-			let target_object_id_opt: Option<i64> = row.try_get_by_index(2)?;
-
-			if let Some(target_object_id) = target_object_id_opt {
-				let (actor_name, actor_avatar) = if let Some(target_actor_id) = target_actor_id_opt
-				{
-					self.find_profile_limited(target_actor_id).await?
-				} else {
-					(None, None)
-				};
-				let mut share_object = ShareObjectInfo::default();
-				if let Some((mime_type, body, attachments)) =
-					self.find_post_object_info_files(target_object_id).await?
-				{
-					share_object.original_post = Some(TargetedPostInfo {
-						actor_address: actor_address.to_string(),
-						actor_name,
-						actor_avatar,
-						message: Some((mime_type, body)),
-						attachments,
-					})
-				} else {
-					share_object.original_post = Some(TargetedPostInfo {
-						actor_address: actor_address.to_string(),
-						actor_name,
-						actor_avatar,
-						message: None,
-						attachments: Vec::new(),
-					})
-				};
-				Ok(Some(share_object))
-			} else {
-				Ok(None)
-			}
-		} else {
-			Ok(None)
-		}
-	}
-
-	/// Finds the mime-type, text content & attachments for the given post
-	/// object respectively.
-	async fn find_post_object_info_files(
-		&self, object_id: i64,
-	) -> Result<Option<(String, String, Vec<PossiblyKnownFileHeader>)>> {
-		fn file_query<F>(backend: DatabaseBackend, object_id: i64, condition: F) -> Statement
-		where
-			F: IntoCondition,
-		{
-			file::Entity::find()
-				.join(
-					JoinType::LeftJoin,
-					file::Entity::belongs_to(post_file::Entity)
-						.from(file::Column::Hash)
-						.to(post_file::Column::Hash)
-						.into(),
-				)
-				.filter(post_file::Column::ObjectId.eq(object_id))
-				.filter(condition)
-				.order_by(post_file::Column::Sequence, Order::Asc)
-				.build(backend)
-		}
-
-		let query = post_object::Entity::find()
-			.filter(post_object::Column::ObjectId.eq(object_id))
-			.build(self.inner().get_database_backend());
-		let result = self.inner().query_one(query).await?;
-
-		if let Some(r) = result {
-			let file_count: i64 = r.try_get_by("file_count")?;
-
-			let query = file_query(
-				self.inner().get_database_backend(),
-				object_id,
-				post_file::Column::Sequence.eq(0),
-			);
-			if let Some(row) = self.inner().query_one(query).await? {
-				//let file_hash: IdType = row.try_get_by(file::Column::Hash.as_str())?;
-				let file_id_opt: Option<i64> = row.try_get_by(file::Column::Id.as_str())?;
-				if let Some(file_id) = file_id_opt {
-					let plain_hash: IdType = row.try_get_by(file::Column::PlainHash.as_str())?;
-					let mime_type: String = row.try_get_by(file::Column::MimeType.as_str())?;
-					let block_count: u32 = row.try_get_by(file::Column::BlockCount.as_str())?;
-
-					let body_opt =
-						match self.find_file_data(file_id, &plain_hash, block_count).await {
-							Ok(message_data_opt) =>
-								message_data_opt.map(|md| String::from_utf8_lossy(&md).to_string()),
-							Err(e) => match &*e {
-								// If a block is still missing from the message data file, don't
-								// actually raise an error, just leave the message data unset.
-								Error::FileMissingBlock(..) => None,
-								_ => return Err(e),
-							},
-						};
-
-					if let Some(body) = body_opt {
-						// Collect the files
-						let mut attachments = Vec::with_capacity(file_count as _);
-						let query = file_query(
-							self.inner().get_database_backend(),
-							object_id,
-							post_file::Column::Sequence.gt(0),
-						);
-						let results = self.inner().query_all(query).await?;
-						for row in results {
-							let hash: IdType = row.try_get_by("hash")?;
-							let mime_type_opt: Option<String> = row.try_get_by("mime_type")?;
-							let attachment = if let Some(mime_type) = mime_type_opt {
-								let block_count: u32 = row.try_get_by("block_count")?;
-
-								PossiblyKnownFileHeader::Known(FileHeader {
-									hash,
-									mime_type,
-									block_count,
-								})
-							} else {
-								PossiblyKnownFileHeader::Unknown(hash)
-							};
-							attachments.push(attachment);
-						}
-
-						return Ok(Some((mime_type, body, attachments)));
-					}
-				}
-			}
-		}
-		Ok(None)
-	}
-
-	/// Finds `PostObjectInfo` for the given `object_id`.
-	async fn find_post_object_info(&self, object_id: i64) -> Result<Option<PostObjectInfo>> {
-		let result = self
-			.inner()
-			.query_one(Statement::from_sql_and_values(
-				self.inner().get_database_backend(),
-				r#"
-			SELECT o.actor_id, o.sequence, ti.id, ti.address, tpo.object_id
-			FROM post_object AS po
-			INNER JOIN object AS o ON po.object_id = o.id
-			INNER JOIN actor AS i ON o.actor_id = i.id
-			LEFT JOIN actor AS ti ON po.in_reply_to_actor_address = ti.address
-			LEFT JOIN object AS to_ ON to_.actor_id = ti.id
-				AND to_.hash = po.in_reply_to_object_hash
-			LEFT JOIN post_object as tpo ON tpo.object_id = to_.id
-			WHERE po.object_id = ?
-		"#,
-				[object_id.into()],
-			))
-			.await?;
-
-		if let Some(r) = result {
-			let object_sequence: i64 = r.try_get_by_index(1)?;
-			let irt_actor_rowid: Option<i64> = r.try_get_by_index(2)?;
-			let irt_actor_address_opt: Option<ActorAddress> = r.try_get_by_index(3)?;
-			let irt_object_id_opt: Option<i64> = r.try_get_by_index(4)?;
-
-			let in_reply_to = match irt_object_id_opt {
-				None => None,
-				Some(irt_object_id) => {
-					let (irt_actor_name, irt_actor_avatar_id) = match irt_actor_rowid {
-						None => (None, None),
-						Some(id) => self.find_profile_limited(id).await?,
-					};
-					let irt_message_opt = self.find_post_object_info_files(irt_object_id).await?;
-					Some(TargetedPostInfo {
-						actor_address: irt_actor_address_opt.unwrap().to_string(),
-						actor_name: irt_actor_name,
-						actor_avatar: irt_actor_avatar_id,
-						message: irt_message_opt.clone().map(|(mt, b, _)| (mt, b)),
-						attachments: irt_message_opt.map(|(_, _, a)| a).unwrap_or(Vec::new()),
-					})
-				}
-			};
-
-			let message_opt = self.find_post_object_info_files(object_id).await?;
-			Ok(Some(PostObjectInfo {
-				in_reply_to,
-				sequence: object_sequence as _,
-				mime_type: message_opt.as_ref().map(|o| o.0.clone()),
-				message: message_opt.as_ref().map(|(_, b, _)| b.clone()),
-				attachments: message_opt.map(|(_, _, a)| a).unwrap_or(Vec::new()),
-			}))
-		} else {
-			Ok(None)
-		}
 	}
 
 	async fn find_profile_files(
@@ -1378,75 +740,6 @@ pub trait PersistenceHandle {
 			.exec(self.inner())
 			.await?;
 		Ok(())
-	}
-
-	async fn _load_object_info_from_result(
-		&self, actor_address: &ActorAddress, result: &sea_orm::QueryResult,
-	) -> Result<Option<ObjectInfo>> {
-		let object_id: i64 = result.try_get_by("id")?;
-		let object_type: u8 = result.try_get_by("type")?;
-		let actor_id: i64 = result.try_get_by("actor_id")?;
-		let payload_result = self
-			.load_object_payload_info(object_id, object_type)
-			.await?;
-
-		if let Some(payload) = payload_result {
-			let (actor_name, actor_avatar) = self.find_profile_limited(actor_id).await?;
-
-			let created: i64 = result.try_get_by("created")?;
-			let found: i64 = result.try_get_by("found")?;
-			Ok(Some(ObjectInfo {
-				hash: result.try_get_by("hash")?,
-				created: created as _,
-				found: found as _,
-				actor_address: actor_address.clone(),
-				actor_name,
-				actor_avatar,
-				payload,
-			}))
-		} else {
-			Ok(None)
-		}
-	}
-
-
-	async fn _parse_profile_info(&self, result: QueryResult) -> Result<Option<ProfileObjectInfo>> {
-		let actor_address: ActorAddress = result.try_get_by_index(0)?;
-		let actor_name: String = result.try_get_by_index(1)?;
-		let avatar_id: Option<IdType> = result.try_get_by_index(2)?;
-		let wallpaper_id: Option<IdType> = result.try_get_by_index(3)?;
-		let description_id: Option<i64> = result.try_get_by_index(4)?;
-		let description_compression_type: Option<u8> = result.try_get_by_index(5)?;
-		let description_plain_hash: Option<IdType> = result.try_get_by_index(6)?;
-		let description_block_count: Option<i64> = result.try_get_by_index(7)?;
-
-		let description = if let Some(file_id) = description_id {
-			let data = self
-				.find_file_data(
-					file_id,
-					&description_plain_hash.unwrap(),
-					description_block_count.unwrap() as _,
-				)
-				.await?;
-
-			data.map(
-				|d| match CompressionType::from_u8(description_compression_type.unwrap()) {
-					Some(t) => decompress(t, &d).expect("decompression error"),
-					None => panic!("unsupported compression type"),
-				},
-			)
-		} else {
-			None
-		};
-		Ok(Some(ProfileObjectInfo {
-			actor: TargetedActorInfo {
-				address: actor_address.to_string(),
-				name: actor_name,
-				avatar_id,
-				wallpaper_id,
-			},
-			description: description.map(|b| String::from_utf8_lossy(&b).to_string()),
-		}))
 	}
 }
 
@@ -1626,38 +919,6 @@ impl Database {
 }
 
 impl Connection {
-	fn _fetch_actor_info<C>(this: &C, actor_id: i64) -> Result<Option<TargetedActorInfo>>
-	where
-		C: DerefConnection,
-	{
-		let mut stat = this.prepare(
-			r#"
-			SELECT i.address, p.name, af.hash, wf.hash
-			FROM actor AS i
-			LEFT JOIN profile AS p ON p.actor_id = i.id
-			LEFT JOIN file AS af ON p.avatar_file_id = f.id
-			LEFT JOIN file AS wf ON p.wallpaper_file_id = f.id
-			WHERE id = ?
-		"#,
-		)?;
-		let mut rows = stat.query([actor_id])?;
-		if let Some(row) = rows.next()? {
-			let address: ActorAddress = row.get(0)?;
-			let name = row.get(1)?;
-			let avatar_id: Option<IdType> = row.get(2)?;
-			let wallpaper_id: Option<IdType> = row.get(3)?;
-
-			Ok(Some(TargetedActorInfo {
-				address: address.to_string(),
-				name,
-				avatar_id,
-				wallpaper_id,
-			}))
-		} else {
-			Ok(None)
-		}
-	}
-
 	fn _fetch_block_data<C>(this: &C, id: &IdType) -> Result<Option<Vec<u8>>>
 	where
 		C: DerefConnection,
@@ -3118,6 +2379,10 @@ impl From<rusqlite::Error> for Traced<Error> {
 	fn from(other: rusqlite::Error) -> Self { Error::SqliteError(other).trace() }
 }
 
+impl From<sea_orm::DbErr> for Error {
+	fn from(other: sea_orm::DbErr) -> Self { Error::OrmError(other) }
+}
+
 impl From<sea_orm::DbErr> for Traced<Error> {
 	fn from(other: sea_orm::DbErr) -> Self { Error::OrmError(other).trace() }
 }
@@ -3161,23 +2426,6 @@ pub fn encrypt_block(index: u64, key: &IdType, data: &mut [u8]) {
 	cipher.apply_keystream(data);
 }
 
-
-impl ObjectPayloadInfo {
-	// Returns true if the payload contains enough information to at least show the
-	// main content.
-	pub fn has_main_content(&self) -> bool {
-		match self {
-			Self::Post(post) => post.message.is_some() && post.mime_type.is_some(),
-			Self::Share(share) =>
-				if let Some(op) = &share.original_post {
-					op.message.is_some() && op.actor_name.is_some()
-				} else {
-					false
-				},
-			Self::Profile(profile) => profile.description.is_some(),
-		}
-	}
-}
 
 impl Transaction {
 	/// Creates a file by doing the following:

@@ -7,10 +7,10 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 use log::*;
 use rand::rngs::OsRng;
-use sea_orm::{prelude::*, NotSet, QueryOrder, QuerySelect, Set};
+use sea_orm::{prelude::*, NotSet, Set};
 use serde::Serialize;
 use tokio::{spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -23,12 +23,14 @@ use super::{
 	net::{actor::ActorNode, binserde, overlay::OverlayNode},
 };
 use crate::{
-	db::{decrypt_block, Database, ObjectInfo, PostObjectInfo, ProfileObjectInfo, ShareObjectInfo},
+	db::{decrypt_block, Database},
 	entity::*,
-	trace::Traceable,
 	web::{
 		self,
-		common::{human_readable_duration, into_object_display_info},
+		consolidated_feed::{
+			load_next_unconsolidated_activity_pub_objects, load_next_unconsolidated_objects,
+		},
+		info::{ObjectInfo, ProfileObjectInfo},
 	},
 };
 
@@ -37,26 +39,6 @@ use crate::{
 pub struct Api {
 	pub node: Arc<OverlayNode>,
 	pub db: Database,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ObjectDisplayInfo {
-	pub url: String,
-	pub hash: Option<String>,
-	pub actor_url: String,
-	pub actor_name: String,
-	pub actor_avatar_url: Option<String>,
-	pub created: String,
-	pub time_ago: String,
-	pub payload: ObjectPayloadDisplayInfo,
-}
-
-#[derive(Debug, Serialize)]
-pub enum ObjectPayloadDisplayInfo {
-	Post(PostObjectInfo),
-	Share(ShareObjectInfo),
-	Profile(ProfileObjectInfo),
-	Other(OtherObjectInfo),
 }
 
 #[derive(Debug, Serialize)]
@@ -386,16 +368,10 @@ impl Api {
 		})
 	}
 
-	pub async fn fetch_object_info(
-		&self, actor_address: &ActorAddress, hash: &IdType,
-	) -> db::Result<Option<ObjectInfo>> {
-		self.db.load_object_info(actor_address, hash).await
-	}
-
 	pub async fn find_profile_info(
-		&self, actor_address: &ActorAddress,
+		&self, url_base: &str, actor_address: &ActorAddress,
 	) -> db::Result<Option<ProfileObjectInfo>> {
-		let profile = self.db.find_profile_info(actor_address).await?;
+		let profile = web::info::find_profile_info(&self.db, url_base, actor_address).await?;
 		if profile.is_some() {
 			return Ok(profile);
 		}
@@ -403,7 +379,7 @@ impl Api {
 		// Try to get the profile from the actor network
 		if let Some(_) = self.node.find_actor_profile_info(actor_address).await {
 			// TODO: Contruct the profile info from the object
-			let profile = self.db.find_profile_info(actor_address).await?;
+			let profile = web::info::find_profile_info(&self.db, url_base, actor_address).await?;
 			return Ok(profile);
 		}
 		Ok(None)
@@ -458,81 +434,6 @@ impl Api {
 		})
 	}
 
-	async fn load_activity_pub_object_info(
-		&self, id: i64,
-	) -> web::Result<Option<ObjectDisplayInfo>> {
-		let result = activity_pub_object::Entity::find_by_id(id)
-			//.find_also_related(activity_pub_actor::Entity.ref()) FIXME
-			.one(self.db.inner())
-			.await
-			.map_err(|e| web::Error::from(e))?;
-
-		let object_result = if let Some(object) = result {
-			let actor_opt = activity_pub_actor::Entity::find_by_id(object.actor_id)
-				.one(self.db.inner())
-				.await
-				.map_err(|e| web::Error::from(e))?;
-			let actor = if let Some(a) = actor_opt {
-				a
-			} else {
-				return Ok(None);
-			};
-			let created = Utc.timestamp_millis_opt(object.published as i64).unwrap();
-			let time_ago = human_readable_duration(&Utc::now().signed_duration_since(created));
-
-			Some(ObjectDisplayInfo {
-				url: object.object_id,
-				hash: None,
-				actor_url: actor.host + &actor.path,
-				actor_name: actor.name.unwrap_or("[no name]".to_string()),
-				actor_avatar_url: actor.icon_url,
-				created: format!("{}", created.format("%Y-%m-%d %H:%M:%S")),
-				time_ago,
-				payload: ObjectPayloadDisplayInfo::Other(web::activity_pub::parse_post_object(
-					&object.data,
-				)?),
-			})
-		} else {
-			None
-		};
-		Ok(object_result)
-	}
-
-	pub async fn load_consolidated_feed(
-		&self, count: u64, offset: u64,
-	) -> web::Result<Vec<ObjectDisplayInfo>> {
-		let consolidated = consolidated_object::Entity::find()
-			.order_by_desc(consolidated_object::Column::Batch)
-			.order_by_asc(consolidated_object::Column::Id)
-			.limit(count)
-			.offset(offset)
-			.all(self.db.inner())
-			.await
-			.map_err(|e| web::Error::from(e))?;
-
-		let mut objects = Vec::with_capacity(consolidated.len());
-		for consolidated_object in consolidated {
-			let object_opt = if consolidated_object.r#type == 0 {
-				let o = self
-					.db
-					.load_object_info2(consolidated_object.object_id)
-					.await
-					.map_err(|e| web::Error::from(e.unwrap().0).trace())?;
-				o.map(|o| into_object_display_info(o))
-			} else if consolidated_object.r#type == 1 {
-				self.load_activity_pub_object_info(consolidated_object.object_id)
-					.await?
-			} else {
-				None
-			};
-
-			if let Some(o) = object_opt {
-				objects.push(o);
-			}
-		}
-		Ok(objects)
-	}
-
 	pub async fn load_home_feed(&self, count: u64, offset: u64) -> db::Result<Vec<ObjectInfo>> {
 		// TODO: Manage tracked actors as followers with a CLI tool
 		//       Currently, because tracked actors are not stored in the DB, it
@@ -545,9 +446,7 @@ impl Api {
 			.keys()
 			.map(|a| a.clone())
 			.collect();
-		self.db
-			.load_home_feed(count, offset, tracked_actors.iter())
-			.await
+		web::info::load_home_feed(&self.db, count, offset, tracked_actors.iter()).await
 	}
 
 	// Like `load_file`, but return an async stream that catches all the blocks that
@@ -824,11 +723,9 @@ impl Api {
 
 		// Get new objects from each source, but only one per actor
 		loop {
-			let stonenet_objects = self.db.load_next_unconsolidated_objects().await?;
-			let activity_pub_objects = self
-				.db
-				.load_next_unconsolidated_activity_pub_objects()
-				.await?;
+			let stonenet_objects = load_next_unconsolidated_objects(&self.db).await?;
+			let activity_pub_objects =
+				load_next_unconsolidated_activity_pub_objects(&self.db).await?;
 			let consolidated = merge_objects(batch, stonenet_objects, activity_pub_objects);
 			if consolidated.len() == 0 {
 				return Ok(());
@@ -894,26 +791,6 @@ impl Api {
 		tx.update_identity_label(old_label, new_label).await?;
 
 		tx.commit().await
-	}
-}
-
-impl ObjectPayloadDisplayInfo {
-	pub fn to_text(&self) -> String {
-		match self {
-			Self::Post(post) => post.message.clone().unwrap_or("".to_string()),
-			Self::Share(share) =>
-				if let Some(op) = &share.original_post {
-					if let Some((_, content)) = &op.message {
-						content.clone()
-					} else {
-						"[Message not synchronized yet]".to_string()
-					}
-				} else {
-					"[Post not synchronized yet]".to_string()
-				},
-			Self::Profile(_) => "[Profile updated]".to_string(),
-			Self::Other(other) => other.content.clone(),
-		}
 	}
 }
 
@@ -1002,15 +879,20 @@ mod tests {
 		assert_eq!(profile.wallpaper, Some(wallpaper_hash.clone()));
 		assert_eq!(profile.description, Some(description_hash));
 
-		let profile_info = db
-			.find_profile_info(&address)
+		let profile_info = web::info::find_profile_info(&db, "", &address)
 			.await
 			.unwrap()
 			.expect("profile info not found");
 		assert_eq!(profile_info.actor.address, address.to_string());
 		assert_eq!(profile_info.actor.name, name.to_string());
-		assert_eq!(profile_info.actor.avatar_id, Some(avatar_hash));
-		assert_eq!(profile_info.actor.wallpaper_id, Some(wallpaper_hash));
+		assert_eq!(
+			profile_info.actor.avatar_url,
+			Some(format!("/actor/{}/file/{}", &address, avatar_hash))
+		);
+		assert_eq!(
+			profile_info.actor.wallpaper_url,
+			Some(format!("/actor/{}/file/{}", &address, wallpaper_hash))
+		);
 		assert_eq!(profile_info.description, Some(description_data.to_string()));
 	}
 }

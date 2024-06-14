@@ -30,7 +30,7 @@ use zeroize::Zeroizing;
 
 use super::{common::*, current_timestamp, ActorAddress, Address, ServerGlobal};
 use crate::{
-	db::{self, PersistenceHandle, ProfileObjectInfo, TargetedActorInfo},
+	db::{self, PersistenceHandle},
 	entity::*,
 	trace::Traceable,
 	util::read_text_file,
@@ -41,6 +41,7 @@ use crate::{
 			ActorPublicKeyWithContext, CreateActivity, OrderedCollection, OrderedCollectionType,
 			WebFingerDocument,
 		},
+		info::{find_profile_info, load_actor_feed, ProfileObjectInfo, TargetedActorInfo},
 		server::Global,
 		Error, Result,
 	},
@@ -301,8 +302,8 @@ async fn activity_pub_actor_get(
 		actor: TargetedActorInfo {
 			address: address.clone(),
 			name,
-			avatar_id: None,
-			wallpaper_id: None,
+			avatar_url: None,
+			wallpaper_url: None,
 		},
 		description: summary,
 	};
@@ -349,20 +350,21 @@ pub async fn actor_get(
 ) -> Response {
 	let public_key = PUBLIC_KEY.get().map(|s| s.as_str());
 
-	let profile = match g.base.api.db.find_profile_info(&address).await {
-		Err(e) => return server_error_response(e, "DB issue"),
-		Ok(r) => match r {
-			None => return not_found_error_response("actor profile not found"),
-			Some(p) => p,
-		},
-	};
+	let profile =
+		match find_profile_info(&g.base.api.db, &g.base.server_info.url_base, &address).await {
+			Err(e) => return server_error_response(e, "DB issue"),
+			Ok(r) => match r {
+				None => return not_found_error_response("actor profile not found"),
+				Some(p) => p,
+			},
+		};
 
 	let description = profile.description.clone().unwrap_or_default();
 	let actor = ActorObject::new(
 		&g.base.server_info.url_base,
 		&address,
 		profile.actor.name,
-		profile.actor.avatar_id.as_ref(),
+		profile.actor.avatar_url,
 		description,
 		public_key,
 	);
@@ -625,7 +627,15 @@ async fn actor_inbox_store_object(
 pub async fn actor_outbox(
 	State(g): State<Arc<ServerGlobal>>, Extension(address): Extension<ActorAddress>,
 ) -> Response {
-	let objects = match g.base.api.db.load_actor_feed(&address, 1000, 0).await {
+	let objects = match load_actor_feed(
+		&g.base.api.db,
+		&g.base.server_info.url_base,
+		&address,
+		1000,
+		0,
+	)
+	.await
+	{
 		Err(e) => return server_error_response(e, "DB issue"),
 		Ok(r) => r,
 	};
@@ -648,7 +658,7 @@ pub async fn actor_outbox(
 			&g.base.server_info.url_base,
 			&address,
 			&cc_list,
-			&object.hash,
+			&object.id,
 			object.created,
 			content,
 		))

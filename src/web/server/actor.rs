@@ -16,11 +16,14 @@ use serde::Deserialize;
 use tera::Context;
 
 use super::{
-	activity_pub, error_response, into_object_display_info, server_error_response,
-	server_error_response2, ActorAddress, Address, ObjectDisplayInfo, PaginationQuery,
-	ServerGlobal,
+	activity_pub, error_response, server_error_response, server_error_response2, ActorAddress,
+	Address, PaginationQuery, ServerGlobal,
 };
-use crate::{db::PersistenceHandle, entity::*};
+use crate::{
+	db::PersistenceHandle,
+	entity::*,
+	web::info::{find_profile_info, load_actor_feed, ObjectInfo},
+};
 
 
 #[derive(Deserialize)]
@@ -83,10 +86,11 @@ async fn actor_get(
 	State(g): State<Arc<ServerGlobal>>, Extension(address): Extension<ActorAddress>,
 	Query(query): Query<PaginationQuery>,
 ) -> Response {
-	let profile = match g.base.api.find_profile_info(&address).await {
-		Ok(p) => p,
-		Err(e) => return server_error_response(e, "Unable to fetch profile"),
-	};
+	let profile =
+		match find_profile_info(&g.base.api.db, &g.base.server_info.url_base, &address).await {
+			Ok(p) => p,
+			Err(e) => return server_error_response(e, "Unable to fetch profile"),
+		};
 	let is_following: bool = match g.base.api.is_following(&address) {
 		Ok(f) => f,
 		Err(e) => return server_error_response(e, "Unable to fetch follow status"),
@@ -95,11 +99,18 @@ async fn actor_get(
 
 	let p = query.page.unwrap_or(0);
 	let start = p * 5;
-	let objects: Vec<ObjectDisplayInfo> =
-		match g.base.api.db.load_actor_feed(&address, 5, start).await {
-			Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
-			Err(e) => return server_error_response(e, "unable to fetch home feed"),
-		};
+	let objects: Vec<ObjectInfo> = match load_actor_feed(
+		&g.base.api.db,
+		&g.base.server_info.url_base,
+		&address,
+		5,
+		start,
+	)
+	.await
+	{
+		Ok(f) => f,
+		Err(e) => return server_error_response(e, "unable to fetch home feed"),
+	};
 
 	let mut context = Context::new();
 	context.insert("address", &address.to_string());

@@ -20,6 +20,7 @@ use crate::{
 	db::{self, Database, PersistenceHandle},
 	entity::*,
 	identity::ActorPrivateKeyV1,
+	web::info::find_profile_info2,
 };
 
 
@@ -81,7 +82,13 @@ async fn profile_get(
 	State(g): State<Arc<ServerGlobal>>, Extension(label): Extension<String>,
 	Extension(identity): Extension<identity::Model>,
 ) -> Response {
-	let profile = match g.base.api.db.find_profile_info2(identity.actor_id).await {
+	let profile = match find_profile_info2(
+		&g.base.api.db,
+		&g.base.server_info.url_base,
+		identity.actor_id,
+	)
+	.await
+	{
 		Ok(p) => p,
 		Err(e) => return server_error_response(e, "Unable to fetch profile"),
 	};

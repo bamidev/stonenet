@@ -14,7 +14,7 @@ use std::{
 
 use axum::http::HeaderMap;
 use base64::prelude::*;
-use chrono::{SecondsFormat, Utc};
+use chrono::{SecondsFormat, TimeZone, Utc};
 use email_address_parser::EmailAddress;
 use lazy_static::lazy_static;
 use log::*;
@@ -36,17 +36,18 @@ use tokio::{spawn, time::sleep};
 use zeroize::Zeroizing;
 
 use super::{
-	json::{expect_string, expect_url},
-	webfinger, Global,
+	consolidated_feed::ConsolidatedObjectType, info::{
+		human_readable_duration, load_object_payload_info, ObjectInfo, ObjectPayloadInfo,
+		PostMessageInfo, PostObjectInfo,
+	}, json::{expect_string, expect_url}, webfinger, Global
 };
 use crate::{
-	api::OtherObjectInfo,
-	common::{current_timestamp, IdType},
+	common::current_timestamp,
 	config::Config,
 	core::{ActorAddress, Address, OBJECT_TYPE_PROFILE},
-	db::{self, Database, ObjectPayloadInfo, PersistenceHandle},
+	db::{self, Database, PersistenceHandle},
 	entity::{self, *},
-	web::{Error, Result},
+	web::{self, Error, Result},
 };
 
 
@@ -290,7 +291,7 @@ pub async fn compose_object_payload(
 	match payload {
 		ObjectPayloadInfo::Post(post) =>
 			if let Some(content) = &post.message {
-				reply_webfingers = webfinger::find_from_content(content)
+				reply_webfingers = webfinger::find_from_content(&content.body)
 			},
 		_ => {}
 	}
@@ -313,7 +314,7 @@ pub fn compose_object_payload_content(payload: &ObjectPayloadInfo) -> Result<Str
 			}
 
 			if let Some(message) = &post.message {
-				content += message;
+				content += &message.body;
 			}
 			content
 		}
@@ -330,7 +331,7 @@ pub fn compose_object_payload_content(payload: &ObjectPayloadInfo) -> Result<Str
 					original_post
 						.message
 						.as_ref()
-						.map(|(_, m)| m)
+						.map(|pm| &pm.body)
 						.unwrap_or(&"[Unable to load post message]".to_string())
 				)
 			} else {
@@ -432,6 +433,51 @@ fn hash_activity(activity: &str) -> String {
 	BASE64_STANDARD.encode(&hash)
 }
 
+pub async fn load_object_info(db: &Database, id: i64) -> Result<Option<ObjectInfo>> {
+	let result = activity_pub_object::Entity::find_by_id(id)
+		//.find_also_related(activity_pub_actor::Entity.ref()) FIXME
+		.one(db.inner())
+		.await
+		.map_err(|e| Error::from(e))?;
+
+	let object_result = if let Some(object) = result {
+		let actor_opt = activity_pub_actor::Entity::find_by_id(object.actor_id)
+			.one(db.inner())
+			.await
+			.map_err(|e| Error::from(e))?;
+		let actor = if let Some(a) = actor_opt {
+			a
+		} else {
+			return Ok(None);
+		};
+		let created = Utc.timestamp_millis_opt(object.published as i64).unwrap();
+		let time_ago = human_readable_duration(&Utc::now().signed_duration_since(created));
+
+		let message = web::activity_pub::parse_post_object(&object.data)?;
+		Some(ObjectInfo {
+			id: id.to_string(),
+			url: object.object_id,
+			consolidated_type: ConsolidatedObjectType::ActivityPub,
+			actor_address: actor.address,
+			actor_url: actor.host + &actor.path,
+			actor_name: actor.name.unwrap_or(actor.path),
+			actor_avatar_url: actor.icon_url,
+			created: object.published as _,
+			found: object.published as _,
+			found_ago: time_ago,
+			payload: ObjectPayloadInfo::Post(PostObjectInfo {
+				in_reply_to: None,
+				sequence: 0,
+				message: Some(message),
+				attachments: Vec::new(),
+			}),
+		})
+	} else {
+		None
+	};
+	Ok(object_result)
+}
+
 async fn loop_box_polls(
 	stop_flag: Arc<AtomicBool>, db: Database,
 	activity_pub_inbox_opt: Option<(String, ActorAddress)>,
@@ -493,7 +539,7 @@ pub fn parse_account_name(resource: &str) -> Option<&str> {
 	None
 }
 
-pub fn parse_post_object(raw_json: &str) -> Result<OtherObjectInfo> {
+pub fn parse_post_object(raw_json: &str) -> Result<PostMessageInfo> {
 	let json = serde_json::Value::from_str(raw_json)
 		.map_err(|e| Error::Deserialization(e, format!("parsing object").into()))?;
 
@@ -523,9 +569,9 @@ pub fn parse_post_object(raw_json: &str) -> Result<OtherObjectInfo> {
 		))?;
 	};
 
-	Ok(OtherObjectInfo {
+	Ok(PostMessageInfo {
 		mime_type: "text/html".to_string(),
-		content: content.clone(),
+		body: content.clone(),
 	})
 }
 
@@ -632,7 +678,7 @@ async fn populate_send_queue_from_new_object(
 		&g.server_info.url_base,
 		&actor_address,
 		&cc_list,
-		&object.hash,
+		&object.hash.to_string(),
 		object.created as _,
 		content,
 	))
@@ -692,12 +738,10 @@ pub async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> Res
 	let mut i = 0;
 	for object in objects {
 		// Ignore profile update objects
-		if let Some(payload_info) = g
-			.api
-			.db
-			.load_object_payload_info(object.id, object.r#type)
-			.await
-			.map_err(|e| e.to_web())?
+		if let Some(payload_info) =
+			load_object_payload_info(&g.api.db, &g.server_info.url_base, object.id, object.r#type)
+				.await
+				.map_err(|e| e.to_web())?
 		{
 			// Ignore objects that don't have enough info on them yet to display them yet
 			if payload_info.has_main_content() {
@@ -1089,7 +1133,7 @@ impl Serialize for AcceptActivityType {
 
 impl ActivityObject {
 	pub fn new(
-		url_base: &str, actor: &ActorAddress, object_hash: &IdType, created: u64, content: String,
+		url_base: &str, actor: &ActorAddress, object_hash: &str, created: u64, content: String,
 	) -> Self {
 		Self {
 			id: format!(
@@ -1113,7 +1157,7 @@ impl Default for ActivityPubDocumentContext {
 
 impl ActorObject {
 	pub fn new(
-		url_base: &str, address: &ActorAddress, name: String, avatar_hash: Option<&IdType>,
+		url_base: &str, address: &ActorAddress, name: String, avatar_url: Option<String>,
 		summary: String, public_key: Option<&str>,
 	) -> Self {
 		let url = format!("{}/actor/{}", url_base, address);
@@ -1135,9 +1179,9 @@ impl ActorObject {
 				publicKeyPem: pk.to_string(),
 			}),
 			summary,
-			icon: avatar_hash.map(|hash| ActorObjectIcon {
+			icon: avatar_url.map(|url| ActorObjectIcon {
 				r#type: "Image",
-				url: format!("{}/file/{}", &id, hash),
+				url,
 			}),
 		}
 	}
@@ -1145,8 +1189,8 @@ impl ActorObject {
 
 impl<'a> CreateActivity<'a> {
 	pub fn new_public_note(
-		url_base: &str, actor: &ActorAddress, cc_list: &[&'a str], object_hash: &IdType,
-		created: u64, content: String,
+		url_base: &str, actor: &ActorAddress, cc_list: &[&'a str], object_hash: &str, created: u64,
+		content: String,
 	) -> Self {
 		let mut cc = vec!["https://www.w3.org/ns/activitystreams#Public"];
 		cc.extend(cc_list);

@@ -2871,7 +2871,7 @@ mod tests {
 		source_node.node.remember_relay_node(&relay_node_info).await;
 
 		let profile = source_node
-			.find_profile_info(&actor_address)
+			.find_profile_info("", &actor_address)
 			.await
 			.unwrap()
 			.expect("no actor profile found");

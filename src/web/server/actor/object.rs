@@ -17,7 +17,7 @@ use crate::{
 	db::PersistenceHandle,
 	entity::object,
 	web::{
-		common::into_object_display_info,
+		info::find_object_info,
 		server::{
 			not_found_error_response, post_message, server_error_response, server_error_response2,
 			ServerGlobal,
@@ -75,11 +75,13 @@ async fn object_get(
 	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(object_hash): Extension<IdType>,
 ) -> Response {
-	let object_info = match g
-		.base
-		.api
-		.fetch_object_info(&actor_address, &object_hash)
-		.await
+	let object_info = match find_object_info(
+		&g.base.api.db,
+		&g.base.server_info.url_base,
+		&actor_address,
+		&object_hash,
+	)
+	.await
 	{
 		Ok(r) => r,
 		Err(e) => return server_error_response(e, "Unable to load object"),
@@ -90,7 +92,7 @@ async fn object_get(
 
 	let mut context = Context::new();
 	context.insert("address", &actor_address);
-	context.insert("object", &into_object_display_info(object_info.unwrap()));
+	context.insert("object", &object_info.unwrap());
 	g.render("actor/object.html.tera", context).await
 }
 

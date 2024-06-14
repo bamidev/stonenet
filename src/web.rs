@@ -1,5 +1,6 @@
 pub mod activity_pub;
-pub mod common;
+pub mod consolidated_feed;
+pub mod info;
 pub mod json;
 pub mod server;
 pub mod webfinger;
@@ -13,7 +14,6 @@ use tokio::sync::Mutex;
 use crate::{
 	api::Api,
 	config::Config,
-	db,
 	trace::{self, Traced},
 };
 
@@ -21,7 +21,7 @@ use crate::{
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
 	#[error("database error: {0}")]
-	Database(#[from] db::Error),
+	Database(#[from] crate::db::Error),
 	#[error("ActivityPub network issue while {1}: {0}")]
 	Network(reqwest::Error, Cow<'static, str>),
 	#[error("JSON parsing error while {1}: {0}")]
@@ -41,11 +41,11 @@ pub struct Global {
 
 pub type Result<T> = trace::Result<T, Error>;
 
-impl db::Error {
+impl crate::db::Error {
 	fn to_web(self) -> Traced<Error> { Traced::capture(Error::Database(self)) }
 }
 
-impl Traced<db::Error> {
+impl Traced<crate::db::Error> {
 	fn to_web(self) -> Traced<Error> {
 		let (inner, backtrace) = self.unwrap();
 		let error = Error::Database(inner);

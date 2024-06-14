@@ -166,7 +166,7 @@ Hoi ik ben Kees!
 
 	// Check if all profile data came through correctly
 	let profile = node2
-		.find_profile_info(&actor_id)
+		.find_profile_info("", &actor_id)
 		.await
 		.expect("unable to fetch profile object from node")
 		.expect("got empty profile object");
@@ -180,7 +180,7 @@ Hoi ik ben Kees!
 	let avatar = node2
 		.find_file_data(
 			Some(&actor_node),
-			&profile.actor.avatar_id.expect("missing avatar ID"),
+			&profile.actor.avatar_url.expect("missing avatar ID"),
 		)
 		.await
 		.expect("unable to get avatar file")
@@ -188,7 +188,7 @@ Hoi ik ben Kees!
 	let wallpaper = node2
 		.find_file_data(
 			Some(&actor_node),
-			&profile.actor.wallpaper_id.expect("missing wallpaper ID"),
+			&profile.actor.wallpaper_url.expect("missing wallpaper ID"),
 		)
 		.await
 		.expect("unable to get wallpaper file")

@@ -21,9 +21,9 @@ use tokio::{sync::Mutex, time::sleep};
 use tower_http::services::ServeDir;
 
 use self::common::*;
-use super::{common::into_object_display_info, Global};
+use super::{consolidated_feed::load_consolidated_feed, info::ObjectInfo, Global};
 use crate::{
-	api::{Api, ObjectDisplayInfo},
+	api::Api,
 	common::*,
 	config::Config,
 	core::*,
@@ -140,15 +140,16 @@ struct PaginationQuery {
 	page: Option<u64>,
 }
 
+
 async fn home(
 	State(g): State<Arc<ServerGlobal>>, Query(query): Query<PaginationQuery>,
 ) -> Response {
 	let p = query.page.unwrap_or(0);
 	let start = p * 5;
 
-	let objects: Vec<ObjectDisplayInfo> = if g.base.server_info.is_exposed {
+	let objects: Vec<ObjectInfo> = if g.base.server_info.is_exposed {
 		match g.base.api.load_home_feed(5, start).await {
-			Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
+			Ok(f) => f,
 			Err(e) => return server_error_response(e, "unable to fetch home feed"),
 		}
 	// In your own local UI, view the consolidated home feed
@@ -158,7 +159,7 @@ async fn home(
 				return server_error_response(e, "unable to update consolidated feed");
 			}
 		}
-		match g.base.api.load_consolidated_feed(5, start).await {
+		match load_consolidated_feed(&g.base.api.db, &g.base.server_info.url_base, 5, start).await {
 			Ok(f) => f,
 			Err(e) => return server_error_response(e, "unable to fetch home feed"),
 		}
@@ -179,8 +180,8 @@ async fn home_post(State(g): State<Arc<ServerGlobal>>, form: Multipart) -> Respo
 }
 
 async fn rss_feed(State(g): State<Arc<ServerGlobal>>) -> Response {
-	let objects: Vec<ObjectDisplayInfo> = match g.base.api.load_home_feed(20, 0).await {
-		Ok(f) => f.into_iter().map(|o| into_object_display_info(o)).collect(),
+	let objects = match g.base.api.load_home_feed(20, 0).await {
+		Ok(f) => f,
 		Err(e) => return server_error_response(e, "unable to fetch home feed"),
 	};
 
@@ -197,14 +198,14 @@ async fn rss_feed(State(g): State<Arc<ServerGlobal>>) -> Response {
 	// Prepare RSS feed items
 	let mut items = Vec::with_capacity(objects.len());
 	for object in objects {
-		//if object.payload.has_main_content() {
-		let item = ItemBuilder::default()
-			.title(object.type_title())
-			.link(format!("{}{}", &g.base.server_info.url_base, &object.url))
-			.description(object.payload.to_text())
-			.build();
-		items.push(item);
-		//}
+		if object.payload.has_main_content() {
+			let item = ItemBuilder::default()
+				.title(object.type_title())
+				.link(format!("{}{}", &g.base.server_info.url_base, &object.url))
+				.description(object.payload.to_text())
+				.build();
+			items.push(item);
+		}
 	}
 	channel_builder.items(items);
 	let channel = channel_builder.build();
