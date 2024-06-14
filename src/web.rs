@@ -10,7 +10,12 @@ use std::borrow::Cow;
 use server::{AppState, ServerInfo};
 use tokio::sync::Mutex;
 
-use crate::{api::Api, config::Config, db, trace};
+use crate::{
+	api::Api,
+	config::Config,
+	db,
+	trace::{self, Traced},
+};
 
 
 #[derive(thiserror::Error, Debug)]
@@ -35,3 +40,19 @@ pub struct Global {
 }
 
 pub type Result<T> = trace::Result<T, Error>;
+
+impl db::Error {
+	fn to_web(self) -> Traced<Error> { Traced::capture(Error::Database(self)) }
+}
+
+impl Traced<db::Error> {
+	fn to_web(self) -> Traced<Error> {
+		let (inner, backtrace) = self.unwrap();
+		let error = Error::Database(inner);
+		if let Some(b) = backtrace {
+			Traced::new(error, b)
+		} else {
+			Traced::capture(error)
+		}
+	}
+}

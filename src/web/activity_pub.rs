@@ -15,6 +15,7 @@ use std::{
 use axum::http::HeaderMap;
 use base64::prelude::*;
 use chrono::{SecondsFormat, Utc};
+use email_address_parser::EmailAddress;
 use lazy_static::lazy_static;
 use log::*;
 use reqwest::Url;
@@ -36,7 +37,7 @@ use zeroize::Zeroizing;
 
 use super::{
 	json::{expect_string, expect_url},
-	Global,
+	webfinger, Global,
 };
 use crate::{
 	api::OtherObjectInfo,
@@ -146,7 +147,7 @@ pub struct ActorPublicKeyWithContext {
 }
 
 #[derive(Serialize)]
-pub struct CreateActivity {
+pub struct CreateActivity<'a> {
 	#[serde(rename(serialize = "@context"), default)]
 	context: ActivityPubDocumentContext,
 	r#type: CreateActivityType,
@@ -155,7 +156,7 @@ pub struct CreateActivity {
 	object: ActivityObject,
 	published: DateTime,
 	to: Vec<String>,
-	cc: Option<Vec<String>>,
+	cc: Option<Vec<&'a str>>,
 }
 
 pub struct CreateActivityType;
@@ -280,8 +281,26 @@ async fn collect_activities(db: &Database, json: &serde_json::Value, url: &str) 
 	Ok(())
 }
 
-pub fn compose_object_payload(payload: &ObjectPayloadInfo) -> String {
+pub async fn compose_object_payload(
+	payload: &ObjectPayloadInfo,
+) -> Result<(String, Vec<EmailAddress>)> {
+	let mut reply_webfingers = Vec::new();
+
+	// Check if the post has an webfinger address at the start
 	match payload {
+		ObjectPayloadInfo::Post(post) =>
+			if let Some(content) = &post.message {
+				reply_webfingers = webfinger::find_from_content(content)
+			},
+		_ => {}
+	}
+
+	let content = compose_object_payload_content(payload)?;
+	Ok((content, reply_webfingers))
+}
+
+pub fn compose_object_payload_content(payload: &ObjectPayloadInfo) -> Result<String> {
+	let string = match payload {
 		ObjectPayloadInfo::Post(post) => {
 			let mut content = String::new();
 			if let Some(irt) = &post.in_reply_to {
@@ -320,7 +339,8 @@ pub fn compose_object_payload(payload: &ObjectPayloadInfo) -> String {
 		ObjectPayloadInfo::Profile(_) => {
 			format!("[Updated my profile]")
 		}
-	}
+	};
+	Ok(string)
 }
 
 fn expect_array<'a>(
@@ -602,48 +622,66 @@ async fn poll_outboxes(stop_flag: Arc<AtomicBool>, db: &Database) -> db::Result<
 /// processed somewhere in the future
 async fn populate_send_queue_from_new_object(
 	g: &Global, actor_address: &ActorAddress, object: object::Model, payload: ObjectPayloadInfo,
-) -> db::Result<()> {
+) -> Result<()> {
 	// Create the activity
+	let (content, reply_addrs) = compose_object_payload(&payload).await?;
+	let reply_urls = actor::resolve_urls_from_webfingers(&g.api.db, &reply_addrs).await;
+	let reply_url_strings: Vec<String> = reply_urls.iter().map(|i| i.to_string()).collect();
+	let cc_list: Vec<&str> = reply_url_strings.iter().map(|i| i.as_str()).collect();
 	let activity_json = serde_json::to_value(CreateActivity::new_public_note(
 		&g.server_info.url_base,
 		&actor_address,
+		&cc_list,
 		&object.hash,
 		object.created as _,
-		compose_object_payload(&payload),
+		content,
 	))
 	.unwrap();
 
 	// Send the activity to each recipient on the fediverse
-	let follower_servers = g
+	let mut recipient_servers = g
 		.api
 		.db
 		.load_activity_pub_follower_servers(object.actor_id)
-		.await?;
+		.await
+		.map_err(|e| e.to_web())?;
+	recipient_servers.reserve(reply_urls.len());
+	for reply_url in reply_urls {
+		if let Some(host) = reply_url.host_str() {
+			recipient_servers.push(host.to_string());
+		}
+	}
 
-	let tx = g.api.db.transaction().await?;
+	let tx: db::Transaction = g.api.db.transaction().await.map_err(|e| e.to_web())?;
 
-	for server in follower_servers {
-		queue_activity(g, &tx, object.actor_id, server, None, &activity_json).await?;
+	for server in recipient_servers {
+		queue_activity(g, &tx, object.actor_id, server, None, &activity_json)
+			.await
+			.map_err(|e| e.to_web())?;
 	}
 
 	// Mark object as 'published on the fediverse'.
 	let mut record = <object::ActiveModel as std::default::Default>::default();
 	record.id = Set(object.id);
 	record.published_on_fediverse = Set(true);
-	object::Entity::update(record).exec(tx.inner()).await?;
+	object::Entity::update(record)
+		.exec(tx.inner())
+		.await
+		.map_err(|e| db::Error::OrmError(e).to_web())?;
 
-	tx.commit().await?;
+	tx.commit().await.map_err(|e| e.to_web())?;
 	Ok(())
 }
 
-pub async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db::Result<()> {
+pub async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> Result<()> {
 	let objects = object::Entity::find()
 		.join(JoinType::InnerJoin, object::Relation::Actor.def())
 		.filter(object::Column::PublishedOnFediverse.eq(false))
 		.filter(object::Column::Type.ne(OBJECT_TYPE_PROFILE))
 		.order_by_asc(object::Column::Id)
 		.all(g.api.db.inner())
-		.await?;
+		.await
+		.map_err(|e| db::Error::OrmError(e).to_web())?;
 	// FIXME: If a lot of objects remain incomplete (without their main content
 	// downloaded too), then this could load many objects into memory which will not
 	// be used. It is better to add another column (e.g. has_main_content) to the
@@ -658,14 +696,16 @@ pub async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> db:
 			.api
 			.db
 			.load_object_payload_info(object.id, object.r#type)
-			.await?
+			.await
+			.map_err(|e| e.to_web())?
 		{
 			// Ignore objects that don't have enough info on them yet to display them yet
 			if payload_info.has_main_content() {
 				// TODO: Don't query for the address for each object.
 				if let Some(actor) = entity::actor::Entity::find_by_id(object.actor_id)
 					.one(g.api.db.inner())
-					.await?
+					.await
+					.map_err(|e| db::Error::OrmError(e).to_web())?
 				{
 					populate_send_queue_from_new_object(g, &actor.address, object, payload_info)
 						.await?;
@@ -1103,10 +1143,14 @@ impl ActorObject {
 	}
 }
 
-impl CreateActivity {
+impl<'a> CreateActivity<'a> {
 	pub fn new_public_note(
-		url_base: &str, actor: &ActorAddress, object_hash: &IdType, created: u64, content: String,
+		url_base: &str, actor: &ActorAddress, cc_list: &[&'a str], object_hash: &IdType,
+		created: u64, content: String,
 	) -> Self {
+		let mut cc = vec!["https://www.w3.org/ns/activitystreams#Public"];
+		cc.extend(cc_list);
+
 		Self {
 			context: ActivityPubDocumentContext::default(),
 			r#type: CreateActivityType,
@@ -1121,9 +1165,7 @@ impl CreateActivity {
 				"{}/actor/{}/activity-pub/follower",
 				url_base, actor
 			)],
-			cc: Some(vec![
-				"https://www.w3.org/ns/activitystreams#Public".to_string(),
-			]),
+			cc: Some(cc),
 		}
 	}
 }

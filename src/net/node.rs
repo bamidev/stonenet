@@ -398,7 +398,7 @@ where
 			.await;
 		let raw_response = raw_response_result?;
 		let result: sstp::Result<_> =
-			binserde::deserialize(&raw_response).map_err(|e| Traced::new(e.into()));
+			binserde::deserialize(&raw_response).map_err(|e| Traced::capture(e.into()));
 		let response: FindNodeResponse = self
 			.handle_connection_issue_find(result, connection.their_node_info())
 			.await?;
@@ -455,7 +455,7 @@ where
 			.await?;
 		if let Some(value_buffer) = value_result {
 			let result: sstp::Result<_> =
-				binserde::deserialize(&value_buffer).map_err(|e| Traced::new(e.into()));
+				binserde::deserialize(&value_buffer).map_err(|e| Traced::capture(e.into()));
 			let value: V = self
 				.handle_connection_issue(result, &connection.their_node_info())
 				.await?;
@@ -1170,7 +1170,8 @@ where
 		// If fingers are expected in the response, parse them
 		let (contacts, contacts_len) = if expect_fingers_in_response {
 			let result: sstp::Result<FindNodeResponse> =
-				binserde::deserialize_with_trailing(&response).map_err(|e| Traced::new(e.into()));
+				binserde::deserialize_with_trailing(&response)
+					.map_err(|e| Traced::capture(e.into()));
 
 			let contacts = self.handle_connection_issue_find(result, node_info).await?;
 			let contacts_len = binserde::serialized_size(&contacts).unwrap();

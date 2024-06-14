@@ -125,7 +125,7 @@ async fn activity_pub_actor_post(
 	if let Some(follow) = &form_data.follow {
 		// Follow
 		if follow == "1" {
-			let actor_url = match web::webfinger::resolve_webfinger(&webfinger_addr).await {
+			let actor_url = match web::webfinger::resolve(&webfinger_addr).await {
 				Ok(r) =>
 					if let Some(url) = r {
 						url
@@ -630,24 +630,38 @@ pub async fn actor_outbox(
 		Ok(r) => r,
 	};
 
+	// Convert all the objects infos to AP json format.
+	let mut activities = Vec::with_capacity(objects.len());
+	for object in objects {
+		let (content, reply_addrs) =
+			match activity_pub::compose_object_payload(&object.payload).await {
+				Ok(r) => r,
+				Err(e) => return server_error_response(e, "Unable to compose object payload"),
+			};
+		let reply_urls =
+			web::activity_pub::actor::resolve_urls_from_webfingers(&g.base.api.db, &reply_addrs)
+				.await;
+		let reply_url_strings: Vec<String> =
+			reply_urls.into_iter().map(|i| i.to_string()).collect();
+		let cc_list: Vec<&str> = reply_url_strings.iter().map(|i| i.as_str()).collect();
+		let json = serde_json::to_value(CreateActivity::new_public_note(
+			&g.base.server_info.url_base,
+			&address,
+			&cc_list,
+			&object.hash,
+			object.created,
+			content,
+		))
+		.unwrap();
+		activities.push(json);
+	}
+
 	let feed = OrderedCollection {
 		context: ActivityPubDocumentContext::default(),
 		summary: "Actor Feed",
 		r#type: OrderedCollectionType,
-		totalItems: objects.len(),
-		orderedItems: objects
-			.iter()
-			.map(|object| {
-				serde_json::to_value(CreateActivity::new_public_note(
-					&g.base.server_info.url_base,
-					&address,
-					&object.hash,
-					object.created,
-					activity_pub::compose_object_payload(&object.payload),
-				))
-				.unwrap()
-			})
-			.collect(),
+		totalItems: activities.len(),
+		orderedItems: activities,
 	};
 	json_response(
 		&feed,

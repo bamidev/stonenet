@@ -19,7 +19,7 @@ pub fn deserialize<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> bincode::Result<T
 }
 
 pub fn deserialize_sstp<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> sstp::Result<T> {
-	deserialize(bytes).map_err(|e| Traced::new(e.into()))
+	deserialize(bytes).map_err(|e| Traced::capture(e.into()))
 }
 
 pub fn deserialize_owned<T: DeserializeOwned>(bytes: &[u8]) -> bincode::Result<T> {

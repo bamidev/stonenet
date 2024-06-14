@@ -104,21 +104,17 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
 }
 
 impl<E> Traceable<E> for E {
-	fn trace(self) -> Traced<E> { Traced::new(self) }
+	fn trace(self) -> Traced<E> { Traced::capture(self) }
 }
 
 impl<T, E> TraceableResult<T, E> for StdResult<T, E> {
-	fn trace_result(self) -> self::Result<T, E> { self.map_err(|e| Traced::new(e)) }
+	fn trace_result(self) -> self::Result<T, E> { self.map_err(|e| Traced::capture(e)) }
 }
 
 impl<T> Traced<T> {
-	pub fn new(inner: T) -> Self {
-		Self {
-			inner,
-			#[cfg(debug_assertions)]
-			backtrace: Backtrace::force_capture(),
-		}
-	}
+	pub fn new(inner: T, backtrace: Backtrace) -> Self { Self { inner, backtrace } }
+
+	pub fn capture(inner: T) -> Self { Self::new(inner, Backtrace::force_capture()) }
 
 	#[cfg(debug_assertions)]
 	pub fn backtrace(&self) -> Option<&Backtrace> { Some(&self.backtrace) }
@@ -134,14 +130,14 @@ impl<T> Traced<T> {
 }
 
 impl<E> From<E> for Traced<E> {
-	fn from(other: E) -> Self { Self::new(other) }
+	fn from(other: E) -> Self { Self::capture(other) }
 }
 
 impl<E> Clone for Traced<E>
 where
 	E: Clone,
 {
-	fn clone(&self) -> Self { Self::new(self.inner.clone()) }
+	fn clone(&self) -> Self { Self::capture(self.inner.clone()) }
 }
 
 impl<E> Deref for Traced<E> {

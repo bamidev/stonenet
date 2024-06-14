@@ -25,6 +25,29 @@ lazy_static! {
 }
 
 
+/// Extracts all webfinger addresses that can be found in the given string.
+/// Each address has to start with an "@" sign in order to be found.
+pub fn find_from_content(content: &str) -> Vec<EmailAddress> {
+	let mut results = Vec::with_capacity(16);
+	let mut i = 0;
+
+	while let Some(at_pos) = content[i..].find("@") {
+		let substring = &content[(at_pos + 1)..];
+		let address_to_check = if let Some(end_pos) = substring.find(char::is_whitespace) {
+			i += at_pos + 1 + end_pos + 1;
+			&substring[..end_pos]
+		} else {
+			i += at_pos + 1;
+			substring
+		};
+		match EmailAddress::parse(address_to_check, None) {
+			None => {}
+			Some(addr) => results.push(addr),
+		}
+	}
+	results
+}
+
 pub fn parse_link(
 	link: &serde_json::Value, when: &impl Fn() -> Cow<'static, str>,
 ) -> Result<Option<Url>> {
@@ -49,7 +72,7 @@ pub fn parse_link(
 	Ok(None)
 }
 
-pub async fn resolve_webfinger(address: &EmailAddress) -> Result<Option<Url>> {
+pub async fn resolve(address: &EmailAddress) -> Result<Option<Url>> {
 	let when = || format!("fetching actor {} from webfinger", address).into();
 	let response = HTTP_CLIENT
 		.get(format!(

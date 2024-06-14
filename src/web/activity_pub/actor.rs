@@ -1,6 +1,7 @@
 use std::{borrow::Cow, str::FromStr};
 
 use email_address_parser::EmailAddress;
+use futures::future::join_all;
 use log::*;
 use reqwest::Url;
 use sea_orm::{prelude::*, NotSet, Set};
@@ -9,7 +10,7 @@ use super::{expect_string, expect_url, Error, Result, HTTP_CLIENT};
 use crate::{
 	db::{Database, PersistenceHandle},
 	entity::activity_pub_actor,
-	web::webfinger::resolve_webfinger,
+	web::webfinger::resolve,
 };
 
 
@@ -150,9 +151,66 @@ pub async fn fetch2(server: &str, actor_path: &str) -> Result<Option<serde_json:
 }
 
 pub async fn fetch_from_webfinger(address: &EmailAddress) -> Result<Option<serde_json::Value>> {
-	if let Some(url) = resolve_webfinger(address).await? {
+	if let Some(url) = resolve(address).await? {
 		Ok(Some(fetch(&url).await?))
 	} else {
 		Ok(None)
 	}
+}
+
+pub async fn resolve_url_from_webfinger(
+	db: &Database, address: &EmailAddress,
+) -> Result<Option<Url>> {
+	let when = || format!("resolving URL from webfinger address {}", address).into();
+	// If we have the actor stored already, get the URL from the DB
+	if let Some(record) = activity_pub_actor::Entity::find()
+		.filter(activity_pub_actor::Column::Address.eq(address.to_string()))
+		.one(db.inner())
+		.await
+		.map_err(|e| Error::from(e))?
+	{
+		let full_url = record.host + record.path.as_str();
+
+		// Parse the url, and if it fails, delete the corrupted record
+		match Url::from_str(&full_url) {
+			Ok(url) => return Ok(Some(url)),
+			Err(e) => {
+				warn!(
+					"URL \"{}\" loaded from ActivtyPub actor {} is an invalid URL: {}",
+					&full_url, record.id, e
+				);
+				activity_pub_actor::Entity::delete_by_id(record.id)
+					.exec(db.inner())
+					.await
+					.map_err(|e| Error::from(e))?;
+			}
+		}
+	}
+
+	// Otherwise, just resolve the webfinger and store the actor for next time
+	if let Some(url) = resolve(address).await? {
+		ensure(db, &url, Some(address), &when).await?;
+		Ok(Some(url))
+	} else {
+		Ok(None)
+	}
+}
+
+pub async fn resolve_urls_from_webfingers(db: &Database, addresses: &[EmailAddress]) -> Vec<Url> {
+	let bulk = addresses
+		.iter()
+		.map(|a| async { (a.clone(), resolve_url_from_webfinger(db, a).await) });
+	let webfinger_results = join_all(bulk).await;
+
+	let mut results = Vec::with_capacity(addresses.len());
+	for (addr, result) in webfinger_results {
+		match result {
+			Ok(r) =>
+				if let Some(url) = r {
+					results.push(url)
+				},
+			Err(e) => warn!("Unable to resolve webfinger address {}: {:?}", addr, e),
+		}
+	}
+	results
 }
