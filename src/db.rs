@@ -2603,7 +2603,7 @@ impl Transaction {
 
 	async fn store_object(
 		&self, actor_id: i64, created: u64, hash: &IdType, previous_hash: &IdType, object_type: u8,
-		signature: &ActorSignatureV1, verified_from_start: bool,
+		signature: &ActorSignatureV1, verified_from_start: bool, published_on_fediverse: bool,
 	) -> Result<i64> {
 		let next_sequence = self.find_next_object_sequence(actor_id).await?;
 		let record = object::ActiveModel {
@@ -2617,7 +2617,7 @@ impl Transaction {
 			r#type: Set(object_type),
 			signature: Set(signature.clone()),
 			verified_from_start: Set(verified_from_start),
-			published_on_fediverse: Set(false),
+			published_on_fediverse: Set(published_on_fediverse),
 		};
 		Ok(object::Entity::insert(record)
 			.exec(self.inner())
@@ -2628,7 +2628,7 @@ impl Transaction {
 	pub async fn store_post(
 		&self, actor_id: i64, created: u64, hash: &IdType, previous_hash: &IdType,
 		signature: &ActorSignatureV1, verified_from_start: bool, tags: &[String], files: &[IdType],
-		in_reply_to: Option<(ActorAddress, IdType)>,
+		in_reply_to: Option<(ActorAddress, IdType)>, published_on_fediverse: bool,
 	) -> Result<()> {
 		let object_id = self
 			.store_object(
@@ -2639,6 +2639,7 @@ impl Transaction {
 				OBJECT_TYPE_POST,
 				signature,
 				verified_from_start,
+				published_on_fediverse,
 			)
 			.await?;
 
@@ -2677,6 +2678,7 @@ impl Transaction {
 				OBJECT_TYPE_PROFILE,
 				signature,
 				verified_from_start,
+				false,
 			)
 			.await?;
 

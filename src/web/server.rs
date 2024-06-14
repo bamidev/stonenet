@@ -172,7 +172,7 @@ async fn home(
 }
 
 async fn home_post(State(g): State<Arc<ServerGlobal>>, form: Multipart) -> Response {
-	if let Err(e) = post_message(&g.base, form, None).await {
+	if let Err(e) = post_message(&g.base, form, None, false).await {
 		return e;
 	}
 

@@ -7,8 +7,13 @@
 		{{macros::object(object=object, footer=false)}}
 	</p>
 	{% if "Post" in object.payload %}
+		{% if object.consolidated_type == "ActivityPub" %}
+			{% set init = "@" ~ irt_webfinger ~ "&#10;" %}
+		{% else %}
+			{% set init = "" %}
+		{% endif %}
 		<p>
-			{{macros::post_form(title="Reply")}}
+			{{macros::post_form(title="Reply", initial_text=init)}}
 		</p>
 	{% endif %}
 {% endblock content %}

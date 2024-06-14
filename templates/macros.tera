@@ -15,7 +15,7 @@
 	</div>
 {% endmacro %}
 
-{% macro post_form(title) %}
+{% macro post_form(title, initial_text='') %}
 	{% if server.is_exposed != true %}
 		<form method="post" enctype="multipart/form-data">
 			<div class="card bg-dark-subtle text-dark">
@@ -24,7 +24,7 @@
 				</div>
 				<div class="card-body">
 					<div id="editor"></div>
-					<textarea class="default-editor" name="message" rows="5" style="width: 100%" placeholder="Write a message..."></textarea>
+					<textarea class="default-editor" name="message" rows="5" style="width: 100%" placeholder="Write a message...">{{ initial_text }}</textarea>
 					<input name="attachments" type="file" multiple="multiple" />
 				</div>
 				<div class="card-footer">

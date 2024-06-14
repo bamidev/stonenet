@@ -36,10 +36,13 @@ use tokio::{spawn, time::sleep};
 use zeroize::Zeroizing;
 
 use super::{
-	consolidated_feed::ConsolidatedObjectType, info::{
+	consolidated_feed::ConsolidatedObjectType,
+	info::{
 		human_readable_duration, load_object_payload_info, ObjectInfo, ObjectPayloadInfo,
 		PostMessageInfo, PostObjectInfo,
-	}, json::{expect_string, expect_url}, webfinger, Global
+	},
+	json::{expect_string, expect_url},
+	webfinger, Global,
 };
 use crate::{
 	common::current_timestamp,
@@ -282,7 +285,25 @@ async fn collect_activities(db: &Database, json: &serde_json::Value, url: &str) 
 	Ok(())
 }
 
-pub async fn compose_object_payload(
+pub async fn compose_object_activity(
+	db: &Database, url_base: &str, actor_address: &ActorAddress, object: &ObjectInfo,
+) -> Result<serde_json::Value> {
+	let (content, reply_addrs) = compose_object_payload(&object.payload).await?;
+	let reply_urls = web::activity_pub::actor::resolve_urls_from_webfingers(db, &reply_addrs).await;
+	let reply_url_strings: Vec<String> = reply_urls.into_iter().map(|i| i.to_string()).collect();
+	let cc_list: Vec<&str> = reply_url_strings.iter().map(|i| i.as_str()).collect();
+	let activity = CreateActivity::new_public_note(
+		url_base,
+		&actor_address,
+		&cc_list,
+		&object.id,
+		object.created,
+		content,
+	);
+	Ok(serde_json::to_value(activity).unwrap())
+}
+
+async fn compose_object_payload(
 	payload: &ObjectPayloadInfo,
 ) -> Result<(String, Vec<EmailAddress>)> {
 	let mut reply_webfingers = Vec::new();
@@ -300,7 +321,7 @@ pub async fn compose_object_payload(
 	Ok((content, reply_webfingers))
 }
 
-pub fn compose_object_payload_content(payload: &ObjectPayloadInfo) -> Result<String> {
+fn compose_object_payload_content(payload: &ObjectPayloadInfo) -> Result<String> {
 	let string = match payload {
 		ObjectPayloadInfo::Post(post) => {
 			let mut content = String::new();
@@ -914,6 +935,30 @@ pub async fn queue_activity(
 		warn!("Send queue is full, dropping activity.");
 		Ok(false)
 	}
+}
+
+pub async fn queue_activity2(
+	g: &Global, actor_address: &ActorAddress, recipient_actor_id: i64, object: &impl Serialize,
+) -> db::Result<bool> {
+	// TODO: Properly handle empty resultsets
+	let sending_actor = entity::actor::Entity::find()
+		.filter(entity::actor::Column::Address.eq(actor_address))
+		.one(g.api.db.inner())
+		.await?
+		.unwrap();
+	let recipient_actor = activity_pub_actor::Entity::find_by_id(recipient_actor_id)
+		.one(g.api.db.inner())
+		.await?
+		.unwrap();
+	queue_activity(
+		g,
+		&g.api.db,
+		sending_actor.id,
+		recipient_actor.host,
+		None,
+		object,
+	)
+	.await
 }
 
 async fn send_activity(

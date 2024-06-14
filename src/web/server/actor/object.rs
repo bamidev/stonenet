@@ -100,7 +100,14 @@ async fn object_post(
 	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(object_hash): Extension<IdType>, multipart: Multipart,
 ) -> Response {
-	if let Err(e) = post_message(&g.base, multipart, Some((actor_address, object_hash))).await {
+	if let Err(e) = post_message(
+		&g.base,
+		multipart,
+		Some((actor_address, object_hash)),
+		false,
+	)
+	.await
+	{
 		return e;
 	}
 

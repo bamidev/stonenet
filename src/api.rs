@@ -551,6 +551,7 @@ impl Api {
 	pub async fn publish_post(
 		&self, actor_address: &ActorAddress, private_key: &ActorPrivateKeyV1, message: &str,
 		tags: Vec<String>, attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
+		published_on_fediverse: bool,
 	) -> db::Result<IdType> {
 		let tx = self.db.transaction().await?;
 		let actor = actor::Entity::find()
@@ -616,6 +617,7 @@ impl Api {
 			&tags,
 			&files,
 			in_reply_to,
+			published_on_fediverse,
 		)
 		.await?;
 		tx.commit().await?;

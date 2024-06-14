@@ -18,7 +18,7 @@ use axum::{
 	*,
 };
 use email_address_parser::EmailAddress;
-use extract::Path;
+use extract::{Multipart, Path};
 use lazy_static::lazy_static;
 use log::*;
 use reqwest::Url;
@@ -37,9 +37,9 @@ use crate::{
 	web::{
 		self,
 		activity_pub::{
-			self, AcceptActivity, AcceptActivityType, ActivityPubDocumentContext, ActorObject,
-			ActorPublicKeyWithContext, CreateActivity, OrderedCollection, OrderedCollectionType,
-			WebFingerDocument,
+			self, compose_object_activity, queue_activity2, AcceptActivity, AcceptActivityType,
+			ActivityPubDocumentContext, ActorObject, ActorPublicKeyWithContext, OrderedCollection,
+			OrderedCollectionType, WebFingerDocument,
 		},
 		info::{find_profile_info, load_actor_feed, ProfileObjectInfo, TargetedActorInfo},
 		server::Global,
@@ -643,26 +643,17 @@ pub async fn actor_outbox(
 	// Convert all the objects infos to AP json format.
 	let mut activities = Vec::with_capacity(objects.len());
 	for object in objects {
-		let (content, reply_addrs) =
-			match activity_pub::compose_object_payload(&object.payload).await {
-				Ok(r) => r,
-				Err(e) => return server_error_response(e, "Unable to compose object payload"),
-			};
-		let reply_urls =
-			web::activity_pub::actor::resolve_urls_from_webfingers(&g.base.api.db, &reply_addrs)
-				.await;
-		let reply_url_strings: Vec<String> =
-			reply_urls.into_iter().map(|i| i.to_string()).collect();
-		let cc_list: Vec<&str> = reply_url_strings.iter().map(|i| i.as_str()).collect();
-		let json = serde_json::to_value(CreateActivity::new_public_note(
+		let json = match compose_object_activity(
+			&g.base.api.db,
 			&g.base.server_info.url_base,
 			&address,
-			&cc_list,
-			&object.id,
-			object.created,
-			content,
-		))
-		.unwrap();
+			&object,
+		)
+		.await
+		{
+			Ok(r) => r,
+			Err(e) => return server_error_response(e, "Unable to compose object activity"),
+		};
 		activities.push(json);
 	}
 
@@ -846,11 +837,139 @@ pub async fn nodeinfo(State(g): State<Arc<ServerGlobal>>) -> Response {
 	json_response(&info, Some("application/json"))
 }
 
-pub fn router(_: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
-	Router::new().route(
-		"/actor/:address",
-		get(activity_pub_actor_get).post(activity_pub_actor_post),
+async fn object_get(State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i64>) -> Response {
+	let object_info = match web::activity_pub::load_object_info(&g.base.api.db, object_id).await {
+		Ok(result) =>
+			if let Some(r) = result {
+				r
+			} else {
+				return not_found_error_response("Object not found");
+			},
+		Err(e) => return server_error_response(e, "Unable to load object"),
+	};
+
+	// Load actor's webfinger
+	let ap_object = match activity_pub_object::Entity::find_by_id(object_id)
+		.one(g.base.api.db.inner())
+		.await
+	{
+		Ok(result) =>
+			if let Some(r) = result {
+				r
+			} else {
+				return server_error_response2("ActivityPub object record not found");
+			},
+		Err(e) => return server_error_response(e, "Database issue"),
+	};
+	let actor = match activity_pub_actor::Entity::find_by_id(ap_object.actor_id)
+		.one(g.base.api.db.inner())
+		.await
+	{
+		Ok(result) =>
+			if let Some(r) = result {
+				r
+			} else {
+				return server_error_response2("ActivityPub actor record not found");
+			},
+		Err(e) => return server_error_response(e, "Database issue"),
+	};
+	let irt_webfinger = if let Some(w) = actor.address {
+		w
+	} else {
+		return not_found_error_response("No webfinger available for actor");
+	};
+
+
+	let mut context = Context::new();
+	context.insert("object", &object_info);
+	context.insert("irt_webfinger", &irt_webfinger);
+	g.render("actor/object.html.tera", context).await
+}
+
+async fn object_post(
+	State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i64>, multipart: Multipart,
+) -> Response {
+	// Load the AP object
+	let actor_address = g.base.state.lock().await.active_identity.clone().unwrap().1;
+	let ap_object = match activity_pub_object::Entity::find_by_id(object_id)
+		.one(g.base.api.db.inner())
+		.await
+	{
+		Ok(result) =>
+			if let Some(r) = result {
+				r
+			} else {
+				return not_found_error_response("Unable to find object");
+			},
+		Err(e) => return server_error_response(e, "Unable to load object"),
+	};
+
+	// Post the message and then load the object afterwards
+	let object_hash = match post_message(&g.base, multipart, None, true).await {
+		Ok(r) => r,
+		Err(e) => return e,
+	};
+	let object = match web::info::load_object_info(
+		&g.base.api.db,
+		&g.base.server_info.url_base,
+		&object_hash,
 	)
+	.await
+	{
+		Ok(result) =>
+			if let Some(r) = result {
+				r
+			} else {
+				return not_found_error_response("Unable to find object info after creation");
+			},
+		Err(e) => return server_error_response(e, "Unable to load object info"),
+	};
+
+	// Generate the AP activity from the posted object
+	let mut activity_json = match compose_object_activity(
+		&g.base.api.db,
+		&g.base.server_info.url_base,
+		&actor_address,
+		&object,
+	)
+	.await
+	{
+		Ok(r) => r,
+		Err(e) => return server_error_response(e, "Unable to compose object activity"),
+	};
+	activity_json
+		.get_mut("object")
+		.unwrap()
+		.as_object_mut()
+		.unwrap()
+		.insert(
+			"inReplyTo".to_string(),
+			serde_json::Value::String(ap_object.object_id),
+		);
+
+	// Queue the activity to be published on the Fediverse manually, because
+	// otherwise it will be put there automatically, and then the `inReplyTo` field
+	// won't have been added.
+	if let Err(e) =
+		queue_activity2(&g.base, &actor_address, ap_object.actor_id, &activity_json).await
+	{
+		return server_error_response(e, "Add activity to the ActivityPub send queue");
+	}
+
+	Response::builder()
+		.status(303)
+		.header("Location", "/")
+		.body(Body::empty())
+		.unwrap()
+}
+
+pub fn router(_: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
+	Router::new()
+		.route(
+			"/actor/:address",
+			get(activity_pub_actor_get).post(activity_pub_actor_post),
+		)
+		.route("/object/:id", get(object_get).post(object_post))
 }
 
 pub fn actor_router(_: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {

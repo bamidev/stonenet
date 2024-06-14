@@ -16,7 +16,8 @@ use crate::{
 
 pub async fn post_message(
 	g: &Arc<Global>, mut form: Multipart, in_reply_to: Option<(ActorAddress, IdType)>,
-) -> Result<(), Response> {
+	published_on_fediverse: bool,
+) -> Result<IdType, Response> {
 	// Load identity + private key
 	let identity = g
 		.state
@@ -71,11 +72,10 @@ pub async fn post_message(
 	// TODO: Parse tags from post
 
 	if message.len() == 0 {
-		return Ok(());
+		panic!("message can not be empty");
 	}
 
-	if let Err(e) = g
-		.api
+	g.api
 		.publish_post(
 			&identity,
 			&private_key,
@@ -83,12 +83,10 @@ pub async fn post_message(
 			Vec::new(),
 			&attachments,
 			in_reply_to,
+			published_on_fediverse,
 		)
 		.await
-	{
-		return Err(server_error_response(e, "unable to publish post"));
-	}
-	Ok(())
+		.map_err(|e| server_error_response(e, "unable to publish post"))
 }
 
 pub fn json_response(json: &impl Serialize, content_type: Option<&str>) -> Response {

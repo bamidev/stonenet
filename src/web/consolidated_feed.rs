@@ -13,7 +13,7 @@ use crate::{
 #[derive(Serialize)]
 pub enum ConsolidatedObjectType {
 	Stonenet,
-	ActivityPub
+	ActivityPub,
 }
 
 

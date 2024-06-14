@@ -6,6 +6,7 @@ use sea_orm::{
 	Condition, DatabaseBackend, JoinType, Order, QueryOrder, QuerySelect, QueryTrait, Statement,
 };
 
+use super::consolidated_feed::ConsolidatedObjectType;
 use crate::{
 	common::{current_timestamp, IdType},
 	compression::decompress,
@@ -16,8 +17,6 @@ use crate::{
 	db::{Database, Error, PersistenceHandle, Result},
 	entity::*,
 };
-
-use super::consolidated_feed::ConsolidatedObjectType;
 
 
 #[derive(Serialize)]
@@ -640,11 +639,48 @@ pub async fn load_home_feed(
 	Ok(objects)
 }
 
+pub async fn load_object_info(
+	db: &Database, url_base: &str, hash: &IdType,
+) -> Result<Option<ObjectInfo>> {
+	let result = object::Entity::find()
+		.filter(object::Column::Hash.eq(hash))
+		.one(db.inner())
+		.await?;
+	_load_object_info(db, url_base, result).await
+}
+
 pub async fn load_object_info2(
 	db: &Database, url_base: &str, id: i64,
 ) -> Result<Option<ObjectInfo>> {
 	let result = object::Entity::find_by_id(id).one(db.inner()).await?;
-	let info = if let Some(object) = result {
+	_load_object_info(db, url_base, result).await
+}
+
+pub async fn load_object_payload_info(
+	db: &Database, url_base: &str, object_id: i64, object_type: u8,
+) -> Result<Option<ObjectPayloadInfo>> {
+	Ok(match object_type {
+		OBJECT_TYPE_POST => find_post_object_info(db, url_base, object_id)
+			.await?
+			.map(|r| ObjectPayloadInfo::Post(r)),
+		OBJECT_TYPE_SHARE => find_share_object_info(db, url_base, object_id)
+			.await?
+			.map(|r| ObjectPayloadInfo::Share(r)),
+		OBJECT_TYPE_PROFILE => find_profile_object_info(db, url_base, object_id)
+			.await?
+			.map(|r| ObjectPayloadInfo::Profile(r)),
+		other => panic!("unknown object type: {}", other),
+	})
+}
+
+fn object_url(url_base: &str, actor_address: &ActorAddress, hash: &IdType) -> String {
+	format!("{}/actor/{}/object/{}", url_base, actor_address, hash)
+}
+
+async fn _load_object_info(
+	db: &Database, url_base: &str, record: Option<object::Model>,
+) -> Result<Option<ObjectInfo>> {
+	let info = if let Some(object) = record {
 		let actor_address = if let Some(record) = actor::Entity::find_by_id(object.actor_id)
 			.one(db.inner())
 			.await?
@@ -679,27 +715,6 @@ pub async fn load_object_info2(
 		None
 	};
 	Ok(info)
-}
-
-pub async fn load_object_payload_info(
-	db: &Database, url_base: &str, object_id: i64, object_type: u8,
-) -> Result<Option<ObjectPayloadInfo>> {
-	Ok(match object_type {
-		OBJECT_TYPE_POST => find_post_object_info(db, url_base, object_id)
-			.await?
-			.map(|r| ObjectPayloadInfo::Post(r)),
-		OBJECT_TYPE_SHARE => find_share_object_info(db, url_base, object_id)
-			.await?
-			.map(|r| ObjectPayloadInfo::Share(r)),
-		OBJECT_TYPE_PROFILE => find_profile_object_info(db, url_base, object_id)
-			.await?
-			.map(|r| ObjectPayloadInfo::Profile(r)),
-		other => panic!("unknown object type: {}", other),
-	})
-}
-
-fn object_url(url_base: &str, actor_address: &ActorAddress, hash: &IdType) -> String {
-	format!("{}/actor/{}/object/{}", url_base, actor_address, hash)
 }
 
 async fn _load_object_info_from_result(
