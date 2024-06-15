@@ -75,12 +75,14 @@ pub struct AcceptActivityType;
 #[allow(non_snake_case)]
 #[derive(Serialize)]
 pub struct ActivityNoteObject {
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub id: Option<String>,
 	pub r#type: ActivityNoteObjectType,
 	pub content: String,
 	pub mediaType: String,
 	pub published: DateTime,
 	pub attachment: Vec<AttachmentObject>,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub inReplyTo: Option<String>,
 }
 
@@ -89,9 +91,10 @@ pub struct ActivityNoteObjectType;
 #[allow(non_snake_case)]
 #[derive(Serialize)]
 pub struct ActivityProfileObject {
-	id: Option<String>,
+	id: String,
 	r#type: ActivityProfileObjectType,
 	published: DateTime,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	summary: Option<String>,
 	describes: ActivityProfileObjectDescribes,
 }
@@ -125,9 +128,11 @@ pub struct ActorObject {
 	followers: String,
 	summary: String,
 
+	#[serde(skip_serializing_if = "Option::is_none")]
 	publicKey: Option<ActorPublicKey>,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	icon: Option<ActorObjectIcon>,
-
+	// TODO: Add image property
 	nodeInfo2Url: String,
 }
 
@@ -154,6 +159,7 @@ pub struct Activity<'a> {
 	pub object: serde_json::Value,
 	pub published: DateTime,
 	pub to: Vec<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub cc: Option<Vec<&'a str>>,
 }
 
@@ -166,6 +172,7 @@ pub enum ActivityType {
 #[derive(Serialize)]
 pub struct AttachmentObject {
 	pub r#type: AttachmentObjectType,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub mediaType: Option<String>,
 	pub url: String,
 }
@@ -1397,7 +1404,7 @@ impl ActivityProfileObject {
 		actor_url: &str, object_hash: &str, created: u64, name: String, summary: Option<String>,
 	) -> Self {
 		Self {
-			id: Some(format!("{}/object/{}/activity-pub", actor_url, object_hash)),
+			id: format!("{}/object/{}/activity-pub", actor_url, object_hash),
 			r#type: ActivityProfileObjectType,
 			published: DateTime(created),
 			summary,
