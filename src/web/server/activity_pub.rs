@@ -28,7 +28,10 @@ use tera::Context;
 use tokio::{spawn, time::sleep};
 use zeroize::Zeroizing;
 
-use super::{common::*, current_timestamp, ActorAddress, Address, ServerGlobal};
+use super::{
+	common::*, current_timestamp, translate_special_mime_types_for_object, ActorAddress, Address,
+	ServerGlobal,
+};
 use crate::{
 	db::{self, PersistenceHandle},
 	entity::*,
@@ -838,7 +841,8 @@ pub async fn nodeinfo(State(g): State<Arc<ServerGlobal>>) -> Response {
 }
 
 async fn object_get(State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i64>) -> Response {
-	let object_info = match web::activity_pub::load_object_info(&g.base.api.db, object_id).await {
+	let mut object_info = match web::activity_pub::load_object_info(&g.base.api.db, object_id).await
+	{
 		Ok(result) =>
 			if let Some(r) = result {
 				r
@@ -879,6 +883,7 @@ async fn object_get(State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i6
 		return not_found_error_response("No webfinger available for actor");
 	};
 
+	translate_special_mime_types_for_object(&mut object_info);
 
 	let mut context = Context::new();
 	context.insert("object", &object_info);

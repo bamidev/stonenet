@@ -42,6 +42,7 @@ use super::{
 		PostMessageInfo, PostObjectInfo,
 	},
 	json::{expect_string, expect_url},
+	server::translate_special_mime_types2,
 	webfinger, Global,
 };
 use crate::{
@@ -1166,6 +1167,49 @@ pub async fn store_object(
 		.map_err(|e| Error::from(e))?;
 	Ok(object_id)
 }
+
+pub fn translate_activitystreams_object(content: &str) -> StdResult<PostMessageInfo, String> {
+	let json = match serde_json::Value::from_str(content) {
+		Ok(r) => r,
+		Err(e) => return Err(format!("Malformed JSON syntax: {}", e)),
+	};
+
+	let content_mime_type = if let Some(media_type) = json.get("mediaType") {
+		match media_type {
+			serde_json::Value::String(s) => s.as_str(),
+			_ => return Err("Property mediaType is not a string".into()),
+		}
+	} else {
+		"text/html"
+	};
+
+	if let Some(content) = json.get("content") {
+		match content {
+			serde_json::Value::String(s) => {
+				// If some sort of special mime type is used, see if we can translate it, but
+				// avoid an infinite loop
+				if !content_mime_type.starts_with("text/")
+					&& content_mime_type != "application/json+activity"
+					&& !content_mime_type.starts_with("application/json+ld ")
+				{
+					if let Some(p) = translate_special_mime_types2(content_mime_type, s.as_str()) {
+						return Ok(p);
+					}
+				}
+				return Ok(PostMessageInfo {
+					mime_type: content_mime_type.to_string(),
+					body: s.clone(),
+				});
+			}
+			_ => return Err("Property content is not a string".into()),
+		}
+	}
+
+	// TODO: Check contentMap if content doesn't exist
+
+	Err("Content not found".into())
+}
+
 
 impl Serialize for AcceptActivityType {
 	fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>

@@ -20,7 +20,7 @@ use crate::{
 		info::find_object_info,
 		server::{
 			not_found_error_response, post_message, server_error_response, server_error_response2,
-			ServerGlobal,
+			translate_special_mime_types_for_object, ServerGlobal,
 		},
 	},
 };
@@ -75,7 +75,7 @@ async fn object_get(
 	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(object_hash): Extension<IdType>,
 ) -> Response {
-	let object_info = match find_object_info(
+	let mut object_info = match find_object_info(
 		&g.base.api.db,
 		&g.base.server_info.url_base,
 		&actor_address,
@@ -83,16 +83,20 @@ async fn object_get(
 	)
 	.await
 	{
-		Ok(r) => r,
+		Ok(result) =>
+			if let Some(r) = result {
+				r
+			} else {
+				return not_found_error_response("Object not found");
+			},
 		Err(e) => return server_error_response(e, "Unable to load object"),
 	};
-	if object_info.is_none() {
-		return not_found_error_response("Object not found");
-	}
+
+	translate_special_mime_types_for_object(&mut object_info);
 
 	let mut context = Context::new();
 	context.insert("address", &actor_address);
-	context.insert("object", &object_info.unwrap());
+	context.insert("object", &object_info);
 	g.render("actor/object.html.tera", context).await
 }
 

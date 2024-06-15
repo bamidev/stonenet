@@ -21,7 +21,11 @@ use tokio::{sync::Mutex, time::sleep};
 use tower_http::services::ServeDir;
 
 use self::common::*;
-use super::{consolidated_feed::load_consolidated_feed, info::ObjectInfo, Global};
+use super::{
+	consolidated_feed::load_consolidated_feed,
+	info::{ObjectInfo, ObjectPayloadInfo, PostMessageInfo},
+	Global,
+};
 use crate::{
 	api::Api,
 	common::*,
@@ -147,7 +151,7 @@ async fn home(
 	let p = query.page.unwrap_or(0);
 	let start = p * 5;
 
-	let objects: Vec<ObjectInfo> = if g.base.server_info.is_exposed {
+	let mut objects: Vec<ObjectInfo> = if g.base.server_info.is_exposed {
 		match g.base.api.load_home_feed(5, start).await {
 			Ok(f) => f,
 			Err(e) => return server_error_response(e, "unable to fetch home feed"),
@@ -164,6 +168,8 @@ async fn home(
 			Err(e) => return server_error_response(e, "unable to fetch home feed"),
 		}
 	};
+
+	translate_special_mime_types_for_objects(&mut objects);
 
 	let mut context = Context::new();
 	context.insert("objects", &objects);
@@ -267,5 +273,67 @@ impl ServerGlobal {
 				.body(Body::from(html))
 				.unwrap(),
 		}
+	}
+}
+
+/// Attemps to translate a post message into one of a mime type that can be
+/// understood by the frontend.
+pub fn translate_special_mime_types(post: &PostMessageInfo) -> Option<PostMessageInfo> {
+	translate_special_mime_types2(&post.mime_type, &post.body)
+}
+
+/// Attemps to translate a post message into one of a mime type that can be
+/// understood by the frontend.
+pub fn translate_special_mime_types2(mime_type: &str, body: &str) -> Option<PostMessageInfo> {
+	let result = match mime_type {
+		"application/activity+json" => super::activity_pub::translate_activitystreams_object(body),
+		"application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"" =>
+			super::activity_pub::translate_activitystreams_object(body),
+		_ => return None,
+	};
+
+	Some(match result {
+		Ok(r) => r,
+		Err(e) => PostMessageInfo {
+			// Abuse the mime_type field to signify an error has occured while trying to translate
+			// the message
+			mime_type: "error".to_string(),
+			body: e,
+		},
+	})
+}
+
+fn translate_special_mime_types_for_object(object: &mut ObjectInfo) {
+	match &mut object.payload {
+		ObjectPayloadInfo::Post(post) => {
+			if let Some(irt) = &mut post.in_reply_to {
+				if let Some(message) = &mut post.message {
+					if let Some(new) = translate_special_mime_types(message) {
+						*message = new;
+					}
+				}
+			}
+
+			if let Some(message) = &mut post.message {
+				if let Some(new) = translate_special_mime_types(message) {
+					*message = new;
+				}
+			}
+		}
+		ObjectPayloadInfo::Share(share) =>
+			if let Some(post) = &mut share.original_post {
+				if let Some(message) = &mut post.message {
+					if let Some(new) = translate_special_mime_types(message) {
+						*message = new;
+					}
+				}
+			},
+		_ => {}
+	}
+}
+
+fn translate_special_mime_types_for_objects(objects: &mut [ObjectInfo]) {
+	for object in objects {
+		translate_special_mime_types_for_object(object);
 	}
 }

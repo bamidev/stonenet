@@ -156,6 +156,15 @@ impl ObjectPayloadInfo {
 	}
 }
 
+/*impl PostMessageInfo {
+	pub fn new_html(html: String) -> Self {
+		Self {
+			mime_type: "text/html".to_string(),
+			body: html
+		}
+	}
+}*/
+
 
 fn actor_url(url_base: &str, actor_address: &ActorAddress) -> String {
 	format!("{}/actor/{}", url_base, actor_address)

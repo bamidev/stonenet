@@ -16,8 +16,8 @@ use serde::Deserialize;
 use tera::Context;
 
 use super::{
-	activity_pub, error_response, server_error_response, server_error_response2, ActorAddress,
-	Address, PaginationQuery, ServerGlobal,
+	activity_pub, error_response, server_error_response, server_error_response2,
+	translate_special_mime_types_for_objects, ActorAddress, Address, PaginationQuery, ServerGlobal,
 };
 use crate::{
 	db::PersistenceHandle,
@@ -99,7 +99,7 @@ async fn actor_get(
 
 	let p = query.page.unwrap_or(0);
 	let start = p * 5;
-	let objects: Vec<ObjectInfo> = match load_actor_feed(
+	let mut objects: Vec<ObjectInfo> = match load_actor_feed(
 		&g.base.api.db,
 		&g.base.server_info.url_base,
 		&address,
@@ -111,6 +111,8 @@ async fn actor_get(
 		Ok(f) => f,
 		Err(e) => return server_error_response(e, "unable to fetch home feed"),
 	};
+
+	translate_special_mime_types_for_objects(&mut objects);
 
 	let mut context = Context::new();
 	context.insert("address", &address.to_string());
