@@ -23,6 +23,7 @@ use super::{
 	net::{actor::ActorNode, binserde, overlay::OverlayNode},
 };
 use crate::{
+	compression::decompress,
 	db::{decrypt_block, Database},
 	entity::*,
 	web::{
@@ -342,9 +343,13 @@ impl Api {
 			}
 		}
 
+		// TODO: Remove unwrap
+		let compression_type = CompressionType::from_u8(file.compression_type).unwrap();
+
 		Ok(Some(FileData {
 			mime_type: file.mime_type,
-			data: buffer,
+			// TODO: remove unwrap
+			data: decompress(compression_type, &buffer).unwrap(),
 		}))
 	}
 

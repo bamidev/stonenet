@@ -404,10 +404,13 @@ async fn find_post_object_info_files(
 				let plain_hash: IdType = row.try_get_by(file::Column::PlainHash.as_str())?;
 				let mime_type: String = row.try_get_by(file::Column::MimeType.as_str())?;
 				let block_count: u32 = row.try_get_by(file::Column::BlockCount.as_str())?;
+				let compression_type_code: u8 =
+					row.try_get_by(file::Column::CompressionType.as_str())?;
+				// TODO: Remove unwrap
+				let compression_type = CompressionType::from_u8(compression_type_code).unwrap();
 
 				let body_opt = match db.find_file_data(file_id, &plain_hash, block_count).await {
-					Ok(message_data_opt) =>
-						message_data_opt.map(|md| String::from_utf8_lossy(&md).to_string()),
+					Ok(r) => r,
 					Err(e) => match &*e {
 						// If a block is still missing from the message data file, don't
 						// actually raise an error, just leave the message data unset.
@@ -416,7 +419,7 @@ async fn find_post_object_info_files(
 					},
 				};
 
-				if let Some(body) = body_opt {
+				if let Some(buffer) = body_opt {
 					// Collect the files
 					let mut attachments = Vec::with_capacity(file_count as _);
 					let query = file_query(
@@ -442,7 +445,10 @@ async fn find_post_object_info_files(
 						attachments.push(attachment);
 					}
 
-					return Ok(Some((mime_type, body, attachments)));
+					// TODO: remove unwrap
+					let decompressed = decompress(compression_type, &buffer).unwrap();
+					let body_string = String::from_utf8_lossy(&decompressed).to_string();
+					return Ok(Some((mime_type, body_string, attachments)));
 				}
 			}
 		}
