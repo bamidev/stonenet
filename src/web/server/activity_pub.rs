@@ -30,7 +30,7 @@ use zeroize::Zeroizing;
 
 use super::{
 	common::*, current_timestamp, translate_special_mime_types_for_object, ActorAddress, Address,
-	ServerGlobal,
+	IdType, ServerGlobal,
 };
 use crate::{
 	db::{self, PersistenceHandle},
@@ -40,11 +40,13 @@ use crate::{
 	web::{
 		self,
 		activity_pub::{
-			self, compose_object_activity, queue_activity2, AcceptActivity, AcceptActivityType,
-			ActivityPubDocumentContext, ActorObject, ActorPublicKeyWithContext, OrderedCollection,
-			OrderedCollectionType, WebFingerDocument,
+			self, compose_activity_from_object_info, compose_full_activity_from_object_info,
+			AcceptActivity, AcceptActivityType, ActivityNoteObject, ActorObject, ActorPublicKey,
+			OrderedCollection, OrderedCollectionType, WebFingerDocument, DEFAULT_CONTEXT,
+			SECURE_CONTEXT,
 		},
 		info::{find_profile_info, load_actor_feed, ProfileObjectInfo, TargetedActorInfo},
+		json::expect_url,
 		server::Global,
 		Error, Result,
 	},
@@ -251,6 +253,30 @@ async fn activity_pub_actor_get(
 		Err(e) => return server_error_response(e, "Database error while checking follow status"),
 	};
 
+	let url = match actor_json.get("url") {
+		Some(r) => match expect_url(r, &|| "...".into()) {
+			Ok(r) => r,
+			Err(e) =>
+				return server_error_response(
+					e,
+					"Unable to parse URL from ActivityPub actor object",
+				),
+		},
+		None => match actor_json.get("id") {
+			Some(r) => match expect_url(r, &|| "...".into()) {
+				Ok(r) => r,
+				Err(e) =>
+					return server_error_response(
+						e,
+						"Unable to parse ID from ActivityPub actor object",
+					),
+			},
+			None =>
+				return server_error_response2(
+					"Unable to find URL or ID on ActivityPub actor object",
+				),
+		},
+	};
 	// FIXME: Clean up this mess with activity_pub::expect_string & expect_object
 	let name = if let Some(v) = actor_json.get("name") {
 		match v {
@@ -304,6 +330,7 @@ async fn activity_pub_actor_get(
 	let profile = ProfileObjectInfo {
 		actor: TargetedActorInfo {
 			address: address.clone(),
+			url: url.to_string(),
 			name,
 			avatar_url: None,
 			wallpaper_url: None,
@@ -320,6 +347,15 @@ async fn activity_pub_actor_get(
 	g.render("activity_pub/actor.html.tera", context).await
 }
 
+fn activity_pub_response(mut json: serde_json::Value, context: &[&str]) -> Response {
+	// Insert context into json object
+	json.as_object_mut()
+		.expect("ActivityPub response is not an object")
+		.insert("@context".into(), serde_json::to_value(context).unwrap());
+
+	json_response(&json, Some("application/json+activity"))
+}
+
 pub async fn actor_followers(
 	State(g): State<Arc<ServerGlobal>>, Extension(actor): Extension<actor::Model>,
 ) -> Response {
@@ -333,7 +369,6 @@ pub async fn actor_followers(
 	};
 
 	let feed = OrderedCollection {
-		context: ActivityPubDocumentContext::default(),
 		summary: "Actor Followers",
 		r#type: OrderedCollectionType,
 		totalItems: objects.len(),
@@ -342,10 +377,7 @@ pub async fn actor_followers(
 			.map(|record| serde_json::Value::String(record.host.clone() + &record.path))
 			.collect(),
 	};
-	json_response(
-		&feed,
-		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
-	)
+	activity_pub_response(serde_json::to_value(feed).unwrap(), DEFAULT_CONTEXT)
 }
 
 pub async fn actor_get(
@@ -371,10 +403,7 @@ pub async fn actor_get(
 		description,
 		public_key,
 	);
-	json_response(
-		&actor,
-		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
-	)
+	activity_pub_response(serde_json::to_value(actor).unwrap(), SECURE_CONTEXT)
 }
 
 pub async fn actor_inbox_get(
@@ -390,7 +419,6 @@ pub async fn actor_inbox_get(
 	};
 
 	let feed = OrderedCollection {
-		context: ActivityPubDocumentContext::default(),
 		summary: "Actor Inbox",
 		r#type: OrderedCollectionType,
 		totalItems: objects.len(),
@@ -399,10 +427,7 @@ pub async fn actor_inbox_get(
 			.map(|record| serde_json::to_value(&record.data).unwrap())
 			.collect(),
 	};
-	json_response(
-		&feed,
-		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
-	)
+	activity_pub_response(serde_json::to_value(feed).unwrap(), DEFAULT_CONTEXT)
 }
 
 pub async fn actor_inbox_post(
@@ -578,7 +603,6 @@ async fn actor_inbox_register_follow(
 
 			// Send an Accept object back
 			let accept_activity = AcceptActivity {
-				context: ActivityPubDocumentContext::default(),
 				id: format!(
 					"{}/actor/{}/activity_pub/follower/{}",
 					&g.base.server_info.url_base, &actor.address, follow_id
@@ -646,31 +670,22 @@ pub async fn actor_outbox(
 	// Convert all the objects infos to AP json format.
 	let mut activities = Vec::with_capacity(objects.len());
 	for object in objects {
-		let json = match compose_object_activity(
-			&g.base.api.db,
-			&g.base.server_info.url_base,
-			&address,
-			&object,
-		)
-		.await
-		{
-			Ok(r) => r,
+		match compose_activity_from_object_info(&g.base.api.db, &object).await {
+			Ok(result) =>
+				if let Some((json, _)) = result {
+					activities.push(json);
+				},
 			Err(e) => return server_error_response(e, "Unable to compose object activity"),
 		};
-		activities.push(json);
 	}
 
 	let feed = OrderedCollection {
-		context: ActivityPubDocumentContext::default(),
 		summary: "Actor Feed",
 		r#type: OrderedCollectionType,
 		totalItems: activities.len(),
 		orderedItems: activities,
 	};
-	json_response(
-		&feed,
-		Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
-	)
+	activity_pub_response(serde_json::to_value(feed).unwrap(), DEFAULT_CONTEXT)
 }
 
 pub async fn actor_public_key(
@@ -681,16 +696,12 @@ pub async fn actor_public_key(
 			"{}/actor/{}/activity-pub",
 			&g.base.server_info.url_base, &address
 		);
-		let key = ActorPublicKeyWithContext {
-			context: activity_pub::DEFAULT_CONTEXT,
+		let key = ActorPublicKey {
 			id: format!("{}#main-key", &actor_id),
 			owner: actor_id,
 			publicKeyPem: public_key.clone(),
 		};
-		json_response(
-			&key,
-			Some("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""),
-		)
+		activity_pub_response(serde_json::to_value(key).unwrap(), DEFAULT_CONTEXT)
 	} else {
 		not_found_error_response("No public key has been configured.")
 	}
@@ -891,13 +902,72 @@ async fn object_get(State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i6
 	g.render("actor/object.html.tera", context).await
 }
 
+pub async fn object_get_stonenet(
+	State(g): State<Arc<ServerGlobal>>, Path(hash): Path<IdType>,
+) -> Response {
+	let object_info = match web::info::load_object_info(
+		&g.base.api.db,
+		&g.base.server_info.url_base,
+		&hash,
+	)
+	.await
+	{
+		Ok(result) =>
+			if let Some(r) = result {
+				r
+			} else {
+				return not_found_error_response("Object not found");
+			},
+		Err(e) => return server_error_response(e, "Unable to load object"),
+	};
+
+	let json = match compose_full_activity_from_object_info(
+		&g.base.api.db,
+		&g.base.server_info.url_base,
+		&object_info,
+	)
+	.await
+	{
+		Ok(result) => match result {
+			Some(r) => r,
+			None => return not_found_error_response("Unable to load object"),
+		},
+		Err(e) => return server_error_response(e, "Unable to load object"),
+	};
+
+	activity_pub_response(json, DEFAULT_CONTEXT)
+}
+
 async fn object_post(
 	State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i64>, multipart: Multipart,
 ) -> Response {
+	// Load active identity and its private key
+	let identity = g
+		.base
+		.state
+		.lock()
+		.await
+		.active_identity
+		.as_ref()
+		.unwrap()
+		.1
+		.clone();
+	let private_key = match g.base.api.db.perform(|c| c.fetch_my_identity(&identity)) {
+		Ok(r) =>
+			if let Some((_, pk)) = r {
+				pk
+			} else {
+				return server_error_response2("unable to load identity");
+			},
+		Err(e) => return server_error_response(e, "unable to load identity"),
+	};
+
 	// Load the AP object
+	// TODO: Remove .unwrap():
+	let tx = g.base.api.db.transaction().await.unwrap();
 	let actor_address = g.base.state.lock().await.active_identity.clone().unwrap().1;
 	let ap_object = match activity_pub_object::Entity::find_by_id(object_id)
-		.one(g.base.api.db.inner())
+		.one(tx.inner())
 		.await
 	{
 		Ok(result) =>
@@ -909,57 +979,44 @@ async fn object_post(
 		Err(e) => return server_error_response(e, "Unable to load object"),
 	};
 
-	// Post the message and then load the object afterwards
-	let object_hash = match post_message(&g.base, multipart, None, true).await {
+	// Parse the request data, and pre-create the attachments so that we can deduce
+	// the URLs they will have
+	let (message, attachment_datas) = match parse_post_message(multipart).await {
 		Ok(r) => r,
 		Err(e) => return e,
 	};
-	let object = match web::info::load_object_info(
-		&g.base.api.db,
-		&g.base.server_info.url_base,
-		&object_hash,
-	)
-	.await
-	{
-		Ok(result) =>
-			if let Some(r) = result {
-				r
-			} else {
-				return not_found_error_response("Unable to find object info after creation");
-			},
-		Err(e) => return server_error_response(e, "Unable to load object info"),
-	};
+	let mut attachments = Vec::with_capacity(attachment_datas.len());
+	for attachment_data in &attachment_datas {
+		let (_, file_hash, _) = tx.create_file(&attachment_data).await.unwrap();
+		attachments.push((attachment_data.mime_type.as_str(), file_hash));
+	}
+	tx.commit().await.unwrap();
 
-	// Generate the AP activity from the posted object
-	let mut activity_json = match compose_object_activity(
-		&g.base.api.db,
+	// Construct the Note object
+	let mut note = ActivityNoteObject::create_markdown_note(
 		&g.base.server_info.url_base,
 		&actor_address,
-		&object,
-	)
-	.await
-	{
-		Ok(r) => r,
-		Err(e) => return server_error_response(e, "Unable to compose object activity"),
-	};
-	activity_json
-		.get_mut("object")
-		.unwrap()
-		.as_object_mut()
-		.unwrap()
-		.insert(
-			"inReplyTo".to_string(),
-			serde_json::Value::String(ap_object.object_id),
-		);
+		message,
+		&attachments,
+	);
+	note.inReplyTo = Some(ap_object.object_id);
+	let activity_object_json = serde_json::to_value(note).unwrap();
 
-	// Queue the activity to be published on the Fediverse manually, because
-	// otherwise it will be put there automatically, and then the `inReplyTo` field
-	// won't have been added.
-	if let Err(e) =
-		queue_activity2(&g.base, &actor_address, ap_object.actor_id, &activity_json).await
-	{
-		return server_error_response(e, "Add activity to the ActivityPub send queue");
-	}
+	// Create a post object on Stonenet with the activity json of the Note object as
+	// its main file
+	g.base
+		.api
+		.publish_post(
+			&actor_address,
+			&private_key,
+			"application/json+activity",
+			&activity_object_json.to_string(),
+			Vec::new(),
+			&attachment_datas,
+			None,
+		)
+		.await
+		.unwrap();
 
 	Response::builder()
 		.status(303)

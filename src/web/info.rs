@@ -75,6 +75,7 @@ pub struct ShareObjectInfo {
 #[derive(Debug, Serialize)]
 pub struct TargetedActorInfo {
 	pub address: String,
+	pub url: String,
 	pub name: String,
 	pub avatar_url: Option<String>,
 	pub wallpaper_url: Option<String>,
@@ -82,6 +83,7 @@ pub struct TargetedActorInfo {
 
 #[derive(Debug, Serialize)]
 pub struct TargetedPostInfo {
+	pub id: String,
 	pub actor_address: String,
 	pub actor_name: Option<String>,
 	pub actor_avatar_url: Option<String>,
@@ -156,6 +158,15 @@ impl ObjectPayloadInfo {
 	}
 }
 
+impl PossiblyKnownFileHeader {
+	pub fn hash(&self) -> &IdType {
+		match self {
+			Self::Known(header) => &header.hash,
+			Self::Unknown(hash) => hash,
+		}
+	}
+}
+
 /*impl PostMessageInfo {
 	pub fn new_html(html: String) -> Self {
 		Self {
@@ -166,11 +177,11 @@ impl ObjectPayloadInfo {
 }*/
 
 
-fn actor_url(url_base: &str, actor_address: &ActorAddress) -> String {
+pub fn actor_url(url_base: &str, actor_address: &ActorAddress) -> String {
 	format!("{}/actor/{}", url_base, actor_address)
 }
 
-fn file_url(url_base: &str, actor_address: &ActorAddress, hash: &IdType) -> String {
+pub fn file_url(url_base: &str, actor_address: &ActorAddress, hash: &IdType) -> String {
 	format!("{}/actor/{}/file/{}", url_base, actor_address, hash)
 }
 
@@ -293,7 +304,7 @@ async fn find_share_object_info(
 		.query_one(Statement::from_sql_and_values(
 			db.inner().get_database_backend(),
 			r#"
-		SELECT bo.actor_address, bi.id, to_.id
+		SELECT o.hash, bo.actor_address, bi.id, to_.id,
 		FROM object AS o
 		LEFT JOIN share_object AS bo ON bo.object_id = o.id
 		LEFT JOIN actor AS i ON o.actor_id = i.id
@@ -306,9 +317,10 @@ async fn find_share_object_info(
 		.await?;
 
 	if let Some(row) = result {
-		let actor_address: ActorAddress = row.try_get_by_index(0)?;
-		let target_actor_id_opt: Option<i64> = row.try_get_by_index(1)?;
-		let target_object_id_opt: Option<i64> = row.try_get_by_index(2)?;
+		let object_hash: IdType = row.try_get_by_index(0)?;
+		let actor_address: ActorAddress = row.try_get_by_index(1)?;
+		let target_actor_id_opt: Option<i64> = row.try_get_by_index(2)?;
+		let target_object_id_opt: Option<i64> = row.try_get_by_index(3)?;
 
 		if let Some(target_object_id) = target_object_id_opt {
 			let (actor_name, actor_avatar) = if let Some(target_actor_id) = target_actor_id_opt {
@@ -321,6 +333,7 @@ async fn find_share_object_info(
 				find_post_object_info_files(db, target_object_id).await?
 			{
 				share_object.original_post = Some(TargetedPostInfo {
+					id: object_hash.to_string(),
 					actor_address: actor_address.to_string(),
 					actor_name,
 					actor_avatar_url: actor_avatar
@@ -330,6 +343,7 @@ async fn find_share_object_info(
 				})
 			} else {
 				share_object.original_post = Some(TargetedPostInfo {
+					id: object_hash.to_string(),
 					actor_address: actor_address.to_string(),
 					actor_name,
 					actor_avatar_url: actor_avatar
@@ -445,7 +459,7 @@ async fn find_post_object_info(
 		.query_one(Statement::from_sql_and_values(
 			db.inner().get_database_backend(),
 			r#"
-		SELECT o.actor_id, o.sequence, ti.id, ti.address, tpo.object_id
+		SELECT o.hash, o.sequence, ti.id, ti.address, tpo.object_id
 		FROM post_object AS po
 		INNER JOIN object AS o ON po.object_id = o.id
 		INNER JOIN actor AS i ON o.actor_id = i.id
@@ -460,6 +474,7 @@ async fn find_post_object_info(
 		.await?;
 
 	if let Some(r) = result {
+		let object_hash: IdType = r.try_get_by_index(0)?;
 		let object_sequence: i64 = r.try_get_by_index(1)?;
 		let irt_actor_rowid: Option<i64> = r.try_get_by_index(2)?;
 		let irt_actor_address_opt: Option<ActorAddress> = r.try_get_by_index(3)?;
@@ -475,6 +490,7 @@ async fn find_post_object_info(
 				let irt_message_opt = find_post_object_info_files(db, irt_object_id).await?;
 				let irt_actor_address = irt_actor_address_opt.unwrap();
 				Some(TargetedPostInfo {
+					id: object_hash.to_string(),
 					actor_address: irt_actor_address.to_string(),
 					actor_name: irt_actor_name,
 					actor_avatar_url: irt_actor_avatar_id
@@ -791,6 +807,7 @@ async fn _parse_profile_info(
 	Ok(Some(ProfileObjectInfo {
 		actor: TargetedActorInfo {
 			address: actor_address.to_string(),
+			url: actor_url(url_base, &actor_address),
 			name: actor_name,
 			avatar_url: avatar_id.map(|id| file_url(url_base, &actor_address, &id)),
 			wallpaper_url: wallpaper_id.map(|id| file_url(url_base, &actor_address, &id)),

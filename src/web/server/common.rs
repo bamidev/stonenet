@@ -14,30 +14,7 @@ use crate::{
 };
 
 
-pub async fn post_message(
-	g: &Arc<Global>, mut form: Multipart, in_reply_to: Option<(ActorAddress, IdType)>,
-	published_on_fediverse: bool,
-) -> Result<IdType, Response> {
-	// Load identity + private key
-	let identity = g
-		.state
-		.lock()
-		.await
-		.active_identity
-		.as_ref()
-		.unwrap()
-		.1
-		.clone();
-	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
-		Ok(r) =>
-			if let Some((_, pk)) = r {
-				pk
-			} else {
-				return Err(server_error_response2("unable to load identity"));
-			},
-		Err(e) => return Err(server_error_response(e, "unable to load identity")),
-	};
-
+pub async fn parse_post_message(mut form: Multipart) -> Result<(String, Vec<FileData>), Response> {
 	let mut message = String::new();
 	let mut attachments = Vec::new();
 
@@ -69,24 +46,52 @@ pub async fn post_message(
 			other => warn!("Unrecognized form field: {}", other),
 		}
 	}
+
 	// TODO: Parse tags from post
+	Ok((message, attachments))
+}
 
-	if message.len() == 0 {
-		panic!("message can not be empty");
-	}
+pub async fn post_message(
+	g: &Arc<Global>, form: Multipart, in_reply_to: Option<(ActorAddress, IdType)>,
+) -> Result<IdType, Response> {
+	// Parse request
+	let (message, attachments) = parse_post_message(form).await?;
 
-	g.api
+	// Load active identity and its private key
+	let identity = g
+		.state
+		.lock()
+		.await
+		.active_identity
+		.as_ref()
+		.unwrap()
+		.1
+		.clone();
+	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
+		Ok(r) =>
+			if let Some((_, pk)) = r {
+				pk
+			} else {
+				return Err(server_error_response2("unable to load identity"));
+			},
+		Err(e) => return Err(server_error_response(e, "unable to load identity")),
+	};
+
+	// Publish post
+	let hash = g
+		.api
 		.publish_post(
 			&identity,
 			&private_key,
+			"text/markdown",
 			&message,
 			Vec::new(),
 			&attachments,
 			in_reply_to,
-			published_on_fediverse,
 		)
 		.await
-		.map_err(|e| server_error_response(e, "unable to publish post"))
+		.map_err(|e| server_error_response(e, "unable to publish post"))?;
+	Ok(hash)
 }
 
 pub fn json_response(json: &impl Serialize, content_type: Option<&str>) -> Response {

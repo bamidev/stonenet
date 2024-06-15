@@ -15,7 +15,6 @@ use std::{
 use axum::http::HeaderMap;
 use base64::prelude::*;
 use chrono::{SecondsFormat, TimeZone, Utc};
-use email_address_parser::EmailAddress;
 use lazy_static::lazy_static;
 use log::*;
 use reqwest::Url;
@@ -29,7 +28,7 @@ use rsa::{
 use sea_orm::{
 	prelude::*,
 	sea_query::{self, Alias},
-	JoinType, NotSet, Order, QueryOrder, QuerySelect, QueryTrait, Set, Statement,
+	NotSet, Order, QueryOrder, QuerySelect, QueryTrait, Set, Statement,
 };
 use serde::{Serialize, Serializer};
 use tokio::{spawn, time::sleep};
@@ -38,7 +37,7 @@ use zeroize::Zeroizing;
 use super::{
 	consolidated_feed::ConsolidatedObjectType,
 	info::{
-		human_readable_duration, load_object_payload_info, ObjectInfo, ObjectPayloadInfo,
+		human_readable_duration, ObjectInfo, ObjectPayloadInfo, PossiblyKnownFileHeader,
 		PostMessageInfo, PostObjectInfo,
 	},
 	json::{expect_string, expect_url},
@@ -46,7 +45,7 @@ use super::{
 	webfinger, Global,
 };
 use crate::{
-	common::current_timestamp,
+	common::{current_timestamp, IdType},
 	config::Config,
 	core::{ActorAddress, Address, OBJECT_TYPE_PROFILE},
 	db::{self, Database, PersistenceHandle},
@@ -55,17 +54,16 @@ use crate::{
 };
 
 
-pub const DEFAULT_CONTEXT: ActivityPubDocumentContext = ActivityPubDocumentContext(&[
+pub const DEFAULT_CONTEXT: &[&'static str] = &["https://www.w3.org/ns/activitystreams"];
+pub const SECURE_CONTEXT: &[&'static str] = &[
 	"https://www.w3.org/ns/activitystreams",
 	"https://w3id.org/security/v1",
-]);
+];
 const SEND_QUEUE_DEFAULT_CAPACITY: u64 = 100000;
 
 
 #[derive(Serialize)]
 pub struct AcceptActivity {
-	#[serde(rename(serialize = "@context"), default)]
-	pub context: ActivityPubDocumentContext,
 	pub r#type: AcceptActivityType,
 	pub id: String,
 	pub actor: String,
@@ -74,29 +72,38 @@ pub struct AcceptActivity {
 }
 pub struct AcceptActivityType;
 
+#[allow(non_snake_case)]
 #[derive(Serialize)]
-pub struct ActivityObject {
-	id: String,
-	r#type: ActivityObjectType,
-	content: String,
-	source: ActivityObjectSource,
-	published: DateTime,
+pub struct ActivityNoteObject {
+	pub id: Option<String>,
+	pub r#type: ActivityNoteObjectType,
+	pub content: String,
+	pub mediaType: String,
+	pub published: DateTime,
+	pub attachment: Vec<AttachmentObject>,
+	pub inReplyTo: Option<String>,
 }
+
+pub struct ActivityNoteObjectType;
 
 #[allow(non_snake_case)]
 #[derive(Serialize)]
-pub struct ActivityObjectSource {
-	content: String,
-	mediaType: MediaType,
+pub struct ActivityProfileObject {
+	id: Option<String>,
+	r#type: ActivityProfileObjectType,
+	published: DateTime,
+	summary: Option<String>,
+	describes: ActivityProfileObjectDescribes,
 }
 
 #[derive(Serialize)]
-pub enum ActivityObjectType {
-	Note,
+pub struct ActivityProfileObjectDescribes {
+	r#type: ActivityProfileObjectDescribesType,
+	name: String,
 }
 
-#[derive(Serialize)]
-pub struct ActivityPubDocumentContext(pub &'static [&'static str]);
+pub struct ActivityProfileObjectType;
+pub struct ActivityProfileObjectDescribesType;
 
 #[derive(PartialEq)]
 pub enum ActivitySendState {
@@ -108,8 +115,6 @@ pub enum ActivitySendState {
 #[allow(non_snake_case)]
 #[derive(Serialize)]
 pub struct ActorObject {
-	#[serde(rename(serialize = "@context"), default)]
-	context: ActivityPubDocumentContext,
 	id: String,
 	r#type: &'static str,
 	name: String,
@@ -136,47 +141,47 @@ pub struct ActorObjectIcon {
 #[allow(non_snake_case)]
 #[derive(Serialize)]
 pub struct ActorPublicKey {
-	id: String,
-	owner: String,
-	publicKeyPem: String,
-}
-
-#[allow(non_snake_case)]
-#[derive(Serialize)]
-pub struct ActorPublicKeyWithContext {
-	#[serde(rename(serialize = "@context"), default)]
-	pub context: ActivityPubDocumentContext,
 	pub id: String,
 	pub owner: String,
 	pub publicKeyPem: String,
 }
 
 #[derive(Serialize)]
-pub struct CreateActivity<'a> {
-	#[serde(rename(serialize = "@context"), default)]
-	context: ActivityPubDocumentContext,
-	r#type: CreateActivityType,
-	id: String,
-	actor: String,
-	object: ActivityObject,
-	published: DateTime,
-	to: Vec<String>,
-	cc: Option<Vec<&'a str>>,
+pub struct Activity<'a> {
+	pub r#type: ActivityType,
+	pub id: String,
+	pub actor: String,
+	pub object: serde_json::Value,
+	pub published: DateTime,
+	pub to: Vec<String>,
+	pub cc: Option<Vec<&'a str>>,
 }
 
-pub struct CreateActivityType;
-
-pub struct DateTime(u64);
-
-pub enum MediaType {
-	Markdown,
+pub enum ActivityType {
+	Announce,
+	Create,
 }
 
 #[allow(non_snake_case)]
 #[derive(Serialize)]
+pub struct AttachmentObject {
+	pub r#type: AttachmentObjectType,
+	pub mediaType: Option<String>,
+	pub url: String,
+}
+
+pub enum AttachmentObjectType {
+	Audio,
+	Document,
+	Image,
+	Video,
+}
+
+pub struct DateTime(u64);
+
+#[allow(non_snake_case)]
+#[derive(Serialize)]
 pub struct OrderedCollection {
-	#[serde(rename(serialize = "@context"), default)]
-	pub context: ActivityPubDocumentContext,
 	pub summary: &'static str,
 	pub r#type: OrderedCollectionType,
 	pub totalItems: usize,
@@ -286,84 +291,170 @@ async fn collect_activities(db: &Database, json: &serde_json::Value, url: &str) 
 	Ok(())
 }
 
-pub async fn compose_object_activity(
-	db: &Database, url_base: &str, actor_address: &ActorAddress, object: &ObjectInfo,
-) -> Result<serde_json::Value> {
-	let (content, reply_addrs) = compose_object_payload(&object.payload).await?;
-	let reply_urls = web::activity_pub::actor::resolve_urls_from_webfingers(db, &reply_addrs).await;
-	let reply_url_strings: Vec<String> = reply_urls.into_iter().map(|i| i.to_string()).collect();
-	let cc_list: Vec<&str> = reply_url_strings.iter().map(|i| i.as_str()).collect();
-	let activity = CreateActivity::new_public_note(
-		url_base,
-		&actor_address,
-		&cc_list,
-		&object.id,
-		object.created,
-		content,
-	);
-	Ok(serde_json::to_value(activity).unwrap())
-}
-
-async fn compose_object_payload(
-	payload: &ObjectPayloadInfo,
-) -> Result<(String, Vec<EmailAddress>)> {
+pub async fn compose_activity_from_object_info(
+	db: &Database, object: &ObjectInfo,
+) -> Result<Option<(serde_json::Value, Vec<Url>)>> {
+	debug_assert_eq!(object.consolidated_type, ConsolidatedObjectType::Stonenet);
 	let mut reply_webfingers = Vec::new();
 
-	// Check if the post has an webfinger address at the start
-	match payload {
-		ObjectPayloadInfo::Post(post) =>
-			if let Some(content) = &post.message {
-				reply_webfingers = webfinger::find_from_content(&content.body)
-			},
-		_ => {}
-	}
-
-	let content = compose_object_payload_content(payload)?;
-	Ok((content, reply_webfingers))
-}
-
-fn compose_object_payload_content(payload: &ObjectPayloadInfo) -> Result<String> {
-	let string = match payload {
+	let object_id = match &object.payload {
 		ObjectPayloadInfo::Post(post) => {
-			let mut content = String::new();
-			if let Some(irt) = &post.in_reply_to {
-				let actor_name: &str = if let Some(name) = irt.actor_name.as_ref() {
-					name
-				} else {
-					"Someone"
-				};
-				content = format!("{} wrote:\n\n", actor_name);
+			if let Some(message) = &post.message {
+				// Parse the text body to find any metions of webfingers
+				if message.mime_type.starts_with("text/") {
+					reply_webfingers = webfinger::find_from_content(&message.body);
+				}
 			}
 
-			if let Some(message) = &post.message {
-				content += &message.body;
-			}
-			content
+			format!("{}/object/{}/activity-pub", &object.actor_url, &object.id)
 		}
-		ObjectPayloadInfo::Share(share) =>
-			if let Some(original_post) = &share.original_post {
-				let actor_name: &str = if let Some(name) = &original_post.actor_name {
-					name
-				} else {
-					"Someone"
-				};
-				format!(
-					"{} wrote:\n\n{}",
-					actor_name,
-					original_post
-						.message
-						.as_ref()
-						.map(|pm| &pm.body)
-						.unwrap_or(&"[Unable to load post message]".to_string())
-				)
-			} else {
-				"[Unable to load shared post]".to_string()
-			},
+		ObjectPayloadInfo::Share(_) =>
+			format!("{}/object/{}/activity-pub", &object.actor_url, &object.id),
 		ObjectPayloadInfo::Profile(_) => {
-			format!("[Updated my profile]")
+			let object_id = format!("{}/object/{}/activity-pub", &object.actor_url, &object.id);
+			let activity = serde_json::to_value(Activity::new(
+				ActivityType::Announce,
+				&object.actor_url,
+				&object.id,
+				&[],
+				object.created,
+				serde_json::Value::String(object_id),
+			))
+			.unwrap();
+			return Ok(Some((activity, Vec::new())));
 		}
 	};
-	Ok(string)
+
+	// Resolve actors to send a reply to
+	let reply_urls = actor::resolve_urls_from_webfingers(db, &reply_webfingers).await;
+	let reply_url_strings: Vec<String> = reply_urls.iter().map(|i| i.to_string()).collect();
+	let cc_list: Vec<&str> = reply_url_strings.iter().map(|i| i.as_str()).collect();
+
+	let activity = serde_json::to_value(Activity::new(
+		ActivityType::Create,
+		&object.actor_url,
+		&object.id,
+		&cc_list,
+		object.created,
+		serde_json::Value::String(object_id),
+	))
+	.unwrap();
+	Ok(Some((activity, reply_urls)))
+}
+
+pub async fn compose_full_activity_from_object_info(
+	db: &Database, url_base: &str, object: &ObjectInfo,
+) -> Result<Option<serde_json::Value>> {
+	debug_assert_eq!(object.consolidated_type, ConsolidatedObjectType::Stonenet);
+
+	let activity_opt = match &object.payload {
+		ObjectPayloadInfo::Post(post) => {
+			if let Some(message) = &post.message {
+				let mut reply_webfingers = Vec::new();
+				let ap_object_id =
+					format!("{}/object/{}/activity-pub", &object.actor_url, &object.id);
+
+				let activity_object_json = if message.mime_type == "application/json+activity" {
+					let mut json = serde_json::Value::from_str(&message.body)
+						.map_err(|e| Error::Deserialization(e, "parsing activity object".into()))?;
+					let json_object = json.as_object_mut().unwrap();
+					// Add the id property, because it couldn't have been added upon creation
+					json_object.insert("id".to_string(), serde_json::Value::String(ap_object_id));
+
+					// Scan the content for mentioned webfingers
+					let media_type = if let Some(v) = json_object.get("mediaType") {
+						expect_string(v, &|| "parsing the mediaType property".into())?.as_str()
+					} else {
+						"text/html"
+					};
+					if media_type.starts_with("text/") {
+						if let Some(content_val) = json_object.get("content") {
+							let content =
+								expect_string(content_val, &|| "parsing content property".into())?;
+							reply_webfingers = webfinger::find_from_content(&content);
+						}
+					}
+
+					json
+				} else {
+					// Parse the text body to find any metions of webfingers
+					if message.mime_type.starts_with("text/") {
+						reply_webfingers = webfinger::find_from_content(&message.body);
+					}
+
+					let mut note = ActivityNoteObject::new2(
+						&object.actor_url,
+						&object.id,
+						object.created,
+						message.mime_type.clone(),
+						message.body.clone(),
+						&post.attachments,
+					);
+					if let Some(irt) = &post.in_reply_to {
+						note.inReplyTo = Some(format!(
+							"{}/actor/{}/object/{}/activity-pub",
+							url_base, &irt.actor_address, &irt.id
+						));
+					}
+					serde_json::to_value(note).unwrap()
+				};
+
+				let reply_urls = actor::resolve_urls_from_webfingers(db, &reply_webfingers).await;
+				let reply_url_strings: Vec<String> =
+					reply_urls.iter().map(|i| i.to_string()).collect();
+				let cc_list: Vec<&str> = reply_url_strings.iter().map(|i| i.as_str()).collect();
+				let activity = Activity::new(
+					ActivityType::Create,
+					&object.actor_url,
+					&object.id,
+					&cc_list,
+					object.created,
+					activity_object_json,
+				);
+				Some(serde_json::to_value(activity).unwrap())
+			} else {
+				None
+			}
+		}
+		ObjectPayloadInfo::Share(share) =>
+			if let Some(post) = &share.original_post {
+				let target_object_id = format!(
+					"{}/actor/{}/object/{}/activity-pub",
+					url_base, &post.actor_address, &post.id
+				);
+				let activity = Activity::new(
+					ActivityType::Announce,
+					&object.actor_url,
+					&object.id,
+					&[],
+					object.created,
+					serde_json::Value::String(target_object_id),
+				);
+				Some(serde_json::to_value(activity).unwrap())
+			} else {
+				None
+			},
+		ObjectPayloadInfo::Profile(profile) => {
+			// Construct a different type of activity (Announce), with a Profile object
+			let profile = ActivityProfileObject::new(
+				&object.actor_url,
+				&object.id,
+				object.created,
+				profile.actor.name.clone(),
+				profile.description.clone(),
+			);
+			let activity = Activity::new(
+				ActivityType::Announce,
+				&object.actor_url,
+				&object.id,
+				&[],
+				object.created,
+				serde_json::to_value(profile).unwrap(),
+			);
+			Some(serde_json::to_value(activity).unwrap())
+		}
+	};
+	Ok(activity_opt)
 }
 
 fn expect_array<'a>(
@@ -689,22 +780,14 @@ async fn poll_outboxes(stop_flag: Arc<AtomicBool>, db: &Database) -> db::Result<
 /// Puts the activity in the send queue for each following server, that will be
 /// processed somewhere in the future
 async fn populate_send_queue_from_new_object(
-	g: &Global, actor_address: &ActorAddress, object: object::Model, payload: ObjectPayloadInfo,
+	g: &Global, object: object::Model, object_info: ObjectInfo,
 ) -> Result<()> {
 	// Create the activity
-	let (content, reply_addrs) = compose_object_payload(&payload).await?;
-	let reply_urls = actor::resolve_urls_from_webfingers(&g.api.db, &reply_addrs).await;
-	let reply_url_strings: Vec<String> = reply_urls.iter().map(|i| i.to_string()).collect();
-	let cc_list: Vec<&str> = reply_url_strings.iter().map(|i| i.as_str()).collect();
-	let activity_json = serde_json::to_value(CreateActivity::new_public_note(
-		&g.server_info.url_base,
-		&actor_address,
-		&cc_list,
-		&object.hash.to_string(),
-		object.created as _,
-		content,
-	))
-	.unwrap();
+	let (activity, reply_urls) =
+		match compose_activity_from_object_info(&g.api.db, &object_info).await? {
+			Some(r) => r,
+			None => return Ok(()),
+		};
 
 	// Send the activity to each recipient on the fediverse
 	let mut recipient_servers = g
@@ -723,7 +806,7 @@ async fn populate_send_queue_from_new_object(
 	let tx: db::Transaction = g.api.db.transaction().await.map_err(|e| e.to_web())?;
 
 	for server in recipient_servers {
-		queue_activity(g, &tx, object.actor_id, server, None, &activity_json)
+		queue_activity(g, &tx, object.actor_id, server, None, &activity)
 			.await
 			.map_err(|e| e.to_web())?;
 	}
@@ -743,7 +826,6 @@ async fn populate_send_queue_from_new_object(
 
 pub async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> Result<()> {
 	let objects = object::Entity::find()
-		.join(JoinType::InnerJoin, object::Relation::Actor.def())
 		.filter(object::Column::PublishedOnFediverse.eq(false))
 		.filter(object::Column::Type.ne(OBJECT_TYPE_PROFILE))
 		.order_by_asc(object::Column::Id)
@@ -758,29 +840,21 @@ pub async fn populate_send_queue_from_new_objects(g: &Global, limit: u64) -> Res
 	// fediverse.
 
 	let mut i = 0;
-	for object in objects {
+	for record in objects {
 		// Ignore profile update objects
-		if let Some(payload_info) =
-			load_object_payload_info(&g.api.db, &g.server_info.url_base, object.id, object.r#type)
+		if let Some(object_info) =
+			web::info::load_object_info(&g.api.db, &g.server_info.url_base, &record.hash)
 				.await
 				.map_err(|e| e.to_web())?
 		{
 			// Ignore objects that don't have enough info on them yet to display them yet
-			if payload_info.has_main_content() {
-				// TODO: Don't query for the address for each object.
-				if let Some(actor) = entity::actor::Entity::find_by_id(object.actor_id)
-					.one(g.api.db.inner())
-					.await
-					.map_err(|e| db::Error::OrmError(e).to_web())?
-				{
-					populate_send_queue_from_new_object(g, &actor.address, object, payload_info)
-						.await?;
+			if object_info.payload.has_main_content() {
+				populate_send_queue_from_new_object(g, record, object_info).await?;
 
-					// Enforce max limit on number of objects being put in the send queue
-					i += 1;
-					if i >= limit {
-						break;
-					}
+				// Enforce max limit on number of objects being put in the send queue
+				i += 1;
+				if i >= limit {
+					break;
 				}
 			}
 		}
@@ -896,7 +970,7 @@ pub async fn process_next_send_queue_item(
 /// shared inbox, otherwise it will be send to the actor's inbox.
 pub async fn queue_activity(
 	g: &Global, db: &impl PersistenceHandle, actor_id: i64, recipient_server: String,
-	recipient_path: Option<String>, object: &impl Serialize,
+	recipient_path: Option<String>, activity: &impl Serialize,
 ) -> db::Result<bool> {
 	// FIXME: Check if the queue is over capacity, in which case nothing will be
 	// done.
@@ -924,7 +998,7 @@ pub async fn queue_activity(
 			actor_id: Set(actor_id),
 			recipient_server: Set(recipient_server),
 			recipient_path: Set(recipient_path),
-			object: Set(serde_json::to_string(object).unwrap()),
+			object: Set(serde_json::to_string(activity).unwrap()),
 			last_fail: Set(None),
 			failures: Set(0),
 		};
@@ -1220,28 +1294,137 @@ impl Serialize for AcceptActivityType {
 	}
 }
 
-impl ActivityObject {
-	pub fn new(
-		url_base: &str, actor: &ActorAddress, object_hash: &str, created: u64, content: String,
+impl Serialize for ActivityNoteObjectType {
+	fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		serializer.serialize_str("Note")
+	}
+}
+
+impl ActivityNoteObject {
+	fn attachments(
+		url_base: &str, actor_address: &ActorAddress, attachments: &[(&str, IdType)],
+	) -> Vec<AttachmentObject> {
+		attachments
+			.iter()
+			.map(|(mime_type, hash)| AttachmentObject {
+				mediaType: Some(mime_type.to_string()),
+				r#type: AttachmentObjectType::from_mime_type(mime_type),
+				url: web::info::file_url(url_base, actor_address, &hash),
+			})
+			.collect()
+	}
+
+	fn attachments2(
+		actor_url: &str, attachments: &[PossiblyKnownFileHeader],
+	) -> Vec<AttachmentObject> {
+		let mut results = Vec::with_capacity(attachments.len());
+		for attachment in attachments {
+			let attachment_object = match attachment {
+				PossiblyKnownFileHeader::Known(header) => AttachmentObject {
+					r#type: AttachmentObjectType::from_mime_type(&header.mime_type),
+					mediaType: Some(header.mime_type.clone()),
+					url: format!("{}/file/{}", actor_url, &header.hash),
+				},
+				PossiblyKnownFileHeader::Unknown(hash) => AttachmentObject {
+					r#type: AttachmentObjectType::Document,
+					mediaType: None,
+					url: format!("{}/file/{}", actor_url, hash),
+				},
+			};
+			results.push(attachment_object);
+		}
+		results
+	}
+
+	pub fn create_markdown_note(
+		url_base: &str, actor_address: &ActorAddress, content: String,
+		attachments: &[(&str, IdType)],
 	) -> Self {
 		Self {
-			id: format!(
+			id: None,
+			r#type: ActivityNoteObjectType,
+			content,
+			mediaType: "text/markdown".to_string(),
+			published: DateTime::current(),
+			attachment: Self::attachments(url_base, actor_address, attachments),
+			inReplyTo: None,
+		}
+	}
+
+	/// `id_info`: An optional tuple of the url base, the actor address & the
+	/// object hash, to construct the id property from.
+	pub fn new(
+		url_base: &str, actor_address: &ActorAddress, object_hash: &str, created: u64,
+		mime_type: String, content: String, attachments: &[(&str, IdType)],
+	) -> Self {
+		Self {
+			id: Some(format!(
 				"{}/actor/{}/object/{}/activity-pub",
-				url_base, actor, object_hash
-			),
-			r#type: ActivityObjectType::Note,
-			content: content.clone(),
-			source: ActivityObjectSource {
-				content,
-				mediaType: MediaType::Markdown,
-			},
+				url_base, actor_address, object_hash
+			)),
+			r#type: ActivityNoteObjectType,
+			content,
+			mediaType: mime_type,
 			published: DateTime(created),
+			attachment: Self::attachments(url_base, actor_address, attachments),
+			inReplyTo: None,
+		}
+	}
+
+	/// `id_info`: An optional tuple of the url base, the actor address & the
+	/// object hash, to construct the id property from.
+	pub fn new2(
+		actor_url: &str, object_hash: &str, created: u64, mime_type: String, content: String,
+		attachments: &[PossiblyKnownFileHeader],
+	) -> Self {
+		Self {
+			id: Some(format!("{}/object/{}/activity-pub", actor_url, object_hash)),
+			r#type: ActivityNoteObjectType,
+			content,
+			mediaType: mime_type,
+			published: DateTime(created),
+			attachment: Self::attachments2(actor_url, attachments),
+			inReplyTo: None,
 		}
 	}
 }
 
-impl Default for ActivityPubDocumentContext {
-	fn default() -> Self { DEFAULT_CONTEXT }
+impl ActivityProfileObject {
+	fn new(
+		actor_url: &str, object_hash: &str, created: u64, name: String, summary: Option<String>,
+	) -> Self {
+		Self {
+			id: Some(format!("{}/object/{}/activity-pub", actor_url, object_hash)),
+			r#type: ActivityProfileObjectType,
+			published: DateTime(created),
+			summary,
+			describes: ActivityProfileObjectDescribes {
+				r#type: ActivityProfileObjectDescribesType,
+				name,
+			},
+		}
+	}
+}
+
+impl Serialize for ActivityProfileObjectType {
+	fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		serializer.serialize_str("Profile")
+	}
+}
+
+impl Serialize for ActivityProfileObjectDescribesType {
+	fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		serializer.serialize_str("Person")
+	}
 }
 
 impl ActorObject {
@@ -1252,7 +1435,6 @@ impl ActorObject {
 		let url = format!("{}/actor/{}", url_base, address);
 		let id = format!("{}/activity-pub", &url);
 		Self {
-			context: DEFAULT_CONTEXT,
 			id: id.clone(),
 			nodeInfo2Url: format!("{}/.well-known/x-nodeinfo2", url_base),
 			url,
@@ -1276,40 +1458,66 @@ impl ActorObject {
 	}
 }
 
-impl<'a> CreateActivity<'a> {
-	pub fn new_public_note(
-		url_base: &str, actor: &ActorAddress, cc_list: &[&'a str], object_hash: &str, created: u64,
-		content: String,
+impl<'a> Activity<'a> {
+	pub fn new(
+		activity_type: ActivityType, actor_url: &str, object_hash: &str, cc_list: &[&'a str],
+		created: u64, object: serde_json::Value,
 	) -> Self {
 		let mut cc = vec!["https://www.w3.org/ns/activitystreams#Public"];
 		cc.extend(cc_list);
 
 		Self {
-			context: ActivityPubDocumentContext::default(),
-			r#type: CreateActivityType,
-			id: format!(
-				"{}/actor/{}/object/{}/activity-pub",
-				url_base, &actor, &object_hash
-			),
-			actor: format!("{}/actor/{}/activity-pub", url_base, &actor),
-			object: ActivityObject::new(url_base, actor, object_hash, created, content),
+			r#type: activity_type,
+			id: format!("{}/object/{}/activity-pub", actor_url, &object_hash),
+			actor: format!("{}/activity-pub", actor_url),
+			object,
 			published: DateTime(created),
-			to: vec![format!(
-				"{}/actor/{}/activity-pub/follower",
-				url_base, actor
-			)],
+			to: vec![format!("{}/activity-pub/follower", actor_url)],
 			cc: Some(cc),
 		}
 	}
 }
 
-impl Serialize for CreateActivityType {
+impl Serialize for ActivityType {
 	fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
-		serializer.serialize_str("Create")
+		match self {
+			Self::Announce => serializer.serialize_str("Announce"),
+			Self::Create => serializer.serialize_str("Create"),
+		}
 	}
+}
+
+impl AttachmentObjectType {
+	pub fn from_mime_type(mime_type: &str) -> Self {
+		match mime_type {
+			"Audio" => Self::Audio,
+			"Document" => Self::Document,
+			"Image" => Self::Image,
+			"Video" => Self::Video,
+			_ => Self::Document,
+		}
+	}
+}
+
+impl Serialize for AttachmentObjectType {
+	fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		match self {
+			Self::Audio => serializer.serialize_str("Audio"),
+			Self::Document => serializer.serialize_str("Document"),
+			Self::Image => serializer.serialize_str("Image"),
+			Self::Video => serializer.serialize_str("Video"),
+		}
+	}
+}
+
+impl DateTime {
+	pub fn current() -> Self { Self(current_timestamp()) }
 }
 
 impl Serialize for DateTime {
@@ -1324,17 +1532,6 @@ impl Serialize for DateTime {
 
 impl From<sea_orm::DbErr> for self::Error {
 	fn from(value: sea_orm::DbErr) -> Self { Self::Database(db::Error::OrmError(value)) }
-}
-
-impl Serialize for MediaType {
-	fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-	where
-		S: Serializer,
-	{
-		match self {
-			Self::Markdown => serializer.serialize_str("text/markdown"),
-		}
-	}
 }
 
 impl Serialize for OrderedCollectionType {

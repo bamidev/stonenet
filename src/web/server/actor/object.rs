@@ -19,8 +19,8 @@ use crate::{
 	web::{
 		info::find_object_info,
 		server::{
-			not_found_error_response, post_message, server_error_response, server_error_response2,
-			translate_special_mime_types_for_object, ServerGlobal,
+			activity_pub, not_found_error_response, post_message, server_error_response,
+			server_error_response2, translate_special_mime_types_for_object, ServerGlobal,
 		},
 	},
 };
@@ -32,7 +32,10 @@ pub fn router(g: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
 		object_methods = object_methods.post(object_post);
 	}
 
-	let mut router = Router::new().route("/:object-hash", object_methods);
+	let mut router = Router::new().route("/:hash", object_methods).route(
+		"/:hash/activity-pub",
+		get(activity_pub::object_get_stonenet),
+	);
 	if !g.base.server_info.is_exposed {
 		router = router.route("/:object-hash/share", post(object_share));
 	}
@@ -48,7 +51,7 @@ async fn object_middleware(
 		.await
 		.unwrap()
 		.0;
-	let hash_str = params.get("object-hash").unwrap();
+	let hash_str = params.get("hash").unwrap();
 
 	match IdType::from_base58(&hash_str) {
 		Ok(id) => request.extensions_mut().insert(id),
@@ -104,14 +107,7 @@ async fn object_post(
 	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
 	Extension(object_hash): Extension<IdType>, multipart: Multipart,
 ) -> Response {
-	if let Err(e) = post_message(
-		&g.base,
-		multipart,
-		Some((actor_address, object_hash)),
-		false,
-	)
-	.await
-	{
+	if let Err(e) = post_message(&g.base, multipart, Some((actor_address, object_hash))).await {
 		return e;
 	}
 

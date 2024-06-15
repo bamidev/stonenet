@@ -549,9 +549,9 @@ impl Api {
 	}
 
 	pub async fn publish_post(
-		&self, actor_address: &ActorAddress, private_key: &ActorPrivateKeyV1, message: &str,
-		tags: Vec<String>, attachments: &[FileData], in_reply_to: Option<(ActorAddress, IdType)>,
-		published_on_fediverse: bool,
+		&self, actor_address: &ActorAddress, private_key: &ActorPrivateKeyV1, msg_mime_type: &str,
+		message: &str, tags: Vec<String>, attachments: &[FileData],
+		in_reply_to: Option<(ActorAddress, IdType)>,
 	) -> db::Result<IdType> {
 		let tx = self.db.transaction().await?;
 		let actor = actor::Entity::find()
@@ -563,7 +563,7 @@ impl Api {
 
 		// Store all files
 		let mut files = Vec::with_capacity(attachments.len() + 1);
-		let (_, file_hash, _) = tx.create_file2("text/markdown", message.as_bytes()).await?;
+		let (_, file_hash, _) = tx.create_file2(msg_mime_type, message.as_bytes()).await?;
 		files.push(file_hash);
 		for FileData { mime_type, data } in attachments {
 			let (_, file_hash, _) = tx.create_file2(mime_type, data).await?;
@@ -617,7 +617,7 @@ impl Api {
 			&tags,
 			&files,
 			in_reply_to,
-			published_on_fediverse,
+			false,
 		)
 		.await?;
 		tx.commit().await?;

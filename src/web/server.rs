@@ -178,9 +178,10 @@ async fn home(
 }
 
 async fn home_post(State(g): State<Arc<ServerGlobal>>, form: Multipart) -> Response {
-	if let Err(e) = post_message(&g.base, form, None, false).await {
-		return e;
-	}
+	match post_message(&g.base, form, None).await {
+		Ok(r) => r,
+		Err(e) => return e,
+	};
 
 	home(State(g), Query(PaginationQuery::default())).await
 }
@@ -307,7 +308,7 @@ fn translate_special_mime_types_for_object(object: &mut ObjectInfo) {
 	match &mut object.payload {
 		ObjectPayloadInfo::Post(post) => {
 			if let Some(irt) = &mut post.in_reply_to {
-				if let Some(message) = &mut post.message {
+				if let Some(message) = &mut irt.message {
 					if let Some(new) = translate_special_mime_types(message) {
 						*message = new;
 					}

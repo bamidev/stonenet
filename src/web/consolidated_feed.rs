@@ -10,7 +10,7 @@ use crate::{
 };
 
 
-#[derive(Serialize)]
+#[derive(Debug, PartialEq, Serialize)]
 pub enum ConsolidatedObjectType {
 	Stonenet,
 	ActivityPub,
