@@ -169,7 +169,7 @@ pub async fn resolve_url_from_webfinger(
 		.await
 		.map_err(|e| Error::from(e))?
 	{
-		let full_url = record.host + record.path.as_str();
+		let full_url = format!("https://{}{}", &record.host, &record.path);
 
 		// Parse the url, and if it fails, delete the corrupted record
 		match Url::from_str(&full_url) {
