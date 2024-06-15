@@ -159,6 +159,7 @@ impl ObjectPayloadInfo {
 }
 
 impl PossiblyKnownFileHeader {
+	#[allow(unused)]
 	pub fn hash(&self) -> &IdType {
 		match self {
 			Self::Known(header) => &header.hash,

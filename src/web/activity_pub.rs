@@ -354,7 +354,7 @@ pub async fn compose_full_activity_from_object_info(
 				let ap_object_id =
 					format!("{}/object/{}/activity-pub", &object.actor_url, &object.id);
 
-				let activity_object_json = if message.mime_type == "application/json+activity" {
+				let activity_object_json = if message.mime_type == "application/activity+json" {
 					let mut json = serde_json::Value::from_str(&message.body)
 						.map_err(|e| Error::Deserialization(e, "parsing activity object".into()))?;
 					let json_object = json.as_object_mut().unwrap();
@@ -1263,7 +1263,7 @@ pub fn translate_activitystreams_object(content: &str) -> StdResult<PostMessageI
 				// If some sort of special mime type is used, see if we can translate it, but
 				// avoid an infinite loop
 				if !content_mime_type.starts_with("text/")
-					&& content_mime_type != "application/json+activity"
+					&& content_mime_type != "application/activity+json"
 					&& !content_mime_type.starts_with("application/json+ld ")
 				{
 					if let Some(p) = translate_special_mime_types2(content_mime_type, s.as_str()) {

@@ -353,7 +353,7 @@ fn activity_pub_response(mut json: serde_json::Value, context: &[&str]) -> Respo
 		.expect("ActivityPub response is not an object")
 		.insert("@context".into(), serde_json::to_value(context).unwrap());
 
-	json_response(&json, Some("application/json+activity"))
+	json_response(&json, Some("application/activity+json"))
 }
 
 pub async fn actor_followers(
@@ -1009,7 +1009,7 @@ async fn object_post(
 		.publish_post(
 			&actor_address,
 			&private_key,
-			"application/json+activity",
+			"application/activity+json",
 			&activity_object_json.to_string(),
 			Vec::new(),
 			&attachment_datas,
