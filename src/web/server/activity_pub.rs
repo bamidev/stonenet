@@ -40,10 +40,9 @@ use crate::{
 	web::{
 		self,
 		activity_pub::{
-			self, compose_activity_from_object_info, compose_full_activity_from_object_info,
-			AcceptActivity, AcceptActivityType, ActivityNoteObject, ActorObject, ActorPublicKey,
-			OrderedCollection, OrderedCollectionType, WebFingerDocument, DEFAULT_CONTEXT,
-			SECURE_CONTEXT,
+			self, compose_activity_from_object_info, AcceptActivity, AcceptActivityType,
+			ActivityNoteObject, ActorObject, ActorPublicKey, OrderedCollection,
+			OrderedCollectionType, WebFingerDocument, DEFAULT_CONTEXT, SECURE_CONTEXT,
 		},
 		info::{find_profile_info, load_actor_feed, ProfileObjectInfo, TargetedActorInfo},
 		json::expect_url,
@@ -670,7 +669,13 @@ pub async fn actor_outbox(
 	// Convert all the objects infos to AP json format.
 	let mut activities = Vec::with_capacity(objects.len());
 	for object in objects {
-		match compose_activity_from_object_info(&g.base.api.db, &object).await {
+		match compose_activity_from_object_info(
+			&g.base.api.db,
+			&g.base.server_info.url_base,
+			&object,
+		)
+		.await
+		{
 			Ok(result) =>
 				if let Some((json, _)) = result {
 					activities.push(json);
@@ -921,7 +926,7 @@ pub async fn object_get_stonenet(
 		Err(e) => return server_error_response(e, "Unable to load object"),
 	};
 
-	let json = match compose_full_activity_from_object_info(
+	let (json, _) = match compose_activity_from_object_info(
 		&g.base.api.db,
 		&g.base.server_info.url_base,
 		&object_info,

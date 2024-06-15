@@ -298,7 +298,7 @@ async fn collect_activities(db: &Database, json: &serde_json::Value, url: &str) 
 	Ok(())
 }
 
-pub async fn compose_activity_from_object_info(
+/*pub async fn compose_activity_from_object_info(
 	db: &Database, object: &ObjectInfo,
 ) -> Result<Option<(serde_json::Value, Vec<Url>)>> {
 	debug_assert_eq!(object.consolidated_type, ConsolidatedObjectType::Stonenet);
@@ -347,11 +347,11 @@ pub async fn compose_activity_from_object_info(
 	))
 	.unwrap();
 	Ok(Some((activity, reply_urls)))
-}
+}*/
 
-pub async fn compose_full_activity_from_object_info(
+pub async fn compose_activity_from_object_info(
 	db: &Database, url_base: &str, object: &ObjectInfo,
-) -> Result<Option<serde_json::Value>> {
+) -> Result<Option<(serde_json::Value, Vec<Url>)>> {
 	debug_assert_eq!(object.consolidated_type, ConsolidatedObjectType::Stonenet);
 
 	let activity_opt = match &object.payload {
@@ -418,7 +418,7 @@ pub async fn compose_full_activity_from_object_info(
 					object.created,
 					activity_object_json,
 				);
-				Some(serde_json::to_value(activity).unwrap())
+				Some((serde_json::to_value(activity).unwrap(), reply_urls))
 			} else {
 				None
 			}
@@ -437,7 +437,7 @@ pub async fn compose_full_activity_from_object_info(
 					object.created,
 					serde_json::Value::String(target_object_id),
 				);
-				Some(serde_json::to_value(activity).unwrap())
+				Some((serde_json::to_value(activity).unwrap(), Vec::new()))
 			} else {
 				None
 			},
@@ -458,7 +458,7 @@ pub async fn compose_full_activity_from_object_info(
 				object.created,
 				serde_json::to_value(profile).unwrap(),
 			);
-			Some(serde_json::to_value(activity).unwrap())
+			Some((serde_json::to_value(activity).unwrap(), Vec::new()))
 		}
 	};
 	Ok(activity_opt)
@@ -791,7 +791,9 @@ async fn populate_send_queue_from_new_object(
 ) -> Result<()> {
 	// Create the activity
 	let (activity, reply_urls) =
-		match compose_activity_from_object_info(&g.api.db, &object_info).await? {
+		match compose_activity_from_object_info(&g.api.db, &g.server_info.url_base, &object_info)
+			.await?
+		{
 			Some(r) => r,
 			None => return Ok(()),
 		};
