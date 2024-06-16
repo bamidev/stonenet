@@ -86,11 +86,18 @@ async fn actor_get(
 	State(g): State<Arc<ServerGlobal>>, Extension(address): Extension<ActorAddress>,
 	Query(query): Query<PaginationQuery>,
 ) -> Response {
-	let profile =
-		match find_profile_info(&g.base.api.db, &g.base.server_info.url_base, &address).await {
-			Ok(p) => p,
-			Err(e) => return server_error_response(e, "Unable to fetch profile"),
-		};
+	let result = if g.base.server_info.is_exposed {
+		find_profile_info(&g.base.api.db, &g.base.server_info.url_base, &address).await
+	} else {
+		g.base
+			.api
+			.find_profile_info(&g.base.server_info.url_base, &address)
+			.await
+	};
+	let profile = match result {
+		Ok(p) => p,
+		Err(e) => return server_error_response(e, "Unable to fetch profile"),
+	};
 	let is_following: bool = match g.base.api.is_following(&address) {
 		Ok(f) => f,
 		Err(e) => return server_error_response(e, "Unable to fetch follow status"),

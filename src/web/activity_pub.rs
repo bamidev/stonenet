@@ -1021,30 +1021,6 @@ pub async fn queue_activity(
 	}
 }
 
-pub async fn queue_activity2(
-	g: &Global, actor_address: &ActorAddress, recipient_actor_id: i64, object: &impl Serialize,
-) -> db::Result<bool> {
-	// TODO: Properly handle empty resultsets
-	let sending_actor = entity::actor::Entity::find()
-		.filter(entity::actor::Column::Address.eq(actor_address))
-		.one(g.api.db.inner())
-		.await?
-		.unwrap();
-	let recipient_actor = activity_pub_actor::Entity::find_by_id(recipient_actor_id)
-		.one(g.api.db.inner())
-		.await?
-		.unwrap();
-	queue_activity(
-		g,
-		&g.api.db,
-		sending_actor.id,
-		recipient_actor.host,
-		None,
-		object,
-	)
-	.await
-}
-
 async fn send_activity(
 	g: &Global, actor_address: &ActorAddress, recipient_server: &str, recipient_path: Option<&str>,
 	activity: String, private_key: &str,

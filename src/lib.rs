@@ -16,4 +16,4 @@ pub mod net;
 pub mod test;
 mod trace;
 pub mod util;
-mod web;
+pub mod web;
