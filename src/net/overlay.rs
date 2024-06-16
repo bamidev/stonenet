@@ -34,6 +34,7 @@ use crate::{
 	identity::*,
 	limited_store::LimitedVec,
 	net::*,
+	serde_limit::LimVec,
 	trace::Mutex,
 };
 
@@ -159,7 +160,7 @@ impl NodeInterface for OverlayInterface {
 			FindActorResult {
 				actor_info,
 				i_am_available,
-				peers,
+				peers: peers.into(),
 			}
 		}
 		// Otherwise, check our database
@@ -176,7 +177,7 @@ impl NodeInterface for OverlayInterface {
 			FindActorResult {
 				actor_info,
 				i_am_available: false,
-				peers: Vec::new(),
+				peers: LimVec::new(),
 			}
 		};
 
@@ -860,7 +861,7 @@ impl OverlayNode {
 							},
 					}
 
-					let mut peers: Vec<NodeContactInfo> = result.peers;
+					let mut peers: Vec<NodeContactInfo> = result.peers.into();
 
 					if result.i_am_available {
 						peers.insert(0, peer.clone());
@@ -1798,8 +1799,8 @@ impl OverlayNode {
 		let mut response = FindActorResponse {
 			contacts: FindNodeResponse {
 				is_relay_node: self.is_relay_node,
-				connected,
-				fingers,
+				connected: connected.into(),
+				fingers: fingers.into(),
 			},
 			result: None,
 		};
@@ -1832,7 +1833,7 @@ impl OverlayNode {
 						response.result = Some(FindActorResult {
 							actor_info: actor_info.unwrap().clone(),
 							i_am_available: true,
-							peers: Vec::new(),
+							peers: LimVec::new(),
 						});
 					} else {
 						response.result.as_mut().unwrap().i_am_available = true;
@@ -2156,7 +2157,7 @@ impl OverlayNode {
 				if valid_checksum {
 					ListTrustedNodesResult::ValidChecksum
 				} else {
-					let items = match trusted_node_trust_item::Entity::find()
+					let result = match trusted_node_trust_item::Entity::find()
 						.filter(trusted_node_trust_item::Column::TrustedNodeId.is_null())
 						.filter(
 							trusted_node_trust_item::Column::RecursionLevel
@@ -2173,8 +2174,8 @@ impl OverlayNode {
 						}
 					};
 
-					let items = items.into_iter().map(|i| (i.address, i.score)).collect();
-					ListTrustedNodesResult::List(items)
+					let items: Vec<_> = result.into_iter().map(|i| (i.address, i.score)).collect();
+					ListTrustedNodesResult::List(items.into())
 				}
 			} else {
 				ListTrustedNodesResult::None

@@ -13,6 +13,7 @@ pub mod identity;
 pub mod limited_store;
 pub mod migration;
 pub mod net;
+pub mod serde_limit;
 pub mod test;
 mod trace;
 pub mod util;

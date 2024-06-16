@@ -278,7 +278,7 @@ impl Api {
 			Some(b) => Some(b),
 			None =>
 				if let Some(actor_node) = actor_node_opt {
-					actor_node.find_block(hash).await.map(|r| r.data)
+					actor_node.find_block(hash).await.map(|r| r.data.into())
 				} else {
 					None
 				},
@@ -529,7 +529,7 @@ impl Api {
 										}
 										let mut block = r.data;
 										db::decrypt_block(i as _, &file.plain_hash, &mut block);
-										if let Err(_) = tx.send(Ok(block)).await {
+										if let Err(_) = tx.send(Ok(block.into())).await {
 											error!("Unable to send block on stream-file channel.");
 										}
 										continue;

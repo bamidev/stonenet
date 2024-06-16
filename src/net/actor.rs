@@ -93,7 +93,9 @@ impl ActorInterface {
 			.await?;
 
 		if let Some(record) = result {
-			let response = FindBlockResult { data: record.data };
+			let response = FindBlockResult {
+				data: record.data.into(),
+			};
 			Ok(Some(binserde::serialize(&response).unwrap()))
 		} else {
 			Ok(None)

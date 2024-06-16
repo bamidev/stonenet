@@ -14,6 +14,7 @@ mod identity;
 mod limited_store;
 mod migration;
 mod net;
+mod serde_limit;
 #[cfg(test)]
 mod test;
 mod trace;

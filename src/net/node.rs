@@ -506,7 +506,7 @@ where
 		let mut new_fingers =
 			Vec::with_capacity(response.fingers.len() + response.connected.len() as usize);
 
-		for f in &response.connected {
+		for f in response.connected.iter() {
 			match self.pick_contact_option(&f.contact_info) {
 				None => {}
 				Some((option, openness)) =>
@@ -518,7 +518,7 @@ where
 			}
 		}
 
-		for f in &response.fingers {
+		for f in response.fingers.iter() {
 			match self.pick_contact_option(&f.contact_info) {
 				None => {}
 				Some((option, openness)) =>
@@ -1158,8 +1158,8 @@ where
 		let (connected, fingers) = self.find_nearest_public_contacts(&request.node_id).await;
 		let response = FindNodeResponse {
 			is_relay_node: self.overlay_node().is_relay_node,
-			connected,
-			fingers,
+			connected: connected.into(),
+			fingers: fingers.into(),
 		};
 		self.simple_result(NETWORK_MESSAGE_TYPE_FIND_NODE_RESPONSE, &response)
 	}
@@ -1259,8 +1259,8 @@ where
 			let (connection, fingers) = self.find_nearest_public_contacts(&request.id).await;
 			let response = FindNodeResponse {
 				is_relay_node: self.overlay_node().is_relay_node,
-				connected: connection,
-				fingers,
+				connected: connection.into(),
+				fingers: fingers.into(),
 			};
 
 			let mut buffer = binserde::serialize(&response).unwrap();
@@ -1275,8 +1275,8 @@ where
 				let (connection, fingers) = self.find_nearest_public_contacts(&request.id).await;
 				let response = FindNodeResponse {
 					is_relay_node: self.overlay_node().is_relay_node,
-					connected: connection,
-					fingers,
+					connected: connection.into(),
+					fingers: fingers.into(),
 				};
 
 				buffer.extend(binserde::serialize(&response).unwrap());

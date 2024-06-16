@@ -8,6 +8,7 @@ use crate::{
 		sstp::server::{RelayHelloAckPacket, RelayHelloPacket},
 		*,
 	},
+	serde_limit::*,
 };
 
 
@@ -26,12 +27,12 @@ pub struct FindActorResult {
 	/// Whether the responding peer is also on the actor's network
 	pub i_am_available: bool,
 	/// A list of known nodes that are connected to it.
-	pub peers: Vec<NodeContactInfo>,
+	pub peers: LimVec<NodeContactInfo, Limit4>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FindBlockResult {
-	pub data: Vec<u8>,
+	pub data: LimVec<u8, Limit10M>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,10 +59,10 @@ pub struct FindNodeRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FindNodeResponse {
 	pub is_relay_node: bool,
-	pub connected: Vec<NodeContactInfo>,
+	pub connected: LimVec<NodeContactInfo, Limit10K>,
 	/// A list of other nodes this node knows about. Are less likely to be still
 	/// available.
-	pub fingers: Vec<NodeContactInfo>,
+	pub fingers: LimVec<NodeContactInfo, Limit256>,
 	// A list of other nodes which this node knows about, but are either
 	// unavailable through the normal internet protocols, or just 'private' and
 	// don't wan't their IP address to be known. They are only accessible
@@ -71,8 +72,8 @@ pub struct FindNodeResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileUploadMessage {
-	pub mime_type: String,
-	pub blocks: Vec<IdType>,
+	pub mime_type: LimString<LimitMimeType>,
+	pub blocks: LimVec<IdType, Limit10K>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -129,7 +130,7 @@ pub struct ListTrustedNodesResponse {
 pub enum ListTrustedNodesResult {
 	None,
 	ValidChecksum,
-	List(Vec<(NodeAddress, u8)>),
+	List(LimVec<(NodeAddress, u8), Limit1M>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
