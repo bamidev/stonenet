@@ -353,6 +353,7 @@ impl Api {
 		}))
 	}
 
+	#[allow(unused)]
 	pub fn fetch_my_identity(
 		&self, address: &ActorAddress,
 	) -> db::Result<Option<(String, ActorPrivateKeyV1)>> {

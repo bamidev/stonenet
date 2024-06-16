@@ -5,7 +5,10 @@ use std::sync::{
 
 use log::*;
 use rand::RngCore;
-use stonenetd::{api::Api, config::Config, core::*, db::*, net::*, test::*};
+use stonenetd::{
+	api::Api, config::Config, core::*, db::PersistenceHandle, net::*, test::*,
+	web::info::ObjectPayloadInfo,
+};
 
 
 #[ctor::ctor]
@@ -126,6 +129,7 @@ Hoi ik ben Kees!
 		.publish_post(
 			&actor_id,
 			&private_key,
+			"text/plain",
 			first_message,
 			vec!["first".to_string()],
 			&[],
@@ -137,6 +141,7 @@ Hoi ik ben Kees!
 		.publish_post(
 			&actor_id,
 			&private_key,
+			"text/plain",
 			second_message,
 			vec!["second".to_string()],
 			&[],
@@ -148,6 +153,7 @@ Hoi ik ben Kees!
 		.publish_post(
 			&actor_id,
 			&private_key,
+			"text/plain",
 			third_message,
 			vec!["third".to_string()],
 			&[],
@@ -165,22 +171,31 @@ Hoi ik ben Kees!
 		.expect("unable to publish share object");
 
 	// Check if all profile data came through correctly
-	let profile = node2
+	let profile_info = node2
 		.find_profile_info("", &actor_id)
 		.await
 		.expect("unable to fetch profile object from node")
 		.expect("got empty profile object");
-	assert_eq!(profile.actor.name, "Kees");
-	assert_eq!(profile.description, Some(profile_description.to_string()));
+	assert_eq!(profile_info.actor.name, "Kees");
+	assert_eq!(
+		profile_info.description,
+		Some(profile_description.to_string())
+	);
 	let actor_node = node2
 		.node
 		.join_actor_network(&actor_id, &actor_info)
 		.await
 		.expect("actor node not found");
+	let profile_object = node2
+		.db
+		.load_profile(&actor_id)
+		.await
+		.expect("unable to load profile")
+		.expect("unable to load profile");
 	let avatar = node2
 		.find_file_data(
 			Some(&actor_node),
-			&profile.actor.avatar_url.expect("missing avatar ID"),
+			&profile_object.avatar.expect("missing avatar ID"),
 		)
 		.await
 		.expect("unable to get avatar file")
@@ -188,7 +203,7 @@ Hoi ik ben Kees!
 	let wallpaper = node2
 		.find_file_data(
 			Some(&actor_node),
-			&profile.actor.wallpaper_url.expect("missing wallpaper ID"),
+			&profile_object.wallpaper.expect("missing wallpaper ID"),
 		)
 		.await
 		.expect("unable to get wallpaper file")
@@ -226,6 +241,7 @@ Hoi ik ben Kees!
 		.publish_post(
 			&actor_id,
 			&private_key,
+			"text/plain",
 			fourth_message,
 			vec!["fourth".to_string()],
 			&[],
@@ -247,24 +263,24 @@ Hoi ik ben Kees!
 		match &object.payload {
 			ObjectPayloadInfo::Profile(_) => {}
 			ObjectPayloadInfo::Post(post) =>
-				if object.hash == first_post_hash {
+				if object.id == first_post_hash.to_string() {
 					assert_eq!(
-						post.message.clone().expect("message is missing"),
+						post.message.clone().expect("message is missing").body,
 						first_message
 					);
-				} else if object.hash == second_post_hash {
+				} else if object.id == second_post_hash.to_string() {
 					assert_eq!(
-						post.message.clone().expect("message is missing"),
+						post.message.clone().expect("message is missing").body,
 						second_message
 					);
-				} else if object.hash == third_post_hash {
+				} else if object.id == third_post_hash.to_string() {
 					assert_eq!(
-						post.message.clone().expect("message is missing"),
+						post.message.clone().expect("message is missing").body,
 						third_message
 					);
-				} else if object.hash == fourth_post_hash {
+				} else if object.id == fourth_post_hash.to_string() {
 					assert_eq!(
-						post.message.clone().expect("message is missing"),
+						post.message.clone().expect("message is missing").body,
 						fourth_message
 					);
 				},
@@ -279,7 +295,7 @@ Hoi ik ben Kees!
 						.message
 						.as_ref()
 						.expect("message is missing from share")
-						.1,
+						.body,
 					first_message
 				);
 			}

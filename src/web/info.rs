@@ -305,7 +305,7 @@ async fn find_share_object_info(
 		.query_one(Statement::from_sql_and_values(
 			db.inner().get_database_backend(),
 			r#"
-		SELECT o.hash, bo.actor_address, bi.id, to_.id,
+		SELECT o.hash, bo.actor_address, bi.id, to_.id
 		FROM object AS o
 		LEFT JOIN share_object AS bo ON bo.object_id = o.id
 		LEFT JOIN actor AS i ON o.actor_id = i.id

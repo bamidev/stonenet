@@ -437,6 +437,27 @@ pub trait PersistenceHandle {
 			.collect())
 	}
 
+	async fn load_profile(&self, actor_address: &ActorAddress) -> Result<Option<ProfileObject>> {
+		if let Some(actor) = actor::Entity::find()
+			.filter(actor::Column::Address.eq(actor_address))
+			.one(self.inner())
+			.await?
+		{
+			if let Some(result) = object::Entity::find()
+				.filter(object::Column::ActorId.eq(actor.id))
+				.filter(object::Column::Type.eq(OBJECT_TYPE_PROFILE))
+				.one(self.inner())
+				.await?
+			{
+				self.load_profile_object_payload(result.id).await
+			} else {
+				Ok(None)
+			}
+		} else {
+			Ok(None)
+		}
+	}
+
 	async fn load_profile_object_payload(&self, object_id: i64) -> Result<Option<ProfileObject>> {
 		let result = profile_object::Entity::find_by_id(object_id)
 			.one(self.inner())
@@ -2028,27 +2049,6 @@ impl Connection {
 				let label = row.get(0)?;
 				let private_key: ActorPrivateKeyV1 = row.get(1)?;
 				Ok(Some((label, private_key)))
-			}
-		}
-	}
-
-	pub fn fetch_my_identity_by_label(
-		&self, label: &str,
-	) -> Result<Option<(ActorAddress, ActorPrivateKeyV1)>> {
-		let mut stat = self.old.prepare(
-			r#"
-			SELECT i.address, mi.private_key
-			FROM identity AS mi LEFT JOIN actor AS i ON mi.actor_id = i.id
-			WHERE label = ?
-		"#,
-		)?;
-		let mut rows = stat.query([label])?;
-		match rows.next()? {
-			None => Ok(None),
-			Some(row) => {
-				let address: ActorAddress = row.get(0)?;
-				let private_key: ActorPrivateKeyV1 = row.get(1)?;
-				Ok(Some((address, private_key)))
 			}
 		}
 	}
