@@ -1132,7 +1132,7 @@ impl OverlayNode {
 												flags: 0,
 												public_key: private_key.public(),
 												first_object,
-												actor_type,
+												actor_type: actor_type.into(),
 											}),
 										)
 									},

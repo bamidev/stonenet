@@ -1309,8 +1309,8 @@ impl ActivityNoteObject {
 		for attachment in attachments {
 			let attachment_object = match attachment {
 				PossiblyKnownFileHeader::Known(header) => AttachmentObject {
-					r#type: AttachmentObjectType::from_mime_type(&header.mime_type),
-					mediaType: Some(header.mime_type.clone()),
+					r#type: AttachmentObjectType::from_mime_type(header.mime_type.as_str()),
+					mediaType: Some(header.mime_type.clone().into()),
 					url: format!("{}/file/{}", actor_url, &header.hash),
 				},
 				PossiblyKnownFileHeader::Unknown(hash) => AttachmentObject {

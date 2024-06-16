@@ -26,6 +26,7 @@ use crate::{
 	compression::decompress,
 	db::{decrypt_block, Database},
 	entity::*,
+	serde_limit::LimString,
 	web::{
 		self,
 		consolidated_feed::{
@@ -63,7 +64,7 @@ impl Api {
 		wallpaper_hash: &Option<IdType>, description_hash: &Option<IdType>,
 	) -> (IdType, BlogchainObject) {
 		let profile = ProfileObject {
-			name: name.to_string(),
+			name: name.into(),
 			avatar: avatar_hash.clone(),
 			wallpaper: wallpaper_hash.clone(),
 			description: description_hash.clone(),
@@ -159,7 +160,7 @@ impl Api {
 			flags: 0,
 			public_key: private_key.public(),
 			first_object: object_hash.clone(),
-			actor_type: ACTOR_TYPE_BLOGCHAIN.to_string(),
+			actor_type: ACTOR_TYPE_BLOGCHAIN.into(),
 		});
 		let actor_address = actor_info.generate_address();
 
@@ -299,7 +300,7 @@ impl Api {
 				.await?;
 			Some(File {
 				plain_hash: record.plain_hash,
-				mime_type: record.mime_type,
+				mime_type: record.mime_type.into(),
 				compression_type: record.compression_type,
 				blocks,
 			})
@@ -545,7 +546,7 @@ impl Api {
 				}
 			});
 			Ok(PossibleFileStream::Stream((
-				file.mime_type,
+				file.mime_type.to_string(),
 				compression_type,
 				ReceiverStream::new(rx),
 			)))
@@ -572,7 +573,7 @@ impl Api {
 		let (_, file_hash, _) = tx.create_file2(msg_mime_type, message.as_bytes()).await?;
 		files.push(file_hash);
 		for FileData { mime_type, data } in attachments {
-			let (_, file_hash, _) = tx.create_file2(mime_type, data).await?;
+			let (_, file_hash, _) = tx.create_file2(mime_type.as_str(), data).await?;
 			files.push(file_hash);
 		}
 
@@ -583,11 +584,12 @@ impl Api {
 				"actor has no objects".to_string(),
 			))?;
 		}
+		let tags2: Vec<LimString<_>> = tags.iter().map(|i| i.into()).collect();
 		let object_payload = ObjectPayload::Post(PostObject {
 			in_reply_to: in_reply_to.clone(),
 			data: PostObjectCryptedData::Plain(PostObjectDataPlain {
-				tags: tags.clone(),
-				files: files.clone(),
+				tags: tags2.into(),
+				files: files.clone().into(),
 			}),
 		});
 		let created = Utc::now().timestamp_millis() as u64;
@@ -825,18 +827,18 @@ mod tests {
 		let mut avatar_data = vec![0u8; 1024];
 		rng.fill_bytes(&mut avatar_data);
 		let avatar = FileData {
-			mime_type: "image/png".to_string(),
+			mime_type: "image/png".into(),
 			data: avatar_data,
 		};
 		let mut wallpaper_data = vec![0u8; 10240];
 		rng.fill_bytes(&mut wallpaper_data);
 		let wallpaper = FileData {
-			mime_type: "image/jpeg".to_string(),
+			mime_type: "image/jpeg".into(),
 			data: wallpaper_data,
 		};
 		let description_data = "Actor description";
 		let description = FileData {
-			mime_type: "text/plain".to_string(),
+			mime_type: "text/plain".into(),
 			data: description_data.as_bytes().to_vec(),
 		};
 
@@ -882,7 +884,7 @@ mod tests {
 			.await
 			.unwrap()
 			.expect("profile object payload not found");
-		assert_eq!(&profile.name, name);
+		assert_eq!(profile.name.as_str(), name);
 		assert_eq!(profile.avatar, Some(avatar_hash.clone()));
 		assert_eq!(profile.wallpaper, Some(wallpaper_hash.clone()));
 		assert_eq!(profile.description, Some(description_hash));

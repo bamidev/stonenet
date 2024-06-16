@@ -437,7 +437,7 @@ async fn find_post_object_info_files(
 
 							PossiblyKnownFileHeader::Known(FileHeader {
 								hash,
-								mime_type,
+								mime_type: mime_type.into(),
 								block_count,
 							})
 						} else {

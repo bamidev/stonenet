@@ -89,17 +89,17 @@ async fn test_data_synchronization(
 Hoi ik ben Kees!
 "#;
 	let mut avatar_file_data = FileData {
-		mime_type: "image/png".to_string(),
+		mime_type: "image/png".into(),
 		data: vec![0u8; 1000],
 	};
 	rng.fill_bytes(&mut avatar_file_data.data);
 	let mut wallpaper_file_data = FileData {
-		mime_type: "image/jpeg".to_string(),
+		mime_type: "image/jpeg".into(),
 		data: vec![0u8; 10000000],
 	};
 	rng.fill_bytes(&mut wallpaper_file_data.data);
 	let description_file_data = FileData {
-		mime_type: "text/markdown".to_string(),
+		mime_type: "text/markdown".into(),
 		data: profile_description.as_bytes().to_vec(),
 	};
 	let (actor_id, actor_info) = node1

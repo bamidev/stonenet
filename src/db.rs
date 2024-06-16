@@ -29,6 +29,7 @@ use crate::{
 	entity::*,
 	identity::*,
 	net::binserde,
+	serde_limit::LimString,
 	trace::{self, Traceable, Traced},
 };
 
@@ -119,7 +120,7 @@ pub trait PersistenceHandle {
 				address: Set(address.clone()),
 				public_key: Set(info.public_key.clone().to_bytes().to_vec()),
 				first_object: Set(info.first_object.clone()),
-				r#type: Set(info.actor_type.clone()),
+				r#type: Set(info.actor_type.clone().into()),
 			};
 			Ok(actor::Entity::insert(model)
 				.exec(self.inner())
@@ -258,7 +259,7 @@ pub trait PersistenceHandle {
 						)
 						.await?;
 					Some(FileData {
-						mime_type: file.mime_type,
+						mime_type: file.mime_type.into(),
 						data,
 					})
 				} else {
@@ -398,6 +399,7 @@ pub trait PersistenceHandle {
 			let tags = self.load_post_tags(object_id).await?;
 			let files = self.load_post_files(object_id).await?;
 
+			let tags2: Vec<LimString<_>> = tags.iter().map(|t| t.into()).collect();
 			Ok(Some(PostObject {
 				in_reply_to: if record.in_reply_to_actor_address.is_some()
 					&& record.in_reply_to_object_hash.is_some()
@@ -409,7 +411,10 @@ pub trait PersistenceHandle {
 				} else {
 					None
 				},
-				data: PostObjectCryptedData::Plain(PostObjectDataPlain { tags, files }),
+				data: PostObjectCryptedData::Plain(PostObjectDataPlain {
+					tags: tags2.into(),
+					files: files.into(),
+				}),
 			}))
 		} else {
 			Ok(None)
@@ -463,7 +468,7 @@ pub trait PersistenceHandle {
 			.one(self.inner())
 			.await?;
 		Ok(result.map(|r| ProfileObject {
-			name: r.name,
+			name: r.name.into(),
 			avatar: r.avatar_file_hash,
 			wallpaper: r.wallpaper_file_hash,
 			description: r.description_file_hash,
@@ -528,7 +533,7 @@ pub trait PersistenceHandle {
 				file.id,
 				File {
 					plain_hash: file.plain_hash,
-					mime_type: file.mime_type,
+					mime_type: file.mime_type.into(),
 					compression_type: file.compression_type,
 					blocks,
 				},
@@ -614,7 +619,7 @@ pub trait PersistenceHandle {
 				public_key: ActorPublicKeyV1::from_bytes(identity.public_key.try_into().unwrap())
 					.unwrap(),
 				first_object: identity.first_object,
-				actor_type: identity.r#type,
+				actor_type: identity.r#type.into(),
 			}))
 		} else {
 			None
@@ -1159,13 +1164,17 @@ impl Connection {
 			let tags = Self::_fetch_post_tags(this, object_id)?;
 			let files = Self::_fetch_post_files(this, object_id)?;
 
+			let lim_tags: Vec<LimString<_>> = tags.into_iter().map(|i| i.into()).collect();
 			Ok(Some(PostObject {
 				in_reply_to: if irt_actor_address.is_some() && irt_object_id.is_some() {
 					Some((irt_actor_address.unwrap(), irt_object_id.unwrap()))
 				} else {
 					None
 				},
-				data: PostObjectCryptedData::Plain(PostObjectDataPlain { tags, files }),
+				data: PostObjectCryptedData::Plain(PostObjectDataPlain {
+					tags: lim_tags.into(),
+					files: files.into(),
+				}),
 			}))
 		} else {
 			Ok(None)
@@ -1194,7 +1203,7 @@ impl Connection {
 			let wallpaper_id: Option<IdType> = row.get(2)?;
 			let description_hash: Option<IdType> = row.get(3)?;
 			Ok(Some(ProfileObject {
-				name: name.unwrap(),
+				name: name.unwrap().into(),
 				avatar: avatar_id,
 				wallpaper: wallpaper_id,
 				description: description_hash,
@@ -1519,7 +1528,7 @@ impl Connection {
 			flags: 0,
 			public_key: private_key.public(),
 			first_object: first_object.clone(),
-			actor_type,
+			actor_type: actor_type.into(),
 		};
 		let address = ActorAddress::V1(actor_info.generate_id());
 		let actor_id = Self::_store_identity(tx, &address, &actor_info.public_key, first_object)?;
@@ -1652,7 +1661,8 @@ impl Connection {
 					payload.in_reply_to.as_ref().map(|irt| irt.1.to_string())
 				])?;
 
-				Self::_store_post_tags(tx, object_id, &plain.tags)?;
+				let tags2: Vec<_> = plain.tags.iter().map(|t| t.clone().to_string()).collect();
+				Self::_store_post_tags(tx, object_id, &tags2)?;
 				Self::_store_post_files(tx, actor_id, object_id, &plain.files)?;
 				Ok(())
 			}
@@ -1746,7 +1756,7 @@ impl Connection {
 			VALUES (?,?,?,?,?)
 		"#, params![
 			object_id,
-			&payload.name,
+			payload.name.as_str(),
 			&payload.avatar,
 			&payload.wallpaper,
 			&payload.description,
@@ -1893,7 +1903,7 @@ impl Connection {
 			Ok(Some(File {
 				compression_type,
 				plain_hash,
-				mime_type,
+				mime_type: mime_type.into(),
 				blocks,
 			}))
 		} else {
@@ -1921,7 +1931,7 @@ impl Connection {
 				flags: 0,
 				public_key,
 				first_object,
-				actor_type,
+				actor_type: actor_type.into(),
 			});
 			list.push((address, actor_info));
 		}
@@ -2004,7 +2014,7 @@ impl Connection {
 				flags: 0,
 				public_key,
 				first_object,
-				actor_type,
+				actor_type: actor_type.into(),
 			})))
 		} else {
 			Ok(None)
@@ -2026,7 +2036,7 @@ impl Connection {
 				flags: 0,
 				public_key,
 				first_object,
-				actor_type,
+				actor_type: actor_type.into(),
 			})))
 		} else {
 			Ok(None)
@@ -2227,7 +2237,7 @@ impl Connection {
 			self,
 			id,
 			&file.plain_hash,
-			&file.mime_type,
+			file.mime_type.as_str(),
 			file.compression_type as _,
 			&file.blocks,
 		)
@@ -2436,7 +2446,7 @@ impl Transaction {
 	/// * Store file
 	/// Returns the file id, the hash & the list of block hashes
 	pub async fn create_file(&self, file_data: &FileData) -> Result<(i64, IdType, Vec<IdType>)> {
-		self.create_file2(&file_data.mime_type, &file_data.data)
+		self.create_file2(file_data.mime_type.as_str(), &file_data.data)
 			.await
 	}
 
@@ -2528,7 +2538,7 @@ impl Transaction {
 		let file_hash = IdType::hash(
 			&binserde::serialize(&File {
 				plain_hash: plain_hash.clone(),
-				mime_type: mime_type.to_string(),
+				mime_type: mime_type.into(),
 				compression_type: compression_type as u8,
 				blocks: block_hashes.clone(),
 			})
@@ -2737,13 +2747,13 @@ mod tests {
 		let mut rng = test::initialize_rng();
 
 		let mut file_data1 = FileData {
-			mime_type: "image/png".to_string(),
+			mime_type: "image/png".into(),
 			data: vec![0u8; 10000],
 		};
 		rng.fill_bytes(&mut file_data1.data);
 
 		let file_data2 = FileData {
-			mime_type: "text/markdown".to_string(),
+			mime_type: "text/markdown".into(),
 			data: "This is some text.".as_bytes().to_vec(),
 		};
 		let tx = db.transaction().await.unwrap();

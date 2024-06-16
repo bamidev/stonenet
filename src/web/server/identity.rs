@@ -200,7 +200,7 @@ async fn parse_identity_form(
 	let name = String::from_utf8_lossy(&name_buf).to_string();
 	let avatar = if avatar_buf.len() > 0 {
 		avatar_mime_type.map(|mime_type| FileData {
-			mime_type,
+			mime_type: mime_type.into(),
 			data: avatar_buf.into(),
 		})
 	} else {
@@ -208,7 +208,7 @@ async fn parse_identity_form(
 	};
 	let wallpaper = if wallpaper_buf.len() > 0 {
 		wallpaper_mime_type.map(|mime_type| FileData {
-			mime_type,
+			mime_type: mime_type.into(),
 			data: wallpaper_buf.into(),
 		})
 	} else {
@@ -216,7 +216,7 @@ async fn parse_identity_form(
 	};
 	let description = if description_buf.len() > 0 {
 		Some(FileData {
-			mime_type: "text/markdown".to_string(),
+			mime_type: "text/markdown".into(),
 			data: description_buf.into(),
 		})
 	} else {

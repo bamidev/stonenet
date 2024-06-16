@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{common::*, identity::*};
-use crate::net::binserde;
+use crate::{net::binserde, serde_limit::*};
 
 
 pub const ACTOR_TYPE_BLOGCHAIN: &str = "blogchain";
@@ -40,7 +40,7 @@ pub struct ActorInfoV1 {
 	pub flags: u8,
 	pub public_key: ActorPublicKeyV1,
 	pub first_object: IdType,
-	pub actor_type: String,
+	pub actor_type: LimString<Limit32>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -64,14 +64,14 @@ pub struct ShareObject {
 
 #[derive(Default)]
 pub struct FileData {
-	pub mime_type: String,
+	pub mime_type: LimString<LimitMimeType>,
 	pub data: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct File {
 	pub plain_hash: IdType,
-	pub mime_type: String,
+	pub mime_type: LimString<LimitMimeType>,
 	pub compression_type: u8,
 	pub blocks: Vec<IdType>,
 }
@@ -79,7 +79,7 @@ pub struct File {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FileHeader {
 	pub hash: IdType,
-	pub mime_type: String,
+	pub mime_type: LimString<LimitMimeType>,
 	pub block_count: u32,
 }
 
@@ -128,9 +128,9 @@ pub enum PostObjectCryptedData {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PostObjectDataPlain {
 	/// Searchable keywords
-	pub tags: Vec<String>,
+	pub tags: LimVec<LimString<Limit32>, Limit64>,
 	/// A list of (mime-type, hash) tuples.
-	pub files: Vec<IdType>,
+	pub files: LimVec<IdType, Limit64>,
 }
 
 // An idea for a better layout of the `PostObjectDataPlain` struct could be as
@@ -147,7 +147,7 @@ struct PostObjectDataPlain {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProfileObject {
-	pub name: String,
+	pub name: LimString<Limit64>,
 	pub avatar: Option<IdType>,
 	pub wallpaper: Option<IdType>,
 	pub description: Option<IdType>,

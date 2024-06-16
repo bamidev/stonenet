@@ -36,7 +36,7 @@ pub async fn parse_post_message(mut form: Multipart) -> Result<(String, Vec<File
 						continue;
 					}
 					let attachment = FileData {
-						mime_type: content_type2,
+						mime_type: content_type2.into(),
 						data: data.to_vec(),
 					};
 					attachments.push(attachment);

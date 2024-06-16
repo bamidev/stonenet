@@ -16,7 +16,7 @@ const N_KILO: usize = 1 << 10;
 const N_MEGA: usize = 1 << 20;
 
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
 pub struct LimVec<T, L>
 where
 	T: Serialize,
@@ -29,7 +29,7 @@ where
 
 struct LimVecVisitor<T, L>(PhantomData<(T, L)>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LimString<L>(LimVec<u8, L>)
 where
 	L: Limit;
@@ -165,11 +165,26 @@ where
 	fn into_iter(self) -> Self::IntoIter { self.inner.into_iter() }
 }
 
+impl<'a, T, L> IntoIterator for &'a LimVec<T, L>
+where
+	T: Serialize,
+	L: Limit,
+{
+	type IntoIter = <&'a Vec<T> as IntoIterator>::IntoIter;
+	type Item = &'a T;
+
+	fn into_iter(self) -> Self::IntoIter { (&self.inner).into_iter() }
+}
+
 impl<L> LimString<L>
 where
 	L: Limit,
 {
+	pub fn as_str(&self) -> &str { unsafe { std::str::from_utf8_unchecked(&self.0.inner) } }
+
 	pub fn new() -> Self { Self(LimVec::new()) }
+
+	pub fn to_string(self) -> String { unsafe { String::from_utf8_unchecked(self.0.inner) } }
 }
 
 impl<L> Deref for LimString<L>
@@ -211,6 +226,20 @@ where
 	fn from(inner: String) -> Self { Self(LimVec::from(inner.into_bytes())) }
 }
 
+impl<L> From<&String> for LimString<L>
+where
+	L: Limit,
+{
+	fn from(string: &String) -> Self { Self(LimVec::from(string.clone().into_bytes())) }
+}
+
+impl<L> From<&str> for LimString<L>
+where
+	L: Limit,
+{
+	fn from(inner: &str) -> Self { Self(LimVec::from(inner.as_bytes().to_vec())) }
+}
+
 impl<L> Into<String> for LimString<L>
 where
 	L: Limit,
@@ -234,7 +263,7 @@ where
 macro_rules! def_limit {
     ( $name:expr, $l:expr ) => {
         concat_idents!(struct_name = Limit, $name {
-            #[derive(Debug)]
+            #[derive(Clone, Debug, Default, PartialEq)]
             pub struct struct_name;
 
             impl Limit for struct_name {
@@ -245,8 +274,10 @@ macro_rules! def_limit {
 }
 
 def_limit!(4, 4);
-def_limit!(256, 256);
+def_limit!(32, 32);
+def_limit!(64, 64);
 def_limit!(255, 255);
+def_limit!(256, 256);
 def_limit!(10K, 10 * N_KILO);
 def_limit!(1M, N_MEGA);
 def_limit!(10M, 10 * N_MEGA);
