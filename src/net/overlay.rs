@@ -177,7 +177,7 @@ impl NodeInterface for OverlayInterface {
 			FindActorResult {
 				actor_info,
 				i_am_available: false,
-				peers: LimVec::new(),
+				peers: LimVec::empty(),
 			}
 		};
 
@@ -1833,7 +1833,7 @@ impl OverlayNode {
 						response.result = Some(FindActorResult {
 							actor_info: actor_info.unwrap().clone(),
 							i_am_available: true,
-							peers: LimVec::new(),
+							peers: LimVec::empty(),
 						});
 					} else {
 						response.result.as_mut().unwrap().i_am_available = true;

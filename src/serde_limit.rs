@@ -44,9 +44,29 @@ where
 	T: Serialize,
 	L: Limit,
 {
-	pub fn new() -> Self {
+	pub fn empty() -> Self {
 		Self {
 			inner: Vec::new(),
+			_phantom: PhantomData,
+		}
+	}
+
+	pub fn new(inner: Vec<T>) -> Option<Self> {
+		if inner.len() > L::limit() {
+			return None;
+		}
+		Some(Self {
+			inner,
+			_phantom: PhantomData,
+		})
+	}
+
+	pub fn new_limitted(mut inner: Vec<T>) -> Self {
+		if inner.len() > L::limit() {
+			inner.shrink_to(L::limit());
+		}
+		Self {
+			inner,
 			_phantom: PhantomData,
 		}
 	}
@@ -125,12 +145,7 @@ where
 	T: Serialize,
 	L: Limit,
 {
-	fn from(inner: Vec<T>) -> Self {
-		Self {
-			inner,
-			_phantom: PhantomData,
-		}
-	}
+	fn from(inner: Vec<T>) -> Self { Self::new_limitted(inner) }
 }
 
 impl<T, L> From<VecDeque<T>> for LimVec<T, L>
@@ -138,12 +153,7 @@ where
 	T: Serialize,
 	L: Limit,
 {
-	fn from(vec: VecDeque<T>) -> Self {
-		Self {
-			inner: vec.into(),
-			_phantom: PhantomData,
-		}
-	}
+	fn from(vec: VecDeque<T>) -> Self { Self::new_limitted(vec.into()) }
 }
 
 impl<T, L> Into<Vec<T>> for LimVec<T, L>
@@ -182,7 +192,9 @@ where
 {
 	pub fn as_str(&self) -> &str { unsafe { std::str::from_utf8_unchecked(&self.0.inner) } }
 
-	pub fn new() -> Self { Self(LimVec::new()) }
+	pub fn empty(&self) -> Self { Self(LimVec::empty()) }
+
+	pub fn new(inner: String) -> Option<Self> { LimVec::new(inner.into_bytes()).map(|r| Self(r)) }
 
 	pub fn to_string(self) -> String { unsafe { String::from_utf8_unchecked(self.0.inner) } }
 }
