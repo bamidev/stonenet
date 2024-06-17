@@ -112,9 +112,17 @@ impl<T, E> TraceableResult<T, E> for StdResult<T, E> {
 }
 
 impl<T> Traced<T> {
-	pub fn new(inner: T, backtrace: Backtrace) -> Self { Self { inner, backtrace } }
+	#[cfg(debug_assertions)]
+	pub fn new_debug(inner: T, backtrace: Backtrace) -> Self { Self { inner, backtrace } }
 
-	pub fn capture(inner: T) -> Self { Self::new(inner, Backtrace::force_capture()) }
+	#[cfg(not(debug_assertions))]
+	pub fn new_release(inner: T) -> Self { Self { inner } }
+
+	#[cfg(debug_assertions)]
+	pub fn capture(inner: T) -> Self { Self::new_debug(inner, Backtrace::force_capture()) }
+
+	#[cfg(not(debug_assertions))]
+	pub fn capture(inner: T) -> Self { Self { inner } }
 
 	#[cfg(debug_assertions)]
 	pub fn backtrace(&self) -> Option<&Backtrace> { Some(&self.backtrace) }

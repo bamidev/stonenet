@@ -46,13 +46,21 @@ impl crate::db::Error {
 }
 
 impl Traced<crate::db::Error> {
+	#[cfg(debug_assertions)]
 	fn to_web(self) -> Traced<Error> {
 		let (inner, backtrace) = self.unwrap();
 		let error = Error::Database(inner);
 		if let Some(b) = backtrace {
-			Traced::new(error, b)
+			Traced::new_debug(error, b)
 		} else {
 			Traced::capture(error)
 		}
+	}
+
+	#[cfg(not(debug_assertions))]
+	fn to_web(self) -> Traced<Error> {
+		let (inner, _) = self.unwrap();
+		let error = Error::Database(inner);
+		Traced::new_release(error)
 	}
 }
