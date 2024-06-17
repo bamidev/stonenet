@@ -39,6 +39,7 @@ pub trait Limit {
 }
 
 
+#[allow(unused)]
 impl<T, L> LimVec<T, L>
 where
 	T: Serialize,
@@ -60,10 +61,18 @@ where
 			_phantom: PhantomData,
 		})
 	}
+}
 
+impl<T, L> LimVec<T, L>
+where
+	T: Clone + Serialize,
+	L: Limit,
+{
 	pub fn new_limitted(mut inner: Vec<T>) -> Self {
 		if inner.len() > L::limit() {
-			inner.shrink_to(L::limit());
+			// TODO: Resize without cloning the first element, which isn't needed as it
+			// always shrinks in this scenario
+			inner.resize(L::limit(), inner.get(0).unwrap().clone());
 		}
 		Self {
 			inner,
@@ -142,7 +151,7 @@ where
 
 impl<T, L> From<Vec<T>> for LimVec<T, L>
 where
-	T: Serialize,
+	T: Clone + Serialize,
 	L: Limit,
 {
 	fn from(inner: Vec<T>) -> Self { Self::new_limitted(inner) }
@@ -150,7 +159,7 @@ where
 
 impl<T, L> From<VecDeque<T>> for LimVec<T, L>
 where
-	T: Serialize,
+	T: Clone + Serialize,
 	L: Limit,
 {
 	fn from(vec: VecDeque<T>) -> Self { Self::new_limitted(vec.into()) }
@@ -186,6 +195,7 @@ where
 	fn into_iter(self) -> Self::IntoIter { (&self.inner).into_iter() }
 }
 
+#[allow(unused)]
 impl<L> LimString<L>
 where
 	L: Limit,
@@ -194,9 +204,13 @@ where
 
 	pub fn empty(&self) -> Self { Self(LimVec::empty()) }
 
+	pub fn into_string(self) -> String { unsafe { String::from_utf8_unchecked(self.0.inner) } }
+
 	pub fn new(inner: String) -> Option<Self> { LimVec::new(inner.into_bytes()).map(|r| Self(r)) }
 
-	pub fn to_string(self) -> String { unsafe { String::from_utf8_unchecked(self.0.inner) } }
+	pub fn to_string(&self) -> String {
+		unsafe { String::from_utf8_unchecked(self.0.inner.clone()) }
+	}
 }
 
 impl<L> Deref for LimString<L>
@@ -267,6 +281,7 @@ where
 	where
 		S: Serializer,
 	{
+		debug_assert!(self.len() <= L::limit());
 		serializer.serialize_bytes(&self.0.inner)
 	}
 }
@@ -296,3 +311,32 @@ def_limit!(10M, 10 * N_MEGA);
 
 
 pub type LimitMimeType = Limit255;
+
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::net::binserde;
+
+	#[test]
+	fn test_serde_limit() {
+		let info: Vec<u32> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+		let lim_info: LimVec<u32, Limit256> = info.clone().into();
+		assert_eq!(info, lim_info.to_vec());
+		let string: String = "This is a string...".into();
+		let lim_string: LimString<Limit256> = string.clone().into();
+		assert_eq!(string, lim_string.to_string());
+
+		// Check if serialization creates the exact same data as the original type
+		let original_data = binserde::serialize(&string).unwrap();
+		let limitted_data = binserde::serialize(&lim_string).unwrap();
+		assert_eq!(original_data, limitted_data);
+		let original_data = binserde::serialize(&info).unwrap();
+		let limitted_data = binserde::serialize(&lim_info).unwrap();
+		assert_eq!(original_data, limitted_data);
+
+		// Check if the limit is applied
+		let this: LimString<Limit4> = string.into();
+		assert_eq!(this.to_string(), "This".to_string());
+	}
+}
