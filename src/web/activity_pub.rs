@@ -37,17 +37,17 @@ use zeroize::Zeroizing;
 use super::{
 	consolidated_feed::ConsolidatedObjectType,
 	info::{
-		human_readable_duration, ObjectInfo, ObjectPayloadInfo, PossiblyKnownFileHeader,
+		human_readable_duration, FileInfo, ObjectInfo, ObjectPayloadInfo, PossiblyKnownFileHeader,
 		PostMessageInfo, PostObjectInfo,
 	},
-	json::{expect_string, expect_url},
+	json::{expect_object, expect_string, expect_url},
 	server::translate_special_mime_types2,
 	webfinger, Global,
 };
 use crate::{
 	common::{current_timestamp, IdType},
 	config::Config,
-	core::{ActorAddress, Address, OBJECT_TYPE_PROFILE},
+	core::{ActorAddress, Address, FileHeader, OBJECT_TYPE_PROFILE},
 	db::{self, Database, PersistenceHandle},
 	entity::{self, *},
 	web::{self, Error, Result},
@@ -573,7 +573,7 @@ pub async fn load_object_info(db: &Database, id: i64) -> Result<Option<ObjectInf
 		let created = Utc.timestamp_millis_opt(object.published as i64).unwrap();
 		let time_ago = human_readable_duration(&Utc::now().signed_duration_since(created));
 
-		let message = web::activity_pub::parse_post_object(&object.data)?;
+		let (message, attachments) = web::activity_pub::parse_post_object(&object.data)?;
 		Some(ObjectInfo {
 			id: id.to_string(),
 			url: object.object_id,
@@ -589,7 +589,7 @@ pub async fn load_object_info(db: &Database, id: i64) -> Result<Option<ObjectInf
 				in_reply_to: None,
 				sequence: 0,
 				message: Some(message),
-				attachments: Vec::new(),
+				attachments,
 			}),
 		})
 	} else {
@@ -659,7 +659,7 @@ pub fn parse_account_name(resource: &str) -> Option<&str> {
 	None
 }
 
-pub fn parse_post_object(raw_json: &str) -> Result<PostMessageInfo> {
+pub fn parse_post_object(raw_json: &str) -> Result<(PostMessageInfo, Vec<FileInfo>)> {
 	let json = serde_json::Value::from_str(raw_json)
 		.map_err(|e| Error::Deserialization(e, format!("parsing object").into()))?;
 
@@ -681,7 +681,7 @@ pub fn parse_post_object(raw_json: &str) -> Result<PostMessageInfo> {
 	}
 
 	let content = if let Some(content_val) = json.get("content") {
-		expect_string(content_val, &|| format!("parsing activity content").into())?
+		expect_string(content_val, &|| "parsing activity content".into())?
 	} else {
 		return Err(Error::UnexpectedBehavior(
 			"missing content property".into(),
@@ -689,9 +689,54 @@ pub fn parse_post_object(raw_json: &str) -> Result<PostMessageInfo> {
 		))?;
 	};
 
-	Ok(PostMessageInfo {
-		mime_type: "text/html".to_string(),
-		body: content.clone(),
+	// Attachments
+	let mut attachment_infos = Vec::with_capacity(10);
+	if let Some(attachment_val) = json.get("attachment") {
+		let attachments = expect_array(attachment_val, &|| "parsing attachments".into())?;
+
+		for attachment in attachments {
+			let info = parse_post_object_attachment(attachment)?;
+			attachment_infos.push(info);
+		}
+	}
+
+	Ok((
+		PostMessageInfo {
+			mime_type: "text/html".to_string(),
+			body: content.clone(),
+		},
+		attachment_infos,
+	))
+}
+
+fn parse_post_object_attachment(json: &serde_json::Value) -> Result<FileInfo> {
+	let when = &|| "parsing attachment".into();
+	let mime_type: Option<String> = if let Some(media_type_val) = json.get("mediaType") {
+		Some(expect_string(media_type_val, &|| "parsing attachment".into())?.into())
+	} else {
+		if let Some(type_val) = json.get("type") {
+			let type_string = expect_string(type_val, when)?.as_str();
+			match type_string {
+				"Image" => Some("image/*".into()),
+				"Video" => Some("video/*".into()),
+				_ => None,
+			}
+		} else {
+			None
+		}
+	};
+	let url = if let Some(url_val) = json.get("url") {
+		expect_string(url_val, when)?.as_str()
+	} else {
+		return Err(Error::UnexpectedBehavior(
+			"missing url property on attachment".into(),
+			when(),
+		))?;
+	};
+
+	Ok(FileInfo {
+		url: url.into(),
+		mime_type,
 	})
 }
 
@@ -1302,23 +1347,18 @@ impl ActivityNoteObject {
 			.collect()
 	}
 
-	fn attachments2(
-		actor_url: &str, attachments: &[PossiblyKnownFileHeader],
-	) -> Vec<AttachmentObject> {
+	fn attachments2(attachments: &[FileInfo]) -> Vec<AttachmentObject> {
 		let mut results = Vec::with_capacity(attachments.len());
 		for attachment in attachments {
-			let attachment_object = match attachment {
-				PossiblyKnownFileHeader::Known(header) => AttachmentObject {
-					r#type: AttachmentObjectType::from_mime_type(header.mime_type.as_str()),
-					mediaType: Some(header.mime_type.clone().into()),
-					url: format!("{}/file/{}", actor_url, &header.hash),
-				},
-				PossiblyKnownFileHeader::Unknown(hash) => AttachmentObject {
-					r#type: AttachmentObjectType::Document,
-					mediaType: None,
-					url: format!("{}/file/{}", actor_url, hash),
-				},
-			};
+			let attachment_object = AttachmentObject {
+				r#type: attachment
+					.mime_type
+					.as_ref()
+					.map(|mt| AttachmentObjectType::from_mime_type(mt))
+					.unwrap_or(AttachmentObjectType::Document),
+				mediaType: attachment.mime_type.clone(),
+				url: attachment.url.clone(),
+			}; // TODO: Remove the above two clones
 			results.push(attachment_object);
 		}
 		results
@@ -1363,7 +1403,7 @@ impl ActivityNoteObject {
 	/// object hash, to construct the id property from.
 	pub fn new2(
 		actor_url: &str, object_hash: &str, created: u64, mime_type: String, content: String,
-		attachments: &[PossiblyKnownFileHeader],
+		attachments: &[FileInfo],
 	) -> Self {
 		Self {
 			id: Some(format!("{}/object/{}/activity-pub", actor_url, object_hash)),
@@ -1371,7 +1411,7 @@ impl ActivityNoteObject {
 			content,
 			mediaType: mime_type,
 			published: DateTime(created),
-			attachment: Self::attachments2(actor_url, attachments),
+			attachment: Self::attachments2(attachments),
 			inReplyTo: None,
 		}
 	}

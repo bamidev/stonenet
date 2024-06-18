@@ -19,6 +19,12 @@ use crate::{
 };
 
 
+#[derive(Clone, Debug, Serialize)]
+pub struct FileInfo {
+	pub url: String,
+	pub mime_type: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct ObjectInfo {
 	pub url: String,
@@ -52,7 +58,7 @@ pub struct PostObjectInfo {
 	pub in_reply_to: Option<TargetedPostInfo>,
 	pub sequence: u64,
 	pub message: Option<PostMessageInfo>,
-	pub attachments: Vec<PossiblyKnownFileHeader>,
+	pub attachments: Vec<FileInfo>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -88,7 +94,7 @@ pub struct TargetedPostInfo {
 	pub actor_name: Option<String>,
 	pub actor_avatar_url: Option<String>,
 	pub message: Option<PostMessageInfo>,
-	pub attachments: Vec<PossiblyKnownFileHeader>,
+	pub attachments: Vec<FileInfo>,
 }
 
 
@@ -162,7 +168,7 @@ impl PossiblyKnownFileHeader {
 	#[allow(unused)]
 	pub fn hash(&self) -> &IdType {
 		match self {
-			Self::Known(header) => &header.hash,
+			Self::Known(header) => &header.url,
 			Self::Unknown(hash) => hash,
 		}
 	}
@@ -331,7 +337,7 @@ async fn find_share_object_info(
 			};
 			let mut share_object = ShareObjectInfo::default();
 			if let Some((mime_type, body, attachments)) =
-				find_post_object_info_files(db, target_object_id).await?
+				find_post_object_info_files(db, url_base, &actor_address, target_object_id).await?
 			{
 				share_object.original_post = Some(TargetedPostInfo {
 					id: object_hash.to_string(),
@@ -365,8 +371,8 @@ async fn find_share_object_info(
 /// Finds the mime-type, text content & attachments for the given post
 /// object respectively.
 async fn find_post_object_info_files(
-	db: &Database, object_id: i64,
-) -> Result<Option<(String, String, Vec<PossiblyKnownFileHeader>)>> {
+	db: &Database, url_base: &str, actor_address: &ActorAddress, object_id: i64,
+) -> Result<Option<(String, String, Vec<FileInfo>)>> {
 	fn file_query<F>(backend: DatabaseBackend, object_id: i64, condition: F) -> Statement
 	where
 		F: IntoCondition,
@@ -432,18 +438,10 @@ async fn find_post_object_info_files(
 					for row in results {
 						let hash: IdType = row.try_get_by("hash")?;
 						let mime_type_opt: Option<String> = row.try_get_by("mime_type")?;
-						let attachment = if let Some(mime_type) = mime_type_opt {
-							let block_count: u32 = row.try_get_by("block_count")?;
-
-							PossiblyKnownFileHeader::Known(FileHeader {
-								hash,
-								mime_type: mime_type.into(),
-								block_count,
-							})
-						} else {
-							PossiblyKnownFileHeader::Unknown(hash)
-						};
-						attachments.push(attachment);
+						attachments.push(FileInfo {
+							url: format!("{}/actor/{}/file/{}", url_base, actor_address, hash),
+							mime_type: mime_type_opt,
+						});
 					}
 
 					// TODO: remove unwrap
@@ -466,7 +464,7 @@ async fn find_post_object_info(
 		.query_one(Statement::from_sql_and_values(
 			db.inner().get_database_backend(),
 			r#"
-		SELECT o.hash, o.sequence, ti.id, ti.address, tpo.object_id
+		SELECT o.hash, o.sequence, i.address, ti.id, ti.address, tpo.object_id
 		FROM post_object AS po
 		INNER JOIN object AS o ON po.object_id = o.id
 		INNER JOIN actor AS i ON o.actor_id = i.id
@@ -483,9 +481,10 @@ async fn find_post_object_info(
 	if let Some(r) = result {
 		let object_hash: IdType = r.try_get_by_index(0)?;
 		let object_sequence: i64 = r.try_get_by_index(1)?;
-		let irt_actor_rowid: Option<i64> = r.try_get_by_index(2)?;
-		let irt_actor_address_opt: Option<ActorAddress> = r.try_get_by_index(3)?;
-		let irt_object_id_opt: Option<i64> = r.try_get_by_index(4)?;
+		let actor_address_opt: Option<ActorAddress> = r.try_get_by_index(2)?;
+		let irt_actor_rowid: Option<i64> = r.try_get_by_index(3)?;
+		let irt_actor_address_opt: Option<ActorAddress> = r.try_get_by_index(4)?;
+		let irt_object_id_opt: Option<i64> = r.try_get_by_index(5)?;
 
 		let in_reply_to = match irt_object_id_opt {
 			None => None,
@@ -494,8 +493,10 @@ async fn find_post_object_info(
 					None => (None, None),
 					Some(id) => db.find_profile_limited(id).await?,
 				};
-				let irt_message_opt = find_post_object_info_files(db, irt_object_id).await?;
 				let irt_actor_address = irt_actor_address_opt.unwrap();
+				let irt_message_opt =
+					find_post_object_info_files(db, url_base, &irt_actor_address, irt_object_id)
+						.await?;
 				Some(TargetedPostInfo {
 					id: object_hash.to_string(),
 					actor_address: irt_actor_address.to_string(),
@@ -511,7 +512,9 @@ async fn find_post_object_info(
 			}
 		};
 
-		let message_opt = find_post_object_info_files(db, object_id).await?;
+		let actor_address = actor_address_opt.unwrap();
+		let message_opt =
+			find_post_object_info_files(db, url_base, &actor_address, object_id).await?;
 		Ok(Some(PostObjectInfo {
 			in_reply_to,
 			sequence: object_sequence as _,

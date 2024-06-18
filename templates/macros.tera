@@ -225,21 +225,18 @@
 		</div>
 		<div class="attachments">
 			{% for file in attachments %}
-				{% if "Known" in file %}
-					{% set known_file = file["Known"] %}
-					<a href="{{actor_url}}/file/{{known_file.hash}}" target="_blank">
-						{% if known_file.mime_type is starting_with("image/") %}
-							<img class="attachment" src="{{actor_url}}/file/{{known_file.hash}}" />
-						{% else %}
-							Attachment {{loop.index}}
-						{% endif %}
-					</a>
-				{% elif "Unknown" in file %}
-					{% set unknown_file_hash = file["Unknown"] %}
-					<a href="{{actor_url}}/file/{{unknown_file_hash}}" target="_blank">
-						Unsynced attachment {{loop.index}}
-					</a>
-				{% endif %}
+				<a href="{{file.url}}" target="_blank">
+					<!-- TODO: Check for file extensions when mime_type isn't set. -->
+					{% if file.mime_type is starting_with("image/") %}
+						<img class="attachment" src="{{file.url}}" />
+					{% elif file.mime_type is starting_with("video/") %}
+						<video width="600" controls>
+  							<source src="{{file.url}}" type="{{file.mime_type}}">
+						</video>
+					{% else %}
+						Attachment {{loop.index}}
+					{% endif %}
+				</a>
 			{% endfor %}
 		</div>
 	</div>
