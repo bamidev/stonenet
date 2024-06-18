@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
+use log::warn;
 use sea_orm::{prelude::*, QueryOrder, QuerySelect, QueryTrait};
 use serde::Serialize;
 
+use super::Error;
 use crate::{
 	db::{self, Database, PersistenceHandle},
 	entity::*,
@@ -36,7 +38,16 @@ pub async fn load_consolidated_feed(
 				.await
 				.map_err(|e| e.to_web())?
 		} else if consolidated_object.r#type == 1 {
-			web::activity_pub::load_object_info(db, consolidated_object.object_id).await?
+			match web::activity_pub::load_object_info(db, consolidated_object.object_id).await {
+				Ok(r) => r,
+				Err(e) => match &*e {
+					Error::UnexpectedBehavior(what, when) => {
+						warn!("Unable to parse ActivityPub object when {}: {}", when, what);
+						continue;
+					}
+					_ => Err(e)?,
+				},
+			}
 		} else {
 			None
 		};
