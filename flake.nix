@@ -2,7 +2,7 @@
   description = "LeetCode C++ examples.";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     flake-utils.url = "github:numtide/flake-utils";
   };
   outputs = { nixpkgs, flake-utils, ... }:
@@ -11,23 +11,22 @@
         lib = nixpkgs.lib;
         pkgs = nixpkgs.legacyPackages.${system};
         stdenv = pkgs.stdenv;
-        stonenet = stdenv.mkDerivation {
+        stonenet = pkgs.rustPlatform.buildRustPackage rec {
           pname = "stonenet";
           version = "0.0.0";
-          src = ./.;
-          buildPhase = ''
-            ${pkgs.cargo}/bin/cargo build
-          '';
-          installPhase = ''
-            mkdir -p $out/bin
-            cp a.out $out/bin
-          '';
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "ed448-rust-0.1.1" = "sha256-AnC3lAIJjnQ6VlZXpjVG/qpPBEIgbJS1/p4200XKCkc=";
+            };
+          };
+          src = pkgs.lib.cleanSource ./.;
         };
       in {
         apps.default = {
           name = "stonenet";
           type = "app";
           program = "${stonenet}/bin/stonenetd";
-        }
+        };
       });
 }
