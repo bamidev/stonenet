@@ -1,5 +1,5 @@
 {
-  description = "LeetCode C++ examples.";
+  description = "Stonenet";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
@@ -8,7 +8,6 @@
   outputs = { nixpkgs, flake-utils, ... }:
     flake-utils.lib.eachSystem flake-utils.lib.allSystems (system:
       let
-        lib = nixpkgs.lib;
         pkgs = nixpkgs.legacyPackages.${system};
         stdenv = pkgs.stdenv;
         stonenet = stdenv.mkDerivation {
@@ -28,6 +27,6 @@
           name = "stonenet";
           type = "app";
           program = "${stonenet}/bin/stonenetd";
-        }
+        };
       });
 }
