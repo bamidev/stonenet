@@ -522,7 +522,7 @@ dependencies = [
  "json",
  "lazy_static",
  "num-bigfloat",
- "unsafe-send-sync 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "unsafe-send-sync 0.1.0",
  "webkit2gtk",
  "webview2",
  "winapi",
@@ -4494,7 +4494,7 @@ dependencies = [
  "toml",
  "tower",
  "tower-http",
- "unsafe-send-sync 0.1.0 (git+https://github.com/bamidev/unsafe-send-sync)",
+ "unsafe-send-sync 0.2.0",
  "windows",
  "winreg",
  "x25519-dalek",
@@ -5142,8 +5142,9 @@ checksum = "e1018b747e426bb8078b687813128515800452e6c42a53c80dd0550f5d8c4483"
 
 [[package]]
 name = "unsafe-send-sync"
-version = "0.1.0"
-source = "git+https://github.com/bamidev/unsafe-send-sync#cf8c59bbd48626e4e8188eddc319072a6e83c82b"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b02598b6e30bc55408b6a4ac412aa26336bcfa03ddfec7fc541ce06a62f2e286"
 
 [[package]]
 name = "untrusted"

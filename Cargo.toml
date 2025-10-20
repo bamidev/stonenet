@@ -47,7 +47,7 @@ reqwest = { version = "0", default-features = false }
 rsa = { version = "0.9", features = ["sha2"] }
 rss = { version = "2.0", features = ["validation"] }
 rusqlite = "^0.30"
-sqlx = { features = ["runtime-tokio"] }
+sqlx = { version = "0.7.4", features = ["runtime-tokio"] }
 sea-orm = { version = "0.12.15", features = ["runtime-tokio", "sqlx-sqlite"] }
 semver = "1"
 serde = { version = "1.0.197", features = ["derive", "rc"] }
@@ -64,7 +64,7 @@ tokio-stream = "0"
 toml = "0"
 tower = "0.4.13"
 tower-http = { version = "0.5.2", features = ["fs"] }
-unsafe-send-sync = { git = "https://github.com/bamidev/unsafe-send-sync" }
+unsafe-send-sync = "0.2.0"
 x25519-dalek = { version = "2.0", features = ["serde", "static_secrets"] }
 zeroize = ">=1.3, <2"
 
