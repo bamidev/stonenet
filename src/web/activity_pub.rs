@@ -37,17 +37,17 @@ use zeroize::Zeroizing;
 use super::{
 	consolidated_feed::ConsolidatedObjectType,
 	info::{
-		human_readable_duration, FileInfo, ObjectInfo, ObjectPayloadInfo, PossiblyKnownFileHeader,
+		human_readable_duration, FileInfo, ObjectInfo, ObjectPayloadInfo,
 		PostMessageInfo, PostObjectInfo,
 	},
-	json::{expect_object, expect_string, expect_url},
+	json::{expect_string, expect_url},
 	server::translate_special_mime_types2,
 	webfinger, Global,
 };
 use crate::{
 	common::{current_timestamp, IdType},
 	config::Config,
-	core::{ActorAddress, Address, FileHeader, OBJECT_TYPE_PROFILE},
+	core::{ActorAddress, Address, OBJECT_TYPE_PROFILE},
 	db::{self, Database, PersistenceHandle},
 	entity::{self, *},
 	web::{self, Error, Result},
