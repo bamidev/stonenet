@@ -10,6 +10,7 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
         stdenv = pkgs.stdenv;
+
         stonenet = pkgs.rustPlatform.buildRustPackage rec {
           pname = "stonenet";
           version = "0.0.0";
@@ -21,11 +22,48 @@
           };
           src = pkgs.lib.cleanSource ./.;
         };
+        packages.windows-installer = stonenet-windows-installer;
+
+        stonenet-windows-installer = stdenv.mkDerivation {
+          pname = "stonenet-windows-installer";
+          version = "0.0.0";
+          outputs = ["out"];
+
+          src = pkgs.lib.cleanSource ./.;
+
+          buildInputs = with pkgs; [nsis];
+
+          buildPhase = with pkgs; ''
+            ${rustup}/bin/cargo build --release --target=x86_64-pc-windows-gnu
+            ${nsis}/bin/makensis package/windows.nsi
+          '';
+
+          installPhase = with pkgs; ''
+            ${coreutils}/bin/cp installer.exe $out/stonenet-windows-installer.exe
+          '';
+
+        };
+        
+        buildWindowsInstaller = pkgs.writers.writeBashBin "build-windows-installer" (with pkgs; ''
+          cargo build --release --target=x86_64-pc-windows-gnu
+        '');
+
       in {
         apps.default = {
           name = "stonenet";
           type = "app";
           program = "${stonenet}/bin/stonenetd";
         };
+
+        devShells.publish = pkgs.mkShell {
+          packages = [
+            buildWindowsInstaller
+          ] ++ (with pkgs; [
+            cargo
+            nsis
+          ]);
+        };
+
+        packages.default = stonenet;
       });
 }
