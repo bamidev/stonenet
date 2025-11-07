@@ -10,10 +10,11 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
         stdenv = pkgs.stdenv;
+        manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
 
         stonenet = pkgs.rustPlatform.buildRustPackage rec {
-          pname = "stonenet";
-          version = "0.0.0";
+          pname = manifest.name;
+          version = manifest.version;
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes = {
@@ -22,7 +23,6 @@
           };
           src = pkgs.lib.cleanSource ./.;
         };
-        packages.windows-installer = stonenet-windows-installer;
 
         stonenet-windows-installer = stdenv.mkDerivation {
           pname = "stonenet-windows-installer";
