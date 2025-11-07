@@ -36,7 +36,7 @@ generic-array = "0"
 hmac = ">=0.12, <1.0"
 ipnetwork = "*"
 lazy_static = "1"
-#libsqlite3-sys = "0.30.1"
+libsqlite3-sys = "^0.27"
 log = ">=0.4"
 multipart = "0"
 num = "0.4"
@@ -46,9 +46,9 @@ rand_chacha = "0.3"
 reqwest = { version = "0", default-features = false }
 rsa = { version = "0.9", features = ["sha2"] }
 rss = { version = "2.0", features = ["validation"] }
-rusqlite = "^0.37"
+rusqlite = "^0.30"
 sqlx = { version = "0.7.4", features = ["runtime-tokio"] }
-sea-orm = { version = "1.1.17", features = ["runtime-tokio", "sqlx-sqlite"] }
+sea-orm = { version = "0.12.15", features = ["runtime-tokio", "sqlx-sqlite"] }
 semver = "1"
 serde = { version = "1.0.197", features = ["derive", "rc"] }
 serde-big-array = "*"
@@ -78,7 +78,7 @@ trace-packets = []
 
 [target.'cfg(target_family = "windows")'.dependencies]
 reqwest = { version = "0", default-features = true }
-rusqlite = { version = "^0.37", features = ["bundled"] }
+rusqlite = { version = "^0.30", features = ["bundled"] }
 windows = { version = "0", features = [
 	"Win32_Foundation",
 	"Win32_Security",
