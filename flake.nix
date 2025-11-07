@@ -12,7 +12,7 @@
         stdenv = pkgs.stdenv;
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
 
-        stonenet = pkgs.rustPlatform.buildRustPackage rec {
+        stonenet = pkgs.rustPlatform.buildRustPackage {
           pname = manifest.name;
           version = manifest.version;
           cargoLock = {
@@ -25,8 +25,8 @@
         };
 
         stonenet-windows-installer = stdenv.mkDerivation {
-          pname = "stonenet-windows-installer";
-          version = "0.0.0";
+          pname = manifest.name + "-windows-installer";
+          version = manifest.version;
           outputs = ["out"];
 
           src = pkgs.lib.cleanSource ./.;
@@ -64,32 +64,45 @@
           ]);
         };
 
-        nixosModules.default = { config, lib, ... }: {
-          options = {
-            services.stonenet = {
-              enable = lib.mkEnableOption "stonenet";
-              package = lib.mkOption {
-                description = "Stonenet package to use";
-                type = lib.types.package;
-                default = stonenet;
-              };
-            };
-          };
-          config = lib.mkIf config.services.stonenet.enable {
-            systemd.services.stonenet = {
-              serviceConfig = {
-                Description = "Stonenet Daemon";
-                ExecStart = "${stonenet}/bin/stonenetd";
-                Type = "simple";
+        nixosModules.default = { config, lib, pkgs, ... }:
+          let
+            settingsFormat = pkgs.formats.toml {};
+            settingsFile = settingsFormat.generate "stonenet.toml" config.services.stonenet.config;
+          in {
+            options = {
+              services.stonenet = {
+                enable = lib.mkEnableOption "stonenet";
+                package = lib.mkOption {
+                  description = "Stonenet package to use";
+                  type = lib.types.package;
+                  default = stonenet;
+                };
 
-                After = "network-online.target";
-                Restart = "on-failure";
-                StandardOutput = "journal+console";
+                config = lib.mkOption {
+                  description = "Stonenet configuration file";
+                  type = lib.types.attrs;
+                    default = pkgs.lib.importTOML ./conf/default.toml;
+                };
               };
-              wantedBy = [ "multi-user.target" ];
+            };
+            config = lib.mkIf config.services.stonenet.enable {
+              environment.etc."stonenet/config.toml".source = settingsFile;
+
+              systemd.services.stonenet = {
+                serviceConfig = {
+                  Description = "Stonenet Daemon";
+                  ExecStart = "${stonenet}/bin/stonenetd";
+                  Type = "simple";
+
+                  After = "network-online.target";
+                  Restart = "on-failure";
+                  StandardError = "journal+console";
+                  StandardOutput = "journal+console";
+                };
+                wantedBy = [ "multi-user.target" ];
+              };
             };
           };
-        };
 
         packages.default = stonenet;
       });
