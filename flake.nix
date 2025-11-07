@@ -64,7 +64,32 @@
           ]);
         };
 
-        nixosModules.systemd = import ./systemd.nix;
+        nixosModules.default = { config, lib, ... }: {
+          options = {
+            services.stonenet = {
+              enable = lib.mkEnableOption "stonenet";
+              package = lib.mkOption {
+                description = "Stonenet package to use";
+                type = lib.types.package;
+                default = stonenet;
+              };
+            };
+          };
+          config = lib.mkIf config.services.stonenet.enable {
+            systemd.services.stonenet = {
+              serviceConfig = {
+                Description = "Stonenet Daemon";
+                ExecStart = "${stonenet}/bin/stonenetd";
+                Type = "simple";
+
+                After = "network-online.target";
+                Restart = "on-failure";
+                StandardOutput = "journal+console";
+              };
+              wantedBy = [ "multi-user.target" ];
+            };
+          };
+        };
 
         packages.default = stonenet;
       });
