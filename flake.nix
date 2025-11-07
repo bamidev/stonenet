@@ -64,6 +64,8 @@
           ]);
         };
 
+        nixosModules.systemd = import ./systemd.nix;
+
         packages.default = stonenet;
       });
 }
