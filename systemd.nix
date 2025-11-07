@@ -1,5 +1,5 @@
 { config, lib, ... }: let
-  stonenetPackage = (builtins.getFlake "github:bamidev/stonenet/main").packages.${builtins.currentSystem}.default;
+  stonenetPackage = (builtins.getFlake "github:bamidev/stonenet/dev").packages.${builtins.currentSystem}.default;
 in {
   options = {
     services.stonenet = {
@@ -16,6 +16,7 @@ in {
       serviceConfig = {
         ExecStart = "${stonenetPackage}/bin/stonenetd";
         Type = "simple";
+
         Restart = "on-failure";
         StandardOutput = "journal+console";
       };
