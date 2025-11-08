@@ -10,5 +10,6 @@ WorkingDirectory=/usr/local/share/stonenet
 Type=simple
 ExecStart=/usr/local/bin/stonenetd
 Environment=RUST_LOG=info
-StandardError=file:/var/log/stonenet.log
+StandardError=journal+control
+StandardOutput=journal+control
 SyslogIdentifier=stonenetd
