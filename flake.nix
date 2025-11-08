@@ -47,7 +47,12 @@
           buildAndTestSubdir = "desktop";
           src = pkgs.lib.cleanSource ./.;
 
-          nativeBuildInputs = browser-window.packages.${system}.webkitgtk.nativeBuildInputs;
+          # FIXME: Not sure why this isn't working:
+          #nativeBuildInputs = browser-window.packages.${system}.webkitgtk.nativeBuildInputs;
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            rustPlatform.bindgenHook
+          ];
           buildInputs = browser-window.packages.${system}.webkitgtk.buildInputs;
         };
 
