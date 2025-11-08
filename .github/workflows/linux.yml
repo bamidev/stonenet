@@ -21,5 +21,8 @@ jobs:
       run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose --release
     - name: Install Nix
       run: sudo apt-get install -y nix-bin
-    - name: Build with Nix
+    - name: Build daemon with Nix
       run: sudo nix --extra-experimental-features 'nix-command flakes' build
+    - name: Build desktop client with Nix (WIP)
+      run: sudo nix --extra-experimental-features 'nix-command flakes' build .#desktop
+      continue-on-error: true

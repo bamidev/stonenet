@@ -4,25 +4,28 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     flake-utils.url = "github:numtide/flake-utils";
+    browser-window.url = "github:bamidev/browser-window";
   };
-  outputs = { nixpkgs, flake-utils, ... }:
+  outputs = { nixpkgs, flake-utils, browser-window, ... }:
     flake-utils.lib.eachSystem flake-utils.lib.allSystems (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         stdenv = pkgs.stdenv;
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
         desktopManifest = (pkgs.lib.importTOML ./desktop/Cargo.toml).package;
+        workspaceCargoLock = {
+          lockFile = ./Cargo.lock;
+          outputHashes = {
+            "ed448-rust-0.1.1" = "sha256-AnC3lAIJjnQ6VlZXpjVG/qpPBEIgbJS1/p4200XKCkc=";
+          };
+        };
+
 
         stonenet = pkgs.rustPlatform.buildRustPackage {
           pname = manifest.name;
           version = manifest.version;
           outputs = ["out" "share"];
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            outputHashes = {
-              "ed448-rust-0.1.1" = "sha256-AnC3lAIJjnQ6VlZXpjVG/qpPBEIgbJS1/p4200XKCkc=";
-            };
-          };
+          cargoLock = workspaceCargoLock;
           src = pkgs.lib.cleanSource ./.;
 
           installPhase = with pkgs; ''
@@ -37,12 +40,16 @@
           '';
         };
 
-        /*stonenet-desktop = pkgs.rustPlatform.buildRustPackage {
-          pname = manifest.name;
-          version = manifest.version;
-          cargoLock.lockFile = ./desktop/Cargo.lock; 
-          src = pkgs.lib.cleanSource ./desktop;
-        };*/
+        stonenetDesktop = pkgs.rustPlatform.buildRustPackage {
+          pname = desktopManifest.name;
+          version = desktopManifest.version;
+          cargoLock = workspaceCargoLock;
+          buildAndTestSubdir = "desktop";
+          src = pkgs.lib.cleanSource ./.;
+
+          nativeBuildInputs = browser-window.packages.${system}.webkitgtk.nativeBuildInputs;
+          buildInputs = browser-window.packages.${system}.webkitgtk.buildInputs;
+        };
 
         stonenet-windows-installer = stdenv.mkDerivation {
           pname = manifest.name + "-windows-installer";
@@ -69,10 +76,17 @@
         '');
 
       in {
-        apps.default = {
-          name = "stonenet";
-          type = "app";
-          program = "${stonenet}/bin/stonenetd";
+        apps = {
+          default = {
+            name = "stonenet";
+            type = "app";
+            program = "${stonenet}/bin/stonenetd";
+          };
+          desktop = {
+            name = "stonenet-desktop";
+            type = "app";
+            program = "${stonenetDesktop}/bin/stonenet-desktop";
+          };
         };
 
         devShells.publish = pkgs.mkShell {
@@ -119,7 +133,7 @@
                 etc."stonenet/config.toml".source = userConfigFile;
 
                 systemPackages = lib.mkIf config.services.stonenet.desktop.enable [
-                  #stonenet-desktop
+                  stonenetDesktop
                 ];
               };
 
@@ -147,6 +161,9 @@
             };
           };
 
-        packages.default = stonenet;
+        packages = {
+          default = stonenet;
+          desktop = stonenetDesktop;
+        };
       });
 }
