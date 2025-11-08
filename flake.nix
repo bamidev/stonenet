@@ -11,10 +11,12 @@
         pkgs = nixpkgs.legacyPackages.${system};
         stdenv = pkgs.stdenv;
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
+        desktopManifest = (pkgs.lib.importTOML ./desktop/Cargo.toml).package;
 
         stonenet = pkgs.rustPlatform.buildRustPackage {
           pname = manifest.name;
           version = manifest.version;
+          outputs = ["out" "share"];
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes = {
@@ -22,7 +24,25 @@
             };
           };
           src = pkgs.lib.cleanSource ./.;
+
+          installPhase = with pkgs; ''
+            set -e
+
+            ls target/release
+            ${coreutils}/bin/mkdir -p $out/bin
+            ${coreutils}/bin/cp target/${stdenv.targetPlatform.rust.rustcTargetSpec}/release/stonenetd $out/bin
+            ${coreutils}/bin/mkdir -p $share
+            ${coreutils}/bin/cp -r static $share
+            ${coreutils}/bin/cp -r templates $share
+          '';
         };
+
+        /*stonenet-desktop = pkgs.rustPlatform.buildRustPackage {
+          pname = manifest.name;
+          version = manifest.version;
+          cargoLock.lockFile = ./desktop/Cargo.lock; 
+          src = pkgs.lib.cleanSource ./desktop;
+        };*/
 
         stonenet-windows-installer = stdenv.mkDerivation {
           pname = manifest.name + "-windows-installer";
@@ -67,40 +87,63 @@
         nixosModules.default = { config, lib, pkgs, ... }:
           let
             settingsFormat = pkgs.formats.toml {};
-            settingsFile = settingsFormat.generate "stonenet.toml" config.services.stonenet.config;
+            defaultConfig = pkgs.lib.importTOML ./conf/default.toml;
+            effectiveConfig = defaultConfig // config.services.stonenet.config;
+            userConfigFile = settingsFormat.generate "stonenet.toml" (
+              effectiveConfig
+            );
           in {
             options = {
               services.stonenet = {
                 enable = lib.mkEnableOption "stonenet";
+                
                 package = lib.mkOption {
                   description = "Stonenet package to use";
                   type = lib.types.package;
                   default = stonenet;
                 };
 
+                desktop = {
+                  enable = lib.mkEnableOption "stonenet-desktop";
+                };
+
                 config = lib.mkOption {
                   description = "Stonenet configuration file";
                   type = lib.types.attrs;
-                    default = pkgs.lib.importTOML ./conf/default.toml;
+                  default = {};
                 };
               };
             };
             config = lib.mkIf config.services.stonenet.enable {
-              environment.etc."stonenet/config.toml".source = settingsFile;
+              environment = {
+                etc."stonenet/config.toml".source = userConfigFile;
+
+                systemPackages = lib.mkIf config.services.stonenet.desktop.enable [
+                  #stonenet-desktop
+                ];
+              };
 
               systemd.services.stonenet = {
+                description = "Stonenet Daemon";
+                after = ["network-online.target"];
+                wantedBy = ["multi-user.target"];
+
                 serviceConfig = {
-                  Description = "Stonenet Daemon";
                   ExecStart = "${stonenet}/bin/stonenetd";
                   Type = "simple";
 
-                  After = "network-online.target";
                   Restart = "on-failure";
                   StandardError = "journal+console";
                   StandardOutput = "journal+console";
+                  WorkingDirectory = "${stonenet.share}";
                 };
-                wantedBy = [ "multi-user.target" ];
               };
+
+              system.activationScripts.stonenet-state.text = ''
+                set -e
+                mkdir -p /var/lib/stonenet
+                touch "${effectiveConfig.database_path}"
+              '';
             };
           };
 
