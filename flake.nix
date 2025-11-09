@@ -2,7 +2,7 @@
   description = "Stonenet";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
     browser-window.url = "github:bamidev/browser-window";
   };
