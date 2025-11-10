@@ -5,7 +5,7 @@ mod daemon;
 use std::process;
 
 use browser_window::{application::*, browser::*};
-use native_dialog::{MessageDialog, MessageType};
+use native_dialog::{DialogBuilder, MessageLevel};
 
 fn main() {
 	let settings = ApplicationSettings::default();
@@ -13,18 +13,21 @@ fn main() {
 	let runtime = application.start();
 	let exit_code = runtime.run_async(|handle| async move {
 		if let Err(e) = daemon::ensure_running() {
-			MessageDialog::new()
+            DialogBuilder::message()
+                .set_level(MessageLevel::Error)
 				.set_title("Stonenet Error")
 				.set_text(&format!("Unable to spawn the Stonenet daemon: {}", e))
-				.set_type(MessageType::Error)
-				.show_alert()
+                .alert()
+                .show()
 				.expect("unable to show error dialog");
 			handle.exit(1);
 			return;
 		}
 
+        // TODO: Read the port from the configuration file
 		let source = Source::Url("http://localhost:37338".into());
 		let mut bwb = BrowserWindowBuilder::new(source);
+        #[cfg(debug_assertions)]
 		bwb.dev_tools(true);
 		bwb.title("Stonenet");
 		bwb.size(1024, 768);

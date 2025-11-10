@@ -10,6 +10,7 @@
     flake-utils.lib.eachSystem flake-utils.lib.allSystems (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        lib = pkgs.lib;
         stdenv = pkgs.stdenv;
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
         desktopManifest = (pkgs.lib.importTOML ./desktop/Cargo.toml).package;
@@ -17,6 +18,7 @@
           lockFile = ./Cargo.lock;
           outputHashes = {
             "ed448-rust-0.1.1" = "sha256-AnC3lAIJjnQ6VlZXpjVG/qpPBEIgbJS1/p4200XKCkc=";
+            "browser-window-0.12.3" = "sha256-a7RhMBnay7s7YATt1w1xFINGyZE6m3AuZQi4gOJokV4=";
           };
         };
 
