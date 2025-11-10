@@ -19,6 +19,10 @@ jobs:
       run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose
     - name: Run tests (release)
       run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose --release
+    - name: Install webkit2gtk
+      run: |
+        sudo apt update
+        sudo apt install -y libwebkit2gtk-4.1-dev
     - name: Run desktop client tests (debug)
       run: RUST_BACKTRACE=full RUST_LOG=debug cargo test -p stonenet-desktop --verbose
     - name: Run desktop clienttests (release)
