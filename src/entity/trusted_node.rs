@@ -2,7 +2,6 @@ use sea_orm::entity::prelude::*;
 
 use crate::core::NodeAddress;
 
-
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "trusted_node")]
 pub struct Model {

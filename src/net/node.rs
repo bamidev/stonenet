@@ -12,7 +12,6 @@ use crate::{
 	trace::{self, Mutex, Traced},
 };
 
-
 // Messages for the overlay network:
 pub const NETWORK_MESSAGE_TYPE_PING_REQUEST: u8 = 0;
 pub const NETWORK_MESSAGE_TYPE_PING_RESPONSE: u8 = 1;
@@ -20,7 +19,6 @@ pub const NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST: u8 = 2;
 pub const NETWORK_MESSAGE_TYPE_FIND_NODE_RESPONSE: u8 = 3;
 pub const NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST: u8 = 4;
 pub const NETWORK_MESSAGE_TYPE_FIND_VALUE_RESPONSE: u8 = 5;
-
 
 pub struct AllFingersIter<'a> {
 	global_index: usize,
@@ -128,7 +126,9 @@ pub trait NodeInterface {
 	}
 }
 
-pub fn differs_at_bit(a: &IdType, b: &IdType) -> Option<u8> { a.differs_at_bit(b) }
+pub fn differs_at_bit(a: &IdType, b: &IdType) -> Option<u8> {
+	a.differs_at_bit(b)
+}
 
 impl ContactStrategy {
 	fn new(contact: ContactOption, openness: Openness) -> Option<Self> {
@@ -161,11 +161,15 @@ impl ContactStrategyMethod {
 }
 
 impl PartialEq for ContactStrategyMethod {
-	fn eq(&self, other: &Self) -> bool { self.to_byte() == other.to_byte() }
+	fn eq(&self, other: &Self) -> bool {
+		self.to_byte() == other.to_byte()
+	}
 }
 
 impl fmt::Debug for ContactStrategyMethod {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self) }
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self)
+	}
 }
 
 impl fmt::Display for ContactStrategyMethod {
@@ -183,7 +187,9 @@ impl<'a, I> FindValueIter<'a, I>
 where
 	I: NodeInterface + Send + Sync,
 {
-	pub fn visited(&self) -> &[(NodeAddress, ContactOption)] { &self.visited }
+	pub fn visited(&self) -> &[(NodeAddress, ContactOption)] {
+		&self.visited
+	}
 }
 
 impl<I> Node<I>
@@ -249,9 +255,10 @@ where
 		already_open_connection: Option<&mut Connection>, request: Option<&[u8]>,
 	) -> Option<(Box<Connection>, Option<Vec<u8>>)> {
 		match &strategy.method {
-			ContactStrategyMethod::Direct =>
+			ContactStrategyMethod::Direct => {
 				self.connect(&strategy.contact, Some(&node_info.address), request)
-					.await,
+					.await
+			}
 			ContactStrategyMethod::PunchHole => Some((
 				self.initiate_assisted_connection(
 					already_open_connection,
@@ -300,7 +307,9 @@ where
 		}
 	}
 
-	pub fn contact_info(&self) -> ContactInfo { self.packet_server.our_contact_info() }
+	pub fn contact_info(&self) -> ContactInfo {
+		self.packet_server.our_contact_info()
+	}
 
 	pub fn differs_at_bit(&self, other_id: &IdType) -> Option<u8> {
 		differs_at_bit(&self.address.as_id(), other_id)
@@ -509,24 +518,26 @@ where
 		for f in response.connected.iter() {
 			match self.pick_contact_option(&f.contact_info) {
 				None => {}
-				Some((option, openness)) =>
+				Some((option, openness)) => {
 					if visited.iter().find(|v| v.1 == option).is_none() {
 						if let Some(strategy) = ContactStrategy::new(option, openness) {
 							new_fingers.push((f.clone(), strategy));
 						}
-					},
+					}
+				}
 			}
 		}
 
 		for f in response.fingers.iter() {
 			match self.pick_contact_option(&f.contact_info) {
 				None => {}
-				Some((option, openness)) =>
+				Some((option, openness)) => {
 					if visited.iter().find(|v| v.1 == option).is_none() {
 						if let Some(strategy) = ContactStrategy::new(option, openness) {
 							new_fingers.push((f.clone(), strategy));
 						}
-					},
+					}
+				}
 			}
 		}
 
@@ -805,13 +816,14 @@ where
 						warn!("Problematic node {}: {:?}", node_info, e);
 						self.mark_node_problematic(&node_info.address).await;
 					}
-					_ =>
+					_ => {
 						if !e.forgivable() {
 							warn!("Problematic node {}: {:?}", node_info, e);
 							self.reject_node(&node_info.address).await;
 						} else {
 							warn!("Connection issue with node {}: {:?}", node_info, e);
-						},
+						}
+					}
 				}
 				None
 			}
@@ -832,13 +844,14 @@ where
 						warn!("Problematic node {}: {:?}", node_info, e);
 						self.mark_node_problematic(&node_info.address).await;
 					}
-					_ =>
+					_ => {
 						if !e.forgivable() {
 							warn!("Problematic node {}: {:?}", node_info, e);
 							self.reject_node(&node_info.address).await;
 						} else {
 							warn!("Connection issue with node {}: {:?}", node_info, e);
-						},
+						}
+					}
 				}
 				None
 			}
@@ -979,7 +992,9 @@ where
 		candidates.push_back((distance, finger.0.clone(), finger.1.clone()));
 	}
 
-	pub fn is_running(&self) -> bool { !self.stop_flag.load(Ordering::Relaxed) }
+	pub fn is_running(&self) -> bool {
+		!self.stop_flag.load(Ordering::Relaxed)
+	}
 
 	/// Joins the network via a peer. If pinging that peer fails, returns an I/O
 	/// error.
@@ -1116,9 +1131,13 @@ where
 		}
 	}
 
-	pub fn node_id(&self) -> &NodeAddress { &self.address }
+	pub fn node_id(&self) -> &NodeAddress {
+		&self.address
+	}
 
-	pub fn overlay_node(&self) -> Arc<OverlayNode> { self.interface.overlay_node() }
+	pub fn overlay_node(&self) -> Arc<OverlayNode> {
+		self.interface.overlay_node()
+	}
 
 	fn pick_contact_option(&self, target: &ContactInfo) -> Option<(ContactOption, Openness)> {
 		self.packet_server.pick_contact_option(target)
@@ -1219,12 +1238,13 @@ where
 		};
 
 		let result = match actor_id {
-			None =>
+			None => {
 				overlay_node
 					.base
 					.interface
 					.find_value(request.value_type, &request.id)
-					.await,
+					.await
+			}
 			Some(id) => {
 				if let Some(actor_node) =
 					overlay_node.base.interface.actor_nodes.lock().await.get(id)
@@ -1301,9 +1321,10 @@ where
 		let result = match message_type {
 			NETWORK_MESSAGE_TYPE_PING_REQUEST => self.process_ping_request(addr).await,
 			NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST => self.process_find_node_request(buffer).await,
-			NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST =>
+			NETWORK_MESSAGE_TYPE_FIND_VALUE_REQUEST => {
 				self.process_find_value_request(buffer, overlay_node, actor_id)
-					.await,
+					.await
+			}
 			_ => return (None, false),
 		};
 		(result, true)

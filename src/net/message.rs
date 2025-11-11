@@ -11,7 +11,6 @@ use crate::{
 	serde_limit::*,
 };
 
-
 pub type FindActorRequest = FindNodeRequest;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -249,11 +248,10 @@ pub struct StoreActorRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StoreActorResponse {}
 
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum BlogchainValueType {
-	Block      = 0,
-	File       = 1,
-	Object     = 2,
+	Block = 0,
+	File = 1,
+	Object = 2,
 	NextObject = 3,
 }

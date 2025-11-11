@@ -39,15 +39,21 @@ pub enum Relation {
 }
 
 impl Related<super::boost_object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::BoostObject.def() }
+	fn to() -> RelationDef {
+		Relation::BoostObject.def()
+	}
 }
 
 impl Related<super::identity::Entity> for Entity {
-	fn to() -> RelationDef { Relation::Identity.def() }
+	fn to() -> RelationDef {
+		Relation::Identity.def()
+	}
 }
 
 impl Related<super::post_object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::PostObject.def() }
+	fn to() -> RelationDef {
+		Relation::PostObject.def()
+	}
 }
 
 impl ActiveModelBehavior for ActiveModel {}

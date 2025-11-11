@@ -19,7 +19,6 @@ use zeroize::Zeroize;
 
 use crate::{common::*, core::NodeAddress};
 
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ActorPublicKeyV1(#[serde(with = "BigArray")] [u8; 57]);
 pub type ActorPublicKeyV1Error = ();
@@ -50,11 +49,14 @@ pub struct NodePrivateKey {
 #[zeroize(drop)]
 struct NodePrivateKeyCopy([u8; ed25519::SECRET_KEY_LENGTH]);
 
-
 impl ActorPublicKeyV1 {
-	pub fn from_bytes(bytes: [u8; 57]) -> Result<Self, ActorPublicKeyV1Error> { Ok(Self(bytes)) }
+	pub fn from_bytes(bytes: [u8; 57]) -> Result<Self, ActorPublicKeyV1Error> {
+		Ok(Self(bytes))
+	}
 
-	pub fn to_bytes(self) -> [u8; 57] { self.0 }
+	pub fn to_bytes(self) -> [u8; 57] {
+		self.0
+	}
 
 	pub fn verify(&self, message: &[u8], signature: &ActorSignatureV1) -> bool {
 		let inner = ed448::PublicKey::from(self.0.clone());
@@ -63,7 +65,9 @@ impl ActorPublicKeyV1 {
 }
 
 impl ActorPrivateKeyV1 {
-	pub fn as_bytes(&self) -> &[u8; ed448::KEY_LENGTH] { self.0.as_bytes() }
+	pub fn as_bytes(&self) -> &[u8; ed448::KEY_LENGTH] {
+		self.0.as_bytes()
+	}
 
 	pub fn from_bytes(bytes: [u8; ed448::KEY_LENGTH]) -> Self {
 		Self(ed448::PrivateKey::from(bytes))
@@ -86,13 +90,21 @@ impl ActorPrivateKeyV1 {
 }
 
 impl ActorSignatureV1 {
-	pub fn as_bytes(&self) -> &[u8; ed448::SIG_LENGTH] { &self.0 }
+	pub fn as_bytes(&self) -> &[u8; ed448::SIG_LENGTH] {
+		&self.0
+	}
 
-	pub fn from_bytes(bytes: [u8; ed448::SIG_LENGTH]) -> Self { Self(bytes) }
+	pub fn from_bytes(bytes: [u8; ed448::SIG_LENGTH]) -> Self {
+		Self(bytes)
+	}
 
-	pub fn hash(&self) -> IdType { IdType::hash(self.as_bytes()) }
+	pub fn hash(&self) -> IdType {
+		IdType::hash(self.as_bytes())
+	}
 
-	pub fn to_bytes(self) -> [u8; ed448::SIG_LENGTH] { self.0 }
+	pub fn to_bytes(self) -> [u8; ed448::SIG_LENGTH] {
+		self.0
+	}
 }
 
 impl sea_orm::TryGetable for ActorSignatureV1 {
@@ -122,13 +134,15 @@ impl Into<sea_orm::Value> for ActorSignatureV1 {
 }
 
 impl sea_orm::sea_query::Nullable for ActorSignatureV1 {
-	fn null() -> sea_orm::Value { sea_orm::Value::Bytes(None) }
+	fn null() -> sea_orm::Value {
+		sea_orm::Value::Bytes(None)
+	}
 }
 
 impl sea_orm::sea_query::ValueType for ActorSignatureV1 {
 	fn try_from(v: sea_orm::Value) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
 		match v {
-			sea_orm::Value::Bytes(ob) =>
+			sea_orm::Value::Bytes(ob) => {
 				if let Some(bytes) = ob {
 					match (*bytes).try_into() {
 						Err(_) => Err(sea_orm::sea_query::ValueTypeErr),
@@ -136,16 +150,23 @@ impl sea_orm::sea_query::ValueType for ActorSignatureV1 {
 					}
 				} else {
 					Err(sea_orm::sea_query::ValueTypeErr)
-				},
+				}
+			}
 			_ => Err(sea_orm::sea_query::ValueTypeErr),
 		}
 	}
 
-	fn type_name() -> String { "IdType".to_owned() }
+	fn type_name() -> String {
+		"IdType".to_owned()
+	}
 
-	fn array_type() -> sea_orm::sea_query::ArrayType { sea_orm::sea_query::ArrayType::String }
+	fn array_type() -> sea_orm::sea_query::ArrayType {
+		sea_orm::sea_query::ArrayType::String
+	}
 
-	fn column_type() -> sea_orm::ColumnType { sea_orm::ColumnType::String(Some(45)) }
+	fn column_type() -> sea_orm::ColumnType {
+		sea_orm::ColumnType::String(Some(45))
+	}
 }
 
 impl NodePublicKey {
@@ -155,7 +176,9 @@ impl NodePublicKey {
 		))
 	}
 
-	pub fn generate_address(&self) -> NodeAddress { NodeAddress::V1(self.generate_address_v1()) }
+	pub fn generate_address(&self) -> NodeAddress {
+		NodeAddress::V1(self.generate_address_v1())
+	}
 
 	pub fn generate_address_v1(&self) -> IdType {
 		let mut hasher = Sha3_256::new();
@@ -170,10 +193,14 @@ impl NodePublicKey {
 }
 
 impl NodePrivateKey {
-	pub fn as_bytes(&self) -> &[u8; 32] { &self.copy.0 }
+	pub fn as_bytes(&self) -> &[u8; 32] {
+		&self.copy.0
+	}
 
 	#[allow(unused)]
-	pub fn to_bytes(&self) -> [u8; 32] { self.inner.to_bytes() }
+	pub fn to_bytes(&self) -> [u8; 32] {
+		self.inner.to_bytes()
+	}
 
 	pub fn from_bytes(mut bytes: [u8; 32]) -> Self {
 		let this = Self::new(ed25519::SigningKey::from_bytes(&bytes));
@@ -200,15 +227,19 @@ impl NodePrivateKey {
 		}
 	}
 
-	pub fn public(&self) -> NodePublicKey { NodePublicKey(self.inner.verifying_key()) }
+	pub fn public(&self) -> NodePublicKey {
+		NodePublicKey(self.inner.verifying_key())
+	}
 
-	pub fn sign(&self, message: &[u8]) -> NodeSignature { NodeSignature(self.inner.sign(message)) }
+	pub fn sign(&self, message: &[u8]) -> NodeSignature {
+		NodeSignature(self.inner.sign(message))
+	}
 }
 
 impl FromSql for NodePrivateKey {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
 		match value {
-			ValueRef::Blob(bytes) =>
+			ValueRef::Blob(bytes) => {
 				if bytes.len() >= ed25519::SECRET_KEY_LENGTH {
 					FromSqlResult::Ok(NodePrivateKey::from_bytes(
 						bytes[..ed25519::SECRET_KEY_LENGTH].try_into().unwrap(),
@@ -218,7 +249,8 @@ impl FromSql for NodePrivateKey {
 						expected_size: ed25519::SECRET_KEY_LENGTH,
 						blob_size: bytes.len(),
 					})
-				},
+				}
+			}
 			_ => FromSqlResult::Err(FromSqlError::InvalidType),
 		}
 	}
@@ -239,35 +271,51 @@ impl fmt::Display for NodePublicKeyError {
 }
 
 impl Clone for NodePrivateKey {
-	fn clone(&self) -> Self { Self::new(ed25519::SigningKey::from_bytes(&self.inner.to_bytes())) }
+	fn clone(&self) -> Self {
+		Self::new(ed25519::SigningKey::from_bytes(&self.inner.to_bytes()))
+	}
 }
 
 impl NodeSignature {
-	pub fn to_bytes(&self) -> [u8; 64] { self.0.to_bytes() }
+	pub fn to_bytes(&self) -> [u8; 64] {
+		self.0.to_bytes()
+	}
 
 	#[allow(unused)]
-	pub fn from_bytes(bytes: [u8; 64]) -> Self { Self(ed25519::Signature::from_bytes(&bytes)) }
+	pub fn from_bytes(bytes: [u8; 64]) -> Self {
+		Self(ed25519::Signature::from_bytes(&bytes))
+	}
 
 	#[allow(unused)]
-	pub fn hash(&self) -> IdType { IdType::hash(&self.to_bytes()) }
+	pub fn hash(&self) -> IdType {
+		IdType::hash(&self.to_bytes())
+	}
 }
 
 impl From<ed25519::VerifyingKey> for NodePublicKey {
-	fn from(other: ed25519::VerifyingKey) -> Self { Self(other) }
+	fn from(other: ed25519::VerifyingKey) -> Self {
+		Self(other)
+	}
 }
 
 impl Clone for NodePublicKey {
-	fn clone(&self) -> Self { Self(ed25519::VerifyingKey::from_bytes(self.0.as_bytes()).unwrap()) }
+	fn clone(&self) -> Self {
+		Self(ed25519::VerifyingKey::from_bytes(self.0.as_bytes()).unwrap())
+	}
 }
 
 impl Deref for NodePublicKey {
 	type Target = ed25519::VerifyingKey;
 
-	fn deref(&self) -> &Self::Target { &self.0 }
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
 }
 
 impl DerefMut for NodePublicKey {
-	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.0
+	}
 }
 
 impl<'de> Deserialize<'de> for NodePublicKey {
@@ -289,7 +337,6 @@ impl Serialize for NodePublicKey {
 		Serialize::serialize(&self.0.to_bytes(), s)
 	}
 }
-
 
 #[cfg(test)]
 mod tests {

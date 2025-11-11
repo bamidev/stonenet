@@ -51,7 +51,6 @@ use crate::{
 	},
 };
 
-
 #[derive(Deserialize)]
 struct ActorActions {
 	follow: Option<String>,
@@ -102,11 +101,9 @@ struct NodeInfoUsageUsers {
 
 struct NodeInfoVersion;
 
-
 lazy_static! {
 	pub static ref PUBLIC_KEY: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
 }
-
 
 impl Serialize for NodeInfoVersion {
 	fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
@@ -116,7 +113,6 @@ impl Serialize for NodeInfoVersion {
 		serializer.serialize_str("1.0")
 	}
 }
-
 
 async fn activity_pub_actor_post(
 	State(g): State<Arc<ServerGlobal>>, Path(address): Path<String>,
@@ -131,19 +127,21 @@ async fn activity_pub_actor_post(
 		// Follow
 		if follow == "1" {
 			let actor_url = match web::webfinger::resolve(&webfinger_addr).await {
-				Ok(r) =>
+				Ok(r) => {
 					if let Some(url) = r {
 						url
 					} else {
 						return server_error_response2(
 							"Webfinger address doesn't have an ActivityPub actor URL",
 						);
-					},
-				Err(e) =>
+					}
+				}
+				Err(e) => {
 					return server_error_response(
 						e,
 						&format!("Error while resolving webfinger {}", &webfinger_addr),
-					),
+					);
+				}
 			};
 			let actor = match activity_pub::actor::ensure(
 				&g.base.api.db,
@@ -192,14 +190,15 @@ async fn activity_pub_actor_post(
 				.await
 			{
 				Ok(r) => r,
-				Err(e) =>
+				Err(e) => {
 					return server_error_response(
 						e,
 						&format!(
 							"Database error while looking up actor with webfinger address {}",
 							&webfinger_addr
 						),
-					),
+					);
+				}
 			};
 			if let Some(record) = result {
 				if let Err(e) = activity_pub_following::Entity::delete_many()
@@ -255,25 +254,28 @@ async fn activity_pub_actor_get(
 	let url = match actor_json.get("url") {
 		Some(r) => match expect_url(r, &|| "...".into()) {
 			Ok(r) => r,
-			Err(e) =>
+			Err(e) => {
 				return server_error_response(
 					e,
 					"Unable to parse URL from ActivityPub actor object",
-				),
+				);
+			}
 		},
 		None => match actor_json.get("id") {
 			Some(r) => match expect_url(r, &|| "...".into()) {
 				Ok(r) => r,
-				Err(e) =>
+				Err(e) => {
 					return server_error_response(
 						e,
 						"Unable to parse ID from ActivityPub actor object",
-					),
+					);
+				}
 			},
-			None =>
+			None => {
 				return server_error_response2(
 					"Unable to find URL or ID on ActivityPub actor object",
-				),
+				);
+			}
 		},
 	};
 	// FIXME: Clean up this mess with activity_pub::expect_string & expect_object
@@ -295,7 +297,7 @@ async fn activity_pub_actor_get(
 	};
 	let avatar_url = if let Some(v) = actor_json.get("icon") {
 		match v {
-			serde_json::Value::Object(o) =>
+			serde_json::Value::Object(o) => {
 				if let Some(p) = o.get("url") {
 					match p {
 						serde_json::Value::String(s) => Some(s.clone()),
@@ -303,7 +305,8 @@ async fn activity_pub_actor_get(
 					}
 				} else {
 					None
-				},
+				}
+			}
 			_ => None,
 		}
 	} else {
@@ -311,7 +314,7 @@ async fn activity_pub_actor_get(
 	};
 	let wallpaper_url = if let Some(v) = actor_json.get("image") {
 		match v {
-			serde_json::Value::Object(o) =>
+			serde_json::Value::Object(o) => {
 				if let Some(p) = o.get("url") {
 					match p {
 						serde_json::Value::String(s) => Some(s.clone()),
@@ -319,7 +322,8 @@ async fn activity_pub_actor_get(
 					}
 				} else {
 					None
-				},
+				}
+			}
 			_ => None,
 		}
 	} else {
@@ -453,8 +457,9 @@ pub async fn actor_inbox_post(
 			"Undo" => actor_inbox_process_undo(&g, &actor, object_json)
 				.await
 				.map_err(|e| Error::from(e.unwrap().0).trace()),
-			other =>
-				return error_response(406, &format!("Object type \"{}\" not supported.", other)),
+			other => {
+				return error_response(406, &format!("Object type \"{}\" not supported.", other));
+			}
 		}
 	} else {
 		return error_response(400, "Missing type parameter.");
@@ -481,11 +486,12 @@ async fn actor_inbox_process_undo(
 		return Ok(error_response(406, "Missing \"object\" field."));
 	};
 	Ok(match object_field {
-		serde_json::Value::String(_) =>
+		serde_json::Value::String(_) => {
 			return Ok(error_response(
 				406,
 				"Undoing object by only their ID in the \"object\" parameter not yet supported.",
-			)),
+			));
+		}
 		serde_json::Value::Object(object_to_undo) => {
 			let object_type_opt = object_to_undo.get("type");
 			if let Some(object_type) = object_type_opt {
@@ -504,11 +510,12 @@ async fn actor_inbox_process_undo(
 			if let Some(our_actor) = object_to_undo.get("object") {
 				let has_actor = match our_actor {
 					serde_json::Value::String(our_actor_string) => our_actor_string == &actor_url,
-					_ =>
+					_ => {
 						return Ok(error_response(
 							406,
 							"Invalid type for \"to\" field in Follow activity.",
-						)),
+						));
+					}
 				};
 
 				if has_actor {
@@ -522,8 +529,9 @@ async fn actor_inbox_process_undo(
 						return Ok(error_response(406, "No actor on Follow activity."));
 					};
 					let (host, path) = match Url::parse(&other_actor) {
-						Err(e) =>
-							return Ok(error_response(406, format!("Invalid actor URL: {}", e))),
+						Err(e) => {
+							return Ok(error_response(406, format!("Invalid actor URL: {}", e)));
+						}
 						Ok(url) => {
 							let host = if let Some(h) = url.host_str() {
 								h
@@ -575,11 +583,12 @@ async fn actor_inbox_register_follow(
 
 	// Store follower
 	match Url::parse(&follower_string) {
-		Err(e) =>
+		Err(e) => {
 			return Ok(error_response(
 				400,
 				&format!("Invalid URL for follower {}: {}", &follower_string, e),
-			)),
+			));
+		}
 		Ok(url) => {
 			let domain = if let Some(d) = url.domain() {
 				d
@@ -676,10 +685,11 @@ pub async fn actor_outbox(
 		)
 		.await
 		{
-			Ok(result) =>
+			Ok(result) => {
 				if let Some((json, _)) = result {
 					activities.push(json);
-				},
+				}
+			}
 			Err(e) => return server_error_response(e, "Unable to compose object activity"),
 		};
 	}
@@ -782,7 +792,7 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>, private
 				"Database error while trying to query the ActivityPub send-queue: {:?}",
 				e
 			),
-			Ok(records) =>
+			Ok(records) => {
 				if records.len() > 0 {
 					let private_key = match read_text_file(&private_key_path).await {
 						Ok(pk) => Arc::new(Zeroizing::<String>::new(pk)),
@@ -813,7 +823,8 @@ pub async fn loop_send_queue(stop_flag: Arc<AtomicBool>, g: Arc<Global>, private
 						}
 						i += 1;
 					}
-				},
+				}
+			}
 		}
 
 		if let Err(e) = join_handle.await {
@@ -859,12 +870,13 @@ pub async fn nodeinfo(State(g): State<Arc<ServerGlobal>>) -> Response {
 async fn object_get(State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i64>) -> Response {
 	let mut object_info = match web::activity_pub::load_object_info(&g.base.api.db, object_id).await
 	{
-		Ok(result) =>
+		Ok(result) => {
 			if let Some(r) = result {
 				r
 			} else {
 				return not_found_error_response("Object not found");
-			},
+			}
+		}
 		Err(e) => return server_error_response(e, "Unable to load object"),
 	};
 
@@ -873,24 +885,26 @@ async fn object_get(State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i6
 		.one(g.base.api.db.inner())
 		.await
 	{
-		Ok(result) =>
+		Ok(result) => {
 			if let Some(r) = result {
 				r
 			} else {
 				return server_error_response2("ActivityPub object record not found");
-			},
+			}
+		}
 		Err(e) => return server_error_response(e, "Database issue"),
 	};
 	let actor = match activity_pub_actor::Entity::find_by_id(ap_object.actor_id)
 		.one(g.base.api.db.inner())
 		.await
 	{
-		Ok(result) =>
+		Ok(result) => {
 			if let Some(r) = result {
 				r
 			} else {
 				return server_error_response2("ActivityPub actor record not found");
-			},
+			}
+		}
 		Err(e) => return server_error_response(e, "Database issue"),
 	};
 	let irt_webfinger = if let Some(w) = actor.address {
@@ -917,12 +931,13 @@ pub async fn object_get_stonenet(
 	)
 	.await
 	{
-		Ok(result) =>
+		Ok(result) => {
 			if let Some(r) = result {
 				r
 			} else {
 				return not_found_error_response("Object not found");
-			},
+			}
+		}
 		Err(e) => return server_error_response(e, "Unable to load object"),
 	};
 
@@ -958,12 +973,13 @@ async fn object_post(
 		.1
 		.clone();
 	let private_key = match g.base.api.db.perform(|c| c.fetch_my_identity(&identity)) {
-		Ok(r) =>
+		Ok(r) => {
 			if let Some((_, pk)) = r {
 				pk
 			} else {
 				return server_error_response2("unable to load identity");
-			},
+			}
+		}
 		Err(e) => return server_error_response(e, "unable to load identity"),
 	};
 
@@ -975,12 +991,13 @@ async fn object_post(
 		.one(tx.inner())
 		.await
 	{
-		Ok(result) =>
+		Ok(result) => {
 			if let Some(r) = result {
 				r
 			} else {
 				return not_found_error_response("Unable to find object");
-			},
+			}
+		}
 		Err(e) => return server_error_response(e, "Unable to load object"),
 	};
 

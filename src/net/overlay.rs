@@ -1,7 +1,6 @@
 #![allow(deprecated)]
 mod trust;
 
-
 use std::{
 	result::Result as StdResult,
 	sync::{atomic::*, Mutex as StdMutex, OnceLock},
@@ -38,7 +37,6 @@ use crate::{
 	trace::Mutex,
 };
 
-
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(120);
 
 const OVERLAY_ATTACHED_NODES_LIMIT_DEFAULT: usize = 1000;
@@ -65,7 +63,6 @@ pub const OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_REQUEST: u8 = 80;
 pub const OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_RESPONSE: u8 = 81;
 pub const OVERLAY_MESSAGE_TYPE_TRUST_LIST_REQUEST: u8 = 82;
 pub const OVERLAY_MESSAGE_TYPE_TRUST_LIST_RESPONSE: u8 = 83;
-
 
 pub struct ConnectActorIter<'a> {
 	base: FindActorIter<'a>,
@@ -112,7 +109,6 @@ pub(super) struct OverlayInterface {
 struct ReverseConnectionToDo {
 	sender: Option<oneshot::Sender<Box<Connection>>>,
 }
-
 
 #[async_trait]
 impl NodeInterface for OverlayInterface {
@@ -212,7 +208,9 @@ impl NodeInterface for OverlayInterface {
 }
 
 impl<'a> FindActorIter<'a> {
-	pub fn visited(&self) -> &[(NodeAddress, ContactOption)] { self.0.visited() }
+	pub fn visited(&self) -> &[(NodeAddress, ContactOption)] {
+		self.0.visited()
+	}
 }
 
 #[async_trait]
@@ -228,7 +226,9 @@ impl<'a> AsyncIterator for FindActorIter<'a> {
 }
 
 impl<'a> ConnectActorIter<'a> {
-	pub fn visited(&self) -> &[(NodeAddress, ContactOption)] { self.base.visited() }
+	pub fn visited(&self) -> &[(NodeAddress, ContactOption)] {
+		self.base.visited()
+	}
 
 	/// Gathers new contacts
 	async fn gather_new_contacts(&mut self) -> bool {
@@ -255,38 +255,42 @@ impl<'a> ConnectActorIter<'a> {
 
 				if let Some(strategy) = self.base.0.node.pick_contact_strategy(&node.contact_info) {
 					match strategy.method {
-						ContactStrategyMethod::Relay =>
+						ContactStrategyMethod::Relay => {
 							if relayable_nodes
 								.iter()
 								.position(|n| &n.address == &node.address)
 								.is_none()
 							{
 								relayable_nodes.push(node);
-							},
-						ContactStrategyMethod::PunchHole =>
+							}
+						}
+						ContactStrategyMethod::PunchHole => {
 							if punchable_nodes
 								.iter()
 								.position(|(n, ..)| &n.address == &node.address)
 								.is_none()
 							{
 								punchable_nodes.push((node.clone(), strategy.contact, false));
-							},
-						ContactStrategyMethod::Reversed =>
+							}
+						}
+						ContactStrategyMethod::Reversed => {
 							if punchable_nodes
 								.iter()
 								.position(|(n, ..)| &n.address == &node.address)
 								.is_none()
 							{
 								punchable_nodes.push((node.clone(), strategy.contact, true));
-							},
-						ContactStrategyMethod::Direct =>
+							}
+						}
+						ContactStrategyMethod::Direct => {
 							if open_nodes
 								.iter()
 								.position(|(n, _)| &n.address == &node.address)
 								.is_none()
 							{
 								open_nodes.push((node.clone(), strategy.contact));
-							},
+							}
+						}
 					}
 				}
 			}
@@ -422,7 +426,9 @@ impl MessageWorkToDo for KeepAliveToDo {
 }
 
 impl OverlayNode {
-	pub async fn close(self: Arc<Self>) { self.base.close().await; }
+	pub async fn close(self: Arc<Self>) {
+		self.base.close().await;
+	}
 
 	pub fn connection_manager(&self) -> &ConnectionManager {
 		&self.base.interface.connection_manager
@@ -531,7 +537,9 @@ impl OverlayNode {
 
 	//pub fn contact_info(&self) -> &IdType { &self.base.node_info.contact_info }
 
-	pub fn db(&self) -> &db::Database { &self.base.interface.db }
+	pub fn db(&self) -> &db::Database {
+		&self.base.interface.db
+	}
 
 	pub async fn drop_actor_network(&self, actor_id: &IdType) -> bool {
 		match self
@@ -551,7 +559,9 @@ impl OverlayNode {
 		}
 	}
 
-	pub fn contact_info(&self) -> ContactInfo { self.base.contact_info() }
+	pub fn contact_info(&self) -> ContactInfo {
+		self.base.contact_info()
+	}
 
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
 	/// RPC.
@@ -800,10 +810,11 @@ impl OverlayNode {
 
 				// Then we can collect all the values related to this identity
 				match node.complete_object(&mut connection, object.clone()).await {
-					Ok(done) =>
+					Ok(done) => {
 						if done {
 							return Some(object);
-						},
+						}
+					}
 					Err(e) => {
 						error!("Unable collect object on first connection: {}", e);
 						return Some(object);
@@ -854,11 +865,12 @@ impl OverlayNode {
 				}
 				Ok(result) => {
 					match result.actor_info.generate_address() {
-						ActorAddress::V1(actor_address) =>
+						ActorAddress::V1(actor_address) => {
 							if &actor_address != id {
 								warn!("Received invalid actor info from node: invalid hash");
 								return None;
-							},
+							}
+						}
 					}
 
 					let mut peers: Vec<NodeContactInfo> = result.peers.into();
@@ -1729,7 +1741,9 @@ impl OverlayNode {
 		});
 	}
 
-	pub fn node_id(&self) -> &NodeAddress { &self.base.address }
+	pub fn node_id(&self) -> &NodeAddress {
+		&self.base.address
+	}
 
 	#[allow(dead_code)]
 	pub async fn ping(&self, target: &NodeContactInfo) -> Option<u32> {
@@ -1827,7 +1841,7 @@ impl OverlayNode {
 		});
 		match actor_info_result {
 			Err(e) => error!("Database error while looking for public key: {}", e),
-			Ok(actor_info) =>
+			Ok(actor_info) => {
 				if actor_info.is_some() {
 					if response.result.is_none() {
 						response.result = Some(FindActorResult {
@@ -1838,7 +1852,8 @@ impl OverlayNode {
 					} else {
 						response.result.as_mut().unwrap().i_am_available = true;
 					}
-				},
+				}
+			}
 		}
 
 		// Deserialize response
@@ -2126,7 +2141,6 @@ impl OverlayNode {
 			}
 		};
 
-
 		let result = if !is_trusted_directly {
 			info!(
 				"Received trust list request from {}, but we don't trust that node (yet).",
@@ -2192,30 +2206,40 @@ impl OverlayNode {
 		node_info: &NodeContactInfo,
 	) -> MessageProcessorResult {
 		match message_type {
-			OVERLAY_MESSAGE_TYPE_FIND_ACTOR_REQUEST =>
-				self.process_find_actor_request(buffer).await,
-			OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST =>
-				self.process_store_actor_request(buffer, node_info).await,
-			OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST =>
-				return self.process_keep_alive_request(buffer, node_info).await,
-			OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST =>
-				self.process_punch_hole_request(buffer).await,
-			OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST =>
+			OVERLAY_MESSAGE_TYPE_FIND_ACTOR_REQUEST => {
+				self.process_find_actor_request(buffer).await
+			}
+			OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST => {
+				self.process_store_actor_request(buffer, node_info).await
+			}
+			OVERLAY_MESSAGE_TYPE_KEEP_ALIVE_REQUEST => {
+				return self.process_keep_alive_request(buffer, node_info).await;
+			}
+			OVERLAY_MESSAGE_TYPE_PUNCH_HOLE_REQUEST => {
+				self.process_punch_hole_request(buffer).await
+			}
+			OVERLAY_MESSAGE_TYPE_RELAY_PUNCH_HOLE_REQUEST => {
 				self.process_relay_punch_hole_request(buffer, node_info)
-					.await,
-			OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_REQUEST =>
+					.await
+			}
+			OVERLAY_MESSAGE_TYPE_REVERSE_CONNECTION_REQUEST => {
 				self.process_reverse_connection_request(buffer, &node_info.address)
-					.await,
-			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST =>
+					.await
+			}
+			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST => {
 				self.process_open_relay_request(buffer, &contact.target)
-					.await,
-			OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_REQUEST =>
-				self.process_relay_request_request(buffer).await,
-			OVERLAY_MESSAGE_TYPE_PASS_RELAY_REQUEST_REQUEST =>
-				self.process_pass_relay_request_request(buffer).await,
-			OVERLAY_MESSAGE_TYPE_TRUST_LIST_REQUEST =>
+					.await
+			}
+			OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_REQUEST => {
+				self.process_relay_request_request(buffer).await
+			}
+			OVERLAY_MESSAGE_TYPE_PASS_RELAY_REQUEST_REQUEST => {
+				self.process_pass_relay_request_request(buffer).await
+			}
+			OVERLAY_MESSAGE_TYPE_TRUST_LIST_REQUEST => {
 				self.process_trust_list_request(buffer, &node_info.address)
-					.await,
+					.await
+			}
 			other_id => {
 				warn!(
 					"Unknown overlay message type ID received from {}: {}",
@@ -2657,7 +2681,7 @@ impl MessageWorkToDo for OpenRelayToDo {
 					None => return Ok(None),
 					// If assistant node doesn't know the target node, we need to let the source
 					// node know
-					Some(response) =>
+					Some(response) => {
 						if !response.ok {
 							let message = OpenRelayStatusMessage {
 								status: OpenRelayStatus::AssistantUnaware,
@@ -2666,7 +2690,8 @@ impl MessageWorkToDo for OpenRelayToDo {
 								.send(binserde::serialize(&message).unwrap())
 								.await?;
 							return Ok(None);
-						},
+						}
+					}
 				}
 			}
 		}
@@ -2717,7 +2742,6 @@ impl MessageWorkToDo for ReverseConnectionToDo {
 		Ok(None)
 	}
 }
-
 
 pub(super) async fn process_request_message(
 	overlay_node: Arc<OverlayNode>, buffer: Vec<u8>, contact: ContactOption,
@@ -2771,47 +2795,46 @@ pub(super) async fn process_request_message(
 	}
 }
 
-
 #[cfg(test)]
 mod tests {
-
 	use crate::{net::overlay::*, test};
+
+	use port_check::free_local_ipv4_port;
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_direct() {
-		test_overlay_connectivity("unidirectional", "bidirectional", false, 11000).await;
+		test_overlay_connectivity("unidirectional", "bidirectional", false).await;
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_hole_punching_normal() {
-		test_overlay_connectivity("unidirectional", "punchable", false, 12000).await;
+		test_overlay_connectivity("unidirectional", "punchable", false).await;
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_hole_punching_reversed() {
-		test_overlay_connectivity("punchable", "unidirectional", false, 13000).await;
+		test_overlay_connectivity("punchable", "unidirectional", false).await;
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_relay_direct() {
-		test_overlay_connectivity("unidirectional", "unidirectional", true, 14000).await;
+		test_overlay_connectivity("unidirectional", "unidirectional", true).await;
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_relay_indirect() {
-		test_overlay_connectivity("unidirectional", "unidirectional", false, 15000).await;
+		test_overlay_connectivity("unidirectional", "unidirectional", false).await;
 	}
 
 	async fn test_overlay_connectivity(
 		openness_source_node: &str, openness_target_node: &str, assistant_is_relay: bool,
-		first_port: u16,
 	) {
 		// Setup all nodes
 		let mut rng = test::initialize_rng();
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let mut assistant_config = Config::default();
 		assistant_config.ipv4_address = Some("127.0.0.1".to_string());
-		assistant_config.ipv4_udp_port = Some(first_port);
+		assistant_config.ipv4_udp_port = Some(free_local_ipv4_port().expect("no free port"));
 		assistant_config.ipv4_udp_openness = Some("bidirectional".to_string());
 		assistant_config.relay_node = Some(assistant_is_relay);
 		let mut relay_config = Config::default();
@@ -2820,7 +2843,7 @@ mod tests {
 			assistant_config.ipv4_udp_port.unwrap()
 		)];
 		relay_config.ipv4_address = Some("127.0.0.1".to_string());
-		relay_config.ipv4_udp_port = Some(first_port + 1);
+		relay_config.ipv4_udp_port = Some(free_local_ipv4_port().expect("no free port"));
 		relay_config.ipv4_udp_openness = Some("bidirectional".to_string());
 		relay_config.relay_node = Some(true);
 		let mut source_config = Config::default();
@@ -2829,7 +2852,7 @@ mod tests {
 			assistant_config.ipv4_udp_port.unwrap()
 		)];
 		source_config.ipv4_address = Some("127.0.0.1".to_string());
-		source_config.ipv4_udp_port = Some(first_port + 2);
+		source_config.ipv4_udp_port = Some(free_local_ipv4_port().expect("no free port"));
 		source_config.ipv4_udp_openness = Some(openness_source_node.to_string());
 		let mut target_config = Config::default();
 		target_config.bootstrap_nodes = vec![format!(
@@ -2837,7 +2860,7 @@ mod tests {
 			assistant_config.ipv4_udp_port.unwrap()
 		)];
 		target_config.ipv4_address = Some("127.0.0.1".to_string());
-		target_config.ipv4_udp_port = Some(first_port + 3);
+		target_config.ipv4_udp_port = Some(free_local_ipv4_port().expect("no free port"));
 		target_config.ipv4_udp_openness = Some(openness_target_node.to_string());
 
 		let _assistant_node =

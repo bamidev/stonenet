@@ -7,7 +7,6 @@ use crate::{
 	trace::{Mutex, MutexGuard},
 };
 
-
 /// The ConnectionManager keeps alive a number of connections.
 /// When you add a new connection, it will only be added if there is room, or if
 /// there was a previous connection with a node ID that is 'further away' than
@@ -27,7 +26,6 @@ pub struct ConnectionSpace<'a> {
 }
 
 pub type ConnectionManagerEntry = (NodeContactInfo, Arc<Mutex<Box<Connection>>>);
-
 
 impl ConnectionManager {
 	pub async fn connections(&self) -> Vec<Arc<Mutex<Box<Connection>>>> {

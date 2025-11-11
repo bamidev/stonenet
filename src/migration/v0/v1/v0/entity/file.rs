@@ -20,7 +20,9 @@ pub enum Relation {
 }
 
 impl Related<super::file_blocks::Entity> for Entity {
-	fn to() -> RelationDef { Relation::FileBlocks.def() }
+	fn to() -> RelationDef {
+		Relation::FileBlocks.def()
+	}
 }
 
 impl ActiveModelBehavior for ActiveModel {}

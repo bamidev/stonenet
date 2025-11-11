@@ -13,7 +13,6 @@ use sea_orm::{DbErr, TryGetError};
 use serde::{Deserialize, Serialize, Serializer};
 use sha3::{Digest, Sha3_256};
 
-
 #[async_trait]
 pub trait AsyncIterator {
 	type Item: Send;
@@ -36,7 +35,6 @@ pub enum IdFromBase58Error {
 	TooShort,
 }
 
-
 pub fn current_timestamp() -> u64 {
 	SystemTime::now()
 		.duration_since(UNIX_EPOCH)
@@ -56,7 +54,6 @@ fn differs_at_bit_u8(a: u8, b: u8) -> u8 {
 	return 0xFF;
 }
 
-
 #[async_trait]
 impl<T> AsyncIteratorExt for T
 where
@@ -72,7 +69,9 @@ where
 }
 
 impl IdType {
-	pub fn as_bytes(&self) -> &[u8; 32] { &self.0 }
+	pub fn as_bytes(&self) -> &[u8; 32] {
+		&self.0
+	}
 
 	/// Returns the index of the bit at which this ID differs with another.
 	/// The first bit, at index 0, is the least significant bit at the first
@@ -119,7 +118,9 @@ impl IdType {
 		}
 	}
 
-	pub fn from_bytes(bytes: &[u8; 32]) -> Self { Self(bytes.clone()) }
+	pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+		Self(bytes.clone())
+	}
 
 	pub fn from_slice(bytes: &[u8]) -> Option<Self> {
 		if bytes.len() < 32 {
@@ -136,9 +137,13 @@ impl IdType {
 		buffer.into()
 	}
 
-	pub fn into_bytes(self) -> [u8; 32] { self.0 }
+	pub fn into_bytes(self) -> [u8; 32] {
+		self.0
+	}
 
-	pub fn new(bytes: [u8; 32]) -> Self { Self(bytes.into()) }
+	pub fn new(bytes: [u8; 32]) -> Self {
+		Self(bytes.into())
+	}
 
 	pub fn random(rng: &mut impl Rng) -> Self {
 		let mut buffer = [0u8; 32];
@@ -168,11 +173,15 @@ impl ops::BitXorAssign for IdType {
 }
 
 impl fmt::Debug for IdType {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "{}", self.to_base58()) }
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "{}", self.to_base58())
+	}
 }
 
 impl From<[u8; 32]> for IdType {
-	fn from(other: [u8; 32]) -> Self { Self(other) }
+	fn from(other: [u8; 32]) -> Self {
+		Self(other)
+	}
 }
 
 impl FromSql for IdType {
@@ -188,7 +197,9 @@ impl FromSql for IdType {
 }
 
 impl fmt::Display for IdType {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "{}", self.to_base58()) }
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "{}", self.to_base58())
+	}
 }
 
 impl Serialize for IdType {
@@ -205,7 +216,9 @@ impl Serialize for IdType {
 }
 
 impl ToBase58 for IdType {
-	fn to_base58(&self) -> String { self.0.to_base58() }
+	fn to_base58(&self) -> String {
+		self.0.to_base58()
+	}
 }
 
 impl sea_orm::TryGetable for IdType {
@@ -224,15 +237,21 @@ impl sea_orm::TryGetable for IdType {
 }
 
 impl Into<sea_orm::Value> for &IdType {
-	fn into(self) -> sea_orm::Value { sea_orm::Value::String(Some(Box::new(self.to_base58()))) }
+	fn into(self) -> sea_orm::Value {
+		sea_orm::Value::String(Some(Box::new(self.to_base58())))
+	}
 }
 
 impl Into<sea_orm::Value> for IdType {
-	fn into(self) -> sea_orm::Value { sea_orm::Value::String(Some(Box::new(self.to_base58()))) }
+	fn into(self) -> sea_orm::Value {
+		sea_orm::Value::String(Some(Box::new(self.to_base58())))
+	}
 }
 
 impl sea_orm::sea_query::Nullable for IdType {
-	fn null() -> sea_orm::Value { sea_orm::Value::String(None) }
+	fn null() -> sea_orm::Value {
+		sea_orm::Value::String(None)
+	}
 }
 
 impl sea_orm::sea_query::ValueType for IdType {
@@ -250,15 +269,23 @@ impl sea_orm::sea_query::ValueType for IdType {
 		}
 	}
 
-	fn type_name() -> String { "IdType".to_owned() }
+	fn type_name() -> String {
+		"IdType".to_owned()
+	}
 
-	fn array_type() -> sea_orm::sea_query::ArrayType { sea_orm::sea_query::ArrayType::String }
+	fn array_type() -> sea_orm::sea_query::ArrayType {
+		sea_orm::sea_query::ArrayType::String
+	}
 
-	fn column_type() -> sea_orm::ColumnType { sea_orm::ColumnType::String(Some(45)) }
+	fn column_type() -> sea_orm::ColumnType {
+		sea_orm::ColumnType::String(Some(45))
+	}
 }
 
 impl From<FromBase58Error> for IdFromBase58Error {
-	fn from(other: FromBase58Error) -> Self { Self::FromBase58Error(other) }
+	fn from(other: FromBase58Error) -> Self {
+		Self::FromBase58Error(other)
+	}
 }
 
 impl fmt::Display for IdFromBase58Error {
@@ -279,7 +306,6 @@ impl fmt::Display for IdFromBase58Error {
 }
 
 impl Error for IdFromBase58Error {}
-
 
 #[cfg(test)]
 mod tests {

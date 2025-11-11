@@ -17,7 +17,6 @@ use crate::{
 	},
 };
 
-
 pub fn router(g: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
 	Router::new()
 		.route("/:file-hash", get(file_get))

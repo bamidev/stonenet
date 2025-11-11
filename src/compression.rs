@@ -4,7 +4,6 @@ use compu::{encoder::BrotliOptions, DecodeError, DecodeStatus, EncodeStatus};
 
 use crate::core::CompressionType;
 
-
 pub fn compress(type_: CompressionType, data: &[u8]) -> Vec<u8> {
 	debug_assert!(type_ != CompressionType::None);
 	match type_ {

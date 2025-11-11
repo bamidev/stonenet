@@ -1,6 +1,5 @@
 mod entity;
 
-
 use async_trait::async_trait;
 use sea_orm::{prelude::*, Schema};
 
@@ -9,9 +8,7 @@ use crate::{
 	migration::{util::*, MigrationTrait},
 };
 
-
 pub struct Migration;
-
 
 #[async_trait]
 impl MigrationTrait for Migration {

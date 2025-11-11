@@ -9,7 +9,6 @@ pub mod overlay;
 mod socket;
 pub(crate) mod sstp;
 
-
 use std::{
 	collections::HashMap,
 	fmt,
@@ -33,12 +32,10 @@ use crate::{common::*, config::Config, core::NodeAddress};
 /// but we use 256.
 pub const KADEMLIA_BITS: usize = 256;
 
-
 lazy_static! {
 	pub static ref NETWORK_INTERFACES: Mutex<HashMap<String, Vec<IpNetwork>>> =
 		Mutex::new(HashMap::new());
 }
-
 
 /// All the info that advertises in what way this node is approachable over the
 /// current internet. Could both be very well set to `None`, if the node is
@@ -121,18 +118,18 @@ pub enum Openness {
 	/// Allowed to initiate and accept connections.
 	/// For nodes that are not behind a symmetric NAT
 	/// for example.
-	Bidirectional  = 0,
+	Bidirectional = 0,
 	/// Allowed to initiate connections, and is able to open a hole to accept
 	/// connections.
-	Punchable      = 1,
+	Punchable = 1,
 	/// Allowed to initiate connections, but not able to accept any.
 	Unidirectional = 2,
 }
 
-
 /// Calculates the distance between two hashes.
-fn distance(a: &IdType, b: &IdType) -> BigUint { a.distance(b) }
-
+fn distance(a: &IdType, b: &IdType) -> BigUint {
+	a.distance(b)
+}
 
 impl ContactInfo {
 	/// Parses the contact info ready for initiating a `SstpSocket` from the
@@ -156,7 +153,7 @@ impl ContactInfo {
 		// IPv4
 		match &config.ipv4_address {
 			None => {}
-			Some(address) =>
+			Some(address) => {
 				contact_info.ipv4 =
 					Some(ContactInfoEntry {
 						addr: address.parse().expect("invalid IPv4 address configured"),
@@ -182,13 +179,14 @@ impl ContactInfo {
 								}
 							}),
 						},
-					}),
+					})
+			}
 		}
 
 		// IPv6
 		match &config.ipv6_address {
 			None => {}
-			Some(address) =>
+			Some(address) => {
 				contact_info.ipv6 =
 					Some(ContactInfoEntry {
 						addr: address.parse().expect("invalid IPv6 address configured"),
@@ -214,7 +212,8 @@ impl ContactInfo {
 								}
 							}),
 						},
-					}),
+					})
+			}
 		}
 
 		contact_info
@@ -252,7 +251,7 @@ impl ContactInfo {
 
 	pub fn openness_at_option(&self, option: &ContactOption) -> Option<Openness> {
 		match &option.target {
-			SocketAddr::V4(_addr) =>
+			SocketAddr::V4(_addr) => {
 				if let Some(e) = &self.ipv4 {
 					if !option.use_tcp {
 						e.availability.udp.as_ref().map(|e| e.openness.clone())
@@ -261,8 +260,9 @@ impl ContactInfo {
 					}
 				} else {
 					None
-				},
-			SocketAddr::V6(_addr) =>
+				}
+			}
+			SocketAddr::V6(_addr) => {
 				if let Some(e) = &self.ipv6 {
 					if !option.use_tcp {
 						e.availability.udp.as_ref().map(|e| e.openness.clone())
@@ -271,13 +271,14 @@ impl ContactInfo {
 					}
 				} else {
 					None
-				},
+				}
+			}
 		}
 	}
 
 	pub fn pick_relay_option(&self, target_option: &ContactOption) -> Option<ContactOption> {
 		match target_option.target {
-			SocketAddr::V6(_ipv6) =>
+			SocketAddr::V6(_ipv6) => {
 				if let Some(e) = &self.ipv6 {
 					if target_option.use_tcp {
 						if let Some(tcp) = &e.availability.tcp {
@@ -294,8 +295,9 @@ impl ContactInfo {
 							));
 						}
 					}
-				},
-			SocketAddr::V4(_ipv4) =>
+				}
+			}
+			SocketAddr::V4(_ipv4) => {
 				if let Some(e) = &self.ipv4 {
 					if target_option.use_tcp {
 						if let Some(tcp) = &e.availability.tcp {
@@ -312,7 +314,8 @@ impl ContactInfo {
 							));
 						}
 					}
-				},
+				}
+			}
 		}
 		None
 	}
@@ -331,20 +334,22 @@ impl ContactInfo {
 				entry.addr = ip.clone();
 				if for_tcp {
 					match &mut entry.availability.tcp {
-						None =>
+						None => {
 							entry.availability.tcp = Some(TransportAvailabilityEntry {
 								port,
 								openness: Openness::Unidirectional,
-							}),
+							})
+						}
 						Some(entry2) => entry2.port = port,
 					}
 				} else {
 					match &mut entry.availability.udp {
-						None =>
+						None => {
 							entry.availability.udp = Some(TransportAvailabilityEntry {
 								port,
 								openness: Openness::Unidirectional,
-							}),
+							})
+						}
 						Some(entry2) => entry2.port = port,
 					}
 				}
@@ -359,20 +364,22 @@ impl ContactInfo {
 				entry.addr = ip.clone();
 				if for_tcp {
 					match &mut entry.availability.tcp {
-						None =>
+						None => {
 							entry.availability.tcp = Some(TransportAvailabilityEntry {
 								port,
 								openness: Openness::Unidirectional,
-							}),
+							})
+						}
 						Some(entry2) => entry2.port = port,
 					}
 				} else {
 					match &mut entry.availability.udp {
-						None =>
+						None => {
 							entry.availability.udp = Some(TransportAvailabilityEntry {
 								port,
 								openness: Openness::Unidirectional,
-							}),
+							})
+						}
 						Some(entry2) => entry2.port = port,
 					}
 				}
@@ -479,10 +486,14 @@ impl From<&SocketAddr> for ContactInfo {
 }
 
 impl ContactOption {
-	pub fn new(target: SocketAddr, use_tcp: bool) -> Self { Self { target, use_tcp } }
+	pub fn new(target: SocketAddr, use_tcp: bool) -> Self {
+		Self { target, use_tcp }
+	}
 
 	#[allow(dead_code)]
-	pub fn new_udp(target: SocketAddr) -> Self { Self::new(target, false) }
+	pub fn new_udp(target: SocketAddr) -> Self {
+		Self::new(target, false)
+	}
 }
 
 impl fmt::Display for ContactOption {
@@ -545,7 +556,6 @@ impl fmt::Display for TransportAvailabilityEntry {
 	}
 }
 
-
 pub fn resolve_bootstrap_addresses(
 	nodes: &[String], use_ipv4: bool, use_ipv6: bool,
 ) -> Vec<SocketAddr> {
@@ -554,7 +564,7 @@ pub fn resolve_bootstrap_addresses(
 	for string in nodes {
 		match string.to_socket_addrs() {
 			Err(e) => error!("Unable to parse bootstrap node {}: {}.", string, e),
-			Ok(mut iter) =>
+			Ok(mut iter) => {
 				while let Some(addr) = iter.next() {
 					let addr = if use_ipv4 {
 						if addr.is_ipv4() {
@@ -575,12 +585,12 @@ pub fn resolve_bootstrap_addresses(
 					if !addrs.contains(&addr) {
 						addrs.push(addr);
 					}
-				},
+				}
+			}
 		}
 	}
 	addrs
 }
-
 
 #[cfg(test)]
 mod tests {

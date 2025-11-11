@@ -23,7 +23,6 @@ use crate::{
 	web::info::find_profile_info2,
 };
 
-
 #[derive(Serialize)]
 struct IdentityData {
 	label: String,
@@ -34,7 +33,6 @@ struct IdentityData {
 struct SelectFormData {
 	identity: String,
 }
-
 
 pub fn router(g: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
 	if g.base.server_info.is_exposed {
@@ -284,7 +282,7 @@ async fn select_post(
 ) -> Response {
 	match find_actor_by_label(&g.base.api.db, &form.identity).await {
 		Err(e) => server_error_response(e, "Unable to find selected identity"),
-		Ok(resultset) =>
+		Ok(resultset) => {
 			if let Some(record) = resultset {
 				g.base.state.lock().await.active_identity = Some((form.identity, record.address));
 				Response::builder()
@@ -294,6 +292,7 @@ async fn select_post(
 					.unwrap()
 			} else {
 				server_error_response2("Unable to find selected identity")
-			},
+			}
+		}
 	}
 }

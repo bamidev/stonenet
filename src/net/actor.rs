@@ -38,7 +38,6 @@ use crate::{
 	trace::Mutex,
 };
 
-
 pub const ACTOR_MESSAGE_TYPE_HEAD_REQUEST: u8 = 64;
 pub const ACTOR_MESSAGE_TYPE_HEAD_RESPONSE: u8 = 65 | 0x80;
 pub const ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST: u8 = 66;
@@ -62,7 +61,6 @@ pub const ACTOR_MIN_LIMIT_TOTAL_FILES: u64 = 10_000;
 /// minimum for an actor.
 pub const ACTOR_MIN_LIMIT_TOTAL_BLOCK_SPACE: u64 = 100_000_000;
 
-
 pub struct ActorNode {
 	pub(super) base: Arc<Node<ActorInterface>>,
 	downloading_objects: Mutex<Vec<IdType>>,
@@ -83,7 +81,6 @@ struct PublishObjectToDo {
 	node: Arc<ActorNode>,
 	hash: IdType,
 }
-
 
 impl ActorInterface {
 	async fn find_block(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
@@ -150,7 +147,9 @@ impl NodeInterface for ActorInterface {
 		}
 	}
 
-	fn overlay_node(&self) -> Arc<OverlayNode> { self.overlay_node.clone() }
+	fn overlay_node(&self) -> Arc<OverlayNode> {
+		self.overlay_node.clone()
+	}
 
 	fn prepare(&self, message_type: u8, buffer: &[u8]) -> Vec<u8> {
 		let mut new_buffer = Vec::with_capacity(1 + 32 + buffer.len());
@@ -163,9 +162,13 @@ impl NodeInterface for ActorInterface {
 }
 
 impl ActorNode {
-	pub fn actor_address(&self) -> &ActorAddress { &self.base.interface.actor_address }
+	pub fn actor_address(&self) -> &ActorAddress {
+		&self.base.interface.actor_address
+	}
 
-	pub async fn close(self: Arc<Self>) { self.base.close().await; }
+	pub async fn close(self: Arc<Self>) {
+		self.base.close().await;
+	}
 
 	/// Attempts to collect as much blocks of this file on the given connection.
 	pub async fn collect_block(
@@ -258,7 +261,7 @@ impl ActorNode {
 						}
 					}
 				}
-				ObjectPayload::Share(payload) =>
+				ObjectPayload::Share(payload) => {
 					if &payload.actor_address == self.actor_address() {
 						self.collect_object(connection, &payload.object_hash)
 							.await?;
@@ -267,17 +270,19 @@ impl ActorNode {
 							payload.actor_address,
 							payload.object_hash,
 						);
-					},
+					}
+				}
 				ObjectPayload::Post(payload) => {
 					match &payload.data {
-						PostObjectCryptedData::Plain(plain) =>
+						PostObjectCryptedData::Plain(plain) => {
 							for hash in &plain.files {
 								if self.needs_file(&hash) {
 									if !self.collect_file(connection, &hash).await? {
 										return Ok(false);
 									}
 								}
-							},
+							}
+						}
 					}
 
 					// If the post is a reply, also collect the object it replied to.
@@ -298,7 +303,9 @@ impl ActorNode {
 		.boxed()
 	}
 
-	fn db(&self) -> &db::Database { &self.base.db }
+	fn db(&self) -> &db::Database {
+		&self.base.db
+	}
 
 	pub async fn exchange_head_on_connection(
 		&self, connection: &mut Connection,
@@ -597,12 +604,13 @@ impl ActorNode {
 					}
 				}
 				ObjectPayload::Post(payload) => match &payload.data {
-					PostObjectCryptedData::Plain(plain) =>
+					PostObjectCryptedData::Plain(plain) => {
 						for file_hash in &plain.files {
 							if !c.has_file(&file_hash)? {
 								results.push(file_hash.clone());
 							}
-						},
+						}
+					}
 				},
 				ObjectPayload::Share(_) => {}
 			}
@@ -745,10 +753,12 @@ impl ActorNode {
 	) -> MessageProcessorResult {
 		match message_type {
 			ACTOR_MESSAGE_TYPE_HEAD_REQUEST => self.process_head_request(buffer).await,
-			ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST =>
-				self.process_get_profile_request(buffer).await,
-			ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST =>
-				self.process_publish_object_request(buffer, addr).await,
+			ACTOR_MESSAGE_TYPE_GET_PROFILE_REQUEST => {
+				self.process_get_profile_request(buffer).await
+			}
+			ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST => {
+				self.process_publish_object_request(buffer, addr).await
+			}
 			other_id => {
 				error!(
 					"Unknown actor message type ID received from {}: {}",
@@ -1287,7 +1297,7 @@ impl ActorNode {
 			{
 				match self.synchronize_head_on_connection(&mut connection).await {
 					Err(e) => error!("Database issue with synchronizing head: {}", e),
-					Ok(r) =>
+					Ok(r) => {
 						if let Some((hash, object)) = r {
 							checked += 1;
 							let mut is_newer = object.sequence as i128 > our_head_sequence;
@@ -1331,7 +1341,8 @@ impl ActorNode {
 							if checked == 4 {
 								break;
 							}
-						},
+						}
+					}
 				}
 			}
 		}

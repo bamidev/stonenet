@@ -10,7 +10,6 @@
     flake-utils.lib.eachSystem flake-utils.lib.allSystems (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        lib = pkgs.lib;
         stdenv = pkgs.stdenv;
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
         desktopManifest = (pkgs.lib.importTOML ./desktop/Cargo.toml).package;

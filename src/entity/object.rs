@@ -41,15 +41,21 @@ pub enum Relation {
 }
 
 impl Related<super::share_object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::ShareObject.def() }
+	fn to() -> RelationDef {
+		Relation::ShareObject.def()
+	}
 }
 
 impl Related<super::actor::Entity> for Entity {
-	fn to() -> RelationDef { Relation::Actor.def() }
+	fn to() -> RelationDef {
+		Relation::Actor.def()
+	}
 }
 
 impl Related<super::post_object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::PostObject.def() }
+	fn to() -> RelationDef {
+		Relation::PostObject.def()
+	}
 }
 
 impl ActiveModelBehavior for ActiveModel {}

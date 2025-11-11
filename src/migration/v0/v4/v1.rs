@@ -6,9 +6,7 @@ use crate::{
 	migration::MigrationTrait,
 };
 
-
 pub struct Migration;
-
 
 #[async_trait]
 impl MigrationTrait for Migration {

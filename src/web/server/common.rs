@@ -13,7 +13,6 @@ use crate::{
 	web::Global,
 };
 
-
 pub async fn parse_post_message(mut form: Multipart) -> Result<(String, Vec<FileData>), Response> {
 	let mut message = String::new();
 	let mut attachments = Vec::new();
@@ -27,7 +26,7 @@ pub async fn parse_post_message(mut form: Multipart) -> Result<(String, Vec<File
 				let data = field.bytes().await.unwrap();
 				message = String::from_utf8_lossy(&data).to_string();
 			}
-			"attachments" =>
+			"attachments" => {
 				if let Some(content_type) = field.content_type() {
 					let content_type2 = content_type.to_string();
 					let data = field.bytes().await.unwrap();
@@ -42,7 +41,8 @@ pub async fn parse_post_message(mut form: Multipart) -> Result<(String, Vec<File
 					attachments.push(attachment);
 				} else {
 					warn!("Ignoring attachement due to missing content type.");
-				},
+				}
+			}
 			other => warn!("Unrecognized form field: {}", other),
 		}
 	}
@@ -68,12 +68,13 @@ pub async fn post_message(
 		.1
 		.clone();
 	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
-		Ok(r) =>
+		Ok(r) => {
 			if let Some((_, pk)) = r {
 				pk
 			} else {
 				return Err(server_error_response2("unable to load identity"));
-			},
+			}
+		}
 		Err(e) => return Err(server_error_response(e, "unable to load identity")),
 	};
 
@@ -118,7 +119,9 @@ where
 		.unwrap()
 }
 
-pub fn not_found_error_response(message: &str) -> Response { error_response(404, message) }
+pub fn not_found_error_response(message: &str) -> Response {
+	error_response(404, message)
+}
 
 pub fn server_error_response<E>(e: E, message: &str) -> Response
 where

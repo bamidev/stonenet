@@ -1,7 +1,6 @@
 mod file;
 mod object;
 
-
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use axum::{
@@ -25,12 +24,10 @@ use crate::{
 	web::info::{find_profile_info, load_actor_feed, ObjectInfo},
 };
 
-
 #[derive(Deserialize)]
 struct ActorActions {
 	follow: Option<String>,
 }
-
 
 pub fn router(g: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
 	let mut actor_methods = get(actor_get);
@@ -138,12 +135,13 @@ async fn actor_post(
 		// Follow
 		if follow == "1" {
 			match g.base.api.follow(&address, true).await {
-				Ok(success) =>
+				Ok(success) => {
 					if !success {
 						return server_error_response2(
 							"Unable to follow this actor: couldn't find its public key",
 						);
-					},
+					}
+				}
 				Err(e) => return server_error_response(e, "Unable to follow this actor: {}"),
 			}
 		// Unfollow

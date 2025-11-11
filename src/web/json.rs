@@ -4,7 +4,6 @@ use reqwest::Url;
 
 use crate::web::{Error, Result};
 
-
 #[allow(unused)]
 pub fn expect_object<'a>(
 	value: &'a serde_json::Value, when: &impl Fn() -> Cow<'static, str>,
@@ -32,11 +31,12 @@ pub fn expect_url<'a>(
 	// Parse value as an URL
 	let url = match Url::parse(string) {
 		Ok(r) => r,
-		Err(e) =>
+		Err(e) => {
 			return Err(Error::UnexpectedBehavior(
 				format!("actor id is not a valid URL: {}", e).into(),
 				when(),
-			))?,
+			))?;
+		}
 	};
 
 	// Ensure that host is set

@@ -14,17 +14,17 @@ use crate::{
 	net::binserde,
 };
 
-
 const WAIT_TIME: u64 = 23 * 60 * 60 * 1000;
 pub const MAX_RECURSION_LEVEL: u8 = 10;
-
 
 fn generate_hash(list: &[(NodeAddress, u8)]) -> IdType {
 	let data = binserde::serialize(list).unwrap();
 	IdType::hash(&data)
 }
 
-pub fn maintain_trust_web(node: Arc<OverlayNode>) { spawn(keep_updating_trust_web(node)); }
+pub fn maintain_trust_web(node: Arc<OverlayNode>) {
+	spawn(keep_updating_trust_web(node));
+}
 
 async fn keep_updating_trust_web(node: Arc<OverlayNode>) {
 	while node.base.is_running() {

@@ -5,7 +5,6 @@ pub mod json;
 pub mod server;
 pub mod webfinger;
 
-
 use std::borrow::Cow;
 
 use server::{AppState, ServerInfo};
@@ -16,7 +15,6 @@ use crate::{
 	config::Config,
 	trace::{self, Traced},
 };
-
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -42,7 +40,9 @@ pub struct Global {
 pub type Result<T> = trace::Result<T, Error>;
 
 impl crate::db::Error {
-	fn to_web(self) -> Traced<Error> { Traced::capture(Error::Database(self)) }
+	fn to_web(self) -> Traced<Error> {
+		Traced::capture(Error::Database(self))
+	}
 }
 
 impl Traced<crate::db::Error> {

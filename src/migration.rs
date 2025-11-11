@@ -10,14 +10,12 @@ use sea_orm::{prelude::*, sea_query::*, DatabaseBackend, Statement};
 
 use crate::db::{self, PersistenceHandle};
 
-
 /// The latest database version.
 pub const LATEST_VERSION: Version = Version {
 	major: 0,
 	minor: 6,
 	patch: 0,
 };
-
 
 #[derive(Clone, Debug)]
 pub struct Version {
@@ -35,7 +33,6 @@ pub struct Migrations {
 trait MigrationTrait {
 	async fn run(&self, tx: &db::Transaction) -> db::Result<()>;
 }
-
 
 impl Migrations {
 	pub fn load() -> Self {

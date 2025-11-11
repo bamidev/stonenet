@@ -14,10 +14,8 @@
 //! exchange happens so frequently. Actually, a new shared secret is established
 //! after every window.
 
-
 pub(super) mod server;
 mod transporter;
-
 
 use std::{
 	cmp::{self, min},
@@ -58,7 +56,6 @@ use crate::{
 	net::*,
 	trace::{self, Traceable, Traced},
 };
-
 
 /// If nothing was received on a TCP connection for 2 minutes, assume the
 /// connection is broken.
@@ -134,7 +131,6 @@ pub type OnPacket =
 
 pub type Result<T> = trace::Result<T, Error>;
 
-
 /// Decrypts what has been encrypted by `encrypt_cbc`.
 fn decrypt(session_id: u16, ks_seq: u16, seq: u16, buffer: &mut [u8], key: &GenericArray<u8, U32>) {
 	encrypt(session_id, ks_seq, seq, buffer, key);
@@ -158,7 +154,6 @@ fn encrypt(session_id: u16, ks_seq: u16, seq: u16, buffer: &mut [u8], key: &Gene
 	cipher.apply_keystream(buffer);
 }
 
-
 impl fmt::Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
@@ -174,8 +169,9 @@ impl fmt::Display for Error {
 				ex, mt
 			),
 			Self::InvalidSessionAddress(addr) => write!(f, "invalid address for session: {}", addr),
-			Self::InvalidSessionId(id) =>
-				write!(f, "invalid session ID for incomming packet: {}", id),
+			Self::InvalidSessionId(id) => {
+				write!(f, "invalid session ID for incomming packet: {}", id)
+			}
 			Self::InvalidSignature => write!(f, "invalid signature"),
 			Self::MalformedMessage(oe) => match oe {
 				Some(e) => write!(f, "malformed message: {}", e),
@@ -210,18 +206,26 @@ impl Error {
 impl std::error::Error for Error {}
 
 impl Into<io::Error> for Error {
-	fn into(self) -> io::Error { io::Error::new(io::ErrorKind::Other, Box::new(self)) }
+	fn into(self) -> io::Error {
+		io::Error::new(io::ErrorKind::Other, Box::new(self))
+	}
 }
 
 impl Connection {
 	#[allow(dead_code)]
-	pub fn alive_flag(&self) -> Arc<AtomicBool> { self.transporter.alive_flag.clone() }
+	pub fn alive_flag(&self) -> Arc<AtomicBool> {
+		self.transporter.alive_flag.clone()
+	}
 
 	#[allow(dead_code)]
-	pub async fn close(&mut self) -> Result<()> { self.transporter.close().await.unwrap_or(Ok(())) }
+	pub async fn close(&mut self) -> Result<()> {
+		self.transporter.close().await.unwrap_or(Ok(()))
+	}
 
 	#[allow(dead_code)]
-	pub fn close_async(self) { self.transporter.close_async(); }
+	pub fn close_async(self) {
+		self.transporter.close_async();
+	}
 
 	pub fn contact_option(&self) -> ContactOption {
 		ContactOption {
@@ -231,16 +235,22 @@ impl Connection {
 	}
 
 	#[allow(dead_code)]
-	pub fn is_alive(&self) -> bool { self.transporter.alive_flag.load(Ordering::Relaxed) }
+	pub fn is_alive(&self) -> bool {
+		self.transporter.alive_flag.load(Ordering::Relaxed)
+	}
 
 	//pub fn network_level(&self) -> NetworkLevel {
 	// NetworkLevel::from_ip(&self.peer_address.ip()) }
 
 	#[allow(dead_code)]
-	pub fn local_session_id(&self) -> u16 { self.local_session_id }
+	pub fn local_session_id(&self) -> u16 {
+		self.local_session_id
+	}
 
 	#[allow(dead_code)]
-	pub fn peer_address(&self) -> &SocketAddr { &self.peer_address }
+	pub fn peer_address(&self) -> &SocketAddr {
+		&self.peer_address
+	}
 
 	pub async fn receive(&mut self) -> Result<Vec<u8>> {
 		if let Some((message_size_result, mut stream)) = self.transporter.receive().await {
@@ -314,72 +324,97 @@ impl Connection {
 		}
 	}
 
-	pub fn their_node_info(&self) -> &NodeContactInfo { &self.peer_node_info }
+	pub fn their_node_info(&self) -> &NodeContactInfo {
+		&self.peer_node_info
+	}
 
-	pub fn their_node_id(&self) -> &NodeAddress { &self.peer_node_info.address }
+	pub fn their_node_id(&self) -> &NodeAddress {
+		&self.peer_node_info.address
+	}
 
 	#[allow(dead_code)]
-	pub fn dest_session_id(&self) -> u16 { self.dest_session_id }
+	pub fn dest_session_id(&self) -> u16 {
+		self.dest_session_id
+	}
 }
 
 impl From<NodePublicKeyError> for Error {
-	fn from(_other: NodePublicKeyError) -> Self { Self::InvalidPublicKey }
+	fn from(_other: NodePublicKeyError) -> Self {
+		Self::InvalidPublicKey
+	}
 }
 
 impl From<NodePublicKeyError> for Traced<Error> {
-	fn from(other: NodePublicKeyError) -> Self { Into::<Error>::into(other).trace() }
+	fn from(other: NodePublicKeyError) -> Self {
+		Into::<Error>::into(other).trace()
+	}
 }
 
 impl From<io::Error> for Error {
-	fn from(other: io::Error) -> Self { Self::IoError(Arc::new(other)) }
+	fn from(other: io::Error) -> Self {
+		Self::IoError(Arc::new(other))
+	}
 }
 
 impl From<io::Error> for Traced<Error> {
-	fn from(other: io::Error) -> Self { Into::<Error>::into(other).trace() }
+	fn from(other: io::Error) -> Self {
+		Into::<Error>::into(other).trace()
+	}
 }
 
 impl From<binserde::Error> for Error {
-	fn from(other: binserde::Error) -> Self { Self::MalformedMessage(Some(Arc::new(other))) }
+	fn from(other: binserde::Error) -> Self {
+		Self::MalformedMessage(Some(Arc::new(other)))
+	}
 }
 
 impl From<binserde::Error> for Traced<Error> {
-	fn from(other: binserde::Error) -> Self { Into::<Error>::into(other).trace() }
+	fn from(other: binserde::Error) -> Self {
+		Into::<Error>::into(other).trace()
+	}
 }
-
 
 #[cfg(test)]
 mod tests {
 	use crate::{config::*, net::sstp::*, test};
-
+	use port_check::free_local_ipv4_port;
 
 	#[ctor::ctor]
-	fn initialize() { env_logger::init(); }
+	fn initialize() {
+		env_logger::init();
+	}
 
 	// Disable the TCP test for now because I've disabled the packet processing of
 	// the outgoing connection.
 	#[tokio::test]
-	async fn test_connection_with_tcp() { test_connection(false, 10000).await; }
+	async fn test_connection_with_tcp() {
+		test_connection(false).await;
+	}
 
 	#[tokio::test]
-	async fn test_connection_with_udp() { test_connection(true, 10002).await; }
+	async fn test_connection_with_udp() {
+		test_connection(true).await;
+	}
 
 	/// Sent and receive a bunch of messages.
-	async fn test_connection(use_udp: bool, port: u16) {
+	async fn test_connection(use_udp: bool) {
 		let mut rng = test::initialize_rng();
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
-		let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, port));
+		let master_port = free_local_ipv4_port().expect("no open port");
+		let slave_port = free_local_ipv4_port().expect("no open port");
+		let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, master_port));
 		let mut master_config = Config::default();
 		master_config.ipv4_address = Some("127.0.0.1".to_string());
 		if use_udp {
-			master_config.ipv4_udp_port = Some(port);
+			master_config.ipv4_udp_port = Some(master_port);
 		} else {
-			master_config.ipv4_tcp_port = Some(port);
+			master_config.ipv4_tcp_port = Some(master_port);
 		}
 		let mut slave_config = master_config.clone();
 		if use_udp {
-			slave_config.ipv4_udp_port = Some(port + 1);
+			slave_config.ipv4_udp_port = Some(slave_port);
 		} else {
-			slave_config.ipv4_tcp_port = Some(port + 1);
+			slave_config.ipv4_tcp_port = Some(slave_port);
 		}
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let master_private_key = NodePrivateKey::generate_with_rng(&mut rng);
@@ -499,16 +534,20 @@ mod tests {
 	// Sent and receive a message through a relay
 	async fn test_relaying() {
 		let mut rng = test::initialize_rng();
+		let relay_port = free_local_ipv4_port().expect("no open port");
 		let mut relay_config = Config::default();
 		relay_config.ipv4_address = Some("127.0.0.1".to_string());
-		relay_config.ipv4_udp_port = Some(10002);
+		relay_config.ipv4_udp_port = Some(relay_port);
+		let node1_port = free_local_ipv4_port().expect("no open port");
 		let mut node1_config = relay_config.clone();
-		node1_config.ipv4_udp_port = Some(10003);
+		node1_config.ipv4_udp_port = Some(node1_port);
+
+		let node2_port = free_local_ipv4_port().expect("no open port");
 		let mut node2_config = relay_config.clone();
-		node2_config.ipv4_udp_port = Some(10004);
+		node2_config.ipv4_udp_port = Some(node2_port);
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
-		let relay_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10002));
-		let node2_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10004));
+		let relay_addr = SocketAddr::V4(SocketAddrV4::new(ip, relay_port));
+		let node2_addr = SocketAddr::V4(SocketAddrV4::new(ip, node2_port));
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let relay_private_key = NodePrivateKey::generate();
 		let relay_node_id = relay_private_key.public().generate_address();

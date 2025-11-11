@@ -25,7 +25,6 @@ use crate::{
 	},
 };
 
-
 pub fn router(g: Arc<ServerGlobal>) -> Router<Arc<ServerGlobal>> {
 	let mut object_methods = get(object_get);
 	if !g.base.server_info.is_exposed {
@@ -86,12 +85,13 @@ async fn object_get(
 	)
 	.await
 	{
-		Ok(result) =>
+		Ok(result) => {
 			if let Some(r) = result {
 				r
 			} else {
 				return not_found_error_response("Object not found");
-			},
+			}
+		}
 		Err(e) => return server_error_response(e, "Unable to load object"),
 	};
 
@@ -133,12 +133,13 @@ async fn object_share(
 		.1
 		.clone();
 	let private_key = match g.base.api.db.perform(|c| c.fetch_my_identity(&identity)) {
-		Ok(r) =>
+		Ok(r) => {
 			if let Some((_, pk)) = r {
 				pk
 			} else {
 				return server_error_response2("unable to load identity");
-			},
+			}
+		}
 		Err(e) => return server_error_response(e, "unable to load identity"),
 	};
 

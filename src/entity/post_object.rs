@@ -4,7 +4,6 @@ use sea_orm::entity::prelude::*;
 
 use crate::{common::IdType, core::ActorAddress};
 
-
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "post_object")]
 pub struct Model {
@@ -30,11 +29,15 @@ pub enum Relation {
 }
 
 impl Related<super::object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::Object.def() }
+	fn to() -> RelationDef {
+		Relation::Object.def()
+	}
 }
 
 impl Related<super::post_tag::Entity> for Entity {
-	fn to() -> RelationDef { Relation::PostTag.def() }
+	fn to() -> RelationDef {
+		Relation::PostTag.def()
+	}
 }
 
 impl ActiveModelBehavior for ActiveModel {}

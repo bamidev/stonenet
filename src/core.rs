@@ -13,9 +13,7 @@ use thiserror::Error;
 use super::{common::*, identity::*};
 use crate::{net::binserde, serde_limit::*};
 
-
 pub const ACTOR_TYPE_BLOGCHAIN: &str = "blogchain";
-
 
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, Serialize)]
 pub enum ActorAddress {
@@ -52,7 +50,7 @@ pub struct Block {
 #[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[repr(u8)]
 pub enum CompressionType {
-	None   = 0,
+	None = 0,
 	Brotli = 1,
 }
 
@@ -187,7 +185,6 @@ pub struct ObjectHeader {
 	pub signature: ActorSignatureV1,
 }
 
-
 impl ActorAddress {
 	pub fn as_id<'a>(&'a self) -> Cow<'a, IdType> {
 		match self {
@@ -233,11 +230,15 @@ impl ActorAddress {
 		}
 	}
 
-	pub fn version(&self) -> u8 { 0 }
+	pub fn version(&self) -> u8 {
+		0
+	}
 }
 
 impl ToBase58 for ActorAddress {
-	fn to_base58(&self) -> String { self.to_bytes().to_base58() }
+	fn to_base58(&self) -> String {
+		self.to_bytes().to_base58()
+	}
 }
 
 impl Display for ActorAddress {
@@ -248,11 +249,15 @@ impl Display for ActorAddress {
 }
 
 impl Into<sea_orm::Value> for &ActorAddress {
-	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
+	fn into(self) -> sea_orm::Value {
+		sea_orm::Value::Bytes(Some(Box::new(self.to_bytes())))
+	}
 }
 
 impl sea_orm::sea_query::Nullable for ActorAddress {
-	fn null() -> sea_orm::Value { sea_orm::Value::Bytes(None) }
+	fn null() -> sea_orm::Value {
+		sea_orm::Value::Bytes(None)
+	}
 }
 
 impl sea_orm::TryGetable for ActorAddress {
@@ -271,25 +276,32 @@ impl sea_orm::TryGetable for ActorAddress {
 }
 
 impl Into<sea_orm::Value> for ActorAddress {
-	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
+	fn into(self) -> sea_orm::Value {
+		sea_orm::Value::Bytes(Some(Box::new(self.to_bytes())))
+	}
 }
 
 impl sea_orm::sea_query::ValueType for ActorAddress {
 	fn try_from(v: sea_orm::Value) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
 		match v {
-			sea_orm::Value::Bytes(b) =>
+			sea_orm::Value::Bytes(b) => {
 				if let Some(bytes) = b {
 					Ok(Self::from_bytes(&bytes).map_err(|_| sea_orm::sea_query::ValueTypeErr)?)
 				} else {
 					Err(sea_orm::sea_query::ValueTypeErr)
-				},
+				}
+			}
 			_ => Err(sea_orm::sea_query::ValueTypeErr),
 		}
 	}
 
-	fn type_name() -> String { "ActorAddress".to_owned() }
+	fn type_name() -> String {
+		"ActorAddress".to_owned()
+	}
 
-	fn array_type() -> sea_orm::sea_query::ArrayType { sea_orm::sea_query::ArrayType::Bytes }
+	fn array_type() -> sea_orm::sea_query::ArrayType {
+		sea_orm::sea_query::ArrayType::Bytes
+	}
 
 	fn column_type() -> sea_orm::ColumnType {
 		sea_orm::ColumnType::Binary(sea_orm::sea_query::BlobSize::Blob(None))
@@ -420,7 +432,9 @@ impl NodeAddress {
 		}
 	}
 
-	pub fn to_bytes(&self) -> Vec<u8> { binserde::serialize(&self).unwrap() }
+	pub fn to_bytes(&self) -> Vec<u8> {
+		binserde::serialize(&self).unwrap()
+	}
 
 	pub fn from_bytes(buffer: &[u8]) -> Result<Self, FromBytesAddressError> {
 		let version = buffer[0];
@@ -435,7 +449,9 @@ impl NodeAddress {
 }
 
 impl ToBase58 for NodeAddress {
-	fn to_base58(&self) -> String { self.to_bytes().to_base58() }
+	fn to_base58(&self) -> String {
+		self.to_bytes().to_base58()
+	}
 }
 
 impl Display for NodeAddress {
@@ -446,15 +462,21 @@ impl Display for NodeAddress {
 }
 
 impl Into<sea_orm::Value> for NodeAddress {
-	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
+	fn into(self) -> sea_orm::Value {
+		sea_orm::Value::Bytes(Some(Box::new(self.to_bytes())))
+	}
 }
 
 impl Into<sea_orm::Value> for &NodeAddress {
-	fn into(self) -> sea_orm::Value { sea_orm::Value::Bytes(Some(Box::new(self.to_bytes()))) }
+	fn into(self) -> sea_orm::Value {
+		sea_orm::Value::Bytes(Some(Box::new(self.to_bytes())))
+	}
 }
 
 impl sea_orm::sea_query::Nullable for NodeAddress {
-	fn null() -> sea_orm::Value { sea_orm::Value::Bytes(None) }
+	fn null() -> sea_orm::Value {
+		sea_orm::Value::Bytes(None)
+	}
 }
 
 impl sea_orm::TryGetable for NodeAddress {
@@ -475,19 +497,24 @@ impl sea_orm::TryGetable for NodeAddress {
 impl sea_orm::sea_query::ValueType for NodeAddress {
 	fn try_from(v: sea_orm::Value) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
 		match v {
-			sea_orm::Value::Bytes(b) =>
+			sea_orm::Value::Bytes(b) => {
 				if let Some(bytes) = b {
 					Ok(Self::from_bytes(&bytes).map_err(|_| sea_orm::sea_query::ValueTypeErr)?)
 				} else {
 					Err(sea_orm::sea_query::ValueTypeErr)
-				},
+				}
+			}
 			_ => Err(sea_orm::sea_query::ValueTypeErr),
 		}
 	}
 
-	fn type_name() -> String { "NodeAddress".to_owned() }
+	fn type_name() -> String {
+		"NodeAddress".to_owned()
+	}
 
-	fn array_type() -> sea_orm::sea_query::ArrayType { sea_orm::sea_query::ArrayType::Bytes }
+	fn array_type() -> sea_orm::sea_query::ArrayType {
+		sea_orm::sea_query::ArrayType::Bytes
+	}
 
 	fn column_type() -> sea_orm::ColumnType {
 		sea_orm::ColumnType::Binary(sea_orm::sea_query::BlobSize::Blob(None))
@@ -505,5 +532,7 @@ impl ObjectPayload {
 }
 
 impl From<FromBase58Error> for ParseAddressError {
-	fn from(other: FromBase58Error) -> Self { Self::FromBase58(other) }
+	fn from(other: FromBase58Error) -> Self {
+		Self::FromBase58(other)
+	}
 }

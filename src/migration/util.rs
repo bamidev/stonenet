@@ -2,7 +2,6 @@ use sea_orm::{sea_query::*, *};
 
 use crate::db::{self, PersistenceHandle};
 
-
 /// Recreates the table that needs to have a new `id` field as the primary key,
 /// instead of using its ROWID.
 pub async fn add_id_column<E>(
@@ -37,7 +36,6 @@ where
 
 	Ok(())
 }
-
 
 /// Recreates the table so that all foreign keys are pointing to the correct
 /// table again.

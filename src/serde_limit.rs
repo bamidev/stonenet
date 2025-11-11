@@ -11,10 +11,8 @@ use serde::{
 	Deserialize, Deserializer, Serialize, Serializer,
 };
 
-
 const N_KILO: usize = 1 << 10;
 const N_MEGA: usize = 1 << 20;
-
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize)]
 pub struct LimVec<T, L>
@@ -37,7 +35,6 @@ where
 pub trait Limit {
 	fn limit() -> usize;
 }
-
 
 #[allow(unused)]
 impl<T, L> LimVec<T, L>
@@ -88,7 +85,9 @@ where
 {
 	type Target = Vec<T>;
 
-	fn deref(&self) -> &Self::Target { &self.inner }
+	fn deref(&self) -> &Self::Target {
+		&self.inner
+	}
 }
 
 impl<T, L> DerefMut for LimVec<T, L>
@@ -96,7 +95,9 @@ where
 	T: Serialize,
 	L: Limit,
 {
-	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.inner }
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.inner
+	}
 }
 
 impl<'de, T, L> Deserialize<'de> for LimVec<T, L>
@@ -154,7 +155,9 @@ where
 	T: Clone + Serialize,
 	L: Limit,
 {
-	fn from(inner: Vec<T>) -> Self { Self::new_limitted(inner) }
+	fn from(inner: Vec<T>) -> Self {
+		Self::new_limitted(inner)
+	}
 }
 
 impl<T, L> From<VecDeque<T>> for LimVec<T, L>
@@ -162,7 +165,9 @@ where
 	T: Clone + Serialize,
 	L: Limit,
 {
-	fn from(vec: VecDeque<T>) -> Self { Self::new_limitted(vec.into()) }
+	fn from(vec: VecDeque<T>) -> Self {
+		Self::new_limitted(vec.into())
+	}
 }
 
 impl<T, L> Into<Vec<T>> for LimVec<T, L>
@@ -170,7 +175,9 @@ where
 	T: Serialize,
 	L: Limit,
 {
-	fn into(self) -> Vec<T> { self.inner }
+	fn into(self) -> Vec<T> {
+		self.inner
+	}
 }
 
 impl<T, L> IntoIterator for LimVec<T, L>
@@ -181,7 +188,9 @@ where
 	type IntoIter = <Vec<T> as IntoIterator>::IntoIter;
 	type Item = T;
 
-	fn into_iter(self) -> Self::IntoIter { self.inner.into_iter() }
+	fn into_iter(self) -> Self::IntoIter {
+		self.inner.into_iter()
+	}
 }
 
 impl<'a, T, L> IntoIterator for &'a LimVec<T, L>
@@ -192,7 +201,9 @@ where
 	type IntoIter = <&'a Vec<T> as IntoIterator>::IntoIter;
 	type Item = &'a T;
 
-	fn into_iter(self) -> Self::IntoIter { (&self.inner).into_iter() }
+	fn into_iter(self) -> Self::IntoIter {
+		(&self.inner).into_iter()
+	}
 }
 
 #[allow(unused)]
@@ -200,13 +211,21 @@ impl<L> LimString<L>
 where
 	L: Limit,
 {
-	pub fn as_str(&self) -> &str { unsafe { std::str::from_utf8_unchecked(&self.0.inner) } }
+	pub fn as_str(&self) -> &str {
+		unsafe { std::str::from_utf8_unchecked(&self.0.inner) }
+	}
 
-	pub fn empty(&self) -> Self { Self(LimVec::empty()) }
+	pub fn empty(&self) -> Self {
+		Self(LimVec::empty())
+	}
 
-	pub fn into_string(self) -> String { unsafe { String::from_utf8_unchecked(self.0.inner) } }
+	pub fn into_string(self) -> String {
+		unsafe { String::from_utf8_unchecked(self.0.inner) }
+	}
 
-	pub fn new(inner: String) -> Option<Self> { LimVec::new(inner.into_bytes()).map(|r| Self(r)) }
+	pub fn new(inner: String) -> Option<Self> {
+		LimVec::new(inner.into_bytes()).map(|r| Self(r))
+	}
 
 	pub fn to_string(&self) -> String {
 		unsafe { String::from_utf8_unchecked(self.0.inner.clone()) }
@@ -219,7 +238,9 @@ where
 {
 	type Target = Vec<u8>;
 
-	fn deref(&self) -> &Self::Target { &self.0.inner }
+	fn deref(&self) -> &Self::Target {
+		&self.0.inner
+	}
 }
 
 impl<'de, L> Deserialize<'de> for LimString<L>
@@ -242,35 +263,45 @@ impl<L> DerefMut for LimString<L>
 where
 	L: Limit,
 {
-	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0.inner }
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.0.inner
+	}
 }
 
 impl<L> From<String> for LimString<L>
 where
 	L: Limit,
 {
-	fn from(inner: String) -> Self { Self(LimVec::from(inner.into_bytes())) }
+	fn from(inner: String) -> Self {
+		Self(LimVec::from(inner.into_bytes()))
+	}
 }
 
 impl<L> From<&String> for LimString<L>
 where
 	L: Limit,
 {
-	fn from(string: &String) -> Self { Self(LimVec::from(string.clone().into_bytes())) }
+	fn from(string: &String) -> Self {
+		Self(LimVec::from(string.clone().into_bytes()))
+	}
 }
 
 impl<L> From<&str> for LimString<L>
 where
 	L: Limit,
 {
-	fn from(inner: &str) -> Self { Self(LimVec::from(inner.as_bytes().to_vec())) }
+	fn from(inner: &str) -> Self {
+		Self(LimVec::from(inner.as_bytes().to_vec()))
+	}
 }
 
 impl<L> Into<String> for LimString<L>
 where
 	L: Limit,
 {
-	fn into(self) -> String { String::from_utf8_lossy(&self.0.inner).to_string() }
+	fn into(self) -> String {
+		String::from_utf8_lossy(&self.0.inner).to_string()
+	}
 }
 
 impl<L> Serialize for LimString<L>
@@ -285,7 +316,6 @@ where
 		serializer.serialize_bytes(&self.0.inner)
 	}
 }
-
 
 macro_rules! def_limit {
     ( $name:expr, $l:expr ) => {
@@ -309,9 +339,7 @@ def_limit!(10K, 10 * N_KILO);
 def_limit!(1M, N_MEGA);
 def_limit!(10M, 10 * N_MEGA);
 
-
 pub type LimitMimeType = Limit255;
-
 
 #[cfg(test)]
 mod tests {

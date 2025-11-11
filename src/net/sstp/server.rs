@@ -9,7 +9,6 @@ use tokio::{
 use super::*;
 use crate::trace::Mutex;
 
-
 const DEFAULT_KEEP_ALIVE_IDLE_TIME: Duration = Duration::from_secs(120);
 
 const PACKET_TYPE_HELLO: u8 = 0;
@@ -25,7 +24,6 @@ const PACKET_TYPE_RELAYED_HELLO: u8 = 9;
 const PACKET_TYPE_RELAYED_HELLO_ACK: u8 = 10;
 const PACKET_TYPE_RELAYED_HELLO_ACK_ACK: u8 = 11;
 
-
 pub type MessageProcessor = dyn Fn(
 		Vec<u8>,
 		ContactOption,
@@ -40,7 +38,6 @@ pub type MessageFinishProcessor = dyn Fn(Result<()>, NodeContactInfo) -> Pin<Box
 	+ Send
 	+ Sync
 	+ 'static;
-
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RelayHelloPacket {
@@ -175,7 +172,6 @@ pub struct HelloResult {
 }
 type HelloSender = mpsc::Sender<HelloResult>;
 
-
 /// The role of the SSTP server is to receive packets on any available
 /// communication method, most notably UDP and TCP over IPv4 or IPv6, and then
 /// forward them to the corresponding receiver to be processed.
@@ -279,7 +275,6 @@ where
 	openness: Openness,
 }
 
-
 impl Server {
 	/// Sets up all necessary sockets internally.
 	/// default_timeout: The timeout that incomming connection will be
@@ -311,10 +306,11 @@ impl Server {
 				>= session.keep_alive_timeout
 			{
 				match &mut session.transport_data {
-					SessionTransportData::Direct(data) =>
+					SessionTransportData::Direct(data) => {
 						if !data.alive_flag.load(Ordering::Relaxed) {
 							done_ids.push(*session_id);
-						},
+						}
+					}
 					SessionTransportData::Relay(_) => {
 						done_ids.push(*session_id);
 					}
@@ -602,17 +598,17 @@ impl Server {
 	pub fn listen(
 		&self,
 		message_processor: impl Fn(
-			Vec<u8>,
-			ContactOption,
-			NodeContactInfo,
-		) -> Pin<Box<dyn Future<Output = MessageProcessorResult> + Send>>
-		+ Send
-		+ Sync
-		+ 'static,
+				Vec<u8>,
+				ContactOption,
+				NodeContactInfo,
+			) -> Pin<Box<dyn Future<Output = MessageProcessorResult> + Send>>
+			+ Send
+			+ Sync
+			+ 'static,
 		on_finish: impl Fn(Result<()>, NodeContactInfo) -> Pin<Box<dyn Future<Output = ()> + Send>>
-		+ Send
-		+ Sync
-		+ 'static,
+			+ Send
+			+ Sync
+			+ 'static,
 	) -> bool {
 		self.message_processors
 			.set((Box::new(message_processor), Box::new(on_finish)))
@@ -753,8 +749,9 @@ impl Server {
 		{
 			None => {}
 			// If it exists, return None
-			Some((our_session_id, session_data)) =>
-				return Ok((our_session_id, false, session_data)),
+			Some((our_session_id, session_data)) => {
+				return Ok((our_session_id, false, session_data));
+			}
 		}
 		let transport_data = SessionTransportData::Direct(SessionTransportDataDirect {
 			alive_flag,
@@ -827,7 +824,9 @@ impl Server {
 		RelayHelloPacket { header, body }
 	}
 
-	pub fn our_contact_info(&self) -> ContactInfo { self.our_contact_info.lock().unwrap().clone() }
+	pub fn our_contact_info(&self) -> ContactInfo {
+		self.our_contact_info.lock().unwrap().clone()
+	}
 
 	fn parse_hello_packet(buffer: &[u8]) -> Result<(HelloPacket, Option<&[u8]>)> {
 		let header: HelloPacketHeader = binserde::deserialize_with_trailing(buffer)?;
@@ -873,9 +872,10 @@ impl Server {
 				*session.last_activity.lock().unwrap() = SystemTime::now();
 
 				match &mut session.transport_data {
-					SessionTransportData::Direct(data) =>
-						data.packet_processor.send(packet).is_err(),
-					SessionTransportData::Relay(data) =>
+					SessionTransportData::Direct(data) => {
+						data.packet_processor.send(packet).is_err()
+					}
+					SessionTransportData::Relay(data) => {
 						if sender == &data.source_addr {
 							if let Some(target_socket) = &data.target_sender {
 								Self::relay_crypted_packet(
@@ -905,7 +905,8 @@ impl Server {
 								"Relay transport data packet received from unknown socket address."
 							);
 							false
-						},
+						}
+					}
 				}
 			// If the result is an error, the receiving end of the queue has
 			// been closed. This happens all the time because connections get
@@ -1681,38 +1682,46 @@ impl Server {
 		let message_type = packet[0];
 		let buffer = &packet[1..];
 		match message_type {
-			PACKET_TYPE_HELLO =>
+			PACKET_TYPE_HELLO => {
 				self.process_hello_packet(link_socket, contact, buffer)
-					.await,
-			PACKET_TYPE_HELLO_ACK =>
+					.await
+			}
+			PACKET_TYPE_HELLO_ACK => {
 				self.process_hello_ack_packet(
 					&link_socket,
 					&contact.target,
 					link_socket.is_connection_based(),
 					buffer,
 				)
-				.await,
+				.await
+			}
 			PACKET_TYPE_HELLO_ACK_ACK => self.process_hello_ack_ack_packet(&buffer).await,
 			PACKET_TYPE_CRYPTED => {
 				self.process_crypted_packet(buffer, &contact.target).await;
 				Ok(())
 			}
-			PACKET_TYPE_RELAY_HELLO =>
+			PACKET_TYPE_RELAY_HELLO => {
 				self.process_relay_hello_packet_raw(link_socket, &contact.target, buffer)
-					.await,
+					.await
+			}
 			PACKET_TYPE_RELAY_HELLO_ACK => self.process_relay_hello_ack_packet(buffer).await,
-			PACKET_TYPE_RELAY_HELLO_RELAY_ACK =>
-				self.process_relay_hello_relay_ack_packet(&buffer).await,
-			PACKET_TYPE_RELAY_HELLO_ACK_ACK =>
-				self.process_relay_hello_ack_ack_packet(&buffer).await,
-			PACKET_TYPE_RELAYED_HELLO =>
+			PACKET_TYPE_RELAY_HELLO_RELAY_ACK => {
+				self.process_relay_hello_relay_ack_packet(&buffer).await
+			}
+			PACKET_TYPE_RELAY_HELLO_ACK_ACK => {
+				self.process_relay_hello_ack_ack_packet(&buffer).await
+			}
+			PACKET_TYPE_RELAYED_HELLO => {
 				self.process_relayed_hello_packet_raw(link_socket, contact, buffer)
-					.await,
-			PACKET_TYPE_RELAYED_HELLO_ACK =>
+					.await
+			}
+			PACKET_TYPE_RELAYED_HELLO_ACK => {
 				self.process_relayed_hello_ack_packet_raw(buffer, &link_socket, &contact.target)
-					.await,
-			PACKET_TYPE_RELAYED_HELLO_ACK_ACK =>
-				self.process_relayed_hello_ack_ack_packet(&buffer).await,
+					.await
+			}
+			PACKET_TYPE_RELAYED_HELLO_ACK_ACK => {
+				self.process_relayed_hello_ack_ack_packet(&buffer).await
+			}
 			// Hole punching packets don't need to be responded to. They don't have any data other
 			// than the message type anyway.
 			PACKET_TYPE_PUNCH_HOLE => Ok(()),
@@ -1920,7 +1929,9 @@ impl Server {
 		*self.our_contact_info.lock().unwrap() = contact_info;
 	}
 
-	pub async fn set_next_session_id(&self, id: u16) { self.sessions.lock().await.next_id = id; }
+	pub async fn set_next_session_id(&self, id: u16) {
+		self.sessions.lock().await.next_id = id;
+	}
 
 	pub async fn setup_outgoing_relay(
 		&self, relay_node_id: NodeAddress, target_node_id: NodeAddress, target: &SocketAddr,
@@ -1974,8 +1985,9 @@ impl Server {
 							// A connection could be closed by the other end at any time, which is
 							// considered reasonable.
 							Error::ConnectionClosed => {}
-							Error::Timeout(timeout) =>
-								warn!("Timeout ({:?}) with {}.", timeout, &contact2),
+							Error::Timeout(timeout) => {
+								warn!("Timeout ({:?}) with {}.", timeout, &contact2)
+							}
 							_ => warn!("SSTP I/O error with {}: {:?}", &contact2, e),
 						},
 					}
@@ -2054,7 +2066,9 @@ impl fmt::Display for SocketBindError {
 }
 
 impl From<io::Error> for SocketBindError {
-	fn from(other: io::Error) -> Self { Self::Io(other) }
+	fn from(other: io::Error) -> Self {
+		Self::Io(other)
+	}
 }
 
 impl SocketCollection {
@@ -2517,7 +2531,7 @@ impl SocketCollection {
 		match &contact.target {
 			SocketAddr::V4(a) => match &self.ipv4 {
 				None => {}
-				Some(servers) =>
+				Some(servers) => {
 					if !contact.use_tcp {
 						match &servers.udp {
 							None => {}
@@ -2535,11 +2549,12 @@ impl SocketCollection {
 								return Ok((Arc::new(tx), Box::new(rx)));
 							}
 						}
-					},
+					}
+				}
 			},
 			SocketAddr::V6(a) => match &self.ipv6 {
 				None => {}
-				Some(servers) =>
+				Some(servers) => {
 					if !contact.use_tcp {
 						match &servers.udp {
 							None => {}
@@ -2557,7 +2572,8 @@ impl SocketCollection {
 								return Ok((Arc::new(tx), Box::new(rx)));
 							}
 						}
-					},
+					}
+				}
 			},
 		}
 		trace::err(Error::NoConnectionOptions)
@@ -2660,7 +2676,6 @@ where
 	}
 }
 
-
 impl SocketAddrSstp {
 	fn is_ipv4(&self) -> bool {
 		match self {
@@ -2718,7 +2733,6 @@ impl Into<SocketAddr> for SocketAddrSstp {
 		}
 	}
 }
-
 
 async fn handle_connection_loop(
 	server: Arc<Server>, connection_original: Box<Connection>, timeout: Duration,

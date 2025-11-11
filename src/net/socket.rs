@@ -4,10 +4,8 @@ use async_trait::async_trait;
 use tokio::{io::*, select, sync::Mutex, time::sleep};
 use unsafe_send_sync::*;
 
-
 const TCP_BACKLOG: u32 = 1024;
 const UDP_MAX_PACKET_SIZE: usize = 65536;
-
 
 #[async_trait]
 pub trait LinkSocket: Send + Sync {
@@ -46,7 +44,9 @@ pub trait LinkSocketSender: Send + Sync {
 
 	fn max_packet_length(&self) -> usize;
 
-	fn is_connection_based(&self) -> bool { false }
+	fn is_connection_based(&self) -> bool {
+		false
+	}
 
 	/// Should be implemented to send one packet. May wait on reciepment.
 	async fn send(&self, message: &[u8]) -> io::Result<()>;
@@ -149,7 +149,6 @@ where
 //pub type TcpSocketSenderV4 = TcpSocketSender<SocketAddrV4>;
 //pub type TcpSocketSenderV6 = TcpSocketSender<SocketAddrV6>;
 
-
 // A workaround of something that should actually be fixed with specialization
 // somehow...
 fn udp_max_packet_length<V>() -> usize {
@@ -161,7 +160,6 @@ fn udp_max_packet_length<V>() -> usize {
 		panic!("should be unreachable");
 	}
 }
-
 
 #[async_trait]
 impl<V> LinkServer for UdpServer<V>
@@ -179,7 +177,9 @@ where
 		})
 	}
 
-	fn is_connection_based(&self) -> bool { false }
+	fn is_connection_based(&self) -> bool {
+		false
+	}
 }
 
 #[async_trait]
@@ -191,9 +191,13 @@ where
 	type Sender = UdpSocketSender<V>;
 
 	// Dropping the struct should already take care of closing the socket
-	async fn close(&mut self) -> io::Result<()> { Ok(()) }
+	async fn close(&mut self) -> io::Result<()> {
+		Ok(())
+	}
 
-	fn max_packet_length(&self) -> usize { udp_max_packet_length::<V>() }
+	fn max_packet_length(&self) -> usize {
+		udp_max_packet_length::<V>()
+	}
 
 	fn split(self) -> (Self::Sender, Self::Receiver) {
 		(
@@ -214,7 +218,9 @@ impl<V> LinkSocketReceiver for UdpSocketReceiver<V>
 where
 	V: Into<SocketAddr>,
 {
-	fn max_packet_length(&self) -> usize { udp_max_packet_length::<V>() }
+	fn max_packet_length(&self) -> usize {
+		udp_max_packet_length::<V>()
+	}
 
 	async fn receive(&self, timeout: Duration) -> io::Result<Vec<u8>> {
 		let mut buffer = vec![0u8; self.max_packet_length()];
@@ -237,9 +243,13 @@ where
 	V: Into<SocketAddr> + Send + Clone,
 {
 	// Dropping the struct should already take care of closing the socket
-	async fn close(&self) -> io::Result<()> { Ok(()) }
+	async fn close(&self) -> io::Result<()> {
+		Ok(())
+	}
 
-	fn max_packet_length(&self) -> usize { udp_max_packet_length::<V>() }
+	fn max_packet_length(&self) -> usize {
+		udp_max_packet_length::<V>()
+	}
 
 	async fn send(&self, message: &[u8]) -> io::Result<()> {
 		let socket_addr: SocketAddr = Into::<SocketAddr>::into((*self.endpoint).clone());
@@ -306,7 +316,9 @@ where
 		})
 	}
 
-	fn is_connection_based(&self) -> bool { true }
+	fn is_connection_based(&self) -> bool {
+		true
+	}
 }
 
 #[async_trait]
@@ -364,7 +376,9 @@ where
 	type Receiver = TcpSocketReceiver<V>;
 	type Sender = TcpSocketSender<V>;
 
-	async fn close(&mut self) -> io::Result<()> { self.inner.as_mut().unwrap().shutdown().await }
+	async fn close(&mut self) -> io::Result<()> {
+		self.inner.as_mut().unwrap().shutdown().await
+	}
 
 	fn split(self) -> (Self::Sender, Self::Receiver) {
 		let (rx, tx) = self.inner.unwrap().into_split();
@@ -383,7 +397,9 @@ where
 	// Because TCP is actually a reliable transport protocol, we can safely use any
 	// max packet size. Keep in mind that we should not pick a max packet size that
 	// is too large, as each packet gets encrypted by a new key.
-	fn max_packet_length(&self) -> usize { 0xFFFF }
+	fn max_packet_length(&self) -> usize {
+		0xFFFF
+	}
 }
 
 #[async_trait]
@@ -391,7 +407,9 @@ impl<V> LinkSocketReceiver for TcpSocketReceiver<V>
 where
 	V: Into<SocketAddr>,
 {
-	fn max_packet_length(&self) -> usize { 0xFFFF }
+	fn max_packet_length(&self) -> usize {
+		0xFFFF
+	}
 
 	async fn receive(&self, timeout: Duration) -> io::Result<Vec<u8>> {
 		// Read 2 bytes for the packet size
@@ -432,9 +450,13 @@ where
 		self.inner.as_ref().unwrap().lock().await.shutdown().await
 	}
 
-	fn is_connection_based(&self) -> bool { true }
+	fn is_connection_based(&self) -> bool {
+		true
+	}
 
-	fn max_packet_length(&self) -> usize { 0xFFFF }
+	fn max_packet_length(&self) -> usize {
+		0xFFFF
+	}
 
 	async fn send(&self, packet: &[u8]) -> io::Result<()> {
 		let packet_size = packet.len() as u32;

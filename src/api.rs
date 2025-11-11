@@ -36,7 +36,6 @@ use crate::{
 	},
 };
 
-
 #[derive(Clone)]
 pub struct Api {
 	pub node: Arc<OverlayNode>,
@@ -55,9 +54,10 @@ pub enum PossibleFileStream {
 	Stream((String, CompressionType, ReceiverStream<db::Result<Vec<u8>>>)),
 }
 
-
 impl Api {
-	pub async fn close(self) { self.node.close().await; }
+	pub async fn close(self) {
+		self.node.close().await;
+	}
 
 	fn compose_profile_object(
 		private_key: &ActorPrivateKeyV1, sequence: u64, name: &str, avatar_hash: &Option<IdType>,
@@ -277,12 +277,13 @@ impl Api {
 
 		Ok(match result {
 			Some(b) => Some(b),
-			None =>
+			None => {
 				if let Some(actor_node) = actor_node_opt {
 					actor_node.find_block(hash).await.map(|r| r.data.into())
 				} else {
 					None
-				},
+				}
+			}
 		})
 	}
 
@@ -538,10 +539,11 @@ impl Api {
 								}
 							}
 						},
-						Err(e) =>
+						Err(e) => {
 							if let Err(_) = tx.send(Err(e)).await {
 								error!("Unable to send error on stream-file channel.");
-							},
+							}
+						}
 					}
 				}
 			});
@@ -803,7 +805,6 @@ impl Api {
 		tx.commit().await
 	}
 }
-
 
 #[cfg(test)]
 mod tests {

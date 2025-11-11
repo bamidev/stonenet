@@ -1,6 +1,5 @@
 pub mod actor;
 
-
 use std::{
 	borrow::Cow,
 	result::Result as StdResult,
@@ -37,8 +36,8 @@ use zeroize::Zeroizing;
 use super::{
 	consolidated_feed::ConsolidatedObjectType,
 	info::{
-		human_readable_duration, FileInfo, ObjectInfo, ObjectPayloadInfo,
-		PostMessageInfo, PostObjectInfo,
+		human_readable_duration, FileInfo, ObjectInfo, ObjectPayloadInfo, PostMessageInfo,
+		PostObjectInfo,
 	},
 	json::{expect_string, expect_url},
 	server::translate_special_mime_types2,
@@ -53,14 +52,12 @@ use crate::{
 	web::{self, Error, Result},
 };
 
-
 pub const DEFAULT_CONTEXT: &[&'static str] = &["https://www.w3.org/ns/activitystreams"];
 pub const SECURE_CONTEXT: &[&'static str] = &[
 	"https://www.w3.org/ns/activitystreams",
 	"https://w3id.org/security/v1",
 ];
 const SEND_QUEUE_DEFAULT_CAPACITY: u64 = 100000;
-
 
 #[derive(Serialize)]
 pub struct AcceptActivity {
@@ -211,7 +208,6 @@ pub struct WebFingerDocumentLink {
 	href: String,
 }
 
-
 lazy_static! {
 	pub static ref HTTP_CLIENT: reqwest::Client = {
 		let mut headers = HeaderMap::new();
@@ -227,7 +223,6 @@ lazy_static! {
 			.unwrap()
 	};
 }
-
 
 async fn collect_activity(db: &Database, item: &serde_json::Value, page_url: &str) -> Result<()> {
 	let when = || format!("collecting activity for page {}", page_url).into();
@@ -246,11 +241,12 @@ async fn collect_activity(db: &Database, item: &serde_json::Value, page_url: &st
 	}
 	let object = match item.get("object") {
 		Some(o) => o,
-		None =>
+		None => {
 			return Err(Error::UnexpectedBehavior(
 				"missing object property in activity object".into(),
 				when(),
-			))?,
+			))?;
+		}
 	};
 
 	// Collect actor if needed
@@ -423,7 +419,7 @@ pub async fn compose_activity_from_object_info(
 				None
 			}
 		}
-		ObjectPayloadInfo::Share(share) =>
+		ObjectPayloadInfo::Share(share) => {
 			if let Some(post) = &share.original_post {
 				let target_object_id = format!(
 					"{}/actor/{}/object/{}/activity-pub",
@@ -440,7 +436,8 @@ pub async fn compose_activity_from_object_info(
 				Some((serde_json::to_value(activity).unwrap(), Vec::new()))
 			} else {
 				None
-			},
+			}
+		}
 		ObjectPayloadInfo::Profile(profile) => {
 			// Construct a different type of activity (Announce), with a Profile object
 			let profile = ActivityProfileObject::new(
@@ -1172,11 +1169,12 @@ pub async fn store_inbox_object(
 ) -> Result<i64> {
 	let object_id = match json.get("id") {
 		Some(r) => expect_string(r, when)?,
-		None =>
+		None => {
 			return Err(Error::UnexpectedBehavior(
 				"missing an id property on the activity".into(),
 				when(),
-			))?,
+			))?;
+		}
 	};
 
 	let record = activity_pub_inbox_object::ActiveModel {
@@ -1221,11 +1219,12 @@ pub async fn store_object(
 ) -> Result<i64> {
 	let object_id = match json.get("id") {
 		Some(r) => expect_string(r, when)?,
-		None =>
+		None => {
 			return Err(Error::UnexpectedBehavior(
 				"missing an id property on the activity".into(),
 				when(),
-			))?,
+			))?;
+		}
 	};
 
 	if let Some(record) = activity_pub_object::Entity::find()
@@ -1313,7 +1312,6 @@ pub fn translate_activitystreams_object(content: &str) -> StdResult<PostMessageI
 
 	Err("Content not found".into())
 }
-
 
 impl Serialize for AcceptActivityType {
 	fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
@@ -1542,7 +1540,9 @@ impl Serialize for AttachmentObjectType {
 }
 
 impl DateTime {
-	pub fn current() -> Self { Self(current_timestamp()) }
+	pub fn current() -> Self {
+		Self(current_timestamp())
+	}
 }
 
 impl Serialize for DateTime {
@@ -1556,7 +1556,9 @@ impl Serialize for DateTime {
 }
 
 impl From<sea_orm::DbErr> for self::Error {
-	fn from(value: sea_orm::DbErr) -> Self { Self::Database(db::Error::OrmError(value)) }
+	fn from(value: sea_orm::DbErr) -> Self {
+		Self::Database(db::Error::OrmError(value))
+	}
 }
 
 impl Serialize for OrderedCollectionType {
@@ -1589,7 +1591,6 @@ impl WebFingerDocument {
 		}
 	}
 }
-
 
 mod tests {
 	#[allow(unused_imports)]

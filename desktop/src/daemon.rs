@@ -2,7 +2,6 @@ use std::{io, process::Command};
 
 use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 
-
 /// Make sure that the Stonenet daemon is actually running.
 pub fn ensure_running() -> io::Result<()> {
 	// If already running, do nothing

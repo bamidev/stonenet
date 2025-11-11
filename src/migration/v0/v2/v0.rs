@@ -8,9 +8,7 @@ use crate::{
 
 mod entity;
 
-
 pub struct Migration;
-
 
 async fn drop_id_and_rename_post_id_column<E>(
 	tx: &db::Transaction, schema: &Schema, entity: E, table_name: &str, other_columns: &[&str],
@@ -44,7 +42,6 @@ where
 
 	Ok(())
 }
-
 
 #[async_trait]
 impl MigrationTrait for Migration {

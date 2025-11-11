@@ -6,9 +6,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use super::sstp;
 use crate::trace::Traced;
 
-
 pub type Error = bincode::Error;
-
 
 pub fn deserialize<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> bincode::Result<T> {
 	let options = bincode::options()

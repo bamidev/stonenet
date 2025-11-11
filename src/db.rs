@@ -33,7 +33,6 @@ use crate::{
 	trace::{self, Traceable, Traced},
 };
 
-
 pub(crate) const BLOCK_SIZE: usize = 0x100000; // 1 MiB
 
 #[derive(Clone)]
@@ -81,9 +80,7 @@ pub enum Error {
 pub trait DerefConnection: Deref<Target = rusqlite::Connection> {}
 impl<T> DerefConnection for T where T: Deref<Target = rusqlite::Connection> {}
 
-
 pub type Result<T> = trace::Result<T, self::Error>;
-
 
 #[async_trait]
 pub trait PersistenceHandle {
@@ -91,8 +88,9 @@ pub trait PersistenceHandle {
 
 	fn inner(&self) -> &Self::Inner;
 
-	fn backend(&self) -> DatabaseBackend { self.inner().get_database_backend() }
-
+	fn backend(&self) -> DatabaseBackend {
+		self.inner().get_database_backend()
+	}
 
 	async fn clear_trusted_nodes_except(
 		&self, trusted_nodes_ids: impl IntoIterator<Item = i64> + Send + std::fmt::Debug,
@@ -346,7 +344,6 @@ pub trait PersistenceHandle {
 			buffer
 		})
 	}
-
 
 	async fn load_is_following(&self, webfinger_address: &str) -> Result<bool> {
 		let is_following = if let Some(actor) = activity_pub_actor::Entity::find()
@@ -769,7 +766,6 @@ pub trait PersistenceHandle {
 	}
 }
 
-
 #[allow(dead_code)]
 fn query_actor_id(address: &ActorAddress) -> SelectStatement {
 	Query::select()
@@ -782,7 +778,7 @@ fn query_actor_id(address: &ActorAddress) -> SelectStatement {
 impl FromSql for ActorAddress {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
 		match value {
-			ValueRef::Blob(blob) =>
+			ValueRef::Blob(blob) => {
 				if blob.len() != 33 {
 					Err(FromSqlError::InvalidBlobSize {
 						expected_size: 33,
@@ -790,7 +786,8 @@ impl FromSql for ActorAddress {
 					})
 				} else {
 					Ok(Self::from_bytes(blob).map_err(|e| FromSqlError::Other(Box::new(e)))?)
-				},
+				}
+			}
 			_ => Err(FromSqlError::InvalidType),
 		}
 	}
@@ -819,7 +816,7 @@ impl ToSql for ActorPublicKeyV1 {
 impl FromSql for ActorPublicKeyV1 {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
 		match value {
-			ValueRef::Blob(blob) =>
+			ValueRef::Blob(blob) => {
 				if blob.len() != 57 {
 					Err(FromSqlError::InvalidBlobSize {
 						expected_size: 57,
@@ -827,7 +824,8 @@ impl FromSql for ActorPublicKeyV1 {
 					})
 				} else {
 					Ok(Self::from_bytes(*array_ref![blob, 0, 57]).unwrap())
-				},
+				}
+			}
 			_ => Err(FromSqlError::InvalidType),
 		}
 	}
@@ -836,7 +834,7 @@ impl FromSql for ActorPublicKeyV1 {
 impl FromSql for ActorPrivateKeyV1 {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
 		match value {
-			ValueRef::Blob(blob) =>
+			ValueRef::Blob(blob) => {
 				if blob.len() != 57 {
 					Err(FromSqlError::InvalidBlobSize {
 						expected_size: 57,
@@ -844,7 +842,8 @@ impl FromSql for ActorPrivateKeyV1 {
 					})
 				} else {
 					Ok(Self::from_bytes(*array_ref![blob, 0, 57]))
-				},
+				}
+			}
 			_ => Err(FromSqlError::InvalidType),
 		}
 	}
@@ -853,7 +852,7 @@ impl FromSql for ActorPrivateKeyV1 {
 impl FromSql for ActorSignatureV1 {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
 		match value {
-			ValueRef::Blob(blob) =>
+			ValueRef::Blob(blob) => {
 				if blob.len() != 114 {
 					Err(FromSqlError::InvalidBlobSize {
 						expected_size: 114,
@@ -861,7 +860,8 @@ impl FromSql for ActorSignatureV1 {
 					})
 				} else {
 					Ok(Self::from_bytes(*array_ref![blob, 0, 114]))
-				},
+				}
+			}
 			_ => Err(FromSqlError::InvalidType),
 		}
 	}
@@ -876,7 +876,7 @@ impl ToSql for ActorSignatureV1 {
 impl FromSql for NodePublicKey {
 	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
 		match value {
-			ValueRef::Blob(blob) =>
+			ValueRef::Blob(blob) => {
 				if blob.len() != 32 {
 					Err(FromSqlError::InvalidBlobSize {
 						expected_size: 32,
@@ -885,14 +885,17 @@ impl FromSql for NodePublicKey {
 				} else {
 					Ok(Self::from_bytes(*array_ref![blob, 0, 32])
 						.map_err(|e| FromSqlError::Other(Box::new(e)))?)
-				},
+				}
+			}
 			_ => Err(FromSqlError::InvalidType),
 		}
 	}
 }
 
 impl Database {
-	pub fn connect_old(&self) -> self::Result<Connection> { Ok(Connection::open_old(&self.path)?) }
+	pub fn connect_old(&self) -> self::Result<Connection> {
+		Ok(Connection::open_old(&self.path)?)
+	}
 
 	/// Runs the given closure, which pauzes the task that runs it, but doesn't
 	/// block the runtime.
@@ -903,7 +906,9 @@ impl Database {
 		})
 	}
 
-	fn install(conn: &Connection) -> Result<()> { Ok(conn.execute_batch(install::QUERY)?) }
+	fn install(conn: &Connection) -> Result<()> {
+		Ok(conn.execute_batch(install::QUERY)?)
+	}
 
 	pub async fn load(path: PathBuf) -> Result<Self> {
 		let connection = Connection::open_old(&path).map_err(|e| Error::SqliteError(e))?;
@@ -915,12 +920,13 @@ impl Database {
 			}
 			Err(e) => match &e {
 				rusqlite::Error::SqliteFailure(_err, msg) => match msg {
-					Some(error_message) =>
+					Some(error_message) => {
 						if error_message == "no such table: version" {
 							Self::install(&connection)?;
 						} else {
 							Err(e)?;
-						},
+						}
+					}
 					None => Err(e)?,
 				},
 				_ => Err(e)?,
@@ -1486,10 +1492,11 @@ impl Connection {
 				}
 				// TODO: Return an error
 			}
-			Err(e) =>
+			Err(e) => {
 				if e != rusqlite::Error::QueryReturnedNoRows {
 					return trace::err(e.into());
-				},
+				}
+			}
 		}
 
 		tx.execute(
@@ -1685,8 +1692,9 @@ impl Connection {
 		tx: &impl DerefConnection, actor_id: i64, object_id: i64, payload: &ObjectPayload,
 	) -> Result<()> {
 		match payload {
-			ObjectPayload::Post(po) =>
-				Self::_store_post_object_payload(tx, actor_id, object_id, &po),
+			ObjectPayload::Post(po) => {
+				Self::_store_post_object_payload(tx, actor_id, object_id, &po)
+			}
 			ObjectPayload::Share(po) => Self::_store_boost_object_payload(tx, object_id, &po),
 			ObjectPayload::Profile(po) => Self::_store_profile_object_payload(tx, object_id, &po),
 		}
@@ -2212,9 +2220,13 @@ impl Connection {
 		Ok(rows.next()?.is_some())
 	}
 
-	pub fn old(&self) -> &rusqlite::Connection { &self.old.0 }
+	pub fn old(&self) -> &rusqlite::Connection {
+		&self.old.0
+	}
 
-	pub fn old_mut(&mut self) -> &mut rusqlite::Connection { &mut self.old.0 }
+	pub fn old_mut(&mut self) -> &mut rusqlite::Connection {
+		&mut self.old.0
+	}
 
 	pub fn open_old(path: &Path) -> rusqlite::Result<Self> {
 		let c = rusqlite::Connection::open(&path)?;
@@ -2317,30 +2329,39 @@ impl Connection {
 impl PersistenceHandle for Database {
 	type Inner = sea_orm::DatabaseConnection;
 
-	fn inner(&self) -> &Self::Inner { &self.orm }
+	fn inner(&self) -> &Self::Inner {
+		&self.orm
+	}
 }
 
 impl PersistenceHandle for Transaction {
 	type Inner = sea_orm::DatabaseTransaction;
 
-	fn inner(&self) -> &Self::Inner { &self.0 }
+	fn inner(&self) -> &Self::Inner {
+		&self.0
+	}
 }
 
 impl Deref for Connection {
 	type Target = rusqlite::Connection;
 
-	fn deref(&self) -> &Self::Target { self.old() }
+	fn deref(&self) -> &Self::Target {
+		self.old()
+	}
 }
 
 impl DerefMut for Connection {
-	fn deref_mut(&mut self) -> &mut Self::Target { self.old_mut() }
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		self.old_mut()
+	}
 }
 
 impl fmt::Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
-			Self::DecompressDecodeError(code) =>
-				write!(f, "decode error during decompression: {}", code),
+			Self::DecompressDecodeError(code) => {
+				write!(f, "decode error during decompression: {}", code)
+			}
 			Self::SqliteError(e) => write!(f, "{}", e),
 			Self::OrmError(e) => write!(f, "{}", e),
 			Self::ActorAddress(e) => write!(f, "invalid actor address format: {}", e),
@@ -2370,47 +2391,69 @@ impl fmt::Display for Error {
 }
 
 impl From<compu::DecodeError> for Error {
-	fn from(other: compu::DecodeError) -> Self { Self::DecompressDecodeError(other.as_raw()) }
+	fn from(other: compu::DecodeError) -> Self {
+		Self::DecompressDecodeError(other.as_raw())
+	}
 }
 
 impl From<FromBytesAddressError> for Error {
-	fn from(other: FromBytesAddressError) -> Self { Self::ActorAddress(other) }
+	fn from(other: FromBytesAddressError) -> Self {
+		Self::ActorAddress(other)
+	}
 }
 
 impl From<FromBytesAddressError> for Traced<Error> {
-	fn from(other: FromBytesAddressError) -> Self { Error::ActorAddress(other).trace() }
+	fn from(other: FromBytesAddressError) -> Self {
+		Error::ActorAddress(other).trace()
+	}
 }
 
 impl From<rusqlite::Error> for Error {
-	fn from(other: rusqlite::Error) -> Self { Self::SqliteError(other) }
+	fn from(other: rusqlite::Error) -> Self {
+		Self::SqliteError(other)
+	}
 }
 
 impl From<rusqlite::Error> for Traced<Error> {
-	fn from(other: rusqlite::Error) -> Self { Error::SqliteError(other).trace() }
+	fn from(other: rusqlite::Error) -> Self {
+		Error::SqliteError(other).trace()
+	}
 }
 
 impl From<sea_orm::DbErr> for Error {
-	fn from(other: sea_orm::DbErr) -> Self { Error::OrmError(other) }
+	fn from(other: sea_orm::DbErr) -> Self {
+		Error::OrmError(other)
+	}
 }
 
 impl From<sea_orm::DbErr> for Traced<Error> {
-	fn from(other: sea_orm::DbErr) -> Self { Error::OrmError(other).trace() }
+	fn from(other: sea_orm::DbErr) -> Self {
+		Error::OrmError(other).trace()
+	}
 }
 
 impl From<NodeSignatureError> for Error {
-	fn from(other: NodeSignatureError) -> Self { Self::InvalidSignature(other) }
+	fn from(other: NodeSignatureError) -> Self {
+		Self::InvalidSignature(other)
+	}
 }
 
 impl From<IdFromBase58Error> for Error {
-	fn from(other: IdFromBase58Error) -> Self { other.to_db() }
+	fn from(other: IdFromBase58Error) -> Self {
+		other.to_db()
+	}
 }
 
 impl From<NodePublicKeyError> for Error {
-	fn from(other: NodePublicKeyError) -> Self { Self::InvalidPublicKey(Some(other)) }
+	fn from(other: NodePublicKeyError) -> Self {
+		Self::InvalidPublicKey(Some(other))
+	}
 }
 
 impl IdFromBase58Error {
-	fn to_db(self) -> Error { Error::InvalidHash(self) }
+	fn to_db(self) -> Error {
+		Error::InvalidHash(self)
+	}
 }
 
 impl Transaction {
@@ -2420,8 +2463,9 @@ impl Transaction {
 	}
 }
 
-
-pub fn decrypt_block(index: u64, key: &IdType, data: &mut [u8]) { encrypt_block(index, key, data) }
+pub fn decrypt_block(index: u64, key: &IdType, data: &mut [u8]) {
+	encrypt_block(index, key, data)
+}
 
 pub fn encrypt_block(index: u64, key: &IdType, data: &mut [u8]) {
 	// Construct nonce out of the block index
@@ -2435,7 +2479,6 @@ pub fn encrypt_block(index: u64, key: &IdType, data: &mut [u8]) {
 	let mut cipher = ChaCha20::new(generic_key, &nonce);
 	cipher.apply_keystream(data);
 }
-
 
 impl Transaction {
 	/// Creates a file by doing the following:
@@ -2732,7 +2775,6 @@ impl Transaction {
 		Ok(())
 	}
 }
-
 
 #[cfg(test)]
 mod tests {

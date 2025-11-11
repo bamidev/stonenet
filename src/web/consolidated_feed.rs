@@ -11,13 +11,11 @@ use crate::{
 	web::{self, info::ObjectInfo, Result},
 };
 
-
 #[derive(Debug, PartialEq, Serialize)]
 pub enum ConsolidatedObjectType {
 	Stonenet,
 	ActivityPub,
 }
-
 
 pub async fn load_consolidated_feed(
 	db: &Database, url_base: &str, count: u64, offset: u64,

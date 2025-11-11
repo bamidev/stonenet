@@ -7,11 +7,9 @@ use serde::*;
 
 use crate::core::*;
 
-
 /// The file path of the configuration file
 #[cfg(target_family = "unix")]
 pub const CONFIG_FILE_PATH: &str = "/etc/stonenet/config.toml";
-
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
@@ -61,7 +59,6 @@ pub struct Config {
 pub struct Settings {
 	pub default_space_allocation: u32,
 }
-
 
 impl Config {
 	pub fn parse_tracked_actors(&self) -> Vec<ActorAddress> {
@@ -128,7 +125,6 @@ impl Default for Config {
 		}
 	}
 }
-
 
 lazy_static! {
 	pub static ref CONFIG: OnceCell<Config> = OnceCell::new();

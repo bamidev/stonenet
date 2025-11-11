@@ -13,7 +13,6 @@ use crate::{
 	web::webfinger::resolve,
 };
 
-
 pub async fn ensure(
 	db: &Database, url: &Url, address: Option<&EmailAddress>, when: &impl Fn() -> Cow<'static, str>,
 ) -> Result<activity_pub_actor::Model> {
@@ -95,7 +94,6 @@ pub async fn ensure(
 		))?;
 	}
 }
-
 
 pub async fn fetch(url: &Url) -> Result<serde_json::Value> {
 	let when = || format!("fetching actor {}", url).into();
@@ -205,10 +203,11 @@ pub async fn resolve_urls_from_webfingers(db: &Database, addresses: &[EmailAddre
 	let mut results = Vec::with_capacity(addresses.len());
 	for (addr, result) in webfinger_results {
 		match result {
-			Ok(r) =>
+			Ok(r) => {
 				if let Some(url) = r {
 					results.push(url)
-				},
+				}
+			}
 			Err(e) => warn!("Unable to resolve webfinger address {}: {:?}", addr, e),
 		}
 	}

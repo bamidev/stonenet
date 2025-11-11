@@ -9,7 +9,6 @@ use reqwest::Url;
 use super::json::{expect_string, expect_url};
 use crate::web::{Error, Result};
 
-
 lazy_static! {
 	pub static ref HTTP_CLIENT: reqwest::Client = {
 		let mut headers = HeaderMap::new();
@@ -23,7 +22,6 @@ lazy_static! {
 			.unwrap()
 	};
 }
-
 
 /// Extracts all webfinger addresses that can be found in the given string.
 /// Each address has to start with an "@" sign in order to be found.

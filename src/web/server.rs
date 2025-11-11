@@ -3,7 +3,6 @@ mod actor;
 pub mod common;
 mod identity;
 
-
 use std::{
 	net::*,
 	str::FromStr,
@@ -34,7 +33,6 @@ use crate::{
 	db::{self, Database},
 };
 
-
 #[derive(Clone, Serialize)]
 pub struct IdentityData {
 	label: String,
@@ -59,7 +57,6 @@ pub struct ServerInfo {
 	pub url_base: String,
 	pub update_message: Option<(String, bool)>,
 }
-
 
 impl AppState {
 	pub async fn load(db: &Database) -> db::Result<Self> {
@@ -143,7 +140,6 @@ pub async fn serve(
 struct PaginationQuery {
 	page: Option<u64>,
 }
-
 
 async fn home(
 	State(g): State<Arc<ServerGlobal>>, Query(query): Query<PaginationQuery>,
@@ -252,7 +248,6 @@ async fn search(Query(query): Query<SearchQuery>) -> Response {
 	}
 }
 
-
 impl ServerGlobal {
 	pub async fn render(&self, template_name: &str, context: Context) -> Response {
 		let mut complete_context = Context::new();
@@ -288,8 +283,9 @@ pub fn translate_special_mime_types(post: &PostMessageInfo) -> Option<PostMessag
 pub fn translate_special_mime_types2(mime_type: &str, body: &str) -> Option<PostMessageInfo> {
 	let result = match mime_type {
 		"application/activity+json" => super::activity_pub::translate_activitystreams_object(body),
-		"application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"" =>
-			super::activity_pub::translate_activitystreams_object(body),
+		"application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"" => {
+			super::activity_pub::translate_activitystreams_object(body)
+		}
 		_ => return None,
 	};
 
@@ -321,14 +317,15 @@ fn translate_special_mime_types_for_object(object: &mut ObjectInfo) {
 				}
 			}
 		}
-		ObjectPayloadInfo::Share(share) =>
+		ObjectPayloadInfo::Share(share) => {
 			if let Some(post) = &mut share.original_post {
 				if let Some(message) = &mut post.message {
 					if let Some(new) = translate_special_mime_types(message) {
 						*message = new;
 					}
 				}
-			},
+			}
+		}
 		_ => {}
 	}
 }

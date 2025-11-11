@@ -24,7 +24,9 @@ pub enum Relation {
 }
 
 impl Related<super::file::Entity> for Entity {
-	fn to() -> RelationDef { Relation::File.def() }
+	fn to() -> RelationDef {
+		Relation::File.def()
+	}
 }
 
 impl ActiveModelBehavior for ActiveModel {}

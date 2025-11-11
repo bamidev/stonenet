@@ -10,7 +10,6 @@ use crate::{
 	net::overlay::OverlayNode,
 };
 
-
 pub async fn empty_node<R>(db: Database, rng: &mut R) -> Arc<OverlayNode>
 where
 	R: RngCore + CryptoRng,
@@ -31,7 +30,14 @@ where
 }
 
 pub fn initialize_rng() -> ChaCha8Rng {
-	let seed = <ChaCha8Rng as SeedableRng>::Seed::default();
+	let mut seed = [0u8; 32];
+	if let Ok(seed_data_string) = std::env::var("STONENET_TEST_RANDOM_SEED") {
+		info!("Random seed based on data: {}", &seed_data_string);
+		let seed_data = seed_data_string.as_bytes();
+		for i in 0..seed_data.len() {
+			seed[i % 32] = seed_data[i]
+		}
+	}
 	ChaCha8Rng::from_seed(seed)
 }
 

@@ -8,7 +8,6 @@ use crate::{
 
 pub struct Migration;
 
-
 #[async_trait]
 impl MigrationTrait for Migration {
 	async fn run(&self, tx: &db::Transaction) -> db::Result<()> {

@@ -49,7 +49,6 @@ use tokio::{spawn, time::sleep};
 
 use crate::{config::CONFIG, core::Address, db::PersistenceHandle, migration::Migrations};
 
-
 /// Gets the latest version, and whether it is required or not
 #[allow(dead_code)]
 async fn check_version() -> Option<(String, bool)> {
@@ -215,7 +214,9 @@ async fn load_database(_config: &Config, install_dir: PathBuf) -> io::Result<Dat
 }
 
 #[cfg(not(target_family = "windows"))]
-fn load_install_dir() -> io::Result<PathBuf> { Ok(PathBuf::new()) }
+fn load_install_dir() -> io::Result<PathBuf> {
+	Ok(PathBuf::new())
+}
 
 #[cfg(target_family = "windows")]
 fn load_install_dir() -> io::Result<PathBuf> {
@@ -242,8 +243,9 @@ async fn load_trusted_node_config(db: &Database, config: &Config) -> db::Result<
 					let id = db.ensure_trusted_node(&node_address, 255).await?;
 					trusted_node_ids.push(id);
 				}
-				_ =>
-					error!("An address in the `trusted_nodes` list is not actually a node address."),
+				_ => {
+					error!("An address in the `trusted_nodes` list is not actually a node address.")
+				}
 			},
 		}
 	}

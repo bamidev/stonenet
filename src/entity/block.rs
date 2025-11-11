@@ -4,7 +4,6 @@ use sea_orm::entity::prelude::*;
 
 use crate::common::IdType;
 
-
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "block")]
 pub struct Model {

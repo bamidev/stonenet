@@ -4,7 +4,6 @@ use sea_orm::entity::prelude::*;
 
 use crate::core::NodeAddress;
 
-
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "bootstrap_node_id")]
 pub struct Model {

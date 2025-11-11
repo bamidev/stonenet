@@ -24,7 +24,9 @@ impl<V> LimitedVec<V> {
 		}
 	}
 
-	pub fn has_space(&self) -> bool { self.store.len() < self.limit }
+	pub fn has_space(&self) -> bool {
+		self.store.len() < self.limit
+	}
 
 	pub fn insert(&mut self, index: usize, value: V) -> bool {
 		if index < self.limit {
@@ -39,7 +41,9 @@ impl<V> LimitedVec<V> {
 		}
 	}
 
-	pub fn limit(&self) -> usize { self.limit }
+	pub fn limit(&self) -> usize {
+		self.limit
+	}
 
 	/// Adds a value to the top of the queue, removing anything to stay within
 	/// the limit.
@@ -100,7 +104,9 @@ where
 		}
 	}
 
-	pub fn contains_key(&self, key: &K) -> bool { self.index_of(key).is_some() }
+	pub fn contains_key(&self, key: &K) -> bool {
+		self.index_of(key).is_some()
+	}
 
 	pub fn index_of(&self, key: &K) -> Option<usize> {
 		for i in 0..self.base.store.len() {
@@ -111,9 +117,13 @@ where
 		None
 	}
 
-	pub fn insert(&mut self, key: K, value: V) { self.base.push_front((key, value)) }
+	pub fn insert(&mut self, key: K, value: V) {
+		self.base.push_front((key, value))
+	}
 
-	pub fn iter(&self) -> Iter<'_, (K, V)> { self.base.store.iter() }
+	pub fn iter(&self) -> Iter<'_, (K, V)> {
+		self.base.store.iter()
+	}
 
 	pub fn find<'a>(&'a self, key: &K) -> Option<&'a V> {
 		for entry in self.base.store.iter() {
@@ -137,13 +147,19 @@ where
 impl<V> Deref for LimitedVec<V> {
 	type Target = VecDeque<V>;
 
-	fn deref(&self) -> &Self::Target { &self.store }
+	fn deref(&self) -> &Self::Target {
+		&self.store
+	}
 }
 
 impl<V> DerefMut for LimitedVec<V> {
-	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.store }
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.store
+	}
 }
 
 impl<V> Into<Vec<V>> for LimitedVec<V> {
-	fn into(self) -> Vec<V> { self.store.into() }
+	fn into(self) -> Vec<V> {
+		self.store.into()
+	}
 }

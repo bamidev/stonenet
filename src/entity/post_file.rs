@@ -4,7 +4,6 @@ use sea_orm::entity::prelude::*;
 
 use crate::common::IdType;
 
-
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "post_file")]
 pub struct Model {
@@ -28,7 +27,9 @@ pub enum Relation {
 }
 
 impl Related<super::object::Entity> for Entity {
-	fn to() -> RelationDef { Relation::Object.def() }
+	fn to() -> RelationDef {
+		Relation::Object.def()
+	}
 }
 
 impl ActiveModelBehavior for ActiveModel {}

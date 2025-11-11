@@ -9,7 +9,6 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use super::{server::PACKET_TYPE_CRYPTED, *};
 
-
 const CRYPTED_PACKET_TYPE_DATA: u8 = 0;
 const CRYPTED_PACKET_TYPE_ACK: u8 = 1;
 const CRYPTED_PACKET_TYPE_ACK_WAIT: u8 = 2;
@@ -19,7 +18,6 @@ const FIRST_WINDOW_HEADER_SIZE: usize = WINDOW_HEADER_SIZE + MESSAGE_HEADER_SIZE
 const INITIAL_WINDOW_SIZE: u16 = 16;
 const MESSAGE_HEADER_SIZE: usize = 4;
 const WINDOW_HEADER_SIZE: usize = 34;
-
 
 #[derive(Clone)]
 pub struct KeyState {
@@ -118,7 +116,6 @@ struct WindowInfo {
 	starting: bool,
 }
 
-
 fn calculate_checksum(buffer: &[u8]) -> u16 {
 	let mut result = 0u16;
 	for i in 0..buffer.len() {
@@ -126,7 +123,6 @@ fn calculate_checksum(buffer: &[u8]) -> u16 {
 	}
 	result
 }
-
 
 impl KeyState {
 	pub fn calculate_initial_key(
@@ -1036,10 +1032,11 @@ impl TransporterInner {
 		match packet_type {
 			CRYPTED_PACKET_TYPE_ACK => {}
 			// FIXME: Handle CRYPTED_PACKET_TYPE_ACK_WAIT so that the sending end can finish.
-			CRYPTED_PACKET_TYPE_CLOSE =>
+			CRYPTED_PACKET_TYPE_CLOSE => {
 				if self.process_close_packet(data).is_err() {
 					self.send_close_ack_packet(ks).await?;
-				},
+				}
+			}
 			CRYPTED_PACKET_TYPE_CLOSE_ACK => return Ok(self.process_close_ack_packet(data)),
 			_ => self.process_unexpected_packet(ks.sequence, seq, packet_type),
 		}
@@ -1119,8 +1116,9 @@ impl TransporterInner {
 							data,
 						);
 					}
-					CRYPTED_PACKET_TYPE_ACK_WAIT =>
-						self.process_current_ack_wait_packet(ks, data).await,
+					CRYPTED_PACKET_TYPE_ACK_WAIT => {
+						self.process_current_ack_wait_packet(ks, data).await
+					}
 					CRYPTED_PACKET_TYPE_CLOSE => self.process_close_packet(data),
 					_ => {
 						self.process_unexpected_packet(ks.sequence, seq, packet_type);
@@ -1239,14 +1237,15 @@ impl TransporterInner {
 			// Stray ack packets can happen if our side has send out an ack-wait packet just before
 			// receiving the successful ack packet, then the other side will still respond to our
 			// ack-wait packet but we've already ended the sending task.
-			CRYPTED_PACKET_TYPE_ACK =>
+			CRYPTED_PACKET_TYPE_ACK => {
 				if is_receiving {
 					return trace::err(Error::BothReceiving);
-				},
+				}
+			}
 			CRYPTED_PACKET_TYPE_CLOSE => {
 				let _ = self.process_close_packet(data);
 			}
-			CRYPTED_PACKET_TYPE_ACK_WAIT =>
+			CRYPTED_PACKET_TYPE_ACK_WAIT => {
 				if is_sending {
 					return trace::err(Error::BothSending);
 				// At this state, we don't know what task is going to be served
@@ -1262,7 +1261,8 @@ impl TransporterInner {
 							ks.sequence
 						);
 					}
-				},
+				}
+			}
 			_ => self.process_unexpected_packet(ks.sequence, seq, packet_type),
 		}
 		Ok(())
@@ -1286,8 +1286,9 @@ impl TransporterInner {
 			CRYPTED_PACKET_TYPE_CLOSE => {
 				let _ = self.process_close_packet(packet);
 			}
-			CRYPTED_PACKET_TYPE_ACK_WAIT =>
-				return self.process_previous_ack_wait_packet(ks, packet).await,
+			CRYPTED_PACKET_TYPE_ACK_WAIT => {
+				return self.process_previous_ack_wait_packet(ks, packet).await;
+			}
 			_ => self.process_unexpected_packet(ks.previous.sequence, seq, packet_type),
 		}
 		Ok(())
@@ -1427,11 +1428,12 @@ impl TransporterInner {
 					let _ = packet_sender.send(Err(e));
 					return false;
 				}
-				Ok(result) =>
+				Ok(result) => {
 					if let Some(completed) = result {
 						already_done = completed;
 						break;
-					},
+					}
+				}
 			}
 		}
 
@@ -1801,9 +1803,13 @@ impl TransporterHandle {
 	}
 
 	#[allow(dead_code)]
-	pub fn is_alive(&self) -> bool { self.alive_flag.load(Ordering::Relaxed) }
+	pub fn is_alive(&self) -> bool {
+		self.alive_flag.load(Ordering::Relaxed)
+	}
 
-	pub fn is_connection_based(&self) -> bool { self.is_connection_based }
+	pub fn is_connection_based(&self) -> bool {
+		self.is_connection_based
+	}
 
 	pub fn keep_alive(&self) -> bool {
 		self.sender.send(TransporterTask::KeepAlive.trace()).is_ok()
@@ -1875,7 +1881,11 @@ impl fmt::Display for TransporterTask {
 impl WindowInfo {
 	pub fn decrease_window_size(&mut self) -> u16 {
 		self.starting = false;
-		if self.size > 1 { self.size >> 1 } else { 1 }
+		if self.size > 1 {
+			self.size >> 1
+		} else {
+			1
+		}
 	}
 
 	pub fn increase_window_size(&self) -> u16 {
@@ -1903,7 +1913,6 @@ impl Default for WindowInfo {
 		}
 	}
 }
-
 
 #[cfg(test)]
 mod tests {

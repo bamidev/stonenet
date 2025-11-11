@@ -3,7 +3,6 @@ use std::cmp::Ordering;
 use super::{distance, NodeContactInfo};
 use crate::{core::NodeAddress, limited_store::LimitedVec};
 
-
 pub struct Bucket {
 	pub(super) connections: LimitedVec<NodeContactInfo>,
 	fingers: LimitedVec<BucketEntry>,
@@ -23,7 +22,6 @@ pub struct BucketReplacementEntry {
 	finger: BucketEntry,
 	failed_attempts: u8,
 }
-
 
 impl Bucket {
 	pub fn add_connection(

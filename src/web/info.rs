@@ -18,7 +18,6 @@ use crate::{
 	entity::*,
 };
 
-
 #[derive(Clone, Debug, Serialize)]
 pub struct FileInfo {
 	pub url: String,
@@ -97,12 +96,11 @@ pub struct TargetedPostInfo {
 	pub attachments: Vec<FileInfo>,
 }
 
-
 impl ObjectInfo {
 	pub fn type_title(&self) -> String {
 		match &self.payload {
 			ObjectPayloadInfo::Profile(_) => "Profile update".to_string(),
-			ObjectPayloadInfo::Post(post) =>
+			ObjectPayloadInfo::Post(post) => {
 				if let Some(irt) = &post.in_reply_to {
 					if let Some(to_name) = &irt.actor_name {
 						format!("Reply from {} to {}", &self.actor_name, to_name)
@@ -111,7 +109,8 @@ impl ObjectInfo {
 					}
 				} else {
 					format!("Post by {}", &self.actor_name)
-				},
+				}
+			}
 			ObjectPayloadInfo::Share(share) => {
 				if let Some(op) = &share.original_post {
 					if let Some(from_name) = &op.actor_name {
@@ -131,12 +130,13 @@ impl ObjectPayloadInfo {
 	pub fn has_main_content(&self) -> bool {
 		match self {
 			Self::Post(post) => post.message.is_some(),
-			Self::Share(share) =>
+			Self::Share(share) => {
 				if let Some(op) = &share.original_post {
 					op.message.is_some() && op.actor_name.is_some()
 				} else {
 					false
-				},
+				}
+			}
 			Self::Profile(profile) => profile.description.is_some(),
 		}
 	}
@@ -149,7 +149,7 @@ impl ObjectPayloadInfo {
 				.as_ref()
 				.map(|m| m.body.clone())
 				.unwrap_or("".to_string()),
-			Self::Share(share) =>
+			Self::Share(share) => {
 				if let Some(op) = &share.original_post {
 					if let Some(m) = &op.message {
 						m.body.clone()
@@ -158,7 +158,8 @@ impl ObjectPayloadInfo {
 					}
 				} else {
 					"[Post not synchronized yet]".to_string()
-				},
+				}
+			}
 			Self::Profile(_) => "[Profile updated]".to_string(),
 		}
 	}
@@ -182,7 +183,6 @@ impl PossiblyKnownFileHeader {
 		}
 	}
 }*/
-
 
 pub fn actor_url(url_base: &str, actor_address: &ActorAddress) -> String {
 	format!("{}/actor/{}", url_base, actor_address)
