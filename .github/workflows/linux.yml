@@ -16,9 +16,9 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Run tests (debug)
-      run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose
+      run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose -- --test-threads 1
     - name: Run tests (release)
-      run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose --release
+      run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose --release -- --test-threads 3
     - name: Install webkit2gtk
       run: |
         sudo apt update
