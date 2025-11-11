@@ -358,28 +358,28 @@ mod tests {
 	// Disable the TCP test for now because I've disabled the packet processing of
 	// the outgoing connection.
 	#[tokio::test]
-	async fn test_connection_with_tcp() { test_connection(false).await; }
+	async fn test_connection_with_tcp() { test_connection(false, 10000).await; }
 
 	#[tokio::test]
-	async fn test_connection_with_udp() { test_connection(true).await; }
+	async fn test_connection_with_udp() { test_connection(true, 10002).await; }
 
 	/// Sent and receive a bunch of messages.
-	async fn test_connection(use_udp: bool) {
+	async fn test_connection(use_udp: bool, port: u16) {
 		let mut rng = test::initialize_rng();
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
-		let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, 10000));
+		let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, port));
 		let mut master_config = Config::default();
 		master_config.ipv4_address = Some("127.0.0.1".to_string());
 		if use_udp {
-			master_config.ipv4_udp_port = Some(10000);
+			master_config.ipv4_udp_port = Some(port);
 		} else {
-			master_config.ipv4_tcp_port = Some(10000);
+			master_config.ipv4_tcp_port = Some(port);
 		}
 		let mut slave_config = master_config.clone();
 		if use_udp {
-			slave_config.ipv4_udp_port = Some(10001);
+			slave_config.ipv4_udp_port = Some(port + 1);
 		} else {
-			slave_config.ipv4_tcp_port = Some(10001);
+			slave_config.ipv4_tcp_port = Some(port + 1);
 		}
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let master_private_key = NodePrivateKey::generate_with_rng(&mut rng);
