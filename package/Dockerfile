@@ -71,7 +71,6 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
 RUN if [ $target = "amd64" ]; then cargo deb -p stonenet-desktop --target x86_64-unknown-linux-gnu; fi
 RUN if [ $target = "amd64" ]; then cargo deb --target x86_64-unknown-linux-gnu; fi
 RUN if [ $target = "amd64" ]; then cp target/x86_64-unknown-linux-gnu/debian/* ../out; fi
-#RUN ls /usr/lib && exit 1
 ENV PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
 ENV CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
 RUN if [ $target = "armhf" ]; then cargo deb -p stonenet-desktop --target armv7-unknown-linux-gnueabihf; fi

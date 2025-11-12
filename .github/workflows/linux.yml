@@ -35,5 +35,5 @@ jobs:
       run: sudo nix --extra-experimental-features 'nix-command flakes' build .#desktop
     - name: Cross compile all binaries
       run: |
-        sudo apt install docker.io
+        sudo apt install docker-cli
         cd package && ./cross-build.sh
