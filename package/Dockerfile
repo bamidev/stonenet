@@ -5,6 +5,7 @@ ARG target
 ENV DEBIAN_FRONTED=noninteractive
 RUN if [ $target = "amd64" ]; then dpkg --add-architecture "amd64"; fi
 RUN if [ $target = "arm64" ]; then dpkg --add-architecture "arm64"; fi
+RUN if [ $target = "armhf" ]; then dpkg --add-architecture "armhf"; fi
 RUN apt-get update
 RUN apt-get upgrade -y
 RUN apt-get install -y --no-install-recommends \
@@ -15,6 +16,8 @@ RUN if [ $target = "amd64" ]; then apt-get install -y --no-install-recommends \
 	gcc-x86-64-linux-gnu libgtk-3-dev:amd64 libssl-dev:amd64 libsqlite3-dev:amd64 libwebkit2gtk-4.1-dev:amd64; fi
 RUN if [ $target = "arm64" ]; then apt-get install -y --no-install-recommends \
 	gcc-aarch64-linux-gnu libgtk-3-dev:arm64 libssl-dev:arm64 libsqlite3-dev:arm64 libwebkit2gtk-4.1-dev:arm64; fi
+RUN if [ $target = "armhf" ]; then apt-get install -y --no-install-recommends \
+	gcc-arm-linux-gnueabihf libssl-dev:armhf libsqlite3-dev:armhf libwebkit2gtk-4.1-dev:armhf; fi
 
 # Install Nix in order to get rustup & nuget
 RUN mkdir -m 0755 /nix
@@ -41,6 +44,7 @@ WORKDIR stonenet
 RUN if [ $target = "win64" ]; then rustup target add x86_64-pc-windows-gnu; fi
 RUN if [ $target = "arm64" ]; then rustup target add aarch64-unknown-linux-gnu; fi
 RUN if [ $target = "amd64" ]; then rustup target add x86_64-unknown-linux-gnu; fi
+RUN if [ $target = "armhf" ]; then rustup target add armv7-unknown-linux-gnueabihf; fi
 RUN if [ $target != "win64" ]; then cargo install cargo-deb; fi
 
 # Compile packages for all the supported architectures
@@ -67,4 +71,10 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
 RUN if [ $target = "amd64" ]; then cargo deb -p stonenet-desktop --target x86_64-unknown-linux-gnu; fi
 RUN if [ $target = "amd64" ]; then cargo deb --target x86_64-unknown-linux-gnu; fi
 RUN if [ $target = "amd64" ]; then cp target/x86_64-unknown-linux-gnu/debian/* ../out; fi
+#RUN ls /usr/lib && exit 1
+ENV PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
+ENV CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
+RUN if [ $target = "armhf" ]; then cargo deb -p stonenet-desktop --target armv7-unknown-linux-gnueabihf; fi
+RUN if [ $target = "armhf" ]; then cargo deb --target armv7-unknown-linux-gnueabihf; fi
+RUN if [ $target = "armhf" ]; then cp target/armv7-unknown-linux-gnueabihf/debian/* ../out; fi
 

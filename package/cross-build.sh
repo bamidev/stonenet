@@ -11,6 +11,7 @@ function build() {
 	docker rm $CONTAINER_ID
 }
 
+build armhf
 build amd64
 build arm64
 build win64
