@@ -33,3 +33,7 @@ jobs:
       run: sudo nix --extra-experimental-features 'nix-command flakes' build
     - name: Build desktop client with Nix
       run: sudo nix --extra-experimental-features 'nix-command flakes' build .#desktop
+    - name: Cross compile all binaries
+      run: |
+        sudo apt install docker.io
+        cd package && ./cross-build.sh
