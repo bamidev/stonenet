@@ -14,7 +14,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout Stonenet
+      uses: actions/checkout@v3
+    - name: Set up Docker
+      uses: docker/setup-docker-action@v4
+    - name: Cross compile all binaries
+      run: cd package && ./cross-build.sh
     - name: Run tests (debug)
       run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose -- --test-threads 1
     - name: Run tests (release)
@@ -33,7 +38,3 @@ jobs:
       run: sudo nix --extra-experimental-features 'nix-command flakes' build
     - name: Build desktop client with Nix
       run: sudo nix --extra-experimental-features 'nix-command flakes' build .#desktop
-    - name: Cross compile all binaries
-      run: |
-        sudo apt install docker-cli
-        cd package && ./cross-build.sh
