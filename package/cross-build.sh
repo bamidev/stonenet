@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-#
 # Build all the debian packages and the windows installer using docker
 set -ex
 
@@ -11,7 +10,7 @@ function build() {
 	docker rm $CONTAINER_ID
 }
 
-build armhf
 build amd64
 build arm64
+build armhf
 build win64
