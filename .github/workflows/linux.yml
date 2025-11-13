@@ -16,12 +16,6 @@ jobs:
     steps:
     - name: Checkout Stonenet
       uses: actions/checkout@v3
-    - name: Clear disk space
-      run: rm -rf /opt/hostedtoolcache
-    - name: Set up Docker
-      uses: docker/setup-docker-action@v4
-    - name: Cross compile all binaries
-      run: cd package && ./cross-build.sh
     - name: Run tests (debug)
       run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose -- --test-threads 1
     - name: Run tests (release)
@@ -40,3 +34,15 @@ jobs:
       run: sudo nix --extra-experimental-features 'nix-command flakes' build
     - name: Build desktop client with Nix
       run: sudo nix --extra-experimental-features 'nix-command flakes' build .#desktop
+    - name: Clear disk space
+      run: rm -rf /opt/hostedtoolcache
+    - name: Set up Docker
+      uses: docker/setup-docker-action@v4
+    # This job currently fails on github because of disk space issues no their servers
+    - name: Cross compile all binaries
+      run: |
+        docker build package --build-arg target=amd64
+        docker build package --build-arg target=arm64
+        docker build package --build-arg target=armhf
+        docker build package --build-arg target=win64
+      continue-on-error: true
