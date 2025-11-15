@@ -9,7 +9,9 @@ use crate::core::*;
 
 /// The file path of the configuration file
 #[cfg(target_family = "unix")]
-pub const CONFIG_FILE_PATH: &str = "/etc/stonenet/config.toml";
+pub const CONFIG_FILE_SYSTEM_PATH: &str = "/etc/stonenet/config.toml";
+#[cfg(target_family = "unix")]
+pub const CONFIG_FILE_USER_PATH: &str = "~/.config/stonenet/config.toml";
 
 #[derive(Clone, Deserialize)]
 pub struct Config {

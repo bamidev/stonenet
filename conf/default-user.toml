@@ -1,6 +1,6 @@
 # The filepath of the SQLite database that stores all media content.
 # If the file and its path don't exist, they will be created.
-database_path = "~/.config/stonenet/db.sqlite"
+database_path = "~/.local/state/stonenet/db.sqlite"
 
 # The IPv4 address to bind to.
 ipv4_address = "0.0.0.0"
@@ -38,12 +38,12 @@ ipv4_address = "0.0.0.0"
 # they are already taken, pick anything else. However, these ports are
 # recommended, as they are the arguably the least blocked ports by firewalls.
 # If this is for some reason not useable, another recommended port is 37337.
-ipv4_udp_port = 37337
-ipv4_tcp_port = 37337
-ipv6_udp_port = 37339
-ipv6_tcp_port = 37339
+ipv4_udp_port = 0
+ipv4_tcp_port = 0
+ipv6_udp_port = 0
+ipv6_tcp_port = 0
 
-# If set to true, will run a web server for the user interface
+# If set to true, will run a web server for publishing data to the web
 load_web_interface = false
 web_interface_port = 80
 
