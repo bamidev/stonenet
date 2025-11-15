@@ -103,22 +103,17 @@
               effectiveConfig = defaultConfig // config.services.stonenet.config;
               userConfigFile = settingsFormat.generate "stonenet.toml" effectiveConfig;
 
-              systemdConfig = {
-                description = "Stonenet Daemon";
-                after = ["network-online.target"];
-                wantedBy = ["multi-user.target"];
+              systemdServiceConfig = {
+                ExecStart = "${stonenet}/bin/stonenetd";
+                Type = "simple";
 
-                serviceConfig = {
-                  ExecStart = "${stonenet}/bin/stonenetd";
-                  Type = "simple";
-
-                  Restart = "on-failure";
-                  StandardError = "journal+console";
-                  StandardOutput = "journal+console";
-                  # A workaround: stonenet looks for the templates and static files in the working directory at the moment
-                  WorkingDirectory = "${stonenet.share}";
-                };
+                Restart = "on-failure";
+                StandardError = "journal+console";
+                StandardOutput = "journal+console";
+                # A workaround: stonenet looks for the templates and static files in the working directory at the moment
+                WorkingDirectory = "${stonenet.share}";
               };
+
 
             in lib.mkIf (config.services.stonenet.enable) (
               if !useHomeManager then {
@@ -130,7 +125,14 @@
                   ];
                 };
 
-                systemd.services.stonenet = systemdConfig;
+                systemd.services.stonenet = {
+                  description = "Stonenet Daemon";
+                  after = ["network-online.target"];
+                  wantedBy = ["multi-user.target"];
+
+                  serviceConfig = systemdServiceConfig;
+                };
+
                 system.activationScripts.stonenet-state.text = ''
                   set -e
                   mkdir -p /var/lib/stonenet
@@ -145,7 +147,14 @@
                   ];
                 };
 
-                systemd.user.services.stonenet = systemdConfig;
+                systemd.user.services.stonenet = {
+                  Unit = {
+                    Description = "Stonenet Daemon";
+                    After = "ntwork-online.target";
+                  };
+
+                  Service = systemdServiceConfig;
+                };
               }
             );
           in {
