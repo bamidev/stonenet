@@ -1,0 +1,160 @@
+# The filepath of the SQLite database that stores all media content.
+# If the file and its path don't exist, they will be created.
+database_path = "~/.config/stonenet/db.sqlite"
+
+# The IPv4 address to bind to.
+ipv4_address = "0.0.0.0"
+
+# The IPv6 address to bind to. Only uncomment this if this is actually supported
+# on your network.
+#ipv6_address = "::"
+
+# Set the following openness settings to either "bidirectional", "punchable" or
+# "unidirectional".
+# If you leave this unset, it will be tested whether hole punching is possible
+# behind your current NAT device. If so, it will be set to "punchable", and
+# "unidirectional" otherwise.
+# If you do set this, your NAT device will not be tested.
+# If you run this node on a server or VPS, or have port forwarding enabled, you
+# should set the openness of the relevant protocol to "bidirectional".
+#
+# Here is what each setting means:
+# - bidrectional: Use this if this device is able to receive incomming
+#     connections. Only use this when you know you are not behind a NAT device,
+#     or when you have forwarded a port on your router. It doesn't matter which
+#     external port is used.
+# - punchable: Use this if this device is behind a NAT device, but still supports
+#     'hole-punching'. Most home routers support hole-punching.
+# - unidirectional: This means the device is only capable of initiating outgoing
+#     connections.
+#ipv4_udp_openness = "bidirectional"
+#ipv4_tcp_openness = "bidirectional"
+#ipv6_udp_openness = "bidirectional"
+#ipv6_tcp_openness = "bidirectional"
+
+# The ports to bind to. If you comment any of them out, they will use a random
+# port available on your system.
+# UDP port 53 (DNS) and TCP port 443 (HTTPS) are commonly used on servers, so if
+# they are already taken, pick anything else. However, these ports are
+# recommended, as they are the arguably the least blocked ports by firewalls.
+# If this is for some reason not useable, another recommended port is 37337.
+ipv4_udp_port = 37337
+ipv4_tcp_port = 37337
+ipv6_udp_port = 37339
+ipv6_tcp_port = 37339
+
+# If set to true, will run a web server for the user interface
+load_web_interface = false
+web_interface_port = 80
+
+#web_url_base = "https://example.com"
+
+# If set to true, will run a local web server for the user interface. This
+# will be bound to IP 127.0.0.1 .
+load_user_interface = true
+user_interface_port = 37338
+
+# These are the nodes to fallback to when none of the saved nodes respond
+# anymore.
+bootstrap_nodes = [
+	"bootstrap1.stonenet.org:37337",
+	"bootstrap2.stonenet.org:37337"
+]
+
+# Enabling this feature makes it so that the first request message on a
+# connection is sometimes send unencrypted, if the message is small enough to be
+# included in the very first packet. This speeds up searching the network, at
+# the expense of privacy. The response message, and any further messages, are
+# not under any circumstance sent over the connection unencrypted, ever.
+leak_first_request = false
+
+# The interval (in seconds) in which other nodes are pinged.
+node_ping_interval = 60
+
+# Become a super node. Being a super node means you'll relay ANY data for ANY
+# node without restriction. This helps the network by allowing nodes that can't
+# receive connections to contact eachother.
+# However, as a super node you could run the risk of being complicit in sharing
+# illegal data. So only set this to true at your own risk!
+relay_node = true
+
+# The number of nodes that can attach themselves to this node.
+# This helps nodes behind restrictive firewalls being able to be contacted by 
+# anyone else. Only relevant if one of the transport protocols has openness
+# "bidirectional".
+# Has to be a number of 100 or more, and defaults to 1000.
+attached_node_limit = 1000
+
+# The number of nodes to remember in each 'bucket'. This is a technical feature
+# that generally does not need to be changed. However, increasing this number
+# makes it less likely to be disconnected from the network. Decreasing this
+# number saves a tiny amount of memory.
+# Needs to be 1 or more.
+bucket_size = 4
+
+# Set up this node to track certain actors. This is similar as 'following' said
+# actor from this node.
+# This is an array of actor addresses
+#track = ["2KLquvVSCjtJGwtNENhkCnpJQnZN1xJZeDNbzSGtrkEKFX"]
+
+
+################################
+#   ActivityPub & Federation   #
+################################
+
+# All options under this section configure things related to ActivityPub
+# support, which is only relevant if you've set up this node on a server.
+# The only exception to this rule is the `activity_pub_inbox_url` option.
+
+# If the following two options are enabled, your client will check the following
+# server for replies of the configured actor
+#activity_pub_inbox_server = "social.example.com"
+#activity_pub_inbox_actor = "a18ofzb8f3TM9NrSewjh6jNQGPHnmCXpYBgShFxs1yAret"
+
+# If set, this enables the inbox, with the given limit.
+# When the inbox reaches its limit, the old activities will be pushed out to
+# accomodate for the new ones.
+#activity_pub_inbox_size = 1000
+
+# The public & private key of the server certificate. If these are set, HTTP
+# signatures will be used whenever delivering activities to other servers,
+# according this specification draft:
+# https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12
+# For most ActivityPub servers, this is mandatory in order to be able to
+# federate with them. These are the keys will be used for every actor, as for
+# the use case of Stonenet, there is no need for one keypair for every actor.
+# The keys have to be PKCS#8 formatted RSA keys and can be generated with
+# openssl like this:
+# ```
+# openssl genrsa -out private_key.pem 2048
+# openssl rsa -in private_key.pem -outform PEM -pubout -out public_key.pem
+# ```
+#activity_pub_public_key = /etc/stonenet/public_key.pem
+#activity_pub_private_key = /etc/stonenet/private_key.pem
+
+# The limit to the number of activities that can be put in the send queue. If
+# this limit is reached, new activities will not be federated to other servers.
+# This limit exists to prevent a certain DoS attack.
+activity_pub_send_queue_capacity = 100000
+
+# Administrator contact info for this instance
+#federation_contact_info = "admin@email.com"
+
+# If you want to support federation through ActivityPub, a domain needs to be
+# configured.
+# Also, keep in mind that if the `web_url_base` parameter has a path in it like:
+# https://example.com/my/path
+# Then your reverse proxy needs to be set up to serve or redirect
+# https://example/.well-known/webfinger as/to
+# https://example.com/my/path/.well-known/webfinger
+#federation_domain = "example.com"
+
+# Optionally set the organization for this server:
+#federation_organization = "My Organization"
+
+# The Stonenet actor address that is considered the 'admin' identity of this
+# server.
+#federation_server_account = "..."
+
+# The display name of this server
+federation_server_name = "Just another Stonenet bridge"

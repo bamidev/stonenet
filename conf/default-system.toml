@@ -43,7 +43,7 @@ ipv4_tcp_port = 37337
 ipv6_udp_port = 37339
 ipv6_tcp_port = 37339
 
-# If set to true, will run a web server for the user interface
+# If set to true, will run a web server for publishing the data to the web.
 load_web_interface = false
 web_interface_port = 80
 

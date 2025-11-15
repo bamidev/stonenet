@@ -92,7 +92,7 @@ name = "stonenet"
 revision = "main"
 section = "net"
 priority = "optional"
-conf-files = ["etc/stonenet/config.toml"]
+conf-files = ["etc/stonenet/config-system.toml"]
 assets = [
 	["target/release/stonenetd", "usr/bin/", "755"],
 	["conf/default.toml", "etc/stonenet/config.toml", "644"],
