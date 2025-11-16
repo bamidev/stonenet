@@ -121,7 +121,7 @@ fn config_path(_install_dir: PathBuf) -> PathBuf {
 	if user_path.exists() {
 		return user_path;
 	}
-	PathBuf::from_str(config::CONFIG_FILE_PATH).unwrap()
+	PathBuf::from_str(config::CONFIG_FILE_SYSTEM_PATH).unwrap()
 }
 
 #[cfg(target_family = "windows")]
