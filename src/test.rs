@@ -69,11 +69,6 @@ pub async fn load_test_node(
 	if config.ipv4_udp_port.is_none() && config.ipv4_tcp_port.is_none() {
 		config2.ipv4_udp_port = Some(0);
 	}
-	info!(
-		"Node {} runs on port {}.",
-		node_id,
-		config.ipv4_udp_port.expect("no port in config")
-	);
 	let node = OverlayNode::start(
 		stop_flag.clone(),
 		&config2,
@@ -83,6 +78,11 @@ pub async fn load_test_node(
 	)
 	.await
 	.expect("unable to start node");
+	info!(
+		"Node {} runs on with {:?}.",
+		node.node_id(),
+		node.contact_info()
+	);
 
 	node.join_network(stop_flag).await;
 
