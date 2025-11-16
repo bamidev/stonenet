@@ -2799,8 +2799,6 @@ pub(super) async fn process_request_message(
 mod tests {
 	use crate::{net::overlay::*, test};
 
-	use port_check::free_local_ipv4_port;
-
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_direct() {
 		test_overlay_connectivity("unidirectional", "bidirectional", false).await;
@@ -2834,37 +2832,32 @@ mod tests {
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let mut assistant_config = Config::default();
 		assistant_config.ipv4_address = Some("127.0.0.1".to_string());
-		assistant_config.ipv4_udp_port = Some(free_local_ipv4_port().expect("no free port"));
 		assistant_config.ipv4_udp_openness = Some("bidirectional".to_string());
 		assistant_config.relay_node = Some(assistant_is_relay);
+		let assistant_node =
+			test::load_test_node(stop_flag.clone(), &mut rng, &assistant_config, "assistant").await;
+		let assistant_port = assistant_node
+			.node
+			.contact_info()
+			.ipv4
+			.unwrap()
+			.availability
+			.udp
+			.unwrap()
+			.port;
 		let mut relay_config = Config::default();
-		relay_config.bootstrap_nodes = vec![format!(
-			"127.0.0.1:{}",
-			assistant_config.ipv4_udp_port.unwrap()
-		)];
+		relay_config.bootstrap_nodes = vec![format!("127.0.0.1:{}", assistant_port)];
 		relay_config.ipv4_address = Some("127.0.0.1".to_string());
-		relay_config.ipv4_udp_port = Some(free_local_ipv4_port().expect("no free port"));
 		relay_config.ipv4_udp_openness = Some("bidirectional".to_string());
 		relay_config.relay_node = Some(true);
 		let mut source_config = Config::default();
-		source_config.bootstrap_nodes = vec![format!(
-			"127.0.0.1:{}",
-			assistant_config.ipv4_udp_port.unwrap()
-		)];
+		source_config.bootstrap_nodes = vec![format!("127.0.0.1:{}", assistant_port)];
 		source_config.ipv4_address = Some("127.0.0.1".to_string());
-		source_config.ipv4_udp_port = Some(free_local_ipv4_port().expect("no free port"));
 		source_config.ipv4_udp_openness = Some(openness_source_node.to_string());
 		let mut target_config = Config::default();
-		target_config.bootstrap_nodes = vec![format!(
-			"127.0.0.1:{}",
-			assistant_config.ipv4_udp_port.unwrap()
-		)];
+		target_config.bootstrap_nodes = vec![format!("127.0.0.1:{}", assistant_port)];
 		target_config.ipv4_address = Some("127.0.0.1".to_string());
-		target_config.ipv4_udp_port = Some(free_local_ipv4_port().expect("no free port"));
 		target_config.ipv4_udp_openness = Some(openness_target_node.to_string());
-
-		let _assistant_node =
-			test::load_test_node(stop_flag.clone(), &mut rng, &assistant_config, "assistant").await;
 		let target_node =
 			test::load_test_node(stop_flag.clone(), &mut rng, &target_config, "target").await;
 		// Load the 'relay' node after the 'target' node, so that the 'target' node

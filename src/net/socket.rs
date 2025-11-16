@@ -136,14 +136,14 @@ where
 	_phantom: PhantomData<UnsafeSendSync<V>>,
 }
 
-//pub type UdpServerV4 = UdpServer<SocketAddrV4>;
-//pub type UdpServerV6 = UdpServer<SocketAddrV6>;
+pub type UdpServerV4 = UdpServer<SocketAddrV4>;
+pub type UdpServerV6 = UdpServer<SocketAddrV6>;
 //pub type UdpSocketV4 = UdpSocket<SocketAddrV4>;
 //pub type UdpSocketV6 = UdpSocket<SocketAddrV6>;
 //pub type UdpSocketSenderV4 = UdpSocketSender<SocketAddrV4>;
 //pub type UdpSocketSenderV6 = UdpSocketSender<SocketAddrV6>;
-//pub type TcpServerV4 = TcpServer<SocketAddrV4>;
-//pub type TcpServerV6 = TcpServer<SocketAddrV6>;
+pub type TcpServerV4 = TcpServer<SocketAddrV4>;
+pub type TcpServerV6 = TcpServer<SocketAddrV6>;
 //pub type TcpSocketV4 = TcpSocket<SocketAddrV4>;
 //pub type TcpSocketV6 = TcpSocket<SocketAddrV6>;
 //pub type TcpSocketSenderV4 = TcpSocketSender<SocketAddrV4>;
@@ -306,9 +306,6 @@ where
 
 	async fn bind(addr: Self::Target) -> io::Result<Self> {
 		let inner = Self::new_inner()?;
-		inner.set_reuseaddr(true)?;
-		#[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-		inner.set_reuseport(true)?;
 		inner.bind(addr.clone().into())?;
 		Ok(Self {
 			inner: inner.listen(TCP_BACKLOG)?,
@@ -328,10 +325,6 @@ where
 {
 	async fn connect(&self, addr: Self::Target, timeout: Duration) -> io::Result<Self::Socket> {
 		let inner = Self::new_inner()?;
-		inner.set_reuseaddr(true)?;
-		#[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-		inner.set_reuseport(true)?;
-		inner.bind(self.addr.as_ref().clone().into())?;
 
 		select! {
 			result = inner.connect(addr.into()) => {

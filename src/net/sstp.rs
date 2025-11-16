@@ -377,7 +377,6 @@ impl From<binserde::Error> for Traced<Error> {
 #[cfg(test)]
 mod tests {
 	use crate::{config::*, net::sstp::*, test};
-	use port_check::free_local_ipv4_port;
 
 	#[ctor::ctor]
 	fn initialize() {
@@ -400,21 +399,18 @@ mod tests {
 	async fn test_connection(use_udp: bool) {
 		let mut rng = test::initialize_rng();
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
-		let master_port = free_local_ipv4_port().expect("no open port");
-		let slave_port = free_local_ipv4_port().expect("no open port");
-		let master_addr = SocketAddr::V4(SocketAddrV4::new(ip, master_port));
 		let mut master_config = Config::default();
 		master_config.ipv4_address = Some("127.0.0.1".to_string());
 		if use_udp {
-			master_config.ipv4_udp_port = Some(master_port);
+			master_config.ipv4_udp_port = Some(0);
 		} else {
-			master_config.ipv4_tcp_port = Some(master_port);
+			master_config.ipv4_tcp_port = Some(0);
 		}
 		let mut slave_config = master_config.clone();
 		if use_udp {
-			slave_config.ipv4_udp_port = Some(slave_port);
+			slave_config.ipv4_udp_port = Some(0);
 		} else {
-			slave_config.ipv4_tcp_port = Some(slave_port);
+			slave_config.ipv4_tcp_port = Some(0);
 		}
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let master_private_key = NodePrivateKey::generate_with_rng(&mut rng);
@@ -503,10 +499,17 @@ mod tests {
 		master.set_next_session_id(100).await;
 		slave.set_next_session_id(200).await;
 
+		let master_availability = master.our_contact_info().ipv4.unwrap().availability;
+		let master_port = if use_udp {
+			master_availability.udp.unwrap().port
+		} else {
+			master_availability.tcp.unwrap().port
+		};
+		let master_addr = SocketAddrV4::new(ip, master_port);
 		let (mut connection, first_response) = slave
 			.clone()
 			.connect(
-				&ContactOption::new(master_addr, !use_udp),
+				&ContactOption::new(master_addr.into(), !use_udp),
 				None,
 				Some(&tiny_message),
 			)
@@ -534,20 +537,16 @@ mod tests {
 	// Sent and receive a message through a relay
 	async fn test_relaying() {
 		let mut rng = test::initialize_rng();
-		let relay_port = free_local_ipv4_port().expect("no open port");
 		let mut relay_config = Config::default();
 		relay_config.ipv4_address = Some("127.0.0.1".to_string());
-		relay_config.ipv4_udp_port = Some(relay_port);
-		let node1_port = free_local_ipv4_port().expect("no open port");
-		let mut node1_config = relay_config.clone();
-		node1_config.ipv4_udp_port = Some(node1_port);
+		relay_config.ipv4_udp_port = Some(0);
 
-		let node2_port = free_local_ipv4_port().expect("no open port");
+		let mut node1_config = relay_config.clone();
+		node1_config.ipv4_udp_port = Some(0);
+
 		let mut node2_config = relay_config.clone();
-		node2_config.ipv4_udp_port = Some(node2_port);
+		node2_config.ipv4_udp_port = Some(0);
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
-		let relay_addr = SocketAddr::V4(SocketAddrV4::new(ip, relay_port));
-		let node2_addr = SocketAddr::V4(SocketAddrV4::new(ip, node2_port));
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let relay_private_key = NodePrivateKey::generate();
 		let relay_node_id = relay_private_key.public().generate_address();
@@ -560,6 +559,15 @@ mod tests {
 		)
 		.await
 		.expect("unable to bind relay");
+		let relay_port = relay
+			.our_contact_info()
+			.ipv4
+			.unwrap()
+			.availability
+			.udp
+			.unwrap()
+			.port;
+		let relay_addr = SocketAddr::V4(SocketAddrV4::new(ip, relay_port));
 		let node1_private_key = NodePrivateKey::generate();
 		let node1_node_id = node1_private_key.public().generate_address();
 		let node1 = sstp::Server::bind(
@@ -584,6 +592,15 @@ mod tests {
 			.await
 			.expect("unable to bind node 2"),
 		);
+		let node2_port = node2
+			.our_contact_info()
+			.ipv4
+			.unwrap()
+			.availability
+			.udp
+			.unwrap()
+			.port;
+		let node2_addr = SocketAddr::V4(SocketAddrV4::new(ip, node2_port));
 
 		let mut request = vec![0u8; 1000];
 		rng.fill_bytes(&mut request);

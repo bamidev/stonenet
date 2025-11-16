@@ -64,14 +64,25 @@ pub async fn load_test_node(
 
 	let private_key = NodePrivateKey::generate_with_rng(rng);
 	let node_id = private_key.public().generate_address();
+	// If not UDP or TCP port is set, implicitly set it to something
+	let mut config2 = config.clone();
+	if config.ipv4_udp_port.is_none() && config.ipv4_tcp_port.is_none() {
+		config2.ipv4_udp_port = Some(0);
+	}
 	info!(
 		"Node {} runs on port {}.",
 		node_id,
 		config.ipv4_udp_port.expect("no port in config")
 	);
-	let node = OverlayNode::start(stop_flag.clone(), &config, node_id, private_key, db.clone())
-		.await
-		.expect("unable to start node");
+	let node = OverlayNode::start(
+		stop_flag.clone(),
+		&config2,
+		node_id,
+		private_key,
+		db.clone(),
+	)
+	.await
+	.expect("unable to start node");
 
 	node.join_network(stop_flag).await;
 

@@ -4,7 +4,6 @@ use std::sync::{
 };
 
 use log::*;
-use port_check::free_local_ipv4_port;
 use rand::RngCore;
 use stonenetd::{
 	api::Api, config::Config, core::*, db::PersistenceHandle, net::*, test::*,
@@ -34,33 +33,34 @@ async fn test_data_synchronization(
 
 	// Set up four nodes
 	let stop_flag = Arc::new(AtomicBool::new(false));
-	let port1 = free_local_ipv4_port().expect("no free port");
 	let mut config1 = Config::default();
 	config1.ipv4_address = Some("127.0.0.1".to_string());
-	config1.ipv4_udp_port = Some(port1);
 	config1.ipv4_udp_openness = Some("bidirectional".to_string());
-	let port2 = free_local_ipv4_port().expect("no free port");
+	let bootstrap_node = load_test_node(stop_flag.clone(), &mut rng, &config1, "bootstrap").await;
+	let port1 = bootstrap_node
+		.node
+		.contact_info()
+		.ipv4
+		.unwrap()
+		.availability
+		.udp
+		.unwrap()
+		.port;
 	let mut config2 = Config::default();
 	config2.ipv4_address = Some("127.0.0.1".to_string());
-	config2.ipv4_udp_port = Some(port2);
 	config2.ipv4_udp_openness = Some("bidirectional".to_string());
 	config2.relay_node = Some(true);
-	config2.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
-	let port3 = free_local_ipv4_port().expect("no free port");
+	config2.bootstrap_nodes = vec![format!("127.0.0.1:{}", port1)];
 	let mut config3 = Config::default();
 	config3.ipv4_address = Some("127.0.0.1".to_string());
-	config3.ipv4_udp_port = Some(port3);
 	config3.ipv4_udp_openness = Some(node1_openness.to_string());
-	config3.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
-	let port4 = free_local_ipv4_port().expect("no free port");
+	config3.bootstrap_nodes = vec![format!("127.0.0.1:{}", port1)];
 	let mut config4 = Config::default();
 	config4.ipv4_address = Some("127.0.0.1".to_string());
-	config4.ipv4_udp_port = Some(port4);
 	config4.ipv4_udp_openness = Some(node2_openness.to_string());
-	config4.bootstrap_nodes = vec![format!("127.0.0.1:{}", config1.ipv4_udp_port.unwrap())];
-	let bootstrap_node = load_test_node(stop_flag.clone(), &mut rng, &config1, "bootstrap").await;
-	let node1 = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
+	config4.bootstrap_nodes = vec![format!("127.0.0.1:{}", port1)];
 	let relay_node: Api = load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
+	let node1 = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
 	let node2 = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
 
 	// Make sure node 1 & 2 know about the relay node, because otherwise they may not be able to

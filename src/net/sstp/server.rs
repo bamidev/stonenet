@@ -7,7 +7,10 @@ use tokio::{
 };
 
 use super::*;
-use crate::trace::Mutex;
+use crate::{
+	net::socket::{TcpServerV4, TcpServerV6, UdpServerV4, UdpServerV6},
+	trace::Mutex,
+};
 
 const DEFAULT_KEEP_ALIVE_IDLE_TIME: Duration = Duration::from_secs(120);
 
@@ -272,6 +275,7 @@ where
 	S: LinkServer,
 {
 	inner: S,
+	port: u16,
 	openness: Openness,
 }
 
@@ -283,10 +287,62 @@ impl Server {
 		stop_flag: Arc<AtomicBool>, config: &Config, node_id: NodeAddress,
 		private_key: NodePrivateKey, default_timeout: Duration,
 	) -> StdResult<Arc<Self>, SocketBindError> {
-		let contact_info = ContactInfo::from_config(config);
+		let mut contact_info = ContactInfo::from_config(config);
+		let sockets = SocketCollection::bind(config).await?;
+
+		// Update the contact info data with the actual ports used
+		if let Some(servers) = &sockets.ipv4 {
+			if let Some(server) = &servers.udp {
+				contact_info
+					.ipv4
+					.as_mut()
+					.unwrap()
+					.availability
+					.udp
+					.as_mut()
+					.unwrap()
+					.port = server.port;
+			}
+			if let Some(server) = &servers.tcp {
+				contact_info
+					.ipv4
+					.as_mut()
+					.unwrap()
+					.availability
+					.tcp
+					.as_mut()
+					.unwrap()
+					.port = server.port;
+			}
+		}
+		if let Some(servers) = &sockets.ipv6 {
+			if let Some(server) = &servers.udp {
+				contact_info
+					.ipv6
+					.as_mut()
+					.unwrap()
+					.availability
+					.udp
+					.as_mut()
+					.unwrap()
+					.port = server.port;
+			}
+			if let Some(server) = &servers.tcp {
+				contact_info
+					.ipv6
+					.as_mut()
+					.unwrap()
+					.availability
+					.tcp
+					.as_mut()
+					.unwrap()
+					.port = server.port;
+			}
+		}
+
 		Ok(Arc::new(Self {
 			stop_flag,
-			sockets: SocketCollection::bind(config).await?,
+			sockets,
 			our_contact_info: StdMutex::new(contact_info),
 			sessions: Mutex::new(Sessions::new()),
 			node_id,
@@ -2071,6 +2127,124 @@ impl From<io::Error> for SocketBindError {
 	}
 }
 
+async fn bind_udpv4(addr: Ipv4Addr, port: u16) -> io::Result<(UdpServerV4, u16)> {
+	if port > 0 {
+		Ok((UdpServer::bind(SocketAddrV4::new(addr, port)).await?, port))
+	} else {
+		bind_first_free_udpv4(addr).await
+	}
+}
+
+async fn bind_tcpv4(addr: Ipv4Addr, port: u16) -> io::Result<(TcpServerV4, u16)> {
+	if port > 0 {
+		Ok((TcpServer::bind(SocketAddrV4::new(addr, port)).await?, port))
+	} else {
+		bind_first_free_tcpv4(addr).await
+	}
+}
+
+async fn bind_udpv6(addr: Ipv6Addr, port: u16) -> io::Result<(UdpServerV6, u16)> {
+	if port > 0 {
+		Ok((
+			UdpServer::bind(SocketAddrV6::new(addr, port, 0, 0)).await?,
+			port,
+		))
+	} else {
+		bind_first_free_udpv6(addr).await
+	}
+}
+
+async fn bind_tcpv6(addr: Ipv6Addr, port: u16) -> io::Result<(TcpServerV6, u16)> {
+	if port > 0 {
+		Ok((
+			TcpServer::bind(SocketAddrV6::new(addr, port, 0, 0)).await?,
+			port,
+		))
+	} else {
+		bind_first_free_tcpv6(addr).await
+	}
+}
+
+async fn bind_first_free_udpv4(addr: Ipv4Addr) -> io::Result<(UdpServerV4, u16)> {
+	// TODO: Start at a port that has not been tried yet by another call to this function
+	let mut i = 10000;
+	loop {
+		match UdpServer::bind(SocketAddrV4::new(addr, i)).await {
+			Ok(s) => return Ok((s, i)),
+			Err(e) => match e.kind() {
+				io::ErrorKind::AddrInUse => {
+					if i == 60000 {
+						return Err(e.into());
+					}
+				}
+				_ => return Err(e.into()),
+			},
+		}
+
+		i += 1;
+	}
+}
+
+async fn bind_first_free_tcpv4(addr: Ipv4Addr) -> io::Result<(TcpServerV4, u16)> {
+	// TODO: Start at a port that has not been tried yet by another call to this function
+	let mut i = 10000;
+	loop {
+		match TcpServer::bind(SocketAddrV4::new(addr, i)).await {
+			Ok(s) => return Ok((s, i)),
+			Err(e) => match e.kind() {
+				io::ErrorKind::AddrInUse => {
+					if i == 60000 {
+						return Err(e.into());
+					}
+				}
+				_ => return Err(e.into()),
+			},
+		}
+
+		i += 1;
+	}
+}
+
+async fn bind_first_free_udpv6(addr: Ipv6Addr) -> io::Result<(UdpServerV6, u16)> {
+	// TODO: Start at a port that has not been tried yet by another call to this function
+	let mut i = 10000;
+	loop {
+		match UdpServer::bind(SocketAddrV6::new(addr, i, 0, 0)).await {
+			Ok(s) => return Ok((s, i)),
+			Err(e) => match e.kind() {
+				io::ErrorKind::AddrInUse => {
+					if i == 60000 {
+						return Err(e.into());
+					}
+				}
+				_ => return Err(e.into()),
+			},
+		}
+
+		i += 1;
+	}
+}
+
+async fn bind_first_free_tcpv6(addr: Ipv6Addr) -> io::Result<(TcpServerV6, u16)> {
+	// TODO: Start at a port that has not been tried yet by another call to this function
+	let mut i = 10000;
+	loop {
+		match TcpServer::bind(SocketAddrV6::new(addr, i, 0, 0)).await {
+			Ok(s) => return Ok((s, i)),
+			Err(e) => match e.kind() {
+				io::ErrorKind::AddrInUse => {
+					if i == 60000 {
+						return Err(e.into());
+					}
+				}
+				_ => return Err(e.into()),
+			},
+		}
+
+		i += 1;
+	}
+}
+
 impl SocketCollection {
 	/// Binds all internal sockets to the given addresses and ports.
 	pub async fn bind(config: &Config) -> StdResult<Self, SocketBindError> {
@@ -2084,8 +2258,10 @@ impl SocketCollection {
 
 			// Parse UDPv4 configuration
 			if let Some(port) = config.ipv4_udp_port {
+				let (inner, new_port) = bind_udpv4(addr, port).await?;
 				servers.udp = Some(Arc::new(SstpSocketServer {
-					inner: UdpServer::bind(SocketAddrV4::new(addr, port)).await?,
+					inner,
+					port: new_port,
 					openness: config
 						.ipv4_udp_openness
 						.as_ref()
@@ -2106,8 +2282,10 @@ impl SocketCollection {
 
 			// Parse TCPv4 configuration
 			if let Some(port) = config.ipv4_tcp_port {
+				let (inner, new_port) = bind_tcpv4(addr, port).await?;
 				servers.tcp = Some(Arc::new(SstpSocketServer {
-					inner: TcpServer::bind(SocketAddrV4::new(addr, port)).await?,
+					inner,
+					port: new_port,
 					openness: config
 						.ipv4_tcp_openness
 						.as_ref()
@@ -2137,8 +2315,10 @@ impl SocketCollection {
 
 			// Parse UDPv6 configuration
 			if let Some(port) = config.ipv6_udp_port {
+				let (inner, new_port) = bind_udpv6(addr, port).await?;
 				servers.udp = Some(Arc::new(SstpSocketServer {
-					inner: UdpServer::bind(SocketAddrV6::new(addr, port, 0, 0)).await?,
+					inner,
+					port: new_port,
 					openness: config
 						.ipv6_udp_openness
 						.as_ref()
@@ -2159,8 +2339,10 @@ impl SocketCollection {
 
 			// Parse TCPv6 configuration
 			if let Some(port) = config.ipv6_tcp_port {
+				let (inner, new_port) = bind_tcpv6(addr, port).await?;
 				servers.tcp = Some(Arc::new(SstpSocketServer {
-					inner: TcpServer::bind(SocketAddrV6::new(addr, port, 0, 0)).await?,
+					inner,
+					port: new_port,
 					openness: config
 						.ipv6_tcp_openness
 						.as_ref()
@@ -2300,7 +2482,7 @@ impl Default for SocketCollection {
 
 impl SocketCollection {
 	fn pick_contact_option_at_openness(
-		&self, target: &ContactInfo, openness: Openness,
+		&self, target: &ContactInfo, mut openness: Openness,
 	) -> Option<ContactOption> {
 		match self.ipv6.as_ref() {
 			None => {}
@@ -2332,6 +2514,9 @@ impl SocketCollection {
 						Some(_) => match contact_option.availability.tcp.as_ref() {
 							None => {}
 							Some(transport_option) => {
+								if openness == Openness::Punchable {
+									openness = Openness::Unidirectional;
+								}
 								let addr = SocketAddrV6::new(
 									contact_option.addr.clone(),
 									transport_option.port,
@@ -2378,6 +2563,9 @@ impl SocketCollection {
 						Some(_) => match contact_option.availability.tcp.as_ref() {
 							None => {}
 							Some(transport_option) => {
+								if openness == Openness::Punchable {
+									openness = Openness::Unidirectional;
+								}
 								let addr = SocketAddrV4::new(
 									contact_option.addr.clone(),
 									transport_option.port,
@@ -2601,6 +2789,10 @@ impl<S> SstpSocketServer<S>
 where
 	S: ConnectionLessLinkServer + 'static,
 {
+	fn port(&self) -> u16 {
+		self.port
+	}
+
 	fn spawn_connection_less(self: Arc<Self>, stop_flag: Arc<AtomicBool>, on_packet: OnPacket) {
 		let this = self.clone();
 		spawn(async move {
