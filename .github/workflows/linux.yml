@@ -39,10 +39,7 @@ jobs:
     - name: Set up Docker
       uses: docker/setup-docker-action@v4
     # This job currently fails on github because of disk space issues no their servers
-    - name: Cross compile all binaries
+    - name: Cross compile binaries
       run: |
-        docker build package --build-arg target=amd64
-        docker build package --build-arg target=arm64
         docker build package --build-arg target=armhf
         docker build package --build-arg target=win64
-      continue-on-error: true
