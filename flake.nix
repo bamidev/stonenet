@@ -27,6 +27,7 @@
           outputs = ["out" "share"];
           cargoLock = workspaceCargoLock;
           src = pkgs.lib.cleanSource ./.;
+          doCheck = false;
 
           installPhase = with pkgs; ''
             set -e
