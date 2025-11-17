@@ -24,16 +24,28 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
+      - name: Build (debug)
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+        continue-on-error: true
       - name: Build (release)
         uses: actions-rs/cargo@v1
         with:
           command: build
           args: --release
-      - name: Run tests for desktop client
+      - name: Build (release)
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --release
+        continue-on-error: true
+      - name: Run tests for desktop client (debug)
         uses: actions-rs/cargo@v1
         with:
           command: test
           args: -p stonenet-desktop
+        # Browser-Window compilation on Windows is broken for the commit that is pinned in stonenet-desktop
         continue-on-error: true
       - name: Run tests for desktop client (release)
         uses: actions-rs/cargo@v1

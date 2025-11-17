@@ -19,10 +19,16 @@ jobs:
         with:
           toolchain: stable
       - uses: actions/checkout@v3
-      - name: Run tests (debug)
+      - name: Build (debug)
         run: RUST_BACKTRACE=full RUST_LOG=debug cargo build --verbose
-      - name: Run tests (release)
+      - name: Run tests (debug)
+        run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose
+        continue-on-error: true
+      - name: Build (release)
         run: RUST_BACKTRACE=full RUST_LOG=debug cargo build --verbose --release
+      - name: Run tests (release)
+        run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose --release
+        continue-on-error: true
       - name: Install Nix
         uses: cachix/install-nix-action@v31
       - name: Build with Nix
