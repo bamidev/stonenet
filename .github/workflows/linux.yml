@@ -17,9 +17,9 @@ jobs:
     - name: Checkout Stonenet
       uses: actions/checkout@v3
     - name: Run tests (debug)
-      run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose -- --test-threads 1
+      run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose
     - name: Run tests (release)
-      run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose --release -- --test-threads 3
+      run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose --release
     - name: Install webkit2gtk
       run: |
         sudo apt update
@@ -34,12 +34,3 @@ jobs:
       run: sudo nix --extra-experimental-features 'nix-command flakes' build
     - name: Build desktop client with Nix
       run: sudo nix --extra-experimental-features 'nix-command flakes' build .#desktop
-    - name: Clear disk space
-      run: rm -rf /opt/hostedtoolcache
-    - name: Set up Docker
-      uses: docker/setup-docker-action@v4
-    # This job currently fails on github because of disk space issues no their servers
-    - name: Cross compile binaries
-      run: |
-        docker build package --build-arg target=armhf
-        docker build package --build-arg target=win64
