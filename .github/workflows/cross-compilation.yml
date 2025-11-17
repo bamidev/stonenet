@@ -22,17 +22,9 @@ jobs:
     - name: Set up Docker
       uses: docker/setup-docker-action@v4
     # This job currently fails on github because of disk space issues no their servers
-    - name: Cross compile for Debian amd64
-      run: docker build package --build-arg target=amd64
-    - name: Cross compile for Debian arm64
-      run: |
-        docker builder prune --all --force
-        docker build package --build-arg target=arm64
     - name: Cross compile for Debian armhf
       run: |
-        docker builder prune --all --force
         docker build package --build-arg target=armhf
     - name: Cross compile for Windows amd64
       run: |
-        docker builder prune --all --force
         docker build package --build-arg target=win64
