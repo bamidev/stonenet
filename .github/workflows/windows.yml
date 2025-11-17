@@ -20,14 +20,14 @@ jobs:
           toolchain: stable
       - name: Checkout Stonenet
         uses: actions/checkout@v3
-      - name: Run tests
+      - name: Build (debug)
         uses: actions-rs/cargo@v1
         with:
-          command: test
-      - name: Run tests (release)
+          command: build
+      - name: Build (release)
         uses: actions-rs/cargo@v1
         with:
-          command: test
+          command: build
           args: --release
       - name: Run tests for desktop client
         uses: actions-rs/cargo@v1

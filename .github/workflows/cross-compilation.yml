@@ -26,4 +26,3 @@ jobs:
       run: |
         docker build package --build-arg target=armhf
         docker build package --build-arg target=win64
-        continue-on-error: true

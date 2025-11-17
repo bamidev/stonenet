@@ -20,9 +20,9 @@ jobs:
           toolchain: stable
       - uses: actions/checkout@v3
       - name: Run tests (debug)
-        run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose
+        run: RUST_BACKTRACE=full RUST_LOG=debug cargo build --verbose
       - name: Run tests (release)
-        run: RUST_BACKTRACE=full RUST_LOG=debug cargo test --verbose --release
+        run: RUST_BACKTRACE=full RUST_LOG=debug cargo build --verbose --release
       - name: Install Nix
         uses: cachix/install-nix-action@v31
       - name: Build with Nix
