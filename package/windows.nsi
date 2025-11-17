@@ -41,7 +41,7 @@ Section "Stonenet"
 	File "../target/x86_64-pc-windows-gnu/release/WebView2Loader.dll"
 	File /r ../static
 	File /r ../templates
-	File /oname=config.toml ../conf/default.toml
+	File /oname=config.toml ../conf/default-system.toml
 
 	# Pre-create directory for Edge WebView2 framework to use
 	CreateDirectory "$INSTDIR\stonenet-desktop.exe.WebView2"
