@@ -91,10 +91,10 @@ name = "stonenet"
 revision = "main"
 section = "net"
 priority = "optional"
-conf-files = ["etc/stonenet/config-system.toml"]
+conf-files = ["etc/stonenet/config.toml"]
 assets = [
 	["target/release/stonenetd", "usr/bin/", "755"],
-	["conf/default.toml", "etc/stonenet/config.toml", "644"],
+	["conf/default-system.toml", "etc/stonenet/config.toml", "644"],
 	["static/**/*", "usr/share/stonenet/static", "644"],
 	["templates/**/*", "usr/share/stonenet/templates", "644"],
 ]
