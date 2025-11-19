@@ -1986,11 +1986,17 @@ impl OverlayNode {
 					)
 					.await
 				{
-					if this
+					if let Some(ok) = this
 						.exchange_reverse_connection_on_connection(&mut connection)
-						.await == Some(true)
+						.await
 					{
-						this.base.packet_server.spawn_connection(connection, None);
+						if ok {
+							this.base.packet_server.spawn_connection(connection, None);
+						} else {
+							info!("Reverse connection was not able to initiate for {} on connection with {}", request.source_node_id, connection.their_node_id());
+						}
+					} else {
+						warn!("Unable to reverse connection.");
 					}
 				}
 			});
