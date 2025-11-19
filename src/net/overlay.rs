@@ -2870,6 +2870,17 @@ mod tests {
 			test::load_test_node(stop_flag.clone(), &mut rng, &target_config, "target").await;
 		// Load the 'relay' node after the 'target' node, so that the 'target' node
 		// always attached itself to the 'assistant' node rather than the 'relay' node.
+		assert_eq!(
+			target_node
+				.node
+				.base
+				.iter_all_fingers_local_first()
+				.await
+				.collect_amount(1)
+				.await
+				.len(),
+			1
+		);
 		let relay_node =
 			test::load_test_node(stop_flag.clone(), &mut rng, &relay_config, "random").await;
 
@@ -2878,15 +2889,37 @@ mod tests {
 			.create_identity("test", "Test", None, None, None)
 			.await
 			.unwrap();
-		let _ = target_node
+		let actor_node = target_node
 			.node
 			.join_actor_network(&actor_address, &actor_info)
 			.await
 			.unwrap();
+		assert_eq!(
+			actor_node
+				.base
+				.iter_all_fingers_local_first()
+				.await
+				.collect_amount(1)
+				.await
+				.len(),
+			0
+		);
 
 		// Find data as the source node
 		let source_node =
 			test::load_test_node(stop_flag.clone(), &mut rng, &source_config, "source").await;
+		assert_eq!(
+			source_node
+				.node
+				.base
+				.iter_all_fingers_local_first()
+				.await
+				.collect_amount(1)
+				.await
+				.len(),
+			1
+		);
+
 		// Make sure that we find the relay node in case the source node needs it
 		let relay_node_info = source_node
 			.node
