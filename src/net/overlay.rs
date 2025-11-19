@@ -1662,19 +1662,6 @@ impl OverlayNode {
 			}
 		}
 
-		// Contact the relay node
-		let knows_target = self
-			.exchange_relay_punch_hole_request(
-				relay_connection,
-				target.clone(),
-				our_contact.clone(),
-				reversed,
-			)
-			.await?;
-		if !knows_target {
-			return None;
-		}
-
 		let (tx_in, rx_in) = oneshot::channel();
 		let connection_result = if reversed {
 			{
@@ -1693,6 +1680,20 @@ impl OverlayNode {
 				expected_connections.insert(target.clone(), tx_in);
 			}
 
+			// Contact the relay node
+			let knows_target = self
+				.exchange_relay_punch_hole_request(
+					relay_connection,
+					target.clone(),
+					our_contact.clone(),
+					reversed,
+				)
+				.await?;
+			if !knows_target {
+				self.expected_connections.lock().await.remove(target);
+				return None;
+			}
+
 			let result = select! {
 				result = rx_in => {
 					Some((result.expect("sender of expected connection has closed unexpectantly"), None))
@@ -1702,8 +1703,10 @@ impl OverlayNode {
 				}
 			};
 
-			let mut expected_connections = self.expected_connections.lock().await;
-			let removed = expected_connections.remove(target).is_some();
+			let removed = {
+				let mut expected_connections = self.expected_connections.lock().await;
+				expected_connections.remove(target).is_some()
+			};
 
 			// It could happen that the connection sender has already been taken from the
 			// expected_connections map, but the sender hasn't been used yet. It is unlikely
@@ -1716,7 +1719,6 @@ impl OverlayNode {
 					 not been used yet."
 				);
 			}
-
 			result
 		} else {
 			let stop_flag = Arc::new(AtomicBool::new(false));
