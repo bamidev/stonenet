@@ -63,6 +63,10 @@ where
 		let mut list = Vec::with_capacity(amount);
 		while let Some(node_info) = self.next().await {
 			list.push(node_info);
+
+			if list.len() == list.capacity() {
+				return list;
+			}
 		}
 		list
 	}
