@@ -44,6 +44,7 @@ once_cell = "1"
 rand = { version = "0.8", features = ["getrandom"] }
 rand_chacha = "0.3"
 reqwest = { version = "0", default-features = false }
+resolve-path = "0.1"
 rsa = { version = "0.9", features = ["sha2"] }
 rss = { version = "2.0", features = ["validation"] }
 rusqlite = "^0.30"

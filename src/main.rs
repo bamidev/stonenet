@@ -43,6 +43,8 @@ use config::Config;
 use db::Database;
 use log::*;
 use net::{overlay::OverlayNode, resolve_bootstrap_addresses, Openness};
+
+use resolve_path::PathResolveExt;
 use semver::Version;
 use signal_hook::flag;
 use tokio::{spawn, time::sleep};
@@ -102,12 +104,6 @@ async fn check_version() -> Option<(String, bool)> {
 			return Some((latest_version_str.to_owned(), true));
 		}
 	}
-	error!(
-		"HOI {:?} {:?} {}",
-		&latest_version,
-		&current_version,
-		latest_version > current_version
-	);
 	if latest_version > current_version {
 		info!("New version available!");
 		return Some((latest_version_str.to_owned(), false));
@@ -117,11 +113,12 @@ async fn check_version() -> Option<(String, bool)> {
 
 #[cfg(not(target_family = "windows"))]
 fn config_path(_install_dir: PathBuf) -> PathBuf {
-	let user_path = PathBuf::from_str(config::CONFIG_FILE_USER_PATH).unwrap();
+	let user_path = config::CONFIG_FILE_USER_PATH.resolve();
+	info!("HIO {:?} {}", &user_path, user_path.exists());
 	if user_path.exists() {
-		return user_path;
+		return user_path.to_path_buf();
 	}
-	PathBuf::from_str(config::CONFIG_FILE_SYSTEM_PATH).unwrap()
+	config::CONFIG_FILE_SYSTEM_PATH.resolve().to_path_buf()
 }
 
 #[cfg(target_family = "windows")]
