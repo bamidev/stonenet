@@ -182,11 +182,17 @@ async fn parse_identity_form(
 			"name" => name_buf = field.bytes().await.unwrap().to_vec(),
 			"avatar" => {
 				avatar_mime_type = field.content_type().map(|s| s.to_string());
-				avatar_buf = field.bytes().await.unwrap().to_vec();
+				match field.bytes().await {
+					Ok(b) => avatar_buf = b.to_vec(),
+					Err(_) => panic!("Uploaded avatar is too large."),
+				}
 			}
 			"wallpaper" => {
 				wallpaper_mime_type = field.content_type().map(|s| s.to_string());
-				wallpaper_buf = field.bytes().await.unwrap().to_vec();
+				match field.bytes().await {
+					Ok(b) => wallpaper_buf = b.to_vec(),
+					Err(_) => panic!("Uploaded wallpaper is too large."),
+				}
 			}
 			"description" => description_buf = field.bytes().await.unwrap().to_vec(),
 			other => warn!("Unrecognized profile form field: {}", other),

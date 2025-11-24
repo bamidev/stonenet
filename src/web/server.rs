@@ -119,6 +119,7 @@ pub async fn serve(
 		.route("/search", get(search))
 		.route("/.well-known/webfinger", get(activity_pub::webfinger))
 		.route("/.well-known/x-nodeinfo2", get(activity_pub::nodeinfo))
+		.layer(DefaultBodyLimit::max(10_000_000))
 		.with_state(global);
 
 	let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

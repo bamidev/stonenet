@@ -10,7 +10,7 @@ readme = "README.md"
 rust-version = "1.86"
 
 [dependencies]
-axum = { version = "0.7.5", features = ["multipart", "tokio"] }
+axum = { version = "0.7.9", features = ["multipart", "tokio"] }
 arrayref = "0"
 async-recursion = "1"
 async-trait = "0"

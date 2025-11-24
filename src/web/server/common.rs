@@ -58,15 +58,10 @@ pub async fn post_message(
 	let (message, attachments) = parse_post_message(form).await?;
 
 	// Load active identity and its private key
-	let identity = g
-		.state
-		.lock()
-		.await
-		.active_identity
-		.as_ref()
-		.unwrap()
-		.1
-		.clone();
+	let identity = match g.state.lock().await.active_identity.as_ref() {
+		None => return Err(error_response(400, "No identiy selected yet.")),
+		Some(i) => i.1.clone(),
+	};
 	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
 		Ok(r) => {
 			if let Some((_, pk)) = r {
