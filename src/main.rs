@@ -268,19 +268,7 @@ fn parse_versions(string: &str) -> (&str, Option<&str>) {
 	}
 }
 
-#[cfg(package_manager = "apt")]
-#[allow(dead_code)]
-fn version_message(_version_str: &str) -> String {
-	"Update stonenet with: <code>apt update && update upgrade</code>".to_owned()
-}
-
-#[cfg(package_manager = "homebrew")]
-#[allow(dead_code)]
-fn version_message(_version_str: &str) -> String {
-	"Update stonenet with: <code>brew update</code>".to_owned()
-}
-
-#[cfg(package_manager = "windows-installer")]
+#[cfg(feature = "windows-installer")]
 #[allow(dead_code)]
 fn version_message(version_str: &str) -> String {
 	format!(
@@ -290,7 +278,7 @@ fn version_message(version_str: &str) -> String {
 	)
 }
 
-#[cfg(not(package_manager))]
+#[cfg(not(feature = "windows-installer"))]
 #[allow(dead_code)]
 fn version_message(_version_str: &str) -> String {
 	"use your package manager to update the stonenet client".to_owned()

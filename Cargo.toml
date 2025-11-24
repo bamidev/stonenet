@@ -73,9 +73,13 @@ zeroize = ">=1.3, <2"
 ctor = "*"
 
 [features]
-unbundled = ["reqwest/native-tls"]
+apt = []
 bundled = ["rusqlite/bundled", "reqwest/rustls-tls"]
+home-manager = []
+nixos = []
 trace-packets = []
+unbundled = ["reqwest/native-tls"]
+windows-installer = []
 
 [target.'cfg(target_family = "windows")'.dependencies]
 reqwest = { version = "0", default-features = true }

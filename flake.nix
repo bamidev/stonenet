@@ -21,13 +21,14 @@
           };
         };
 
-        stonenet = pkgs.rustPlatform.buildRustPackage {
+        stonenet = {useHomeManager}: pkgs.rustPlatform.buildRustPackage {
           pname = manifest.name;
           version = manifest.version;
           outputs = ["out" "share"];
           cargoLock = workspaceCargoLock;
           src = pkgs.lib.cleanSource ./.;
           doCheck = false;
+          buildFeatures = [(if !useHomeManager then "nixos" else "home-manager")];
 
           installPhase = with pkgs; ''
             set -e
@@ -62,7 +63,7 @@
           default = {
             name = "stonenet";
             type = "app";
-            program = "${stonenet}/bin/stonenetd";
+            program = "${stonenet {useHomeManager = false;}}/bin/stonenetd";
           };
           desktop = {
             name = "stonenet-desktop";
@@ -103,16 +104,17 @@
                 (pkgs.lib.importTOML ./conf/default-user.toml);
               effectiveConfig = defaultConfig // config.services.stonenet.config;
               userConfigFile = settingsFormat.generate "stonenet.toml" effectiveConfig;
+              stonenetPackage = stonenet { useHomeManager=useHomeManager; };
 
               systemdServiceConfig = {
-                ExecStart = "${stonenet}/bin/stonenetd";
+                ExecStart = "${stonenetPackage}/bin/stonenetd";
                 Type = "simple";
 
                 Restart = "on-failure";
                 StandardError = "journal+console";
                 StandardOutput = "journal+console";
                 # A workaround: stonenet looks for the templates and static files in the working directory at the moment
-                WorkingDirectory = "${stonenet.share}";
+                WorkingDirectory = "${stonenetPackage.share}";
               };
 
 
@@ -171,7 +173,7 @@
         };
 
         packages = {
-          default = stonenet;
+          default = stonenet { useHomeManager = false; };
           desktop = stonenetDesktop;
         };
       });
