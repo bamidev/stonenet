@@ -32,6 +32,8 @@
             "unbundled"
             (if !useHomeManager then "nixos" else "home-manager")
           ];
+          buildInputs = with pkgs; [ openssl.dev ];
+          nativeBuildInputs = with pkgs; [ pkg-config ];
 
           installPhase = with pkgs; ''
             set -e
@@ -52,8 +54,6 @@
           buildAndTestSubdir = "desktop";
           src = pkgs.lib.cleanSource ./.;
 
-          # FIXME: Not sure why this isn't working:
-          #nativeBuildInputs = browser-window.packages.${system}.webkitgtk.nativeBuildInputs;
           nativeBuildInputs = with pkgs; [
             pkg-config
             rustPlatform.bindgenHook
@@ -75,10 +75,13 @@
           };
         };
 
-        devShells = rec {
-          default = openssl;
-          openssl = pkgs.mkShell {
-            packages = with pkgs; [ pkg-config pkgs.openssl.dev ];
+        devShells = {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              pkg-config
+              pkgs.openssl.dev
+              rustPlatform.bindgenHook
+            ] ++ browser-window.packages.${system}.webkitgtk.buildInputs;
           };
         };
 
