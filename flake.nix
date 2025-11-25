@@ -28,7 +28,10 @@
           cargoLock = workspaceCargoLock;
           src = pkgs.lib.cleanSource ./.;
           doCheck = false;
-          buildFeatures = [(if !useHomeManager then "nixos" else "home-manager")];
+          buildFeatures = [
+            "unbundled"
+            (if !useHomeManager then "nixos" else "home-manager")
+          ];
 
           installPhase = with pkgs; ''
             set -e
@@ -69,6 +72,13 @@
             name = "stonenet-desktop";
             type = "app";
             program = "${stonenetDesktop}/bin/stonenet-desktop";
+          };
+        };
+
+        devShells = rec {
+          default = openssl;
+          openssl = pkgs.mkShell {
+            packages = with pkgs; [ pkg-config pkgs.openssl.dev ];
           };
         };
 
@@ -153,7 +163,8 @@
                 systemd.user.services.stonenet = {
                   Unit = {
                     Description = "Stonenet Daemon";
-                    After = "ntwork-online.target";
+                    After = "network-online.target";
+                    WantedBy = "multi-user.target";
                   };
 
                   Service = systemdServiceConfig;
