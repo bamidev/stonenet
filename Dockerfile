@@ -19,10 +19,9 @@ ENV PATH="/home/stonenet/.nix-profile/bin:${PATH}"
 RUN nix-env -iA nixpkgs.rustup
 
 # Clone Stonenet
-# TODO: Change the branch to main
-RUN git clone --depth=1 -b dev https://github.com/bamidev/stonenet
+ADD --chown=stonenet:stonenet . /home/stonenet/stonenet
 WORKDIR stonenet
-# This is not needed for Windows, but it is usefull if it's cached by docker
+# This is not needed for Windows, but it is usefull that it's cached by docker
 RUN cargo install cargo-deb
 
 # After this, all stuff is target platform specific and so docker's cache can't really help a lot here
