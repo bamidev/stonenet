@@ -114,7 +114,6 @@ async fn check_version() -> Option<(String, bool)> {
 #[cfg(not(target_family = "windows"))]
 fn config_path(_install_dir: PathBuf) -> PathBuf {
 	let user_path = config::CONFIG_FILE_USER_PATH.resolve();
-	info!("HIO {:?} {}", &user_path, user_path.exists());
 	if user_path.exists() {
 		return user_path.to_path_buf();
 	}

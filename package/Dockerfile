@@ -60,7 +60,7 @@ RUN mkdir ../out
 # FIXME: The above does not work
 ENV BINDGEN_EXTRA_CLANG_ARGS="-I/usr/lib/gcc/x86_64-w64-mingw32/14-win32/include"
 RUN if [ $target = "win64" ]; then cargo build -p stonenet-desktop --release --target x86_64-pc-windows-gnu; fi
-RUN if [ $target = "win64" ]; then cargo build --release --features windows-installer --target x86_64-pc-windows-gnu; fi
+RUN if [ $target = "win64" ]; then cargo build --release --features bundled,windows-installer --target x86_64-pc-windows-gnu; fi
 ENV BINDGEN_EXTRA_CLANG_ARGS=
 RUN if [ $target = "win64" ]; then cp Microsoft.Web.WebView2.*/build/native/x64/WebView2Loader.dll target/x86_64-pc-windows-gnu/release; fi
 RUN if [ $target = "win64" ]; then makensis package/windows.nsi; fi
@@ -69,16 +69,16 @@ ENV PKG_CONFIG_ALLOW_CROSS=true
 ENV PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 RUN if [ $target = "arm64" ]; then cargo deb -p stonenet-desktop --target aarch64-unknown-linux-gnu; fi
-RUN if [ $target = "arm64" ]; then cargo deb --features apt --target aarch64-unknown-linux-gnu; fi
+RUN if [ $target = "arm64" ]; then cargo deb --features apt,unbundled --target aarch64-unknown-linux-gnu; fi
 RUN if [ $target = "arm64" ]; then cp target/aarch64-unknown-linux-gnu/debian/* ../out; fi
 ENV PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
 RUN if [ $target = "amd64" ]; then cargo deb -p stonenet-desktop --target x86_64-unknown-linux-gnu; fi
-RUN if [ $target = "amd64" ]; then cargo deb --features apt --target x86_64-unknown-linux-gnu; fi
+RUN if [ $target = "amd64" ]; then cargo deb --features apt,unbundled --target x86_64-unknown-linux-gnu; fi
 RUN if [ $target = "amd64" ]; then cp target/x86_64-unknown-linux-gnu/debian/* ../out; fi
 ENV PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
 ENV CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
 RUN if [ $target = "armhf" ]; then cargo deb -p stonenet-desktop --target armv7-unknown-linux-gnueabihf; fi
-RUN if [ $target = "armhf" ]; then cargo deb --features apt --target armv7-unknown-linux-gnueabihf; fi
+RUN if [ $target = "armhf" ]; then cargo deb --features apt,unbundled --target armv7-unknown-linux-gnueabihf; fi
 RUN if [ $target = "armhf" ]; then cp target/armv7-unknown-linux-gnueabihf/debian/* ../out; fi
 
