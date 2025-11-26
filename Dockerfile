@@ -1,4 +1,4 @@
-FROM debian:stable-slim
+FROM debian:trixie-slim
 
 # Install debian packages
 ENV DEBIAN_FRONTED=noninteractive
