@@ -2258,50 +2258,64 @@ impl SocketCollection {
 
 			// Parse UDPv4 configuration
 			if let Some(port) = config.ipv4_udp_port {
-				let (inner, new_port) = bind_udpv4(addr, port).await?;
-				servers.udp = Some(Arc::new(SstpSocketServer {
-					inner,
-					port: new_port,
-					openness: config
-						.ipv4_udp_openness
-						.as_ref()
-						.map(|s| match Openness::from_str(s) {
-							Ok(o) => o,
-							Err(_) => {
-								error!(
-									"Unable to parse UDPv4 openness \"{}\" from config file. \
-									 Assuming unidirectional.",
-									s
-								);
-								Openness::Unidirectional
-							}
-						})
-						.unwrap_or(Openness::Unidirectional),
-				}));
+				match bind_udpv4(addr, port).await {
+					Err(e) => error!(
+						"Unable to bind node to IPv6 socket address {}:{} for UDP: {}",
+						addr, port, e
+					),
+					Ok((inner, new_port)) => {
+						servers.udp = Some(Arc::new(SstpSocketServer {
+							inner,
+							port: new_port,
+							openness: config
+								.ipv4_udp_openness
+								.as_ref()
+								.map(|s| match Openness::from_str(s) {
+									Ok(o) => o,
+									Err(_) => {
+										error!(
+                                        "Unable to parse UDPv4 openness \"{}\" from config file. \
+                                         Assuming unidirectional.",
+                                        s
+                                    );
+										Openness::Unidirectional
+									}
+								})
+								.unwrap_or(Openness::Unidirectional),
+						}))
+					}
+				}
 			}
 
 			// Parse TCPv4 configuration
 			if let Some(port) = config.ipv4_tcp_port {
-				let (inner, new_port) = bind_tcpv4(addr, port).await?;
-				servers.tcp = Some(Arc::new(SstpSocketServer {
-					inner,
-					port: new_port,
-					openness: config
-						.ipv4_tcp_openness
-						.as_ref()
-						.map(|s| match Openness::from_str(s) {
-							Ok(o) => o,
-							Err(_) => {
-								error!(
-									"Unable to parse TCPv4 openness \"{}\" from config file. \
-									 Assuming unidirectional.",
-									s
-								);
-								Openness::Unidirectional
-							}
-						})
-						.unwrap_or(Openness::Unidirectional),
-				}));
+				match bind_tcpv4(addr, port).await {
+					Err(e) => error!(
+						"Unable to bind node to IPv4 socket address {}:{} for TCP: {}",
+						addr, port, e
+					),
+					Ok((inner, new_port)) => {
+						servers.tcp = Some(Arc::new(SstpSocketServer {
+							inner,
+							port: new_port,
+							openness: config
+								.ipv4_tcp_openness
+								.as_ref()
+								.map(|s| match Openness::from_str(s) {
+									Ok(o) => o,
+									Err(_) => {
+										error!(
+                                        "Unable to parse TCPv4 openness \"{}\" from config file. \
+                                         Assuming unidirectional.",
+                                        s
+                                    );
+										Openness::Unidirectional
+									}
+								})
+								.unwrap_or(Openness::Unidirectional),
+						}))
+					}
+				}
 			}
 
 			this.ipv4 = Some(servers);
@@ -2315,50 +2329,64 @@ impl SocketCollection {
 
 			// Parse UDPv6 configuration
 			if let Some(port) = config.ipv6_udp_port {
-				let (inner, new_port) = bind_udpv6(addr, port).await?;
-				servers.udp = Some(Arc::new(SstpSocketServer {
-					inner,
-					port: new_port,
-					openness: config
-						.ipv6_udp_openness
-						.as_ref()
-						.map(|s| match Openness::from_str(&s) {
-							Ok(o) => o,
-							Err(_) => {
-								error!(
-									"Unable to parse UDPv6 openness \"{}\" from config file. \
-									 Assuming unidirectional.",
-									s
-								);
-								Openness::Unidirectional
-							}
-						})
-						.unwrap_or(Openness::Unidirectional),
-				}));
+				match bind_udpv6(addr, port).await {
+					Err(e) => error!(
+						"Unable to bind node to IPv6 socket address {}:{} for UDP: {}",
+						addr, port, e
+					),
+					Ok((inner, new_port)) => {
+						servers.udp = Some(Arc::new(SstpSocketServer {
+							inner,
+							port: new_port,
+							openness: config
+								.ipv6_udp_openness
+								.as_ref()
+								.map(|s| match Openness::from_str(&s) {
+									Ok(o) => o,
+									Err(_) => {
+										error!(
+                                        "Unable to parse UDPv6 openness \"{}\" from config file. \
+                                         Assuming unidirectional.",
+                                        s
+                                    );
+										Openness::Unidirectional
+									}
+								})
+								.unwrap_or(Openness::Unidirectional),
+						}))
+					}
+				}
 			}
 
 			// Parse TCPv6 configuration
 			if let Some(port) = config.ipv6_tcp_port {
-				let (inner, new_port) = bind_tcpv6(addr, port).await?;
-				servers.tcp = Some(Arc::new(SstpSocketServer {
-					inner,
-					port: new_port,
-					openness: config
-						.ipv6_tcp_openness
-						.as_ref()
-						.map(|s| match Openness::from_str(&s) {
-							Ok(o) => o,
-							Err(_) => {
-								error!(
-									"Unable to parse TCPv6 openness \"{}\" from config file. \
-									 Assuming unidirectional.",
-									s
-								);
-								Openness::Unidirectional
-							}
-						})
-						.unwrap_or(Openness::Unidirectional),
-				}));
+				match bind_tcpv6(addr, port).await {
+					Err(e) => error!(
+						"Unable to bind node to IPv6 socket address {}:{} for TCP: {}",
+						addr, port, e
+					),
+					Ok((inner, new_port)) => {
+						servers.tcp = Some(Arc::new(SstpSocketServer {
+							inner,
+							port: new_port,
+							openness: config
+								.ipv6_tcp_openness
+								.as_ref()
+								.map(|s| match Openness::from_str(&s) {
+									Ok(o) => o,
+									Err(_) => {
+										error!(
+                                        "Unable to parse TCPv6 openness \"{}\" from config file. \
+                                         Assuming unidirectional.",
+                                        s
+                                    );
+										Openness::Unidirectional
+									}
+								})
+								.unwrap_or(Openness::Unidirectional),
+						}))
+					}
+				}
 			}
 
 			this.ipv6 = Some(servers);
