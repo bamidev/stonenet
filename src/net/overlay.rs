@@ -2809,63 +2809,206 @@ mod tests {
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_direct() {
-		test_overlay_connectivity("unidirectional", "bidirectional", false).await;
+		test_overlay_connectivity_with_openess_restrictions(
+			"unidirectional",
+			"bidirectional",
+			false,
+		)
+		.await;
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_direct_reversed() {
+		test_overlay_connectivity_with_openess_restrictions(
+			"bidirectional",
+			"unidirectional",
+			false,
+		)
+		.await;
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_hole_punching_normal() {
-		test_overlay_connectivity("unidirectional", "punchable", false).await;
+		test_overlay_connectivity_with_openess_restrictions("unidirectional", "punchable", false)
+			.await;
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_hole_punching_reversed() {
-		test_overlay_connectivity("punchable", "unidirectional", false).await;
+		test_overlay_connectivity_with_openess_restrictions("punchable", "unidirectional", false)
+			.await;
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_relay_direct() {
-		test_overlay_connectivity("unidirectional", "unidirectional", true).await;
+		test_overlay_connectivity_with_openess_restrictions(
+			"unidirectional",
+			"unidirectional",
+			true,
+		)
+		.await;
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn test_relay_indirect() {
-		test_overlay_connectivity("unidirectional", "unidirectional", false).await;
+		test_overlay_connectivity_with_openess_restrictions(
+			"unidirectional",
+			"unidirectional",
+			false,
+		)
+		.await;
 	}
 
-	async fn test_overlay_connectivity(
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_relay_ipv4_vs_ipv6_with_udp() {
+		let mut source_config = Config::default();
+		source_config.ipv4_udp_port = Some(0);
+		source_config.ipv4_udp_openness = Some("unidirectional".to_string());
+		let mut target_config = Config::default();
+		source_config.ipv6_udp_port = Some(0);
+		target_config.ipv6_udp_openness = Some("unidirectional".to_string());
+		_test_overlay_connectivity(source_config, target_config, false).await;
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_relay_ipv4_vs_ipv6_with_tcp() {
+		let mut source_config = Config::default();
+		source_config.ipv4_tcp_port = Some(0);
+		source_config.ipv4_tcp_openness = Some("unidirectional".to_string());
+		let mut target_config = Config::default();
+		target_config.ipv6_tcp_port = Some(0);
+		target_config.ipv6_tcp_openness = Some("unidirectional".to_string());
+		_test_overlay_connectivity(source_config, target_config, false).await;
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_relay_udp_vs_tcp_on_ipv4() {
+		let mut source_config = Config::default();
+		source_config.ipv4_udp_port = Some(0);
+		source_config.ipv4_udp_openness = Some("unidirectional".to_string());
+		let mut target_config = Config::default();
+		target_config.ipv4_tcp_port = Some(0);
+		target_config.ipv4_tcp_openness = Some("unidirectional".to_string());
+		_test_overlay_connectivity(source_config, target_config, false).await;
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_relay_udp_vs_tcp_on_ipv6() {
+		let mut source_config = Config::default();
+		source_config.ipv6_udp_port = Some(0);
+		source_config.ipv6_udp_openness = Some("unidirectional".to_string());
+		let mut target_config = Config::default();
+		target_config.ipv6_tcp_port = Some(0);
+		target_config.ipv6_tcp_openness = Some("unidirectional".to_string());
+		_test_overlay_connectivity(source_config, target_config, false).await;
+	}
+
+	async fn test_overlay_connectivity_with_openess_restrictions(
 		openness_source_node: &str, openness_target_node: &str, assistant_is_relay: bool,
 	) {
+		let mut source_config = Config::default();
+		source_config.ipv4_udp_port = Some(0);
+		source_config.ipv4_udp_openness = Some(openness_source_node.to_string());
+		let mut target_config = Config::default();
+		target_config.ipv4_udp_port = Some(0);
+		target_config.ipv4_udp_openness = Some(openness_target_node.to_string());
+		_test_overlay_connectivity(source_config, target_config, assistant_is_relay).await;
+	}
+
+	async fn _test_overlay_connectivity(
+		mut source_config: Config, mut target_config: Config, assistant_is_relay: bool,
+	) {
+		fn set_bootstrap_config(config: &mut Config, assistant_contact_info: &ContactInfo) {
+			let assistant_udp4_port = assistant_contact_info
+				.ipv4
+				.as_ref()
+				.unwrap()
+				.availability
+				.udp
+				.as_ref()
+				.unwrap()
+				.port;
+			let assistant_tcp4_port = assistant_contact_info
+				.ipv4
+				.as_ref()
+				.unwrap()
+				.availability
+				.tcp
+				.as_ref()
+				.unwrap()
+				.port;
+			let assistant_udp6_port = assistant_contact_info
+				.ipv6
+				.as_ref()
+				.unwrap()
+				.availability
+				.udp
+				.as_ref()
+				.unwrap()
+				.port;
+			let assistant_tcp6_port = assistant_contact_info
+				.ipv6
+				.as_ref()
+				.unwrap()
+				.availability
+				.tcp
+				.as_ref()
+				.unwrap()
+				.port;
+			let assistant_udp4_address = format!("127.0.0.1:{}", assistant_udp4_port);
+			let assistant_tcp4_address = format!("127.0.0.1:{}", assistant_tcp4_port);
+			let assistant_udp6_address = format!("::1:{}", assistant_udp6_port);
+			let assistant_tcp6_address = format!("::1:{}", assistant_tcp6_port);
+
+			// Apply the bootstrap node configuration to the config of the relevant protocol that
+			// is supported.
+			if config.ipv4_udp_port.is_some() {
+				config.bootstrap_nodes = vec![assistant_udp4_address.clone()];
+			} else if config.ipv4_tcp_port.is_some() {
+				config.bootstrap_nodes = vec![assistant_tcp4_address.clone()];
+			} else if config.ipv6_udp_port.is_some() {
+				config.bootstrap_nodes = vec![assistant_udp6_address.clone()];
+			} else if config.ipv6_tcp_port.is_some() {
+				config.bootstrap_nodes = vec![assistant_tcp6_address.clone()];
+			}
+			assert_eq!(config.bootstrap_nodes.len(), 1, "Bootstrap nodes");
+		}
+
+		/// Enable all protocols bidirectionally.
+		fn set_server_node_config(config: &mut Config) {
+			config.ipv4_address = Some("127.0.0.1".to_string());
+			config.ipv4_udp_port = Some(0);
+			config.ipv4_udp_openness = Some("bidirectional".to_string());
+			config.ipv4_tcp_port = Some(0);
+			config.ipv4_tcp_openness = Some("bidirectional".to_string());
+			config.ipv6_address = Some("::1".to_string());
+			config.ipv6_udp_port = Some(0);
+			config.ipv6_udp_openness = Some("bidirectional".to_string());
+			config.ipv6_tcp_port = Some(0);
+			config.ipv6_tcp_openness = Some("bidirectional".to_string());
+		}
+
 		// Setup all nodes
 		let mut rng = test::initialize_rng();
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let mut assistant_config = Config::default();
-		assistant_config.ipv4_address = Some("127.0.0.1".to_string());
-		assistant_config.ipv4_udp_openness = Some("bidirectional".to_string());
+		set_server_node_config(&mut assistant_config);
 		assistant_config.relay_node = Some(assistant_is_relay);
 		let assistant_node =
 			test::load_test_node(stop_flag.clone(), &mut rng, &assistant_config, "assistant").await;
-		let assistant_port = assistant_node
-			.node
-			.contact_info()
-			.ipv4
-			.unwrap()
-			.availability
-			.udp
-			.unwrap()
-			.port;
+		let assistant_contact_info = assistant_node.node.contact_info();
+
 		let mut relay_config = Config::default();
-		relay_config.bootstrap_nodes = vec![format!("127.0.0.1:{}", assistant_port)];
-		relay_config.ipv4_address = Some("127.0.0.1".to_string());
-		relay_config.ipv4_udp_openness = Some("bidirectional".to_string());
+		set_server_node_config(&mut relay_config);
+		set_bootstrap_config(&mut relay_config, &assistant_contact_info);
 		relay_config.relay_node = Some(true);
-		let mut source_config = Config::default();
-		source_config.bootstrap_nodes = vec![format!("127.0.0.1:{}", assistant_port)];
 		source_config.ipv4_address = Some("127.0.0.1".to_string());
-		source_config.ipv4_udp_openness = Some(openness_source_node.to_string());
-		let mut target_config = Config::default();
-		target_config.bootstrap_nodes = vec![format!("127.0.0.1:{}", assistant_port)];
+		source_config.ipv6_address = Some("::1".to_string());
+		set_bootstrap_config(&mut source_config, &assistant_contact_info);
 		target_config.ipv4_address = Some("127.0.0.1".to_string());
-		target_config.ipv4_udp_openness = Some(openness_target_node.to_string());
+		target_config.ipv6_address = Some("::1".to_string());
+		set_bootstrap_config(&mut target_config, &assistant_contact_info);
+
 		let target_node =
 			test::load_test_node(stop_flag.clone(), &mut rng, &target_config, "target").await;
 		// Load the 'relay' node after the 'target' node, so that the 'target' node
