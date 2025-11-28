@@ -233,10 +233,10 @@ impl<'a> ConnectActorIter<'a> {
 	/// Gathers new contacts
 	async fn gather_new_contacts(&mut self) -> bool {
 		while let Some(result) = self.base.next().await {
-			let (ai, actor_nodes) = *result;
 			if self.actor_info.is_none() {
-				self.actor_info = Some(ai);
+				self.actor_info = Some(result.0);
 			}
+			let actor_nodes = &result.1;
 			if actor_nodes.len() == 0 {
 				continue;
 			}
@@ -261,7 +261,7 @@ impl<'a> ConnectActorIter<'a> {
 								.position(|n| &n.address == &node.address)
 								.is_none()
 							{
-								relayable_nodes.push(node);
+								relayable_nodes.push(node.clone());
 							}
 						}
 						ContactStrategyMethod::PunchHole => {
