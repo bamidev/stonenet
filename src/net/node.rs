@@ -1139,29 +1139,87 @@ where
 		self.interface.overlay_node()
 	}
 
+	/// Picks the best available option, regardless of anything.
+	/// Picks UDP over TCP, and then IPv6 over IPv4.
+	fn pick_best_contact_option(target: &ContactInfo) -> Option<ContactOption> {
+		if let Some(ipv6) = target.ipv6.as_ref() {
+			if let Some(udp) = ipv6.availability.udp.as_ref() {
+				return Some(ContactOption {
+					use_tcp: false,
+					target: SocketAddr::new(ipv6.addr.into(), udp.port),
+				});
+			}
+		}
+		if let Some(ipv4) = target.ipv4.as_ref() {
+			if let Some(udp) = ipv4.availability.udp.as_ref() {
+				return Some(ContactOption {
+					use_tcp: false,
+					target: SocketAddr::new(ipv4.addr.into(), udp.port),
+				});
+			}
+		}
+		if let Some(ipv6) = target.ipv6.as_ref() {
+			if let Some(udp) = ipv6.availability.tcp.as_ref() {
+				return Some(ContactOption {
+					use_tcp: true,
+					target: SocketAddr::new(ipv6.addr.into(), udp.port),
+				});
+			}
+		}
+		if let Some(ipv4) = target.ipv4.as_ref() {
+			if let Some(udp) = ipv4.availability.tcp.as_ref() {
+				return Some(ContactOption {
+					use_tcp: true,
+					target: SocketAddr::new(ipv4.addr.into(), udp.port),
+				});
+			}
+		}
+		None
+	}
+
 	fn pick_contact_option(&self, target: &ContactInfo) -> Option<(ContactOption, Openness)> {
 		self.packet_server.pick_contact_option(target)
 	}
 
+	/// Pick the best available strategy to contact a node.
 	pub(super) fn pick_contact_strategy(&self, target: &ContactInfo) -> Option<ContactStrategy> {
-		let (option, openness) = self.pick_contact_option(target)?;
-		let method = match openness {
-			Openness::Bidirectional => ContactStrategyMethod::Direct,
-			Openness::Punchable => ContactStrategyMethod::PunchHole,
-			Openness::Unidirectional => {
-				let own_openness = self.contact_info().openness_at_option(&option)?;
-				if own_openness != Openness::Unidirectional {
-					ContactStrategyMethod::Reversed
-				} else {
-					ContactStrategyMethod::Relay
-				}
-			}
-		};
+		// TODO: Don't connect to nodes without a contact info option. Doing a simple check
+		// initially might be more effecient
+		/*if !target.has_one_option() {
+			return None;
+		}*/
 
-		Some(ContactStrategy {
-			method,
-			contact: option,
-		})
+		// If there is a matching contact option between the two nodes, pick that.
+		if let Some((option, openness)) = self.pick_contact_option(target) {
+			let method = match openness {
+				Openness::Bidirectional => ContactStrategyMethod::Direct,
+				Openness::Punchable => ContactStrategyMethod::PunchHole,
+				Openness::Unidirectional => {
+					let own_openness = self.contact_info().openness_at_option(&option)?;
+					if own_openness != Openness::Unidirectional {
+						ContactStrategyMethod::Reversed
+					} else {
+						ContactStrategyMethod::Relay
+					}
+				}
+			};
+
+			Some(ContactStrategy {
+				method,
+				contact: option,
+			})
+		// Otherwise, if there isn't a matching contact option between the two nodes, just pick the
+		// best one and hope we can find a relay node that can relay the message for it.
+		} else {
+			Some(ContactStrategy {
+				method: ContactStrategyMethod::Relay,
+				contact: Self::pick_best_contact_option(target)?,
+			})
+		}
+
+		// TODO: Obtain a list of all bidirectional contact options of all the relay nodes that we
+		// currently know, so that we don't try to set up a connection with a contact strategy with
+		// the target node, that we won't be able to find relay nodes for.
 	}
 
 	async fn process_find_node_request(&self, buffer: &[u8]) -> MessageProcessorResult {
