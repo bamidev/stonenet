@@ -566,21 +566,15 @@ pub fn resolve_bootstrap_addresses(
 			Err(e) => error!("Unable to parse bootstrap node {}: {}.", string, e),
 			Ok(mut iter) => {
 				while let Some(addr) = iter.next() {
-					let addr = if use_ipv4 {
-						if addr.is_ipv4() {
-							addr
-						} else {
-							continue;
+					if addr.is_ipv4() {
+						if use_ipv4 {
+							addrs.push(addr);
 						}
-					} else if use_ipv6 {
-						if addr.is_ipv6() {
-							addr
-						} else {
-							continue;
+					} else if addr.is_ipv6() {
+						if use_ipv6 {
+							addrs.push(addr);
 						}
-					} else {
-						continue;
-					};
+					}
 
 					if !addrs.contains(&addr) {
 						addrs.push(addr);
