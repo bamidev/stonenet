@@ -430,8 +430,25 @@ impl OverlayNode {
 		self.base.close().await;
 	}
 
+	async fn connect_actor_iter<'a>(
+		self: &'a Arc<Self>, actor_id: &ActorAddress,
+	) -> ConnectActorIter<'a> {
+		ConnectActorIter {
+			base: self.find_actor_iter(actor_id, 100, true).await,
+			actor_info: None,
+			has_contacts_to_process: false,
+			open_nodes_iter: Vec::new().into_iter(),
+			punchable_nodes_iter: Vec::new().into_iter(),
+			relayable_nodes_iter: Vec::new().into_iter(),
+		}
+	}
+
 	pub fn connection_manager(&self) -> &ConnectionManager {
 		&self.base.interface.connection_manager
+	}
+
+	pub fn contact_info(&self) -> ContactInfo {
+		self.base.contact_info()
 	}
 
 	pub async fn start(
@@ -557,10 +574,6 @@ impl OverlayNode {
 				true
 			}
 		}
-	}
-
-	pub fn contact_info(&self) -> ContactInfo {
-		self.base.contact_info()
 	}
 
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
@@ -998,17 +1011,21 @@ impl OverlayNode {
 		}
 	}
 
-	async fn connect_actor_iter<'a>(
-		self: &'a Arc<Self>, actor_id: &ActorAddress,
-	) -> ConnectActorIter<'a> {
-		ConnectActorIter {
-			base: self.find_actor_iter(actor_id, 100, true).await,
-			actor_info: None,
-			has_contacts_to_process: false,
-			open_nodes_iter: Vec::new().into_iter(),
-			punchable_nodes_iter: Vec::new().into_iter(),
-			relayable_nodes_iter: Vec::new().into_iter(),
+	/// Whether the node is available enough to not need to work with an 'assistant node'.
+	/// This is only the case if at least TCP and UDP are supported on IPv4 both bidirectionally.
+	fn is_decently_available(&self) -> bool {
+		if let Some(contact_info) = self.base.packet_server.our_contact_info().ipv4 {
+			if let Some(udp) = contact_info.availability.udp {
+				if let Some(tcp) = contact_info.availability.tcp {
+					if udp.openness == Openness::Bidirectional
+						&& tcp.openness == Openness::Bidirectional
+					{
+						return true;
+					}
+				}
+			}
 		}
+		false
 	}
 
 	pub async fn join_actor_network(
@@ -1153,17 +1170,9 @@ impl OverlayNode {
 							});
 
 							// Open and maintain a connection to a bidirectional node
-							// TODO: Do the same thing for IPv6
-							if let Some(ipv4_contact_info) =
-								self.base.packet_server.our_contact_info().ipv4
-							{
-								if let Some(availability) = ipv4_contact_info.availability.udp {
-									if availability.openness != Openness::Bidirectional {
-										self.obtain_keep_alive_connection().await;
-									}
-								}
-							} else {
-								panic!("no contact info")
+							if !self.is_decently_available() {
+								warn!("obtain_keep_alive_connection {:?}", self.contact_info());
+								self.obtain_keep_alive_connection().await;
 							}
 
 							self.join_actor_networks(actor_node_infos).await;
@@ -2865,7 +2874,7 @@ mod tests {
 		source_config.ipv4_udp_port = Some(0);
 		source_config.ipv4_udp_openness = Some("unidirectional".to_string());
 		let mut target_config = Config::default();
-		source_config.ipv6_udp_port = Some(0);
+		target_config.ipv6_udp_port = Some(0);
 		target_config.ipv6_udp_openness = Some("unidirectional".to_string());
 		_test_overlay_connectivity(source_config, target_config, false).await;
 	}
