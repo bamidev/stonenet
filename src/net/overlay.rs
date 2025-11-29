@@ -1403,31 +1403,17 @@ impl OverlayNode {
 		let mut punchable_nodes = Vec::new();
 		let mut iter = self.base.iter_all_fingers_local_first().await;
 		while let Some(finger) = iter.next().await {
-			if let Some(ipv4_contact_info) = finger.contact_info.ipv4.clone() {
-				if let Some(udpv4_availability) = ipv4_contact_info.availability.udp {
-					if udpv4_availability.openness == Openness::Punchable {
-						punchable_nodes.push(finger);
-					} else if udpv4_availability.openness == Openness::Bidirectional {
-						let contact_option = ContactOption::new(
-							SocketAddr::V4(SocketAddrV4::new(
-								ipv4_contact_info.addr,
-								udpv4_availability.port,
-							)),
-							false,
-						);
-
-						if let Some((c, _)) = self
-							.base
-							.connect(&contact_option, Some(&finger.address), None)
-							.await
-						{
-							if use_connection(self, c).await {
-								return;
-							}
-						}
-					}
-				}
-			}
+            if let Some(contact_strategy) = self.base.pick_contact_strategy(&finger.contact_info) {
+                if contact_strategy.method == ContactStrategyMethod::PunchHole {
+                    punchable_nodes.push(finger.clone());
+                } else if contact_strategy.method == ContactStrategyMethod::Direct {
+                    if let Some((c, _)) = self.base.connect(&contact_strategy.contact, Some(&finger.address), None).await {
+                        if use_connection(self, c).await {
+                            return;
+                        }
+                    }
+                }
+            }
 		}
 
 		// If not bidirectional nodes were available, try the punchable ones next
