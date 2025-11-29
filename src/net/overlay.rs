@@ -12,7 +12,11 @@ use futures::{
 	future::{join_all, BoxFuture},
 };
 use log::*;
-use rand::{rngs::OsRng, Rng};
+use rand::{
+	rngs::{OsRng, StdRng},
+	seq::SliceRandom,
+	Rng, SeedableRng,
+};
 use sea_orm::{prelude::*, QueryOrder, Set};
 use tokio::{select, spawn, time::sleep};
 
@@ -96,6 +100,7 @@ pub struct OverlayNode {
 	pub(super) is_relay_node: bool,
 	pub(crate) tracked_actors: Mutex<HashMap<ActorAddress, Option<ActorInfo>>>,
 	relay_nodes: Mutex<LimitedVec<NodeContactInfo>>,
+	rng: StdMutex<StdRng>,
 }
 
 pub(super) struct OverlayInterface {
@@ -508,6 +513,7 @@ impl OverlayNode {
 					.into_iter()
 					.map(|aa| (aa, None)),
 			)),
+			rng: StdMutex::new(StdRng::from_seed([0u8; 32])), // TODO: Take seed from timestamp
 		});
 		let _is_set = this.base.interface.node.set(Some(this.clone())).is_ok();
 		debug_assert!(_is_set);
@@ -1403,17 +1409,21 @@ impl OverlayNode {
 		let mut punchable_nodes = Vec::new();
 		let mut iter = self.base.iter_all_fingers_local_first().await;
 		while let Some(finger) = iter.next().await {
-            if let Some(contact_strategy) = self.base.pick_contact_strategy(&finger.contact_info) {
-                if contact_strategy.method == ContactStrategyMethod::PunchHole {
-                    punchable_nodes.push(finger.clone());
-                } else if contact_strategy.method == ContactStrategyMethod::Direct {
-                    if let Some((c, _)) = self.base.connect(&contact_strategy.contact, Some(&finger.address), None).await {
-                        if use_connection(self, c).await {
-                            return;
-                        }
-                    }
-                }
-            }
+			if let Some(contact_strategy) = self.base.pick_contact_strategy(&finger.contact_info) {
+				if contact_strategy.method == ContactStrategyMethod::PunchHole {
+					punchable_nodes.push(finger.clone());
+				} else if contact_strategy.method == ContactStrategyMethod::Direct {
+					if let Some((c, _)) = self
+						.base
+						.connect(&contact_strategy.contact, Some(&finger.address), None)
+						.await
+					{
+						if use_connection(self, c).await {
+							return;
+						}
+					}
+				}
+			}
 		}
 
 		// If not bidirectional nodes were available, try the punchable ones next
@@ -1483,52 +1493,55 @@ impl OverlayNode {
 
 		// Otherwise, loop through all of our relay nodes until one serviced us
 		// successfully.
-		loop {
-			let mut relay_nodes = self.relay_nodes.lock().await;
-			if let Some(relay_node_info) = relay_nodes.pop_front() {
-				drop(relay_nodes);
-				let (contact_option, _) = self
-					.base
-					.packet_server
-					.pick_contact_option(&target.contact_info)?;
-				if let Some(relay_contact_option) = relay_node_info
-					.contact_info
-					.pick_relay_option(&contact_option)
+		let mut relay_nodes: Vec<_> = self.relay_nodes.lock().await.clone().into();
+		{
+			let mut rng = self.rng.lock().unwrap();
+			relay_nodes.as_mut_slice().shuffle(&mut *rng);
+		}
+
+		for relay_node_info in relay_nodes {
+			let (contact_option, _) = self
+				.base
+				.packet_server
+				.pick_contact_option(&target.contact_info)?;
+			info!("open_relay1");
+			if let Some(relay_contact_option) = relay_node_info
+				.contact_info
+				.pick_relay_option(&contact_option)
+			{
+				// Attempt to open a relay connection through the current relay node
+				match self
+					.open_relay_with_node(
+						&relay_node_info.address,
+						&relay_contact_option,
+						assistant_node_info.clone(),
+						target.address.clone(),
+						&contact_option,
+					)
+					.await
 				{
-					// Attempt to open a relay connection through the current relay node
-					match self
-						.open_relay_with_node(
-							&relay_node_info.address,
-							&relay_contact_option,
-							assistant_node_info.clone(),
-							target.address.clone(),
-							&contact_option,
-						)
-						.await
-					{
-						// On failure with the relay node, keep trying other relay nodes
-						None => {}
-						// If the relay node tells us the target was not reachable, stop.
-						// Or if the connection was obtained, we're done.
-						Some(r) => match r {
-							OpenRelayStatus::Success(connection) => return Some(connection),
-							OpenRelayStatus::AssistantUnaware => {
-								warn!(
-									"Unable to obtain relay connection because the assistant node \
-									 was unaware of the target node."
-								);
-							}
-							OpenRelayStatus::Timeout => {
-								warn!(
-									"Unable to obtain relay connection because the target node \
-									 never contacted the relay node."
-								);
-							}
-						},
+					// On failure with the relay node, keep trying other relay nodes
+					None => {
+						info!("open_relay3");
 					}
+					// If the relay node tells us the target was not reachable, stop.
+					// Or if the connection was obtained, we're done.
+					Some(r) => match r {
+						OpenRelayStatus::Success(connection) => return Some(connection),
+						OpenRelayStatus::AssistantUnaware => {
+							warn!(
+								"Unable to obtain relay connection because the assistant node \
+                                 was unaware of the target node."
+							);
+						}
+						OpenRelayStatus::Timeout => {
+							warn!(
+								"Unable to obtain relay connection because the target node \
+                                 never contacted the relay node."
+							);
+						}
+					},
 				}
-			} else {
-				break;
 			}
 		}
 		warn!("No relay nodes were available to contact {}.", target);
