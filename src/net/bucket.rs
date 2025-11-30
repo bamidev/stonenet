@@ -131,6 +131,9 @@ impl Bucket {
 	}
 
 	pub fn mark_problematic(&mut self, address: &NodeAddress) -> bool {
+		#[cfg(test)]
+		panic!("No node should be marked as problematic in tests.");
+
 		let mut removed = false;
 		match self
 			.fingers
@@ -167,6 +170,9 @@ impl Bucket {
 	}
 
 	pub fn reject(&mut self, address: &NodeAddress) {
+		#[cfg(test)]
+		panic!("No node should be rejected in tests.");
+
 		match self.connections.iter().position(|n| &n.address == address) {
 			None => {}
 			Some(index) => {
