@@ -534,18 +534,88 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn test_relaying_ipv4_tcp() {
+		test_relaying(false, false, true, true).await;
+	}
+
+	#[tokio::test]
+	async fn test_relaying_ipv4_udp() {
+		test_relaying(false, false, false, false).await;
+	}
+
+	#[tokio::test]
+	async fn test_relaying_ipv4_udp_vs_tcp() {
+		test_relaying(false, false, false, true).await;
+	}
+
+	#[tokio::test]
+	async fn test_relaying_ipv4_vs_ipv6_udp() {
+		test_relaying(false, true, false, false).await;
+	}
+
+	#[tokio::test]
+	async fn test_relaying_ipv4_vs_ipv6_tcp() {
+		test_relaying(false, true, true, true).await;
+	}
+
+	#[tokio::test]
+	async fn test_relaying_ipv4_vs_ipv6_udp_vs_tcp() {
+		test_relaying(false, true, false, true).await;
+	}
+
+	#[tokio::test]
+	async fn test_relaying_ipv6_udp() {
+		test_relaying(true, true, false, false).await;
+	}
+
+	#[tokio::test]
+	async fn test_relaying_ipv6_tcp() {
+		test_relaying(true, true, true, true).await;
+	}
+
+	#[tokio::test]
+	async fn test_relaying_ipv6_udp_vs_tcp() {
+		test_relaying(true, true, false, true).await;
+	}
+
 	// Sent and receive a message through a relay
-	async fn test_relaying() {
+	async fn test_relaying(
+		node1_use_ipv6: bool, node2_use_ipv6: bool, node1_use_tcp: bool, node2_use_tcp: bool,
+	) {
 		let mut rng = test::initialize_rng();
 		let mut relay_config = Config::default();
 		relay_config.ipv4_address = Some("127.0.0.1".to_string());
 		relay_config.ipv4_udp_port = Some(0);
 
 		let mut node1_config = relay_config.clone();
-		node1_config.ipv4_udp_port = Some(0);
+		if !node1_use_ipv6 {
+			if !node1_use_tcp {
+				node1_config.ipv4_udp_port = Some(0);
+			} else {
+				node1_config.ipv4_tcp_port = Some(0);
+			}
+		} else {
+			if !node1_use_tcp {
+				node1_config.ipv6_udp_port = Some(0);
+			} else {
+				node1_config.ipv6_tcp_port = Some(0);
+			}
+		}
 
 		let mut node2_config = relay_config.clone();
-		node2_config.ipv4_udp_port = Some(0);
+		if !node2_use_ipv6 {
+			if !node2_use_tcp {
+				node2_config.ipv4_udp_port = Some(0);
+			} else {
+				node2_config.ipv4_tcp_port = Some(0);
+			}
+		} else {
+			if !node2_use_tcp {
+				node2_config.ipv6_udp_port = Some(0);
+			} else {
+				node2_config.ipv6_tcp_port = Some(0);
+			}
+		}
 		let ip = Ipv4Addr::new(127, 0, 0, 1);
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		let relay_private_key = NodePrivateKey::generate();
