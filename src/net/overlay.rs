@@ -85,8 +85,9 @@ struct KeepAliveToDo {
 
 struct OpenRelayToDo {
 	node: Arc<OverlayNode>,
-	source_addr: SocketAddr,
+	source_contact: ContactOption,
 	target_node_id: NodeAddress,
+	target_contact: ContactOption,
 	assistant_node_info: NodeContactInfo,
 	hello_packet: RelayHelloPacket,
 	timeout: Duration,
@@ -1476,7 +1477,7 @@ impl OverlayNode {
 						.relay(
 							&relay_contact_option,
 							assistant_node_info.address.clone(),
-							target_contact_option.target,
+							target_contact_option,
 							&target.address,
 						)
 						.await
@@ -1500,47 +1501,49 @@ impl OverlayNode {
 		}
 
 		for relay_node_info in relay_nodes {
-			let (contact_option, _) = self
-				.base
-				.packet_server
-				.pick_contact_option(&target.contact_info)?;
-			info!("open_relay1");
-			if let Some(relay_contact_option) = relay_node_info
-				.contact_info
-				.pick_relay_option(&contact_option)
+			// Pick a contact option between us and the relay
+			if let Some(relay_contact_option) = self
+				.contact_info()
+				.pick_best_option(&relay_node_info.contact_info)
 			{
-				// Attempt to open a relay connection through the current relay node
-				match self
-					.open_relay_with_node(
-						&relay_node_info.address,
-						&relay_contact_option,
-						assistant_node_info.clone(),
-						target.address.clone(),
-						&contact_option,
-					)
-					.await
+				// Pick the contact option that the relay will have to use to reach the target
+				if let Some(target_contact_option) = relay_node_info
+					.contact_info
+					.pick_best_option(&target.contact_info)
 				{
-					// On failure with the relay node, keep trying other relay nodes
-					None => {
-						info!("open_relay3");
+					// Attempt to open a relay connection through the current relay node
+					match self
+						.open_relay_with_node(
+							&relay_node_info.address,
+							&relay_contact_option,
+							assistant_node_info.clone(),
+							target.address.clone(),
+							&target_contact_option,
+						)
+						.await
+					{
+						// On failure with the relay node, keep trying other relay nodes
+						None => {
+							info!("open_relay3");
+						}
+						// If the relay node tells us the target was not reachable, stop.
+						// Or if the connection was obtained, we're done.
+						Some(r) => match r {
+							OpenRelayStatus::Success(connection) => return Some(connection),
+							OpenRelayStatus::AssistantUnaware => {
+								warn!(
+									"Unable to obtain relay connection because the assistant node \
+                                     was unaware of the target node."
+								);
+							}
+							OpenRelayStatus::Timeout => {
+								warn!(
+									"Unable to obtain relay connection because the target node \
+                                     never contacted the relay node."
+								);
+							}
+						},
 					}
-					// If the relay node tells us the target was not reachable, stop.
-					// Or if the connection was obtained, we're done.
-					Some(r) => match r {
-						OpenRelayStatus::Success(connection) => return Some(connection),
-						OpenRelayStatus::AssistantUnaware => {
-							warn!(
-								"Unable to obtain relay connection because the assistant node \
-                                 was unaware of the target node."
-							);
-						}
-						OpenRelayStatus::Timeout => {
-							warn!(
-								"Unable to obtain relay connection because the target node \
-                                 never contacted the relay node."
-							);
-						}
-					},
 				}
 			}
 		}
@@ -1555,17 +1558,13 @@ impl OverlayNode {
 	) -> Option<OpenRelayStatus<Box<Connection>>> {
 		let timeout = DEFAULT_TIMEOUT * 3;
 
-		let protocol = LinkProtocol {
-			use_ipv6: target_contact_option.target.is_ipv6(),
-			use_tcp: target_contact_option.use_tcp,
-		};
 		let initiation_info = match self
 			.base
 			.packet_server
 			.setup_outgoing_relay(
 				relay_node_id.clone(),
 				target_node_id.clone(),
-				&target_contact_option.target,
+				&target_contact_option,
 				timeout,
 				None,
 			)
@@ -1579,7 +1578,7 @@ impl OverlayNode {
 		};
 		let request = OpenRelayRequest {
 			target_node_id: target_node_id.clone(),
-			protocol,
+			target_contact_option: target_contact_option.clone(),
 			assistant_node: assistant_node_info,
 			hello_packet: initiation_info.packet.clone(),
 		};
@@ -1889,7 +1888,7 @@ impl OverlayNode {
 	}
 
 	async fn process_open_relay_request(
-		self: &Arc<Self>, buffer: &[u8], addr: &SocketAddr,
+		self: &Arc<Self>, buffer: &[u8], source_contact: &ContactOption,
 	) -> MessageProcessorResult {
 		let request: OpenRelayRequest = match binserde::deserialize(buffer) {
 			Ok(r) => r,
@@ -1903,8 +1902,9 @@ impl OverlayNode {
 			Vec::new(),
 			Some(Box::new(OpenRelayToDo {
 				node: self.clone(),
-				source_addr: addr.clone(),
+				source_contact: source_contact.clone(),
 				target_node_id: request.target_node_id,
+				target_contact: request.target_contact_option,
 				assistant_node_info: request.assistant_node,
 				hello_packet: request.hello_packet,
 				timeout: DEFAULT_TIMEOUT * 3,
@@ -2243,8 +2243,7 @@ impl OverlayNode {
 					.await
 			}
 			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST => {
-				self.process_open_relay_request(buffer, &contact.target)
-					.await
+				self.process_open_relay_request(buffer, &contact).await
 			}
 			OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_REQUEST => {
 				self.process_relay_request_request(buffer).await
@@ -2641,7 +2640,7 @@ impl MessageWorkToDo for OpenRelayToDo {
 			.packet_server
 			.process_relay_hello_packet(
 				connection.socket_sender(),
-				&self.source_addr,
+				&self.source_contact,
 				self.hello_packet.clone(),
 				None,
 			)
@@ -2674,13 +2673,16 @@ impl MessageWorkToDo for OpenRelayToDo {
 		}
 
 		// Pass the packet to the assistant node.
+		// TODO: The source node has already picked a contact option for the relay node to use.
 		match self
 			.node
-			.base
 			.contact_info()
-			.pick_relay_option(&connection.contact_option())
+			.pick_similar_option(&self.target_contact)
 		{
-			None => return Ok(None),
+			None => {
+				warn!("Source node tried to contact target node through us using a contact option that we do not support.");
+				return Ok(None);
+			}
 			Some(relay_node_contact) => {
 				let request = PassRelayRequestRequest {
 					target_node_id: self.target_node_id.clone(),

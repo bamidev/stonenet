@@ -134,8 +134,11 @@ pub enum ListTrustedNodesResult {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenRelayRequest {
+	/// The ID of the target node.
 	pub target_node_id: NodeAddress,
-	pub protocol: LinkProtocol,
+	/// The contact option that the source node is requesting the relay node to use.
+	pub target_contact_option: ContactOption,
+	/// The assistant node that can be contacted to reach the target node.
 	pub assistant_node: NodeContactInfo,
 	pub hello_packet: RelayHelloPacket,
 }

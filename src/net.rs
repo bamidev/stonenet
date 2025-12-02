@@ -276,43 +276,52 @@ impl ContactInfo {
 		}
 	}
 
-	pub fn pick_relay_option(&self, target_option: &ContactOption) -> Option<ContactOption> {
-		match target_option.target {
-			SocketAddr::V6(_ipv6) => {
-				if let Some(e) = &self.ipv6 {
-					if target_option.use_tcp {
-						if let Some(tcp) = &e.availability.tcp {
-							return Some(ContactOption::new(
-								SocketAddr::V6(SocketAddrV6::new(e.addr, tcp.port, 0, 0)),
-								true,
-							));
-						}
-					} else {
-						if let Some(udp) = &e.availability.udp {
-							return Some(ContactOption::new(
-								SocketAddr::V6(SocketAddrV6::new(e.addr, udp.port, 0, 0)),
-								false,
-							));
-						}
+	/// Picks the best available contact option between this ContactInfo and that of the target.
+	pub fn pick_best_option(&self, target: &ContactInfo) -> Option<ContactOption> {
+		if let Some(our) = self.ipv6.as_ref() {
+			if let Some(their) = target.ipv6.as_ref() {
+				if our.availability.udp.is_some() {
+					if let Some(udp) = their.availability.udp.as_ref() {
+						return Some(ContactOption::new(
+							SocketAddrV6::new(their.addr.clone(), udp.port, 0, 0xE).into(),
+							false,
+						));
 					}
 				}
 			}
-			SocketAddr::V4(_ipv4) => {
-				if let Some(e) = &self.ipv4 {
-					if target_option.use_tcp {
-						if let Some(tcp) = &e.availability.tcp {
-							return Some(ContactOption::new(
-								SocketAddr::V4(SocketAddrV4::new(e.addr, tcp.port)),
-								true,
-							));
-						}
-					} else {
-						if let Some(udp) = &e.availability.udp {
-							return Some(ContactOption::new(
-								SocketAddr::V4(SocketAddrV4::new(e.addr, udp.port)),
-								false,
-							));
-						}
+		}
+		if let Some(our) = self.ipv4.as_ref() {
+			if let Some(their) = target.ipv4.as_ref() {
+				if our.availability.udp.is_some() {
+					if let Some(udp) = their.availability.udp.as_ref() {
+						return Some(ContactOption::new(
+							SocketAddrV4::new(their.addr.clone(), udp.port).into(),
+							false,
+						));
+					}
+				}
+			}
+		}
+		if let Some(our) = self.ipv6.as_ref() {
+			if let Some(their) = target.ipv6.as_ref() {
+				if our.availability.tcp.is_some() {
+					if let Some(udp) = their.availability.tcp.as_ref() {
+						return Some(ContactOption::new(
+							SocketAddrV6::new(their.addr.clone(), udp.port, 0, 0xE).into(),
+							true,
+						));
+					}
+				}
+			}
+		}
+		if let Some(our) = self.ipv4.as_ref() {
+			if let Some(their) = target.ipv4.as_ref() {
+				if our.availability.tcp.is_some() {
+					if let Some(udp) = their.availability.tcp.as_ref() {
+						return Some(ContactOption::new(
+							SocketAddrV4::new(their.addr.clone(), udp.port).into(),
+							true,
+						));
 					}
 				}
 			}
@@ -320,6 +329,55 @@ impl ContactInfo {
 		None
 	}
 
+	pub fn pick_similar_option(&self, target: &ContactOption) -> Option<ContactOption> {
+		let socketaddr = match target.target {
+			SocketAddr::V6(_) => {
+				if let Some(ipv6) = &self.ipv6 {
+					let port = if !target.use_tcp {
+						if let Some(udp) = &ipv6.availability.udp {
+							udp.port
+						} else {
+							return None;
+						}
+					} else {
+						if let Some(tcp) = &ipv6.availability.tcp {
+							tcp.port
+						} else {
+							return None;
+						}
+					};
+					SocketAddr::V6(SocketAddrV6::new(ipv6.addr, port, 0, 0xE))
+				} else {
+					return None;
+				}
+			}
+			SocketAddr::V4(_) => {
+				if let Some(ipv4) = &self.ipv4 {
+					let port = if !target.use_tcp {
+						if let Some(udp) = &ipv4.availability.udp {
+							udp.port
+						} else {
+							return None;
+						}
+					} else {
+						if let Some(tcp) = &ipv4.availability.tcp {
+							tcp.port
+						} else {
+							return None;
+						}
+					};
+					SocketAddr::V4(SocketAddrV4::new(ipv4.addr, port))
+				} else {
+					return None;
+				}
+			}
+		};
+		Some(ContactOption::new(socketaddr, target.use_tcp))
+	}
+
+	/// Update contact info with what has been seen by the other side.
+	/// This is used whenever contacting another node, because our external port and/or IP address
+	/// may change with time.
 	pub fn update(&mut self, addr: &SocketAddr, for_tcp: bool) {
 		match addr {
 			SocketAddr::V4(a) => self.update_v4(a.ip(), a.port(), for_tcp),
@@ -332,17 +390,9 @@ impl ContactInfo {
 			None => {}
 			Some(entry) => {
 				entry.addr = ip.clone();
-				if for_tcp {
-					match &mut entry.availability.tcp {
-						None => {
-							entry.availability.tcp = Some(TransportAvailabilityEntry {
-								port,
-								openness: Openness::Unidirectional,
-							})
-						}
-						Some(entry2) => entry2.port = port,
-					}
-				} else {
+				// For TCP, we don't update the port because the source port (as reported
+				// by the other side) is rarely open to receiving connections.
+				if !for_tcp {
 					match &mut entry.availability.udp {
 						None => {
 							entry.availability.udp = Some(TransportAvailabilityEntry {
@@ -350,7 +400,13 @@ impl ContactInfo {
 								openness: Openness::Unidirectional,
 							})
 						}
-						Some(entry2) => entry2.port = port,
+						Some(udp) => {
+							if udp.openness != Openness::Unidirectional {
+								// When unidirectional, it doesn't actually matter what the port is,
+								// because it can't be reached anyway.
+								udp.port = port;
+							}
+						}
 					}
 				}
 			}
@@ -362,17 +418,9 @@ impl ContactInfo {
 			None => {}
 			Some(entry) => {
 				entry.addr = ip.clone();
-				if for_tcp {
-					match &mut entry.availability.tcp {
-						None => {
-							entry.availability.tcp = Some(TransportAvailabilityEntry {
-								port,
-								openness: Openness::Unidirectional,
-							})
-						}
-						Some(entry2) => entry2.port = port,
-					}
-				} else {
+				// For TCP, we don't update the port because the source port (as reported
+				// by the other side) is rarely open to receiving connections.
+				if !for_tcp {
 					match &mut entry.availability.udp {
 						None => {
 							entry.availability.udp = Some(TransportAvailabilityEntry {
@@ -380,7 +428,13 @@ impl ContactInfo {
 								openness: Openness::Unidirectional,
 							})
 						}
-						Some(entry2) => entry2.port = port,
+						Some(udp) => {
+							if udp.openness != Openness::Unidirectional {
+								// When unidirectional, it doesn't actually matter what the port is,
+								// because it can't be reached anyway.
+								udp.port = port;
+							}
+						}
 					}
 				}
 			}

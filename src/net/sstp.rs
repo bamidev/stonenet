@@ -600,7 +600,8 @@ mod tests {
 			.udp
 			.unwrap()
 			.port;
-		let node2_addr = SocketAddr::V4(SocketAddrV4::new(ip, node2_port));
+		let node2_contact =
+			ContactOption::new(SocketAddr::V4(SocketAddrV4::new(ip, node2_port)), false);
 
 		let mut request = vec![0u8; 1000];
 		rng.fill_bytes(&mut request);
@@ -655,7 +656,7 @@ mod tests {
 			.relay(
 				&ContactOption::new_udp(relay_addr),
 				relay_node_id.clone(),
-				node2_addr,
+				node2_contact,
 				&node2_node_id,
 			)
 			.await

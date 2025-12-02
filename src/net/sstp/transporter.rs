@@ -1221,7 +1221,7 @@ impl TransporterInner {
 		}
 
 		if !self.decrypt_packet(ks, seq, &mut data) {
-			warn!("Malformed stray packet found, dropping it...");
+			warn!("Malformed stray packet found, dropping it... (1)");
 			return Ok(());
 		}
 
@@ -1277,7 +1277,7 @@ impl TransporterInner {
 		}
 
 		if !self.decrypt_packet(ks.previous, seq, &mut packet) {
-			warn!("Malformed stray packet found, dropping it...");
+			warn!("Malformed stray packet found, dropping it... (2)");
 			return Ok(());
 		}
 

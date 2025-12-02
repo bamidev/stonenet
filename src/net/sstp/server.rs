@@ -57,6 +57,7 @@ struct RelayHelloPacketBody {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct RelayHelloPacketHeader {
 	target: SocketAddrSstp,
+	target_use_tcp: bool,
 	base: HelloPacketHeader,
 }
 
@@ -216,11 +217,11 @@ struct SessionTransportDataDirect {
 
 struct SessionTransportDataRelay {
 	source_session_id: u16,
-	source_addr: SocketAddr,
+	source_contact: ContactOption,
 	source_public_key: NodePublicKey,
 	source_sender: Arc<dyn LinkSocketSender>,
 	target_session_id: u16,
-	target_addr: SocketAddr,
+	target_contact: ContactOption,
 	target_node_id: NodeAddress,
 	target_public_key: Option<NodePublicKey>,
 	target_sender: Option<Arc<dyn LinkSocketSender>>,
@@ -380,6 +381,7 @@ impl Server {
 		}
 	}
 
+	/// Finish setting up an outgoing relay connection.
 	pub async fn complete_outgoing_relay(
 		self: &Arc<Server>, sender: Arc<dyn LinkSocketSender>,
 		initiation_data: RelayInitiationInfo, establish_info: HelloResult,
@@ -759,18 +761,19 @@ impl Server {
 	}
 
 	async fn new_relay_session(
-		&self, source_session_id: u16, source_addr: SocketAddr, source_public_key: NodePublicKey,
-		source_sender: Arc<dyn LinkSocketSender>, target_node_id: NodeAddress,
-		target_addr: SocketAddr, hello_sender: Sender<RelayedHelloAckPacket>,
+		&self, source_session_id: u16, source_contact: ContactOption,
+		source_public_key: NodePublicKey, source_sender: Arc<dyn LinkSocketSender>,
+		target_node_id: NodeAddress, target_contact: ContactOption,
+		hello_sender: Sender<RelayedHelloAckPacket>,
 		relay_hello_ack_ack_sender: Option<Sender<u16>>, keep_alive_timeout: Duration,
 	) -> Result<(u16, Arc<Mutex<SessionData>>)> {
 		let transport_data = SessionTransportData::Relay(SessionTransportDataRelay {
 			source_session_id,
-			source_addr,
+			source_contact,
 			source_public_key,
 			source_sender,
 			target_session_id: 0,
-			target_addr,
+			target_contact,
 			target_node_id: target_node_id.clone(),
 			target_public_key: None,
 			target_sender: None,
@@ -853,10 +856,10 @@ impl Server {
 	}
 
 	pub fn new_relay_hello_packet(
-		&self, target_node_id: NodeAddress, target: &SocketAddr, local_session_id: u16,
+		&self, target_node_id: NodeAddress, target: &ContactOption, local_session_id: u16,
 		dh_public_key: x25519::PublicKey,
 	) -> RelayHelloPacket {
-		let target2: SocketAddrSstp = target.clone().into();
+		let target2: SocketAddrSstp = target.target.clone().into();
 		let body = RelayHelloPacketBody {
 			target_node_id,
 			base: HelloPacketBody {
@@ -871,6 +874,7 @@ impl Server {
 		let signature = self.private_key.sign(&buffer);
 		let header = RelayHelloPacketHeader {
 			target: target2,
+			target_use_tcp: target.use_tcp,
 			base: HelloPacketHeader {
 				node_public_key: self.private_key.public(),
 				signature,
@@ -913,8 +917,12 @@ impl Server {
 		self.sockets.pick_contact_option(target)
 	}
 
-	async fn process_crypted_packet(&self, buffer: &[u8], sender: &SocketAddr) {
+	async fn process_crypted_packet(&self, buffer: &[u8], sender: &ContactOption) {
 		let session_id = u16::from_le_bytes(*array_ref![buffer, 0, 2]);
+		// TODO: Decide if putting an extra 2-byte session_id to the packet, so that we can identify wether a
+		// relay packet comes from the source or the target, is a good idea.
+		// We can use that for cases where someone's IP address may change mid-connection.
+		// But I'm not sure how often that happends in real life situations.
 		let ks_seq = u16::from_le_bytes(*array_ref![buffer, 2, 2]);
 		let seq = u16::from_le_bytes(*array_ref![buffer, 4, 2]);
 		let data = buffer[6..].to_vec();
@@ -932,15 +940,31 @@ impl Server {
 						data.packet_processor.send(packet).is_err()
 					}
 					SessionTransportData::Relay(data) => {
-						if sender == &data.source_addr {
+						// The port of both sides need only be used to distinguish them from
+						// eachother when their IP and chosen protocol is the same. Otherwise, we
+						// can easily figure out who has send what packet.
+						let port_is_unimportant = data.source_contact.use_tcp
+							!= data.target_contact.use_tcp
+							|| data.source_contact.target.ip() != data.target_contact.target.ip();
+						if sender.use_tcp == data.source_contact.use_tcp
+							&& sender.target.ip() == data.source_contact.target.ip()
+							&& (port_is_unimportant
+								|| sender.target.port() == data.source_contact.target.port())
+						{
 							if let Some(target_socket) = &data.target_sender {
-								Self::relay_crypted_packet(
+								let result = Self::relay_crypted_packet(
 									target_socket,
 									data.target_session_id,
 									&buffer[2..],
 								)
-								.await
-								.is_err()
+								.await;
+								if let Err(e) = &result {
+									warn!(
+										"Unable to pass relayed crypted packet to target {}: {:?}",
+										&data.target_contact, e
+									);
+								}
+								result.is_err()
 							} else {
 								error!(
 									"Received transport data packet before relay connected with \
@@ -948,17 +972,28 @@ impl Server {
 								);
 								false
 							}
-						} else if sender == &data.target_addr {
-							Self::relay_crypted_packet(
+						} else if sender.use_tcp == data.target_contact.use_tcp
+							&& sender.target.ip() == data.target_contact.target.ip()
+							&& (port_is_unimportant
+								|| sender.target.port() == data.target_contact.target.port())
+						{
+							let result = Self::relay_crypted_packet(
 								&data.source_sender,
 								data.source_session_id,
 								&buffer[2..],
 							)
-							.await
-							.is_err()
+							.await;
+							if let Err(e) = &result {
+								warn!(
+									"Unable to pass relayed crypted packet to source {}: {:?}",
+									&data.target_contact, e
+								);
+							}
+							result.is_err()
 						} else {
 							warn!(
-								"Relay transport data packet received from unknown socket address."
+								"Relay transport data packet received from unknown socket address. {} {} {}",
+                                sender, &data.source_contact, &data.target_contact
 							);
 							false
 						}
@@ -1115,10 +1150,6 @@ impl Server {
 		let mut session = session.lock().await;
 		match &mut session.transport_data {
 			SessionTransportData::Relay(data) => {
-				if &data.target_addr != target_addr {
-					warn!("Received packets from wrong socket address.");
-					return trace::err(Error::InvalidSessionAddress(target_addr.clone()));
-				}
 				let target_public_key = packet.header.node_public_key.clone();
 				if target_public_key.generate_address() != data.target_node_id {
 					warn!(
@@ -1127,11 +1158,15 @@ impl Server {
 					);
 					return Ok(());
 				}
+
+				// Remember anything we've learned about the target node & used transport protocol
+				// info.
 				data.target_public_key = Some(target_public_key);
 				if data.source_session_id != packet.body.base.source_session_id {
 					return trace::err(Error::InvalidSessionId(packet.body.base.source_session_id));
 				}
 				data.target_session_id = target_session_id;
+				data.target_contact.target = target_addr.clone();
 
 				let relay_ack_packet: RelayedHelloAckPacket = packet;
 				let _ = data.relay_hello_sender.send(relay_ack_packet.clone()).await;
@@ -1177,7 +1212,7 @@ impl Server {
 	}
 
 	pub async fn process_relay_hello_packet(
-		self: &Arc<Self>, source_socket: Arc<dyn LinkSocketSender>, source_addr: &SocketAddr,
+		self: &Arc<Self>, source_socket: Arc<dyn LinkSocketSender>, source_contact: &ContactOption,
 		packet: RelayHelloPacket, relay_hello_ack_ack_sender: Option<Sender<u16>>,
 	) -> Result<(
 		Arc<dyn LinkSocketSender>,
@@ -1199,11 +1234,14 @@ impl Server {
 		let (relayer_session_id, session) = self
 			.new_relay_session(
 				packet.body.base.session_id,
-				source_addr.clone(),
+				source_contact.clone(),
 				packet.header.base.node_public_key.clone(),
 				source_socket.clone(),
 				target_node_id,
-				packet.header.target.into(),
+				ContactOption::new(
+					packet.header.target.clone().into(),
+					packet.header.target_use_tcp,
+				),
 				hello_tx,
 				relay_hello_ack_ack_sender,
 				DEFAULT_TIMEOUT,
@@ -1241,7 +1279,7 @@ impl Server {
 	}
 
 	async fn process_relay_hello_packet_raw(
-		self: &Arc<Self>, source_socket: Arc<dyn LinkSocketSender>, source_addr: &SocketAddr,
+		self: &Arc<Self>, source_socket: Arc<dyn LinkSocketSender>, source_contact: &ContactOption,
 		buffer: &[u8],
 	) -> Result<()> {
 		let packet: RelayHelloPacket = binserde::deserialize(buffer)?;
@@ -1249,7 +1287,7 @@ impl Server {
 		let (target_tx, relayed_hello, mut hello_rx) = self
 			.process_relay_hello_packet(
 				source_socket.clone(),
-				source_addr,
+				source_contact,
 				packet,
 				Some(hello_ack_ack_tx),
 			)
@@ -1753,11 +1791,11 @@ impl Server {
 			}
 			PACKET_TYPE_HELLO_ACK_ACK => self.process_hello_ack_ack_packet(&buffer).await,
 			PACKET_TYPE_CRYPTED => {
-				self.process_crypted_packet(buffer, &contact.target).await;
+				self.process_crypted_packet(buffer, &contact).await;
 				Ok(())
 			}
 			PACKET_TYPE_RELAY_HELLO => {
-				self.process_relay_hello_packet_raw(link_socket, &contact.target, buffer)
+				self.process_relay_hello_packet_raw(link_socket, &contact, buffer)
 					.await
 			}
 			PACKET_TYPE_RELAY_HELLO_ACK => self.process_relay_hello_ack_packet(buffer).await,
@@ -1792,15 +1830,15 @@ impl Server {
 	/// blocked by their firewall somehow.
 	#[allow(dead_code)]
 	pub async fn relay(
-		self: &Arc<Self>, relay: &ContactOption, relay_node_id: NodeAddress, target: SocketAddr,
-		target_node_id: &NodeAddress,
+		self: &Arc<Self>, relay: &ContactOption, relay_node_id: NodeAddress,
+		target_contact: ContactOption, target_node_id: &NodeAddress,
 	) -> Result<Box<Connection>> {
 		let stop_flag = Arc::new(AtomicBool::new(false));
 		self.relay_with_timeout(
 			stop_flag,
 			relay,
 			relay_node_id,
-			target,
+			target_contact,
 			target_node_id,
 			2 * DEFAULT_TIMEOUT,
 		)
@@ -1809,7 +1847,7 @@ impl Server {
 
 	pub async fn relay_with_timeout(
 		self: &Arc<Self>, stop_flag: Arc<AtomicBool>, relay: &ContactOption,
-		relay_node_id: NodeAddress, target_addr: SocketAddr, target_node_id: &NodeAddress,
+		relay_node_id: NodeAddress, target_contact: ContactOption, target_node_id: &NodeAddress,
 		timeout: Duration,
 	) -> Result<Box<Connection>> {
 		let sender = self.link_connect(relay, timeout).await?;
@@ -1819,7 +1857,7 @@ impl Server {
 			.setup_outgoing_relay(
 				relay_node_id,
 				target_node_id.clone(),
-				&target_addr,
+				&target_contact,
 				timeout,
 				Some(hello_relay_ack_tx),
 			)
@@ -1856,7 +1894,7 @@ impl Server {
 					self.send_relay_hello_ack_ack_packet(&*sender, establish_info.dest_session_id).await?;
 				}
 
-				let connection = self.complete_outgoing_relay(sender, initiation_info, establish_info, target_node_id, target_addr, timeout).await?;
+				let connection = self.complete_outgoing_relay(sender, initiation_info, establish_info, target_node_id, target_contact.target, timeout).await?;
 				Ok(connection)
 			},
 			_ = sleep(timeout) => {
@@ -1990,8 +2028,9 @@ impl Server {
 	}
 
 	pub async fn setup_outgoing_relay(
-		&self, relay_node_id: NodeAddress, target_node_id: NodeAddress, target: &SocketAddr,
-		timeout: Duration, hello_relay_ack_sender: Option<Sender<u16>>,
+		&self, relay_node_id: NodeAddress, target_node_id: NodeAddress,
+		target_option: &ContactOption, timeout: Duration,
+		hello_relay_ack_sender: Option<Sender<u16>>,
 	) -> Result<RelayInitiationInfo> {
 		let (packet_sender, packet_receiver) = mpsc::unbounded_channel();
 		let (hello_sender, hello_receiver) = mpsc::channel(1);
@@ -2012,8 +2051,12 @@ impl Server {
 
 		let dh_private_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let dh_public_key = x25519::PublicKey::from(&dh_private_key);
-		let packet =
-			self.new_relay_hello_packet(target_node_id, target, local_session_id, dh_public_key);
+		let packet = self.new_relay_hello_packet(
+			target_node_id,
+			target_option,
+			local_session_id,
+			dh_public_key,
+		);
 		Ok(RelayInitiationInfo {
 			local_session_id,
 			session,
