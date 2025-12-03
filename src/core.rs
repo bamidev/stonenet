@@ -196,7 +196,9 @@ pub enum ObjectPayload {
 	/// Updates the 'home file', which is generally the file that is served to the web browser when
 	/// a user chooses to 'visit' the actor as if it was a website.
 	/// The hash is a hash of a file that was once posted using a post object.
-	HomeFile(IdType),
+	//HomeFile(IdType),
+	/// TODO: Remove the share object
+	Share(ShareObject),
 }
 
 #[derive(Clone, Deserialize, Serialize)]
