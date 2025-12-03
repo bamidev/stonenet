@@ -1,3 +1,6 @@
+// TODO: The source of the relay connection needs to be able to send some kind of 'close relay'
+// packet to the relay node, because the regular close packets that the source sends end up at the
+// target node because they are simply relayed.
 use std::backtrace::Backtrace;
 
 use futures::Stream;
@@ -371,6 +374,7 @@ impl Transporter {
 						}
 					// If the task channel has closed down, proceed with the closing sequence
 					} else {
+						debug!("SSTP transporter task channel has closed down uncleanly.");
 						break;
 					}
 				},
@@ -420,8 +424,14 @@ impl Transporter {
 					}
 					tx.send(Ok(()))
 				}
-				Err(e) => tx.send(Err(e)),
+				Err(e) => {
+					warn!("Transporter close channel got broken during the closing sequence.");
+					tx.send(Err(e))
+				}
 			};
+			// Generally, the channels in the transporter handle should not be closed externally.
+			// We close it here by letting it go out of scope, and then the garbage collector can
+			// discover that the channel is broken now.
 			if let Err(_) = r {
 				warn!("Transporter handle has been closed before the closing sequence finished.");
 			}
@@ -1453,7 +1463,7 @@ impl TransporterInner {
 						if let Some(packet) = result {
 							match self.process_packet_while_receiving(size_sender, &packet_sender, &mut ks, packet).await {
 								Err(e) => {
-									let _ = packet_sender.send(Err(e));
+									packet_sender.send(Err(e));
 									return false;
 								}
 								Ok(result) => if let Some(done) = result {
@@ -1480,16 +1490,16 @@ impl TransporterInner {
 						if i < 8 || waiting {
 							self.window_error_free = false;
 							if let Err(e) = self.send_missing_ack_packet(ks.current).await {
-								let _ = packet_sender.send(Err(e));
+								packet_sender.send(Err(e));
 								return false;
 							}
 							if !waiting { i += 1; }
 							else {
-								let _ = packet_sender.send(trace::err(Error::Timeout(initial_wait_time)));
+								packet_sender.send(trace::err(Error::Timeout(initial_wait_time)));
 								return false;
 							}
 						} else {
-							let _ = packet_sender.send(trace::err(Error::Timeout(self.timeout)));
+							packet_sender.send(trace::err(Error::Timeout(self.timeout)));
 							return false;
 						}
 					}
