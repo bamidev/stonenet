@@ -565,9 +565,7 @@ impl Server {
 					);
 					let transporter_handle = transporter.spawn();
 
-					if !target.use_tcp {
-						self.send_hello_ack_ack_packet(&*sender, establish_info.dest_session_id).await?;
-					}
+					self.send_hello_ack_ack_packet(&*sender, establish_info.dest_session_id).await?;
 					return Ok((Box::new(Connection {
 						transporter: transporter_handle,
 						server: self.clone(),
@@ -1246,14 +1244,12 @@ impl Server {
 				DEFAULT_TIMEOUT,
 			)
 			.await?;
-		if !source_socket.is_connection_based() {
-			self.send_relay_hello_relay_ack_packet(
-				&*source_socket,
-				packet.body.base.session_id,
-				relayer_session_id,
-			)
-			.await?;
-		}
+		self.send_relay_hello_relay_ack_packet(
+			&*source_socket,
+			packet.body.base.session_id,
+			relayer_session_id,
+		)
+		.await?;
 
 		// Open a socket to the target node and put the socket into our session
 		let target_tx = self.link_connect(&target_contact, DEFAULT_TIMEOUT).await?;
@@ -1467,18 +1463,14 @@ impl Server {
 		// it has been received by the other side.
 		// Or if on a connection-based socket already, don't wait fo the ack from the
 		// other side.
-		if sender.is_connection_based() {
+		for i in 0..8 {
 			sender.send(&hello_ack).await?;
-		} else {
-			for i in 0..8 {
-				sender.send(&hello_ack).await?;
 
-				select! {
-					_ = hello_ack_rx.recv() => break,
-					_ = sleep(self.default_timeout / 8) => {
-						if i == 7 {
-							return Err(Error::Timeout(self.default_timeout).trace());
-						}
+			select! {
+				_ = hello_ack_rx.recv() => break,
+				_ = sleep(self.default_timeout / 8) => {
+					if i == 7 {
+						return Err(Error::Timeout(self.default_timeout).trace());
 					}
 				}
 			}
@@ -1626,7 +1618,7 @@ impl Server {
 
 		// Send the hello-ack-ack packet to the other side
 		let their_session_id = packet.body.target_session_id;
-		if !connection_based {
+		{
 			let packet = self.compose_hello_ack_ack_packet(their_session_id);
 			let r = link_socket.send(&packet).await;
 			debug_assert!(r.is_ok(), "unable to send hello-ack-ack packet");
@@ -1901,9 +1893,7 @@ impl Server {
 			result = initiation_info.hello_receiver.recv() => {
 				let establish_info = result.unwrap();
 
-				if !relay.use_tcp {
-					self.send_relay_hello_ack_ack_packet(&*sender, establish_info.dest_session_id).await?;
-				}
+				self.send_relay_hello_ack_ack_packet(&*sender, establish_info.dest_session_id).await?;
 
 				let connection = self.complete_outgoing_relay(sender, initiation_info, establish_info, target_node_id, target_contact.target, timeout).await?;
 				Ok(connection)
