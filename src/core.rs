@@ -68,9 +68,23 @@ pub struct FileData {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct File {
+	/// The hash of the unencrypted & uncompressed content
 	pub plain_hash: IdType,
+	/// The mime type
 	pub mime_type: LimString<LimitMimeType>,
+	/// The ID of an 'index file' that can be used for 'full text search' in this file.
+	pub search_index: Option<IdType>,
+	/// The compression that is used to compress the unencrypted data.
+	/// Or 0 for no compression.
 	pub compression_type: u8,
+	/// The sequence of data blocks of the file.
+	pub blocks: Vec<IdType>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FileSearchIndex {
+	pub hash: IdType,
+	pub mime_type: LimString<LimitMimeType>,
 	pub blocks: Vec<IdType>,
 }
 
@@ -174,9 +188,15 @@ pub const OBJECT_TYPE_SHARE: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ObjectPayload {
+	/// Updates profile information
 	Profile(ProfileObject),
+	/// Posts a number of files, that may contain text messages, attachments or just about
+	/// anything.
 	Post(PostObject),
-	Share(ShareObject),
+	/// Updates the 'home file', which is generally the file that is served to the web browser when
+	/// a user chooses to 'visit' the actor as if it was a website.
+	/// The hash is a hash of a file that was once posted using a post object.
+	HomeFile(IdType),
 }
 
 #[derive(Clone, Deserialize, Serialize)]

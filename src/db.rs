@@ -531,6 +531,7 @@ pub trait PersistenceHandle {
 				File {
 					plain_hash: file.plain_hash,
 					mime_type: file.mime_type.into(),
+					search_index: None,
 					compression_type: file.compression_type,
 					blocks,
 				},
@@ -1911,6 +1912,7 @@ impl Connection {
 			Ok(Some(File {
 				compression_type,
 				plain_hash,
+				search_index: None,
 				mime_type: mime_type.into(),
 				blocks,
 			}))
@@ -2582,6 +2584,7 @@ impl Transaction {
 			&binserde::serialize(&File {
 				plain_hash: plain_hash.clone(),
 				mime_type: mime_type.into(),
+				search_index: None,
 				compression_type: compression_type as u8,
 				blocks: block_hashes.clone(),
 			})

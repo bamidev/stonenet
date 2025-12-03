@@ -302,6 +302,7 @@ impl Api {
 			Some(File {
 				plain_hash: record.plain_hash,
 				mime_type: record.mime_type.into(),
+				search_index: None,
 				compression_type: record.compression_type,
 				blocks,
 			})
