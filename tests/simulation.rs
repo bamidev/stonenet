@@ -36,6 +36,7 @@ async fn test_data_synchronization(
 	let mut config1 = Config::default();
 	config1.ipv4_address = Some("127.0.0.1".to_string());
 	config1.ipv4_udp_openness = Some("bidirectional".to_string());
+	config1.ipv4_udp_port = Some(0);
 	let bootstrap_node = load_test_node(stop_flag.clone(), &mut rng, &config1, "bootstrap").await;
 	let port1 = bootstrap_node
 		.node
@@ -49,17 +50,20 @@ async fn test_data_synchronization(
 	let mut config2 = Config::default();
 	config2.ipv4_address = Some("127.0.0.1".to_string());
 	config2.ipv4_udp_openness = Some("bidirectional".to_string());
+	config2.ipv4_udp_port = Some(0);
 	config2.relay_node = Some(true);
 	config2.bootstrap_nodes = vec![format!("127.0.0.1:{}", port1)];
 	let mut config3 = Config::default();
 	config3.ipv4_address = Some("127.0.0.1".to_string());
 	config3.ipv4_udp_openness = Some(node1_openness.to_string());
+	config3.ipv4_udp_port = Some(0);
 	config3.bootstrap_nodes = vec![format!("127.0.0.1:{}", port1)];
 	let mut config4 = Config::default();
 	config4.ipv4_address = Some("127.0.0.1".to_string());
 	config4.ipv4_udp_openness = Some(node2_openness.to_string());
+	config4.ipv4_udp_port = Some(0);
 	config4.bootstrap_nodes = vec![format!("127.0.0.1:{}", port1)];
-	let relay_node: Api = load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
+	let relay_node = load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
 	let node1 = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
 	let node2 = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
 

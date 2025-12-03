@@ -799,7 +799,7 @@ impl Server {
 		&self, alive_flag: Arc<AtomicBool>, their_node_id: NodeAddress,
 		their_public_key: NodePublicKey, dest_session_id: u16,
 		packet_sender: UnboundedSender<CryptedPacket>, timeout: Duration,
-	) -> Result<(u16, bool, Arc<Mutex<SessionData>>)> {
+	) -> Result<Option<(u16, bool, Arc<Mutex<SessionData>>)>> {
 		// Check if session doesn't already exists
 		let mut sessions = self.sessions.lock().await;
 		match sessions
@@ -807,9 +807,8 @@ impl Server {
 			.await
 		{
 			None => {}
-			// If it exists, return None
-			Some((our_session_id, session_data)) => {
-				return Ok((our_session_id, false, session_data));
+			Some(_) => {
+				return Ok(None);
 			}
 		}
 		let transport_data = SessionTransportData::Direct(SessionTransportDataDirect {
@@ -833,7 +832,7 @@ impl Server {
 			Some(id) => id,
 		};
 		sessions.map.insert(session_id, session_data.clone());
-		return Ok((session_id, true, session_data));
+		return Ok(Some((session_id, true, session_data)));
 	}
 
 	async fn new_outgoing_session(
@@ -1227,7 +1226,7 @@ impl Server {
 
 		let target_contact = ContactOption::new(
 			packet.header.target.clone().into(),
-			source_socket.is_connection_based(),
+			packet.header.target_use_tcp,
 		);
 		let target_node_id = packet.body.target_node_id.clone();
 		let (hello_tx, hello_rx) = mpsc::channel(1);
@@ -1353,7 +1352,7 @@ impl Server {
 		let their_node_id = public_key.generate_address();
 		let alive_flag = Arc::new(AtomicBool::new(true));
 		let (packet_sender, packet_receiver) = mpsc::unbounded_channel();
-		let (our_session_id, is_new, session) = self
+		let (our_session_id, is_new, session) = match self
 			.new_incomming_session(
 				alive_flag.clone(),
 				their_node_id.clone(),
@@ -1362,7 +1361,18 @@ impl Server {
 				packet_sender,
 				self.default_timeout,
 			)
-			.await?;
+			.await?
+		{
+			Some(x) => x,
+			None => {
+				trace!(
+					"Received hello packet from node {} and session {} more than once.",
+					&their_node_id,
+					dest_session_id
+				);
+				return Ok(());
+			}
+		};
 
 		// Generate DH keypair
 		let dh_private_key = x25519::StaticSecret::random_from_rng(OsRng);
@@ -1378,8 +1388,7 @@ impl Server {
 				)
 				.await
 			{
-				// Decrypt the response (TODO: Use the initial key for the newly created
-				// transporter)
+				// Decrypt the response
 				let shared_secret =
 					KeyState::calculate_initial_key(&dh_private_key, &dh_public_key);
 				decrypt(encrypt_session_id, 0, 0, &mut response, &shared_secret);
@@ -1389,6 +1398,8 @@ impl Server {
 				if sender.is_connection_based() {
 					spawn(async move {
 						sender.close().await.unwrap();
+						// If the hello packet is invalid, but we're receiving it over TCP, close the TCP
+						// connection itself.
 					});
 				}
 				return Ok(());
@@ -1488,8 +1499,8 @@ impl Server {
 			local_session_id: our_session_id,
 		});
 
-		// If there is a response already, but we've not been able to send it on the
-		// back already on the hello-ack packet, do it as the first task on the
+		// If there is a response already, but we've not been able to send it back on he connection
+		// already on the hello-ack packet, do it as the first task on the
 		// connection transporter.
 		if let Some(response) = opt_response {
 			if !response_included {

@@ -578,7 +578,7 @@ mod tests {
 		test_relaying(true, true, false, true).await;
 	}
 
-	// Sent and receive a message through a relay
+	/// Sent and receive a message through a relay
 	async fn test_relaying(
 		node1_use_ipv6: bool, node2_use_ipv6: bool, node1_use_tcp: bool, node2_use_tcp: bool,
 	) {
