@@ -1444,8 +1444,10 @@ impl TransporterInner {
 			let start_time = SystemTime::now();
 			let mut interval = initial_wait_time;
 			let initial_end_time = start_time + initial_wait_time;
-			let mut waiting = true;
-			while !self.close_received {
+			let mut waiting = true; // Whether or not we are waiting on the first packet to arrive.
+						   // When still in 'waiting' mode, we do not know if we are actually going to receive a
+						   // new window. We could also receive a close packet.
+			while !waiting || !self.close_received {
 				select! {
 					result = self.packet_receiver.recv() => {
 						if let Some(packet) = result {
