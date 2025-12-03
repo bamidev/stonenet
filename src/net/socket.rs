@@ -307,6 +307,7 @@ where
 	async fn bind(addr: Self::Target) -> io::Result<Self> {
 		let inner = Self::new_inner()?;
 		inner.bind(addr.clone().into())?;
+		inner.set_keepalive(true)?;
 		Ok(Self {
 			inner: inner.listen(TCP_BACKLOG)?,
 			addr: UnsafeSync::new(addr),
@@ -325,6 +326,7 @@ where
 {
 	async fn connect(&self, addr: Self::Target, timeout: Duration) -> io::Result<Self::Socket> {
 		let inner = Self::new_inner()?;
+		inner.set_keepalive(true)?;
 
 		select! {
 			result = inner.connect(addr.into()) => {
