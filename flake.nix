@@ -79,6 +79,7 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               cargo
+              rustfmt
               pkg-config
               pkgs.openssl.dev
               rustPlatform.bindgenHook
