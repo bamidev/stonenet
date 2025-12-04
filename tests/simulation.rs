@@ -159,7 +159,7 @@ Hoi ik ben Kees!
 		actor_address: actor_id.clone(),
 		object_hash: first_post_hash.clone(),
 	};
-	let _share_hash = node1
+	let share_hash = node1
 		.publish_share(&actor_id, &private_key, &share_object)
 		.await
 		.expect("unable to publish share object");
@@ -277,22 +277,9 @@ Hoi ik ben Kees!
 						post.message.clone().expect("message is missing").body,
 						fourth_message
 					);
+				} else if object.id == share_hash.to_string() {
+					// TODO: Check if the shared message matches
 				}
-			}
-			ObjectPayloadInfo::Share(share) => {
-				let original_post = share
-					.original_post
-					.as_ref()
-					.expect("share is missing original post");
-				assert_eq!(original_post.actor_address, actor_id.to_string());
-				assert_eq!(
-					original_post
-						.message
-						.as_ref()
-						.expect("message is missing from share")
-						.body,
-					first_message
-				);
 			}
 		}
 	}

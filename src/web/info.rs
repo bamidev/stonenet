@@ -11,8 +11,8 @@ use crate::{
 	common::{current_timestamp, IdType},
 	compression::decompress,
 	core::{
-		ActorAddress, CompressionType, FileHeader, OBJECT_TYPE_POST, OBJECT_TYPE_PROFILE,
-		OBJECT_TYPE_SHARE,
+		ActorAddress, CompressionType, FileHeader, OBJECT_TYPE_HOME_FILE, OBJECT_TYPE_POST,
+		OBJECT_TYPE_PROFILE,
 	},
 	db::{Database, Error, PersistenceHandle, Result},
 	entity::*,
@@ -43,7 +43,6 @@ pub struct ObjectInfo {
 pub enum ObjectPayloadInfo {
 	Profile(ProfileObjectInfo),
 	Post(PostObjectInfo),
-	Share(ShareObjectInfo),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -70,11 +69,6 @@ pub struct PostMessageInfo {
 pub struct ProfileObjectInfo {
 	pub actor: TargetedActorInfo,
 	pub description: Option<String>,
-}
-
-#[derive(Debug, Default, Serialize)]
-pub struct ShareObjectInfo {
-	pub original_post: Option<TargetedPostInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,15 +105,6 @@ impl ObjectInfo {
 					format!("Post by {}", &self.actor_name)
 				}
 			}
-			ObjectPayloadInfo::Share(share) => {
-				if let Some(op) = &share.original_post {
-					if let Some(from_name) = &op.actor_name {
-						return format!("Post from {} shared by {}", from_name, &self.actor_name);
-					}
-				}
-
-				format!("Post shared by {}", &self.actor_name)
-			}
 		}
 	}
 }
@@ -130,13 +115,6 @@ impl ObjectPayloadInfo {
 	pub fn has_main_content(&self) -> bool {
 		match self {
 			Self::Post(post) => post.message.is_some(),
-			Self::Share(share) => {
-				if let Some(op) = &share.original_post {
-					op.message.is_some() && op.actor_name.is_some()
-				} else {
-					false
-				}
-			}
 			Self::Profile(profile) => profile.description.is_some(),
 		}
 	}
@@ -149,17 +127,6 @@ impl ObjectPayloadInfo {
 				.as_ref()
 				.map(|m| m.body.clone())
 				.unwrap_or("".to_string()),
-			Self::Share(share) => {
-				if let Some(op) = &share.original_post {
-					if let Some(m) = &op.message {
-						m.body.clone()
-					} else {
-						"[Message not synchronized yet]".to_string()
-					}
-				} else {
-					"[Post not synchronized yet]".to_string()
-				}
-			}
 			Self::Profile(_) => "[Profile updated]".to_string(),
 		}
 	}
@@ -301,71 +268,6 @@ async fn find_profile_object_info(
 	} else {
 		None
 	})
-}
-
-async fn find_share_object_info(
-	db: &Database, url_base: &str, object_id: i64,
-) -> Result<Option<ShareObjectInfo>> {
-	let result = db
-		.inner()
-		.query_one(Statement::from_sql_and_values(
-			db.inner().get_database_backend(),
-			r#"
-		SELECT o.hash, bo.actor_address, bi.id, to_.id
-		FROM object AS o
-		LEFT JOIN share_object AS bo ON bo.object_id = o.id
-		LEFT JOIN actor AS i ON o.actor_id = i.id
-		LEFT JOIN actor AS bi ON bo.actor_address = bi.address
-		LEFT JOIN object AS to_ ON to_.hash = bo.object_hash
-		WHERE o.id = ?
-	"#,
-			[object_id.into()],
-		))
-		.await?;
-
-	if let Some(row) = result {
-		let object_hash: IdType = row.try_get_by_index(0)?;
-		let actor_address: ActorAddress = row.try_get_by_index(1)?;
-		let target_actor_id_opt: Option<i64> = row.try_get_by_index(2)?;
-		let target_object_id_opt: Option<i64> = row.try_get_by_index(3)?;
-
-		if let Some(target_object_id) = target_object_id_opt {
-			let (actor_name, actor_avatar) = if let Some(target_actor_id) = target_actor_id_opt {
-				db.find_profile_limited(target_actor_id).await?
-			} else {
-				(None, None)
-			};
-			let mut share_object = ShareObjectInfo::default();
-			if let Some((mime_type, body, attachments)) =
-				find_post_object_info_files(db, url_base, &actor_address, target_object_id).await?
-			{
-				share_object.original_post = Some(TargetedPostInfo {
-					id: object_hash.to_string(),
-					actor_address: actor_address.to_string(),
-					actor_name,
-					actor_avatar_url: actor_avatar
-						.map(|hash| file_url(url_base, &actor_address, &hash)),
-					message: Some(PostMessageInfo { mime_type, body }),
-					attachments,
-				})
-			} else {
-				share_object.original_post = Some(TargetedPostInfo {
-					id: object_hash.to_string(),
-					actor_address: actor_address.to_string(),
-					actor_name,
-					actor_avatar_url: actor_avatar
-						.map(|hash| file_url(url_base, &actor_address, &hash)),
-					message: None,
-					attachments: Vec::new(),
-				})
-			};
-			Ok(Some(share_object))
-		} else {
-			Ok(None)
-		}
-	} else {
-		Ok(None)
-	}
 }
 
 /// Finds the mime-type, text content & attachments for the given post
@@ -698,9 +600,7 @@ pub async fn load_object_payload_info(
 		OBJECT_TYPE_POST => find_post_object_info(db, url_base, object_id)
 			.await?
 			.map(|r| ObjectPayloadInfo::Post(r)),
-		OBJECT_TYPE_SHARE => find_share_object_info(db, url_base, object_id)
-			.await?
-			.map(|r| ObjectPayloadInfo::Share(r)),
+		OBJECT_TYPE_HOME_FILE => panic!("Home files not implemented yet."),
 		OBJECT_TYPE_PROFILE => find_profile_object_info(db, url_base, object_id)
 			.await?
 			.map(|r| ObjectPayloadInfo::Profile(r)),

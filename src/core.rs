@@ -95,6 +95,11 @@ pub struct FileHeader {
 	pub block_count: u32,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HomeFileObject {
+	pub hash: Option<IdType>,
+}
+
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, Serialize)]
 pub enum NodeAddress {
 	/// The first version of the node address refers to a ed448 keypair.
@@ -128,7 +133,6 @@ pub enum FromBytesAddressError {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PostObject {
 	/// If this post is a reply, a tuple of the actor's ID and the post.
-	pub in_reply_to: Option<(ActorAddress, IdType)>,
 	pub data: PostObjectCryptedData,
 }
 
@@ -139,6 +143,7 @@ pub enum PostObjectCryptedData {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PostObjectDataPlain {
+	pub in_reply_to: Option<(ActorAddress, IdType)>,
 	/// Searchable keywords
 	pub tags: LimVec<LimString<Limit32>, Limit64>,
 	/// A list of (mime-type, hash) tuples.
@@ -184,7 +189,7 @@ pub struct ObjectSignData<'a> {
 
 pub const OBJECT_TYPE_PROFILE: u8 = 0;
 pub const OBJECT_TYPE_POST: u8 = 1;
-pub const OBJECT_TYPE_SHARE: u8 = 2;
+pub const OBJECT_TYPE_HOME_FILE: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ObjectPayload {
@@ -196,9 +201,7 @@ pub enum ObjectPayload {
 	/// Updates the 'home file', which is generally the file that is served to the web browser when
 	/// a user chooses to 'visit' the actor as if it was a website.
 	/// The hash is a hash of a file that was once posted using a post object.
-	//HomeFile(IdType),
-	/// TODO: Remove the share object
-	Share(ShareObject),
+	HomeFile(HomeFileObject),
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -548,7 +551,7 @@ impl ObjectPayload {
 		match self {
 			Self::Profile(_) => OBJECT_TYPE_PROFILE,
 			Self::Post(_) => OBJECT_TYPE_POST,
-			Self::Share(_) => OBJECT_TYPE_SHARE,
+			Self::HomeFile(_) => OBJECT_TYPE_HOME_FILE,
 		}
 	}
 }

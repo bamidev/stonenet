@@ -318,15 +318,6 @@ fn translate_special_mime_types_for_object(object: &mut ObjectInfo) {
 				}
 			}
 		}
-		ObjectPayloadInfo::Share(share) => {
-			if let Some(post) = &mut share.original_post {
-				if let Some(message) = &mut post.message {
-					if let Some(new) = translate_special_mime_types(message) {
-						*message = new;
-					}
-				}
-			}
-		}
 		_ => {}
 	}
 }

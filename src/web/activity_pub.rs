@@ -419,25 +419,6 @@ pub async fn compose_activity_from_object_info(
 				None
 			}
 		}
-		ObjectPayloadInfo::Share(share) => {
-			if let Some(post) = &share.original_post {
-				let target_object_id = format!(
-					"{}/actor/{}/object/{}/activity-pub",
-					url_base, &post.actor_address, &post.id
-				);
-				let activity = Activity::new(
-					ActivityType::Announce,
-					&object.actor_url,
-					&object.id,
-					&[],
-					object.created,
-					serde_json::Value::String(target_object_id),
-				);
-				Some((serde_json::to_value(activity).unwrap(), Vec::new()))
-			} else {
-				None
-			}
-		}
 		ObjectPayloadInfo::Profile(profile) => {
 			// Construct a different type of activity (Announce), with a Profile object
 			let profile = ActivityProfileObject::new(
@@ -457,6 +438,7 @@ pub async fn compose_activity_from_object_info(
 			);
 			Some((serde_json::to_value(activity).unwrap(), Vec::new()))
 		}
+		_ => None,
 	};
 	Ok(activity_opt)
 }

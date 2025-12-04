@@ -261,16 +261,8 @@ impl ActorNode {
 						}
 					}
 				}
-				ObjectPayload::Share(payload) => {
-					if &payload.actor_address == self.actor_address() {
-						self.collect_object(connection, &payload.object_hash)
-							.await?;
-					} else {
-						self.spawn_collect_object_from_other_network(
-							payload.actor_address,
-							payload.object_hash,
-						);
-					}
+				ObjectPayload::HomeFile(_) => {
+					error!("Home file objects are not implemented yet.");
 				}
 				ObjectPayload::Post(payload) => {
 					match &payload.data {
@@ -286,15 +278,17 @@ impl ActorNode {
 					}
 
 					// If the post is a reply, also collect the object it replied to.
-					if let Some((actor_address, object_hash)) = payload.in_reply_to {
-						if &actor_address == self.actor_address() {
-							self.collect_object(connection, &object_hash).await?;
-						} else {
-							self.spawn_collect_object_from_other_network(
-								actor_address,
-								object_hash,
-							);
-						};
+					if let PostObjectCryptedData::Plain(plain) = &payload.data {
+						if let Some((actor_address, object_hash)) = &plain.in_reply_to {
+							if actor_address == self.actor_address() {
+								self.collect_object(connection, object_hash).await?;
+							} else {
+								self.spawn_collect_object_from_other_network(
+									actor_address.clone(),
+									object_hash.clone(),
+								);
+							};
+						}
 					}
 				}
 			}
@@ -541,7 +535,9 @@ impl ActorNode {
 					results
 				}
 			},
-			ObjectPayload::Share(_) => Vec::new(),
+			ObjectPayload::HomeFile(payload) => {
+				payload.hash.clone().map(|h| vec![h]).unwrap_or(Vec::new())
+			}
 		};
 		Ok(results)
 	}
@@ -612,7 +608,11 @@ impl ActorNode {
 						}
 					}
 				},
-				ObjectPayload::Share(_) => {}
+				ObjectPayload::HomeFile(payload) => {
+					if let Some(hash) = &payload.hash {
+						results.push(hash.clone());
+					}
+				}
 			}
 			Ok(results)
 		})

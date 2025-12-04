@@ -398,17 +398,17 @@ pub trait PersistenceHandle {
 
 			let tags2: Vec<LimString<_>> = tags.iter().map(|t| t.into()).collect();
 			Ok(Some(PostObject {
-				in_reply_to: if record.in_reply_to_actor_address.is_some()
-					&& record.in_reply_to_object_hash.is_some()
-				{
-					Some((
-						record.in_reply_to_actor_address.unwrap(),
-						record.in_reply_to_object_hash.unwrap(),
-					))
-				} else {
-					None
-				},
 				data: PostObjectCryptedData::Plain(PostObjectDataPlain {
+					in_reply_to: if record.in_reply_to_actor_address.is_some()
+						&& record.in_reply_to_object_hash.is_some()
+					{
+						Some((
+							record.in_reply_to_actor_address.unwrap(),
+							record.in_reply_to_object_hash.unwrap(),
+						))
+					} else {
+						None
+					},
 					tags: tags2.into(),
 					files: files.into(),
 				}),
@@ -472,16 +472,6 @@ pub trait PersistenceHandle {
 		}))
 	}
 
-	async fn load_share_object_payload(&self, object_id: i64) -> Result<Option<ShareObject>> {
-		let result = share_object::Entity::find_by_id(object_id)
-			.one(self.inner())
-			.await?;
-		Ok(result.map(|r| ShareObject {
-			actor_address: r.actor_address,
-			object_hash: r.object_hash,
-		}))
-	}
-
 	async fn load_object_payload(
 		&self, object_id: i64, object_type: u8,
 	) -> Result<Option<ObjectPayload>> {
@@ -490,10 +480,7 @@ pub trait PersistenceHandle {
 				.load_post_object_payload(object_id)
 				.await?
 				.map(|p| ObjectPayload::Post(p)),
-			OBJECT_TYPE_SHARE => self
-				.load_share_object_payload(object_id)
-				.await?
-				.map(|s| ObjectPayload::Share(s)),
+			OBJECT_TYPE_HOME_FILE => panic!("Home file not implemented yet"),
 			OBJECT_TYPE_PROFILE => self
 				.load_profile_object_payload(object_id)
 				.await?
@@ -1108,31 +1095,6 @@ impl Connection {
 		Self::_parse_object(tx, &mut rows)
 	}
 
-	pub fn _fetch_share_object<C>(this: &C, object_id: i64) -> Result<Option<ShareObject>>
-	where
-		C: DerefConnection,
-	{
-		let mut stat = this.prepare(
-			r#"
-			SELECT actor_address, object_hash
-			FROM share_object
-			WHERE object_id = ?
-		"#,
-		)?;
-		let mut rows = stat.query([object_id])?;
-		if let Some(row) = rows.next()? {
-			let post_actor_address: ActorAddress = row.get(0)?;
-			let object_sequence = row.get(1)?;
-
-			Ok(Some(ShareObject {
-				actor_address: post_actor_address,
-				object_hash: object_sequence,
-			}))
-		} else {
-			Ok(None)
-		}
-	}
-
 	fn _fetch_post_files(this: &impl DerefConnection, object_id: i64) -> Result<Vec<IdType>> {
 		// Collect the files
 		let mut files = Vec::new();
@@ -1173,12 +1135,12 @@ impl Connection {
 
 			let lim_tags: Vec<LimString<_>> = tags.into_iter().map(|i| i.into()).collect();
 			Ok(Some(PostObject {
-				in_reply_to: if irt_actor_address.is_some() && irt_object_id.is_some() {
-					Some((irt_actor_address.unwrap(), irt_object_id.unwrap()))
-				} else {
-					None
-				},
 				data: PostObjectCryptedData::Plain(PostObjectDataPlain {
+					in_reply_to: if irt_actor_address.is_some() && irt_object_id.is_some() {
+						Some((irt_actor_address.unwrap(), irt_object_id.unwrap()))
+					} else {
+						None
+					},
 					tags: lim_tags.into(),
 					files: files.into(),
 				}),
@@ -1374,8 +1336,7 @@ impl Connection {
 			let payload = match object_type {
 				OBJECT_TYPE_POST => Self::_fetch_post_object(tx, object_id)
 					.map(|o| o.map(|p| ObjectPayload::Post(p))),
-				OBJECT_TYPE_SHARE => Self::_fetch_share_object(tx, object_id)
-					.map(|o| o.map(|b| ObjectPayload::Share(b))),
+				OBJECT_TYPE_HOME_FILE => panic!("Home file not implemented yet."),
 				OBJECT_TYPE_PROFILE => Self::_fetch_profile_object(tx, object_id)
 					.map(|o| o.map(|p| ObjectPayload::Profile(p))),
 				other => Err(Error::InvalidObjectType(other))?,
@@ -1665,8 +1626,8 @@ impl Connection {
 				stat.insert(params![
 					object_id,
 					plain.files.len(),
-					payload.in_reply_to.as_ref().map(|irt| irt.0.to_bytes()),
-					payload.in_reply_to.as_ref().map(|irt| irt.1.to_string())
+					plain.in_reply_to.as_ref().map(|irt| irt.0.to_bytes()),
+					plain.in_reply_to.as_ref().map(|irt| irt.1.to_string())
 				])?;
 
 				let tags2: Vec<_> = plain.tags.iter().map(|t| t.clone().to_string()).collect();
@@ -1696,7 +1657,7 @@ impl Connection {
 			ObjectPayload::Post(po) => {
 				Self::_store_post_object_payload(tx, actor_id, object_id, &po)
 			}
-			ObjectPayload::Share(po) => Self::_store_boost_object_payload(tx, object_id, &po),
+			ObjectPayload::HomeFile(_) => panic!("Home file payloads are not implemented yet"),
 			ObjectPayload::Profile(po) => Self::_store_profile_object_payload(tx, object_id, &po),
 		}
 	}
@@ -1740,19 +1701,6 @@ impl Connection {
 				wallpaper_file_id.map(|id| id.to_string()),
 				description_hash.map(|id| id.to_string())
 			],
-		)?;
-		Ok(())
-	}
-
-	fn _store_boost_object_payload(
-		tx: &impl DerefConnection, object_id: i64, payload: &ShareObject,
-	) -> Result<()> {
-		tx.execute(
-			r#"
-			INSERT INTO share_object (object_id, actor_address, object_hash)
-			VALUES (?,?,?)
-		"#,
-			params![object_id, &payload.actor_address, &payload.object_hash],
 		)?;
 		Ok(())
 	}

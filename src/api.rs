@@ -207,7 +207,14 @@ impl Api {
 			.expect("identity doesn't exist");
 
 		let next_object_sequence = tx.find_next_object_sequence(identity_record.id).await?;
-		let object_payload = ObjectPayload::Share(share.clone());
+		let post_object = PostObject {
+			data: PostObjectCryptedData::Plain(PostObjectDataPlain {
+				in_reply_to: Some((share.actor_address.clone(), share.object_hash.clone())),
+				tags: Vec::new().into(),
+				files: Vec::new().into(),
+			}),
+		};
+		let object_payload = ObjectPayload::Post(post_object.clone());
 		let created = Utc::now().timestamp_millis();
 
 		// TODO: Create a seperate db function that merely finds the hash of the object,
@@ -239,7 +246,7 @@ impl Api {
 			created: Set(created),
 			verified_from_start: Set(true),
 			found: Set(created),
-			r#type: Set(OBJECT_TYPE_SHARE),
+			r#type: Set(OBJECT_TYPE_POST),
 			published_on_fediverse: Set(false),
 		})
 		.exec(tx.inner())
@@ -247,10 +254,11 @@ impl Api {
 		let object_id = result.last_insert_id;
 
 		// Insert the share object record
-		share_object::Entity::insert(share_object::ActiveModel {
+		post_object::Entity::insert(post_object::ActiveModel {
 			object_id: Set(object_id),
-			actor_address: Set(share.actor_address.clone()),
-			object_hash: Set(share.object_hash.clone()),
+			in_reply_to_actor_address: Set(Some(share.actor_address.clone())),
+			in_reply_to_object_hash: Set(Some(share.object_hash.clone())),
+			file_count: Set(0),
 		})
 		.exec(tx.inner())
 		.await?;
@@ -262,7 +270,7 @@ impl Api {
 			sequence: next_object_sequence,
 			previous_hash,
 			created: created as _,
-			payload: ObjectPayload::Share(share.clone()),
+			payload: ObjectPayload::Post(post_object),
 		};
 		Ok((result.last_insert_id, hash, object))
 	}
@@ -589,8 +597,8 @@ impl Api {
 		}
 		let tags2: Vec<LimString<_>> = tags.iter().map(|i| i.into()).collect();
 		let object_payload = ObjectPayload::Post(PostObject {
-			in_reply_to: in_reply_to.clone(),
 			data: PostObjectCryptedData::Plain(PostObjectDataPlain {
+				in_reply_to: in_reply_to.clone(),
 				tags: tags2.into(),
 				files: files.clone().into(),
 			}),
