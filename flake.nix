@@ -2,7 +2,7 @@
   description = "Stonenet";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
     browser-window.url = "github:bamidev/browser-window";
   };
@@ -78,6 +78,7 @@
         devShells = {
           default = pkgs.mkShell {
             packages = with pkgs; [
+              cargo
               pkg-config
               pkgs.openssl.dev
               rustPlatform.bindgenHook
