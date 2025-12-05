@@ -825,7 +825,7 @@ mod tests {
 	#[tokio::test]
 	async fn test_create_identity() {
 		let mut rng = test::initialize_rng();
-		let db = test::load_database("api").await;
+		let (db, db_file) = test::load_database("api").await;
 		let node = test::empty_node(db.clone(), &mut rng).await;
 		let api = Api {
 			node,
@@ -914,5 +914,7 @@ mod tests {
 			Some(format!("/actor/{}/file/{}", &address, wallpaper_hash))
 		);
 		assert_eq!(profile_info.description, Some(description_data.to_string()));
+
+		drop(db_file);
 	}
 }

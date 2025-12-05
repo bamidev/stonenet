@@ -3004,7 +3004,7 @@ mod tests {
 		let mut assistant_config = Config::default();
 		set_server_node_config(&mut assistant_config);
 		assistant_config.relay_node = Some(assistant_is_relay);
-		let assistant_node =
+		let (assistant_node, assistant_file) =
 			test::load_test_node(stop_flag.clone(), &mut rng, &assistant_config, "assistant").await;
 		let assistant_contact_info = assistant_node.node.contact_info();
 
@@ -3019,7 +3019,7 @@ mod tests {
 		target_config.ipv6_address = Some("::1".to_string());
 		set_bootstrap_config(&mut target_config, &assistant_contact_info);
 
-		let target_node =
+		let (target_node, target_file) =
 			test::load_test_node(stop_flag.clone(), &mut rng, &target_config, "target").await;
 		// Load the 'relay' node after the 'target' node, so that the 'target' node
 		// always attached itself to the 'assistant' node rather than the 'relay' node.
@@ -3034,7 +3034,7 @@ mod tests {
 				.len(),
 			1
 		);
-		let relay_node =
+		let (relay_node, relay_file) =
 			test::load_test_node(stop_flag.clone(), &mut rng, &relay_config, "random").await;
 
 		// Create data at the target node
@@ -3059,7 +3059,7 @@ mod tests {
 		);
 
 		// Find data as the source node
-		let source_node =
+		let (source_node, source_file) =
 			test::load_test_node(stop_flag.clone(), &mut rng, &source_config, "source").await;
 		assert_eq!(
 			source_node
@@ -3089,5 +3089,10 @@ mod tests {
 		stop_flag.store(true, Ordering::Relaxed);
 
 		assert_eq!(profile.actor.name, "Test");
+
+		drop(assistant_file);
+		drop(relay_file);
+		drop(source_file);
+		drop(target_file);
 	}
 }

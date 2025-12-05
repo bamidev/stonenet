@@ -2735,7 +2735,7 @@ mod tests {
 	use crate::test;
 	#[tokio::test]
 	async fn test_file_data() {
-		let db = test::load_database("db").await;
+		let (db, db_file) = test::load_database("db").await;
 
 		let mut rng = test::initialize_rng();
 
@@ -2766,5 +2766,7 @@ mod tests {
 			"corrupted mime type"
 		);
 		assert_eq!(fetched_file2.data, file_data2.data, "corrupted file data");
+
+		drop(db_file);
 	}
 }

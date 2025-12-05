@@ -6,8 +6,7 @@ use std::sync::{
 use log::*;
 use rand::RngCore;
 use stonenetd::{
-	api::Api, config::Config, core::*, db::PersistenceHandle, net::*, test::*,
-	web::info::ObjectPayloadInfo,
+	config::Config, core::*, db::PersistenceHandle, net::*, test::*, web::info::ObjectPayloadInfo,
 };
 #[cfg(test)]
 #[ctor::ctor]
@@ -37,7 +36,8 @@ async fn test_data_synchronization(
 	config1.ipv4_address = Some("127.0.0.1".to_string());
 	config1.ipv4_udp_openness = Some("bidirectional".to_string());
 	config1.ipv4_udp_port = Some(0);
-	let bootstrap_node = load_test_node(stop_flag.clone(), &mut rng, &config1, "bootstrap").await;
+	let (bootstrap_node, bootstrap_file) =
+		load_test_node(stop_flag.clone(), &mut rng, &config1, "bootstrap").await;
 	let port1 = bootstrap_node
 		.node
 		.contact_info()
@@ -63,9 +63,10 @@ async fn test_data_synchronization(
 	config4.ipv4_udp_openness = Some(node2_openness.to_string());
 	config4.ipv4_udp_port = Some(0);
 	config4.bootstrap_nodes = vec![format!("127.0.0.1:{}", port1)];
-	let relay_node = load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
-	let node1 = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
-	let node2 = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
+	let (relay_node, relay_file) =
+		load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
+	let (node1, node1_file) = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
+	let (node2, node2_file) = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
 
 	// Make sure node 1 & 2 know about the relay node, because otherwise they may not be able to
 	// reach eachother whenever they just happened to not need to come across this node before and
@@ -289,4 +290,9 @@ Hoi ik ben Kees!
 	node2.close().await;
 	relay_node.close().await;
 	bootstrap_node.close().await;
+
+	drop(bootstrap_file);
+	drop(node1_file);
+	drop(node2_file);
+	drop(relay_file);
 }
