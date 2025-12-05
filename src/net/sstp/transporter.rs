@@ -215,7 +215,7 @@ impl KeyStateManager {
 		}
 	}
 
-	pub fn get_duo(&self) -> KeyStateDuo {
+	pub fn get_duo(&self) -> KeyStateDuo<'_> {
 		if self.use_first {
 			KeyStateDuo {
 				current: &self.keystate1,
@@ -229,7 +229,7 @@ impl KeyStateManager {
 		}
 	}
 
-	pub fn get_duo_mut(&mut self) -> KeyStateDuoMut {
+	pub fn get_duo_mut(&mut self) -> KeyStateDuoMut<'_> {
 		if self.use_first {
 			KeyStateDuoMut {
 				current: &mut self.keystate1,
@@ -1477,7 +1477,7 @@ impl TransporterInner {
 						if let Some(packet) = result {
 							match self.process_packet_while_receiving(size_sender, &packet_sender, &mut ks, packet).await {
 								Err(e) => {
-									packet_sender.send(Err(e));
+									let _ = packet_sender.send(Err(e));
 									return false;
 								}
 								Ok(result) => if let Some(done) = result {
@@ -1504,16 +1504,16 @@ impl TransporterInner {
 						if i < 8 || waiting {
 							self.window_error_free = false;
 							if let Err(e) = self.send_missing_ack_packet(ks.current).await {
-								packet_sender.send(Err(e));
+								let _ = packet_sender.send(Err(e));
 								return false;
 							}
 							if !waiting { i += 1; }
 							else {
-								packet_sender.send(trace::err(Error::Timeout(initial_wait_time)));
+								let _ = packet_sender.send(trace::err(Error::Timeout(initial_wait_time)));
 								return false;
 							}
 						} else {
-							packet_sender.send(trace::err(Error::Timeout(self.timeout)));
+							let _ = packet_sender.send(trace::err(Error::Timeout(self.timeout)));
 							return false;
 						}
 					}
