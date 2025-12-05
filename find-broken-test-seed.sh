@@ -7,7 +7,7 @@
 
 while true; do
     SEED=$(date)
-    if ! STONENET_TEST_RANDOM_SEED="$SEED" cargo test; then
+    if ! RUST_BACKTRACE=full RUST_LOG=debug STONENET_TEST_RANDOM_SEED="$SEED" cargo test; then
         echo Tests failed with seed: \""$SEED"\"
         exit 1
     fi
