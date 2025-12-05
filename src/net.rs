@@ -288,7 +288,17 @@ impl ContactInfo {
 				if our.availability.udp.is_some() {
 					if let Some(udp) = their.availability.udp.as_ref() {
 						return Some(ContactOption::new(
-							SocketAddrV6::new(their.addr.clone(), udp.port, 0, 0xE).into(),
+							SocketAddrV6::new(
+								their.addr.clone(),
+								udp.port,
+								0,
+								if their.addr != Ipv6Addr::LOCALHOST {
+									0xE
+								} else {
+									0x0
+								},
+							)
+							.into(),
 							false,
 						));
 					}
@@ -312,7 +322,17 @@ impl ContactInfo {
 				if our.availability.tcp.is_some() {
 					if let Some(udp) = their.availability.tcp.as_ref() {
 						return Some(ContactOption::new(
-							SocketAddrV6::new(their.addr.clone(), udp.port, 0, 0xE).into(),
+							SocketAddrV6::new(
+								their.addr.clone(),
+								udp.port,
+								0,
+								if their.addr != Ipv6Addr::LOCALHOST {
+									0xE
+								} else {
+									0x0
+								},
+							)
+							.into(),
 							true,
 						));
 					}
@@ -351,7 +371,16 @@ impl ContactInfo {
 							return None;
 						}
 					};
-					SocketAddr::V6(SocketAddrV6::new(ipv6.addr, port, 0, 0xE))
+					SocketAddr::V6(SocketAddrV6::new(
+						ipv6.addr,
+						port,
+						0,
+						if ipv6.addr != Ipv6Addr::LOCALHOST {
+							0xE
+						} else {
+							0x0
+						},
+					))
 				} else {
 					return None;
 				}
