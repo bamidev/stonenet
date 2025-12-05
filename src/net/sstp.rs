@@ -239,9 +239,6 @@ impl Connection {
 		self.transporter.alive_flag.load(Ordering::Relaxed)
 	}
 
-	//pub fn network_level(&self) -> NetworkLevel {
-	// NetworkLevel::from_ip(&self.peer_address.ip()) }
-
 	#[allow(dead_code)]
 	pub fn local_session_id(&self) -> u16 {
 		self.local_session_id

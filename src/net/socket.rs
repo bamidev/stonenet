@@ -5,7 +5,12 @@ use tokio::{io::*, select, sync::Mutex, time::sleep};
 use unsafe_send_sync::*;
 
 const TCP_BACKLOG: u32 = 1024;
-const UDP_MAX_PACKET_SIZE: usize = 65536;
+const UDP_THEORETICAL_MAX_PACKET_LENGTH: usize = 65536;
+
+pub const UDP4_MAX_PACKET_LENGTH: usize = 576 - 60 /* Max IP header size */ - 8 /* UDP header size */;
+pub const UDP6_MAX_PACKET_LENGTH: usize = 1280 - 40 /* Fixed IP header size */ - 8 /* UDP header size */;
+
+pub const TCP_MAX_PACKET_LENGTH: usize = 0xFFFF;
 
 #[async_trait]
 pub trait LinkSocket: Send + Sync {
@@ -153,9 +158,9 @@ pub type TcpServerV6 = TcpServer<SocketAddrV6>;
 // somehow...
 fn udp_max_packet_length<V>() -> usize {
 	if mem::size_of::<V>() == mem::size_of::<SocketAddrV4>() {
-		576 - 60 /* Max IP header size */ - 8 /* UDP header size */
+		UDP4_MAX_PACKET_LENGTH
 	} else if mem::size_of::<V>() == mem::size_of::<SocketAddrV6>() {
-		1280 - 40 /* Fixed IP header size */ - 8 /* UDP header size */
+		UDP6_MAX_PACKET_LENGTH
 	} else {
 		panic!("should be unreachable");
 	}
@@ -275,7 +280,7 @@ where
 	}
 
 	async fn listen(&self) -> io::Result<(Vec<u8>, V)> {
-		let mut buffer = vec![0u8; UDP_MAX_PACKET_SIZE];
+		let mut buffer = vec![0u8; UDP_THEORETICAL_MAX_PACKET_LENGTH];
 		let (received, addr) = self.inner.recv_from(&mut *buffer).await?;
 		buffer.truncate(received);
 		let unwrapped_addr = V::from_str(&addr.to_string()).ok().unwrap();

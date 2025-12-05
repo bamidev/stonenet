@@ -25,7 +25,12 @@ use num::BigUint;
 use serde::{Deserialize, Serialize};
 use sstp::Connection;
 
-use crate::{common::*, config::Config, core::NodeAddress};
+use crate::{
+	common::*,
+	config::Config,
+	core::NodeAddress,
+	net::socket::{TCP_MAX_PACKET_LENGTH, UDP4_MAX_PACKET_LENGTH, UDP6_MAX_PACKET_LENGTH},
+};
 
 //pub type KADEMLIA_K_AL = U4;
 /// Number of bits in a Kademlia ID. It is specified as 160 bits in the paper,
@@ -540,6 +545,26 @@ impl From<&SocketAddr> for ContactInfo {
 }
 
 impl ContactOption {
+	/// The maximum packet size that is supported for the underlying transport protocol
+	pub fn max_packet_length(&self) -> usize {
+		match &self.target {
+			SocketAddr::V4(_) => {
+				if !self.use_tcp {
+					UDP4_MAX_PACKET_LENGTH
+				} else {
+					TCP_MAX_PACKET_LENGTH
+				}
+			}
+			SocketAddr::V6(_) => {
+				if !self.use_tcp {
+					UDP6_MAX_PACKET_LENGTH
+				} else {
+					TCP_MAX_PACKET_LENGTH
+				}
+			}
+		}
+	}
+
 	pub fn new(target: SocketAddr, use_tcp: bool) -> Self {
 		Self { target, use_tcp }
 	}

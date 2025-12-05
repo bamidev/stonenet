@@ -62,12 +62,14 @@ pub(super) struct TransporterInner {
 	packet_receiver: UnboundedReceiver<CryptedPacket>,
 
 	// Non-temporary vars
+	max_packet_length: usize,
 	encrypt_session_id: u16,
 	node_id: NodeAddress,
 	local_session_id: u16,
 	peer_node_id: NodeAddress,
 	timeout: Duration,
 	dest_session_id: u16,
+	underlying_protocol_is_reliable: bool,
 
 	// All temporary vars that change on every message
 	message_bytes_received: u32,
@@ -263,13 +265,16 @@ impl KeyStateManager {
 
 impl Transporter {
 	pub(super) fn new_with_receiver(
-		alive_flag: Arc<AtomicBool>, encrypt_session_id: u16, our_session_id: u16,
+		alive_flag: Arc<AtomicBool>, max_packet_length: usize,
+		underlying_protocol_is_reliable: bool, encrypt_session_id: u16, our_session_id: u16,
 		their_session_id: u16, socket_sender: Arc<dyn LinkSocketSender>, node_id: NodeAddress,
 		peer_node_id: NodeAddress, timeout: Duration, private_key: x25519::StaticSecret,
 		public_key: x25519::PublicKey, receiver: UnboundedReceiver<CryptedPacket>,
 	) -> Self {
 		Self {
 			inner: TransporterInner::new(
+				max_packet_length,
+				underlying_protocol_is_reliable,
 				encrypt_session_id,
 				our_session_id,
 				their_session_id,
@@ -459,7 +464,11 @@ impl Transporter {
 			let next_private_key = x25519::StaticSecret::random_from_rng(OsRng);
 			let our_next_public_key = x25519::PublicKey::from(&next_private_key);
 			let ks = self.key_state_manager.get_duo_mut();
-			let our_next_window_size = self.inner.send_window.increase_window_size();
+			let our_next_window_size = if !self.inner.underlying_protocol_is_reliable {
+				self.inner.send_window.increase_window_size()
+			} else {
+				1
+			};
 
 			match self
 				.inner
@@ -701,15 +710,15 @@ impl TransporterInner {
 		}
 	}
 
-	// The max amount of byte that can be sent in one data packet
+	/// The max amount of byte that can be sent in one data packet
 	fn max_data_packet_length(&self) -> usize {
 		// 10 bytes are used for the header
-		self.socket_sender.max_packet_length() - 10
+		self.max_packet_length - 10
 	}
 
 	pub fn new(
-		encrypt_session_id: u16, our_session_id: u16, their_session_id: u16,
-		socket_sender: Arc<dyn LinkSocketSender>,
+		max_packet_length: usize, underlying_protocol_is_reliable: bool, encrypt_session_id: u16,
+		our_session_id: u16, their_session_id: u16, socket_sender: Arc<dyn LinkSocketSender>,
 		packet_receiver: UnboundedReceiver<CryptedPacket>, node_id: NodeAddress,
 		peer_node_id: NodeAddress, timeout: Duration,
 	) -> Self {
@@ -718,8 +727,10 @@ impl TransporterInner {
 			current_backtrace: Some(Backtrace::force_capture()),
 			current_ks_unprocessed_first_packet: None,
 			current_ks_unprocessed_packets: HashMap::new(),
+			dest_session_id: their_session_id,
 			encrypt_session_id,
 			first_window: true,
+			max_packet_length,
 			max_packets_expected: 0,
 			message_bytes_received: 0,
 			message_size: 0,
@@ -736,20 +747,23 @@ impl TransporterInner {
 			requested_window_size: 0,
 			send_window: WindowInfo::default(),
 			socket_sender,
-			dest_session_id: their_session_id,
 			timeout,
+			underlying_protocol_is_reliable,
 			window_bytes_received: 0,
 			window_error_free: false,
 		}
 	}
 
 	fn next_receiving_window_size(&mut self) -> u16 {
-		let our_next_window_size =
+		let our_next_window_size = if !self.underlying_protocol_is_reliable {
 			if self.max_packets_expected == self.receive_window.size && self.window_error_free {
 				self.receive_window.increase_window_size()
 			} else {
 				self.receive_window.decrease_window_size()
-			};
+			}
+		} else {
+			1
+		};
 
 		// Take the lowest of the two requested window sizes
 		min(our_next_window_size, self.requested_window_size)

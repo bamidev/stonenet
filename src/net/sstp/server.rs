@@ -385,7 +385,7 @@ impl Server {
 	pub async fn complete_outgoing_relay(
 		self: &Arc<Server>, sender: Arc<dyn LinkSocketSender>,
 		initiation_data: RelayInitiationInfo, establish_info: HelloResult,
-		target_node_id: &NodeAddress, target_addr: SocketAddr, timeout: Duration,
+		target_node_id: &NodeAddress, target_contact: ContactOption, timeout: Duration,
 	) -> Result<Box<Connection>> {
 		debug_assert!(establish_info.opt_response.is_none());
 
@@ -399,8 +399,16 @@ impl Server {
 			_ => panic!("invalid session transport data type"),
 		};
 
+		let max_packet_len = min(
+			sender.max_packet_length(),
+			target_contact.max_packet_length(),
+		);
+		let underlying_protocol_is_reliable =
+			sender.is_connection_based() && target_contact.use_tcp;
 		let transporter = Transporter::new_with_receiver(
 			alive_flag,
+			max_packet_len,
+			underlying_protocol_is_reliable,
 			establish_info.encrypt_session_id,
 			initiation_data.local_session_id,
 			establish_info.dest_session_id,
@@ -414,11 +422,13 @@ impl Server {
 		);
 		let transporter_handle = transporter.spawn();
 
+		// When relaying, the max packet length is infered by taking the lowest support max packet
+		// length between the underlying transport protocol of the two nodes.
 		Ok(Box::new(Connection {
 			transporter: transporter_handle,
 			server: self.clone(),
 			keep_alive_timeout: DEFAULT_KEEP_ALIVE_IDLE_TIME,
-			peer_address: target_addr,
+			peer_address: target_contact.target,
 			peer_node_info: NodeContactInfo {
 				address: establish_info.node_id,
 				contact_info: establish_info.contact_info,
@@ -552,6 +562,8 @@ impl Server {
 
 					let transporter = Transporter::new_with_receiver(
 						alive_flag,
+						sender.max_packet_length(),
+						sender.is_connection_based(),
 						establish_info.encrypt_session_id,
 						local_session_id,
 						establish_info.dest_session_id,
@@ -561,7 +573,7 @@ impl Server {
 						timeout,
 						dh_private_key,
 						establish_info.dh_public_key,
-						packet_receiver
+						packet_receiver,
 					);
 					let transporter_handle = transporter.spawn();
 
@@ -1098,9 +1110,14 @@ impl Server {
 			&packet.body,
 		)?;
 
+		// Take the smallest max packet length of the two connections
+		let max_packet_length = min(sender.max_packet_length(), contact.max_packet_length());
+		let underlying_protocol_is_reliable = sender.is_connection_based() && contact.use_tcp;
 		self._process_hello_packet(
 			sender,
 			contact,
+			max_packet_length,
+			underlying_protocol_is_reliable,
 			packet.header.relayer_session_id,
 			packet.body.base.session_id,
 			packet.header.base.node_public_key,
@@ -1332,8 +1349,9 @@ impl Server {
 
 	async fn _process_hello_packet(
 		self: &Arc<Self>, sender: Arc<dyn LinkSocketSender>, contact: &ContactOption,
-		dest_session_id: u16, encrypt_session_id: u16, public_key: NodePublicKey,
-		dh_public_key: x25519::PublicKey, contact_info: ContactInfo, opt_request: Option<&[u8]>,
+		max_packet_length: usize, underlying_protocol_is_reliable: bool, dest_session_id: u16,
+		encrypt_session_id: u16, public_key: NodePublicKey, dh_public_key: x25519::PublicKey,
+		contact_info: ContactInfo, opt_request: Option<&[u8]>,
 		relayer_public_key: Option<NodePublicKey>,
 		new_packet: impl FnOnce(
 			usize,
@@ -1407,7 +1425,7 @@ impl Server {
 		// FIXME: Send back the relayed-hello-ack packet if this is handling a
 		// relayed-hello packet
 		let (hello_ack, response_included) = new_packet(
-			sender.max_packet_length(),
+			max_packet_length,
 			&our_dh_public_key,
 			encrypt_session_id,
 			our_session_id,
@@ -1446,6 +1464,8 @@ impl Server {
 		// Spawn transporter
 		let transporter = Transporter::new_with_receiver(
 			alive_flag,
+			max_packet_length,
+			underlying_protocol_is_reliable,
 			encrypt_session_id,
 			our_session_id,
 			dest_session_id,
@@ -1533,9 +1553,13 @@ impl Server {
 		let mut their_contact_info = hello.body.contact_info.clone();
 		their_contact_info.update(&addr.target, addr.use_tcp);
 
+		let max_packet_length = sender.max_packet_length();
+		let is_connection_based = sender.is_connection_based();
 		self._process_hello_packet(
 			sender,
 			addr,
+			max_packet_length,
+			is_connection_based,
 			hello.body.session_id,
 			hello.body.session_id,
 			hello.header.node_public_key,
@@ -1895,7 +1919,7 @@ impl Server {
 
 				self.send_relay_hello_ack_ack_packet(&*sender, establish_info.dest_session_id).await?;
 
-				let connection = self.complete_outgoing_relay(sender, initiation_info, establish_info, target_node_id, target_contact.target, timeout).await?;
+				let connection = self.complete_outgoing_relay(sender, initiation_info, establish_info, target_node_id, target_contact, timeout).await?;
 				Ok(connection)
 			},
 			_ = sleep(timeout) => {

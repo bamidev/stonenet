@@ -1597,7 +1597,7 @@ impl OverlayNode {
 						initiation_info,
 						establish_info,
 						&target_node_id,
-						target_contact_option.target.clone(),
+						target_contact_option.clone(),
 						timeout,
 					)
 					.await
