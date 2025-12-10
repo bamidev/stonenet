@@ -27,7 +27,7 @@ fn load_data_home_path() -> PathBuf {
 }
 
 #[cfg(target_family = "windows")]
-fn load_data_home_path() -> String {
+fn load_data_home_path() -> PathBuf {
 	let mut install_dir = env::current_exe().unwrap();
 	install_dir.pop();
 	install_dir
