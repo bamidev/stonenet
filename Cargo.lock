@@ -1916,6 +1916,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "homedir"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68df315d2857b2d8d2898be54a85e1d001bbbe0dbb5f8ef847b48dd3a23c4527"
+dependencies = [
+ "cfg-if",
+ "nix",
+ "widestring 1.2.1",
+ "windows",
+]
+
+[[package]]
 name = "http"
 version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4770,6 +4782,7 @@ dependencies = [
  "futures",
  "generic-array",
  "hmac",
+ "homedir",
  "ipnetwork",
  "lazy_static",
  "libsqlite3-sys",
@@ -5781,7 +5794,7 @@ dependencies = [
  "com",
  "once_cell",
  "webview2-sys",
- "widestring",
+ "widestring 0.5.1",
  "winapi",
 ]
 
@@ -5832,6 +5845,12 @@ name = "widestring"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17882f045410753661207383517a6f62ec3dbeb6a4ed2acce01f0728238d1983"
+
+[[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi"
