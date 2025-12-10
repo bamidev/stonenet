@@ -12,7 +12,7 @@ use log::*;
 use rand::rngs::OsRng;
 use sea_orm::{prelude::*, NotSet, Set};
 use serde::Serialize;
-use tokio::{spawn, sync::mpsc};
+use tokio::{io, spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
@@ -26,7 +26,9 @@ use crate::{
 	compression::decompress,
 	db::{decrypt_block, Database},
 	entity::*,
+	os_path,
 	serde_limit::LimString,
+	trace::Traced,
 	web::{
 		self,
 		consolidated_feed::{
@@ -40,6 +42,17 @@ use crate::{
 pub struct Api {
 	pub node: Arc<OverlayNode>,
 	pub db: Database,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CreateIdentityError {
+	#[error("unable to store identity in the database: {0}")]
+	Db(Traced<db::Error>),
+	#[error("unable to store private key on disk: {0}")]
+	Io(io::Error),
+	#[error("invalid system username: {0}")]
+	#[allow(dead_code)]
+	InvalidSystemUsername(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -96,9 +109,9 @@ impl Api {
 	}
 
 	pub async fn create_identity(
-		&self, label: &str, name: &str, avatar: Option<&FileData>, wallpaper: Option<&FileData>,
-		description: Option<&FileData>,
-	) -> db::Result<(ActorAddress, ActorInfo)> {
+		&self, system_user: Option<String>, label: &str, name: &str, avatar: Option<&FileData>,
+		wallpaper: Option<&FileData>, description: Option<&FileData>,
+	) -> Result<(ActorAddress, ActorInfo), CreateIdentityError> {
 		let tx = self.db.transaction().await?;
 		// Prepare profile files
 		let avatar_hash = if let Some(f) = avatar {
@@ -126,34 +139,6 @@ impl Api {
 			&wallpaper_hash,
 			&description_hash,
 		);
-		/*let profile = ProfileObject {
-			name: name.to_string(),
-			avatar: avatar_hash.clone(),
-			wallpaper: wallpaper_hash.clone(),
-			description: description_hash.clone(),
-		};
-
-		// Sign the profile object and construct an object out of it
-		let payload = ObjectPayload::Profile(profile);
-		let sign_data = ObjectSignData {
-			sequence: 0,
-			previous_hash: IdType::default(),
-			created: SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.unwrap()
-				.as_millis() as u64,
-			payload: &payload,
-		};
-		let private_key = ActorPrivateKeyV1::generate_with_rng(&mut OsRng);
-		let signature = private_key.sign(&binserde::serialize(&sign_data).unwrap());
-		let object_hash = signature.hash();
-		let object = Object {
-			signature,
-			previous_hash: IdType::default(),
-			sequence: 0,
-			created: sign_data.created,
-			payload,
-		};*/
 
 		// Generate an actor ID with our new object hash.
 		let actor_info = ActorInfo::V1(ActorInfoV1 {
@@ -164,15 +149,26 @@ impl Api {
 		});
 		let actor_address = actor_info.generate_address();
 
-		// Create the identity on disk
+		// Store private key to disk
+		let data_dir = match os_path::data_identity(system_user.as_deref()) {
+			Some(d) => d,
+			None => {
+				return Err(CreateIdentityError::InvalidSystemUsername(
+					system_user.unwrap(),
+				))
+			}
+		};
+		private_key.store(&data_dir, label).await?;
+
+		// Create the identity
 		// TODO: Remove old code and create the identity with the same transaction as
 		// used for the files
 		let actor_id = tx
 			.create_identity(
+				system_user,
 				label,
 				&actor_address,
 				&actor_info.public_key,
-				&private_key,
 				false,
 				&object_hash,
 			)
@@ -364,25 +360,36 @@ impl Api {
 		}))
 	}
 
-	#[allow(unused)]
-	pub fn fetch_my_identity(
-		&self, address: &ActorAddress,
-	) -> db::Result<Option<(String, ActorPrivateKeyV1)>> {
-		let this = self.clone();
-		tokio::task::block_in_place(|| {
-			let c = this.db.connect_old()?;
-			c.fetch_my_identity(address)
-		})
+	pub async fn load_identity_private_key(
+		&self, system_user: Option<&str>, label: &str,
+	) -> db::Result<Option<Result<ActorPrivateKeyV1, ActorPrivateKeyLoadError>>> {
+		let loaded_system_user = match self.db.load_identity_system_user(label).await? {
+			Some(u) => u,
+			None => return Ok(None),
+		};
+		if loaded_system_user.is_none() || loaded_system_user.as_deref() == system_user {
+			let data_dir = match os_path::data_identity(system_user.as_deref()) {
+				Some(d) => d,
+				None => return Ok(None),
+			};
+			Ok(Some(ActorPrivateKeyV1::from_disk(&data_dir, label).await))
+		} else {
+			Ok(None)
+		}
 	}
 
-	pub fn fetch_my_identities(
+	/// Fetches all known identities, regardless of what system user it may be tied to.
+	pub async fn fetch_all_identities(
 		&self,
-	) -> db::Result<Vec<(String, ActorAddress, IdType, String, ActorPrivateKeyV1)>> {
-		let this = self.clone();
-		tokio::task::block_in_place(|| {
-			let c = this.db.connect_old()?;
-			c.fetch_my_identities()
-		})
+	) -> db::Result<Vec<(String, ActorAddress, IdType, String)>> {
+		self.db.fetch_identities(None, true).await
+	}
+
+	/// Fetchess all identities that are accessible to the given system user.
+	pub async fn fetch_identities(
+		&self, system_user: Option<&str>,
+	) -> db::Result<Vec<(String, ActorAddress, IdType, String)>> {
+		self.db.fetch_identities(system_user, false).await
 	}
 
 	pub async fn find_profile_info(
@@ -815,6 +822,18 @@ impl Api {
 	}
 }
 
+impl From<Traced<db::Error>> for CreateIdentityError {
+	fn from(other: Traced<db::Error>) -> Self {
+		Self::Db(other)
+	}
+}
+
+impl From<io::Error> for CreateIdentityError {
+	fn from(other: io::Error) -> Self {
+		Self::Io(other)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use rand::RngCore;
@@ -832,7 +851,7 @@ mod tests {
 			db: db.clone(),
 		};
 
-		let label = "Label";
+		let label = "label";
 		let name = "Display name";
 		let mut avatar_data = vec![0u8; 1024];
 		rng.fill_bytes(&mut avatar_data);
@@ -861,6 +880,7 @@ mod tests {
 
 		let (address, _) = api
 			.create_identity(
+				None,
 				label,
 				name,
 				Some(&avatar),

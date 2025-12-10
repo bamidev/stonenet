@@ -37,6 +37,7 @@ use crate::{
 	identity::*,
 	limited_store::LimitedVec,
 	net::*,
+	os_path,
 	serde_limit::LimVec,
 	trace::Mutex,
 };
@@ -1150,43 +1151,35 @@ impl OverlayNode {
 			{
 				false => warn!("Bootstrap node {} wasn't available", bootstrap_node),
 				true => {
-					match self.db().connect_old() {
-						Err(e) => {
-							panic!("Unable to connect to database to load actor nodes: {}", e);
-						}
-						Ok(c) => {
-							// Load actor nodes for both your own actors and the
-							// ones you are following.
-							self.maintain_tracked_actors().await;
-							let actor_node_infos = tokio::task::block_in_place(|| {
-								let mut list = self.load_following_actor_nodes(&c);
-								list.extend(self.load_my_actor_nodes(&c).into_iter().map(
-									|(id, first_object, actor_type, private_key)| {
-										(
-											id,
-											ActorInfo::V1(ActorInfoV1 {
-												flags: 0,
-												public_key: private_key.public(),
-												first_object,
-												actor_type: actor_type.into(),
-											}),
-										)
-									},
-								));
-								list
-							});
+					// Load actor nodes for both your own actors and the
+					// ones you are following.
+					self.maintain_tracked_actors().await;
+					let actor_node_infos = {
+						let mut list = self.load_following_actor_nodes().await;
+						list.extend(self.load_my_actor_nodes().await.into_iter().map(
+							|(id, first_object, actor_type, private_key)| {
+								(
+									id,
+									ActorInfo::V1(ActorInfoV1 {
+										flags: 0,
+										public_key: private_key.public(),
+										first_object,
+										actor_type: actor_type.into(),
+									}),
+								)
+							},
+						));
+						list
+					};
 
-							// Open and maintain a connection to a bidirectional node
-							if !self.is_decently_available() {
-								warn!("obtain_keep_alive_connection {:?}", self.contact_info());
-								self.obtain_keep_alive_connection().await;
-							}
-
-							self.join_actor_networks(actor_node_infos).await;
-
-							return true;
-						}
+					// Open and maintain a connection to a bidirectional node
+					if !self.is_decently_available() {
+						self.obtain_keep_alive_connection().await;
 					}
+
+					self.join_actor_networks(actor_node_infos).await;
+
+					return true;
 				}
 			}
 
@@ -1241,33 +1234,62 @@ impl OverlayNode {
 		}
 	}
 
-	fn load_following_actor_nodes(&self, c: &db::Connection) -> Vec<(ActorAddress, ActorInfo)> {
-		match c.fetch_follow_list() {
+	// TODO: Improve result type for error handling
+	async fn load_any_identity_private_key(
+		&self, label: &str,
+	) -> db::Result<Option<StdResult<ActorPrivateKeyV1, ActorPrivateKeyLoadError>>> {
+		let system_user = match self.db().load_identity_system_user(label).await? {
+			Some(u) => u,
+			None => return Ok(None),
+		};
+		let data_dir = match os_path::data_identity(system_user.as_deref()) {
+			Some(d) => d,
+			None => return Ok(None),
+		};
+		return Ok(Some(ActorPrivateKeyV1::from_disk(&data_dir, label).await));
+	}
+
+	async fn load_following_actor_nodes(&self) -> Vec<(ActorAddress, ActorInfo)> {
+		match self.db().fetch_follow_list().await {
 			Ok(r) => r,
 			Err(e) => {
-				error!("Unable to fetch following identities: {:?}", e);
+				error!("Unable to fetch the following of identities: {:?}", e);
 				Vec::new()
 			}
 		}
 	}
 
-	fn load_my_actor_nodes(
-		&self, c: &db::Connection,
-	) -> Vec<(ActorAddress, IdType, String, ActorPrivateKeyV1)> {
-		let result = match c.fetch_my_identities() {
+	async fn load_my_actor_nodes(&self) -> Vec<(ActorAddress, IdType, String, ActorPrivateKeyV1)> {
+		let result = match self.db().fetch_identities(None, true).await {
 			Ok(r) => r,
 			Err(e) => {
 				error!("Unable to fetch my identities: {:?}", e);
+				error!("No actor networks have been joined.");
 				return Vec::new();
 			}
 		};
-
-		result
-			.into_iter()
-			.map(|(_, actor_id, first_object, actor_type, private_key)| {
-				(actor_id, first_object, actor_type, private_key)
-			})
-			.collect()
+		let mut actor_nodes = Vec::with_capacity(result.len());
+		for (label, actor_id, first_object, actor_type) in result {
+			match self.load_any_identity_private_key(&label).await {
+				Err(e) => error!("Unable to load identity \"{}\": {}", label, e),
+				Ok(private_key_result1) => {
+					if let Some(private_key_result2) = private_key_result1 {
+						match private_key_result2 {
+							Ok(private_key) => {
+								actor_nodes.push((actor_id, first_object, actor_type, private_key))
+							}
+							Err(e) => error!(
+								"Unable to load private key of identity \"{}\": {}",
+								label, e
+							),
+						}
+					} else {
+						error!("Private key of identity \"{}\" does not exist.", label);
+					}
+				}
+			}
+		}
+		actor_nodes
 	}
 
 	pub async fn lurk_actor_network(
@@ -3039,7 +3061,7 @@ mod tests {
 
 		// Create data at the target node
 		let (actor_address, actor_info) = target_node
-			.create_identity("test", "Test", None, None, None)
+			.create_identity(None, "test", "Test", None, None, None)
 			.await
 			.unwrap();
 		let actor_node = target_node

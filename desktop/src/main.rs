@@ -8,6 +8,8 @@ use browser_window::{application::*, browser::*};
 use native_dialog::{DialogBuilder, MessageLevel};
 
 fn main() {
+	let username = "";
+
 	let settings = ApplicationSettings::default();
 	let application = Application::initialize(&settings).unwrap();
 	let runtime = application.start();
@@ -32,6 +34,9 @@ fn main() {
 		bwb.title("Stonenet");
 		bwb.size(1024, 768);
 		let bw = bwb.build_async(&handle).await;
+		bw.eval_js(&format!("document.cookie = 'system-user={}'", username))
+			.await
+			.expect("unable to execute JS");
 		bw.show();
 	});
 

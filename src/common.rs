@@ -20,6 +20,7 @@ pub trait AsyncIterator {
 	async fn next(&mut self) -> Option<Self::Item>;
 }
 
+#[allow(unused)]
 #[async_trait]
 pub trait AsyncIteratorExt: AsyncIterator {
 	async fn collect_amount(&mut self, amount: usize) -> Vec<Self::Item>;

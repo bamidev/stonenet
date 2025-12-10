@@ -9,9 +9,8 @@ pub struct Model {
 	pub label: String,
 	#[sea_orm(unique)]
 	pub actor_id: i64,
-	#[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
-	pub private_key: Vec<u8>,
 	pub is_private: bool,
+	pub system_user: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

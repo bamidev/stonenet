@@ -8,6 +8,7 @@ use axum::{
 	routing::{get, post},
 	Extension, RequestExt, Router,
 };
+use axum_extra::extract::CookieJar;
 use sea_orm::prelude::*;
 use tera::Context;
 
@@ -19,8 +20,8 @@ use crate::{
 	web::{
 		info::find_object_info,
 		server::{
-			activity_pub, not_found_error_response, post_message, server_error_response,
-			server_error_response2, translate_special_mime_types_for_object, ServerGlobal,
+			activity_pub, common::load_private_key, not_found_error_response, post_message,
+			server_error_response, translate_special_mime_types_for_object, ServerGlobal,
 		},
 	},
 };
@@ -105,9 +106,16 @@ async fn object_get(
 
 async fn object_post(
 	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
-	Extension(object_hash): Extension<IdType>, multipart: Multipart,
+	Extension(object_hash): Extension<IdType>, cookies: CookieJar, multipart: Multipart,
 ) -> Response {
-	if let Err(e) = post_message(&g.base, multipart, Some((actor_address, object_hash))).await {
+	if let Err(e) = post_message(
+		&g.base,
+		&cookies,
+		multipart,
+		Some((actor_address, object_hash)),
+	)
+	.await
+	{
 		return e;
 	}
 
@@ -120,27 +128,11 @@ async fn object_post(
 
 async fn object_share(
 	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
-	Extension(object_hash): Extension<IdType>,
+	Extension(object_hash): Extension<IdType>, cookies: CookieJar,
 ) -> Response {
-	let identity = g
-		.base
-		.state
-		.lock()
-		.await
-		.active_identity
-		.as_ref()
-		.unwrap()
-		.1
-		.clone();
-	let private_key = match g.base.api.db.perform(|c| c.fetch_my_identity(&identity)) {
-		Ok(r) => {
-			if let Some((_, pk)) = r {
-				pk
-			} else {
-				return server_error_response2("unable to load identity");
-			}
-		}
-		Err(e) => return server_error_response(e, "unable to load identity"),
+	let (private_key, identity_actor_address) = match load_private_key(&g.base, &cookies).await {
+		Ok(r) => r,
+		Err(r) => return r,
 	};
 
 	let share = ShareObject {
@@ -150,7 +142,7 @@ async fn object_share(
 	if let Err(e) = g
 		.base
 		.api
-		.publish_share(&identity, &private_key, &share)
+		.publish_share(&identity_actor_address, &private_key, &share)
 		.await
 	{
 		return server_error_response(e, "unable to publish share");

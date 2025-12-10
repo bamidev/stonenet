@@ -4,14 +4,56 @@ use std::{
 };
 
 use axum::{body::Body, extract::Multipart, response::Response};
+use axum_extra::extract::CookieJar;
 use log::*;
 use serde::Serialize;
 
 use super::IdType;
 use crate::{
 	core::{ActorAddress, FileData},
+	identity::ActorPrivateKeyV1,
 	web::Global,
 };
+
+/// Loads the private key of the currently selected identity.
+/// Uses cookies to know what system user is being used.
+pub async fn load_private_key(
+	g: &Arc<Global>, cookies: &CookieJar,
+) -> Result<(ActorPrivateKeyV1, ActorAddress), Response> {
+	let system_user: Option<String> = cookies.get("system-user").map(|c| c.value().to_string());
+
+	let (identity_label, actor_address) = g
+		.state
+		.lock()
+		.await
+		.active_identity
+        .as_ref()
+		.unwrap() // TODO: Handle error
+        .clone();
+	let private_key = match g
+		.api
+		.load_identity_private_key(system_user.as_deref(), &identity_label)
+		.await
+	{
+		Ok(r) => {
+			if let Some(pk_result) = r {
+				match pk_result {
+					Ok(pk) => pk,
+					Err(e) => {
+						return Err(server_error_response(
+							e,
+							"unable to load private key for identity",
+						))
+					}
+				}
+			} else {
+				return Err(server_error_response2("identity does not exist"));
+			}
+		}
+		Err(e) => return Err(server_error_response(e, "unable to load identity")),
+	};
+	Ok((private_key, actor_address))
+}
 
 pub async fn parse_post_message(mut form: Multipart) -> Result<(String, Vec<FileData>), Response> {
 	let mut message = String::new();
@@ -52,32 +94,23 @@ pub async fn parse_post_message(mut form: Multipart) -> Result<(String, Vec<File
 }
 
 pub async fn post_message(
-	g: &Arc<Global>, form: Multipart, in_reply_to: Option<(ActorAddress, IdType)>,
+	g: &Arc<Global>, cookies: &CookieJar, form: Multipart,
+	in_reply_to: Option<(ActorAddress, IdType)>,
 ) -> Result<IdType, Response> {
 	// Parse request
 	let (message, attachments) = parse_post_message(form).await?;
 
 	// Load active identity and its private key
-	let identity = match g.state.lock().await.active_identity.as_ref() {
-		None => return Err(error_response(400, "No identiy selected yet.")),
-		Some(i) => i.1.clone(),
-	};
-	let private_key = match g.api.db.perform(|c| c.fetch_my_identity(&identity)) {
-		Ok(r) => {
-			if let Some((_, pk)) = r {
-				pk
-			} else {
-				return Err(server_error_response2("unable to load identity"));
-			}
-		}
-		Err(e) => return Err(server_error_response(e, "unable to load identity")),
+	let (private_key, actor_address) = match load_private_key(&g, cookies).await {
+		Ok(r) => r,
+		Err(r) => return Err(r),
 	};
 
 	// Publish post
 	let hash = g
 		.api
 		.publish_post(
-			&identity,
+			&actor_address,
 			&private_key,
 			"text/markdown",
 			&message,

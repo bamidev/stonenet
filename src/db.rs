@@ -3,7 +3,10 @@
 
 mod install;
 
-use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration};
+use std::{
+	cmp::min, fmt, net::SocketAddr, ops::*, path::*, str,
+	time::Duration,
+};
 
 use async_trait::async_trait;
 use chacha20::{
@@ -30,7 +33,7 @@ use crate::{
 	identity::*,
 	net::binserde,
 	serde_limit::LimString,
-	trace::{self, Traceable, Traced},
+	trace::{self, *},
 };
 
 pub(crate) const BLOCK_SIZE: usize = 0x100000; // 1 MiB
@@ -66,10 +69,10 @@ pub enum Error {
 	InvalidHash(IdFromBase58Error),
 	InvalidSignature(NodeSignatureError),
 	InvalidPrivateKey(usize),
-	InvalidPublicKey(Option<NodePublicKeyError>),
+	InvalidPublicKey,
 	/// The data that is stored for a block is corrupt
 	BlockDataCorrupt(i64),
-	PostMissingFiles(i64),
+	//PostMissingFiles(i64),
 	FileMissingBlock(i64, u32),
 
 	MissingIdentity(ActorAddress),
@@ -172,6 +175,53 @@ pub trait PersistenceHandle {
 				.await?
 				.last_insert_id)
 		}
+	}
+
+	async fn load_identity_system_user(&self, label: &str) -> Result<Option<Option<String>>> {
+		// TODO: Only load system_user from query
+		let result = identity::Entity::find()
+			.filter(identity::Column::Label.eq(label))
+			.one(self.inner())
+			.await?;
+		if let Some(r) = result {
+			return Ok(Some(r.system_user));
+		}
+		Ok(None)
+	}
+
+	async fn fetch_identities(
+		&self, system_user: Option<&str>, load_all: bool,
+	) -> Result<Vec<(String, ActorAddress, IdType, String)>> {
+		let mut query = actor::Entity::find().column(identity::Column::Label);
+		if !load_all {
+			query = query.filter(
+				identity::Column::SystemUser
+					.eq(system_user)
+					.or(identity::Column::SystemUser.is_null()),
+			);
+		}
+		let stat = query
+			.join(
+				JoinType::RightJoin,
+				actor::Entity::belongs_to(identity::Entity)
+					.from(actor::Column::Id)
+					.to(identity::Column::ActorId)
+					.into(),
+			)
+			.build(self.inner().get_database_backend());
+		let results = self.inner().query_all(stat).await?;
+
+		// Prepare all fetched identities and load their private key from the disk
+		// Identities tied to a system user will load their private key from a local directory.
+		let mut identities = Vec::with_capacity(results.len());
+		for r in results {
+			let label: String = r.try_get_by_index(0)?;
+			let address: ActorAddress = r.try_get_by_index(1)?;
+			let first_object: IdType = r.try_get_by_index(2)?;
+			let actor_type: String = r.try_get_by_index(3)?;
+			identities.push((label, address, first_object, actor_type));
+		}
+		Ok(identities)
 	}
 
 	async fn has_block(&self, hash: &IdType) -> Result<bool> {
@@ -489,6 +539,34 @@ pub trait PersistenceHandle {
 		})
 	}
 
+	async fn fetch_follow_list(&self) -> Result<Vec<(ActorAddress, ActorInfo)>> {
+		let followers = actor::Entity::find()
+			.join(
+				JoinType::RightJoin,
+				actor::Entity::belongs_to(following::Entity)
+					.from(actor::Column::Id)
+					.to(following::Column::ActorId)
+					.into(),
+			)
+			.all(self.inner())
+			.await?;
+
+		Ok(followers
+			.into_iter()
+			.map(|r| {
+				(
+					r.address,
+					ActorInfo::V1(ActorInfoV1 {
+						flags: 0,
+						public_key: ActorPublicKeyV1::from_bytes(r.public_key.try_into().unwrap()), // TODO: Return InvalidPublicKey error
+						first_object: r.first_object,
+						actor_type: r.r#type.into(),
+					}),
+				)
+			})
+			.collect())
+	}
+
 	async fn find_actor_head(&self, address: &ActorAddress) -> Result<Option<object::Model>> {
 		let result = object::Entity::find()
 			.filter(object::Column::ActorId.in_subquery(query_actor_id(address)))
@@ -599,13 +677,16 @@ pub trait PersistenceHandle {
 			.await?;
 
 		let actor_info_opt = if let Some(identity) = result {
-			Some(ActorInfo::V1(ActorInfoV1 {
-				flags: 0,
-				public_key: ActorPublicKeyV1::from_bytes(identity.public_key.try_into().unwrap())
-					.unwrap(),
-				first_object: identity.first_object,
-				actor_type: identity.r#type.into(),
-			}))
+			if let Ok(public_key) = identity.public_key.try_into() {
+				Some(ActorInfo::V1(ActorInfoV1 {
+					flags: 0,
+					public_key: ActorPublicKeyV1::from_bytes(public_key),
+					first_object: identity.first_object,
+					actor_type: identity.r#type.into(),
+				}))
+			} else {
+				return Err(Error::InvalidPublicKey.trace());
+			}
 		} else {
 			None
 		};
@@ -811,7 +892,7 @@ impl FromSql for ActorPublicKeyV1 {
 						blob_size: blob.len(),
 					})
 				} else {
-					Ok(Self::from_bytes(*array_ref![blob, 0, 57]).unwrap())
+					Ok(Self::from_bytes(*array_ref![blob, 0, 57]))
 				}
 			}
 			_ => Err(FromSqlError::InvalidType),
@@ -2001,49 +2082,6 @@ impl Connection {
 		}
 	}
 
-	pub fn fetch_my_identity(
-		&self, address: &ActorAddress,
-	) -> Result<Option<(String, ActorPrivateKeyV1)>> {
-		let mut stat = self.old.prepare(
-			r#"
-			SELECT label, private_key FROM identity AS mi LEFT JOIN actor AS i
-			WHERE i.address = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![address])?;
-		match rows.next()? {
-			None => Ok(None),
-			Some(row) => {
-				let label = row.get(0)?;
-				let private_key: ActorPrivateKeyV1 = row.get(1)?;
-				Ok(Some((label, private_key)))
-			}
-		}
-	}
-
-	pub fn fetch_my_identities(
-		&self,
-	) -> Result<Vec<(String, ActorAddress, IdType, String, ActorPrivateKeyV1)>> {
-		let mut stat = self.old.prepare(
-			r#"
-			SELECT label, i.address, i.first_object, i.type, mi.private_key
-			FROM identity AS mi
-			LEFT JOIN actor AS i ON mi.actor_id = i.id
-		"#,
-		)?;
-		let mut rows = stat.query([])?;
-
-		let mut ids = Vec::new();
-		while let Some(row) = rows.next()? {
-			let address: ActorAddress = row.get(1)?;
-			let first_object: IdType = row.get(2)?;
-			let actor_type: String = row.get(3)?;
-			let private_key: ActorPrivateKeyV1 = row.get(4)?;
-			ids.push((row.get(0)?, address, first_object, actor_type, private_key));
-		}
-		Ok(ids)
-	}
-
 	pub fn fetch_profile_object(
 		&self, actor_id: &ActorAddress,
 	) -> Result<Option<(IdType, BlogchainObject)>> {
@@ -2325,15 +2363,11 @@ impl fmt::Display for Error {
 			}
 			//Self::InvalidPrivateKey(e) => write!(f, "invalid private_key: {}", e),
 			Self::BlockDataCorrupt(block_id) => write!(f, "data of block {} is corrupt", block_id),
-			Self::PostMissingFiles(object_id) => write!(f, "object {} has no files", object_id),
 			Self::FileMissingBlock(file_id, sequence) => {
 				write!(f, "file {} missing block sequence {}", file_id, sequence)
 			}
 			Self::InvalidPrivateKey(len) => write!(f, "invalid private key (size={})", len),
-			Self::InvalidPublicKey(oe) => match oe {
-				Some(e) => write!(f, "invalid public key: {}", e),
-				None => write!(f, "invalid public key size"),
-			},
+			Self::InvalidPublicKey => write!(f, "invalid public key"),
 			Self::MissingIdentity(hash) => write!(f, "identity {:?} is missing", &hash),
 			Self::UnexpectedState(msg) => write!(f, "unexpected database state: {}", msg),
 		}
@@ -2391,12 +2425,6 @@ impl From<NodeSignatureError> for Error {
 impl From<IdFromBase58Error> for Error {
 	fn from(other: IdFromBase58Error) -> Self {
 		other.to_db()
-	}
-}
-
-impl From<NodePublicKeyError> for Error {
-	fn from(other: NodePublicKeyError) -> Self {
-		Self::InvalidPublicKey(Some(other))
 	}
 }
 
@@ -2581,8 +2609,8 @@ impl Transaction {
 	}
 
 	pub async fn create_identity(
-		&self, label: &str, address: &ActorAddress, public_key: &ActorPublicKeyV1,
-		private_key: &ActorPrivateKeyV1, is_private: bool, first_object_hash: &IdType,
+		&self, system_user: Option<String>, label: &str, address: &ActorAddress,
+		public_key: &ActorPublicKeyV1, is_private: bool, first_object_hash: &IdType,
 	) -> Result<i64> {
 		let model = actor::ActiveModel {
 			id: NotSet,
@@ -2598,8 +2626,8 @@ impl Transaction {
 		let model = identity::ActiveModel {
 			label: Set(label.to_string()),
 			actor_id: Set(actor_id),
-			private_key: Set(private_key.as_bytes().to_vec()),
 			is_private: Set(is_private),
+			system_user: Set(system_user),
 		};
 		identity::Entity::insert(model).exec(self.inner()).await?;
 		Ok(actor_id)

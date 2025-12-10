@@ -8,6 +8,7 @@ use axum::{
 	routing::*,
 	RequestExt,
 };
+use axum_extra::extract::CookieJar;
 use log::*;
 use sea_orm::{prelude::*, QuerySelect, QueryTrait};
 use serde::{Deserialize, Serialize};
@@ -19,8 +20,7 @@ use super::{
 use crate::{
 	db::{self, Database, PersistenceHandle},
 	entity::*,
-	identity::ActorPrivateKeyV1,
-	web::info::find_profile_info2,
+	web::{info::find_profile_info2, server::common::*},
 };
 
 #[derive(Serialize)]
@@ -100,14 +100,17 @@ async fn profile_get(
 
 async fn profile_post(
 	State(g): State<Arc<ServerGlobal>>, Extension(old_label): Extension<String>,
-	Extension(identity): Extension<identity::Model>, multipart: Multipart,
+	Extension(identity): Extension<identity::Model>, cookies: CookieJar, multipart: Multipart,
 ) -> Response {
 	let (new_label, name, avatar, wallpaper, description) = parse_identity_form(multipart).await;
 	if name.len() == 0 {
 		return server_error_response2("Display name can not be empty");
 	}
 
-	let private_key = ActorPrivateKeyV1::from_bytes(identity.private_key.try_into().unwrap());
+	let (private_key, _) = match load_private_key(&g.base, &cookies).await {
+		Ok(k) => k,
+		Err(r) => return r,
+	};
 	if let Err(e) = g
 		.base
 		.api
@@ -132,8 +135,16 @@ async fn profile_post(
 		.unwrap()
 }
 
-async fn index(State(g): State<Arc<ServerGlobal>>) -> Response {
-	let identities = match g.base.api.fetch_my_identities() {
+async fn index(State(g): State<Arc<ServerGlobal>>, mut request: Request) -> Response {
+	let system_user: Option<String>;
+	match request.extract_parts::<CookieJar>().await {
+		Ok(cookies) => {
+			system_user = cookies.get("system-user").map(|c| c.value().to_string());
+		}
+		Err(e) => return server_error_response(e, "unable to load cookie jar"),
+	}
+
+	let identities = match g.base.api.fetch_identities(system_user.as_deref()).await {
 		Ok(i) => i,
 		Err(e) => return server_error_response(e, "unable to fetch identities:"),
 	};
@@ -230,7 +241,10 @@ async fn parse_identity_form(
 	(label, name, avatar, wallpaper, description)
 }
 
-async fn new_post(State(g): State<Arc<ServerGlobal>>, multipart: Multipart) -> Response {
+async fn new_post(
+	State(g): State<Arc<ServerGlobal>>, cookies: CookieJar, multipart: Multipart,
+) -> Response {
+	let system_user: Option<String> = cookies.get("system-user").map(|c| c.value().to_string());
 	let (label, name, avatar, wallpaper, description) = parse_identity_form(multipart).await;
 
 	// Create the identity
@@ -238,6 +252,7 @@ async fn new_post(State(g): State<Arc<ServerGlobal>>, multipart: Multipart) -> R
 		.base
 		.api
 		.create_identity(
+			system_user,
 			&label,
 			&name,
 			avatar.as_ref(),
@@ -246,23 +261,11 @@ async fn new_post(State(g): State<Arc<ServerGlobal>>, multipart: Multipart) -> R
 		)
 		.await
 	{
-		Ok((address, _)) => {
-			g.base
-				.state
-				.lock()
-				.await
-				.identities
-				.push(super::IdentityData {
-					label,
-					address: address.to_string(),
-				});
-
-			Response::builder()
-				.status(303)
-				.header("Location", "/identity")
-				.body(Body::empty())
-				.unwrap()
-		}
+		Ok(_) => Response::builder()
+			.status(303)
+			.header("Location", "/identity")
+			.body(Body::empty())
+			.unwrap(),
 		Err(e) => server_error_response(e, "Unable to create your new identity:"),
 	}
 }

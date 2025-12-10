@@ -12,6 +12,7 @@ use std::{
 
 use ::serde::*;
 use axum::{body::Body, extract::*, response::Response, routing::get, Router};
+use axum_extra::extract::CookieJar;
 #[cfg(debug_assertions)]
 use rss::validation::Validate;
 use rss::{ChannelBuilder, ItemBuilder};
@@ -42,7 +43,6 @@ pub struct IdentityData {
 #[derive(Clone, Default, Serialize)]
 pub struct AppState {
 	active_identity: Option<(String, ActorAddress)>,
-	identities: Vec<IdentityData>,
 }
 
 pub struct ServerGlobal {
@@ -60,19 +60,8 @@ pub struct ServerInfo {
 
 impl AppState {
 	pub async fn load(db: &Database) -> db::Result<Self> {
-		let identities = db.perform(|c| c.fetch_my_identities())?;
-
 		Ok(Self {
-			active_identity: identities
-				.get(0)
-				.map(|(label, address, ..)| (label.clone(), address.clone())),
-			identities: identities
-				.into_iter()
-				.map(|(label, address, ..)| IdentityData {
-					label,
-					address: address.to_string(),
-				})
-				.collect(),
+			active_identity: None,
 		})
 	}
 }
@@ -174,8 +163,10 @@ async fn home(
 	g.render("home.html.tera", context).await
 }
 
-async fn home_post(State(g): State<Arc<ServerGlobal>>, form: Multipart) -> Response {
-	match post_message(&g.base, form, None).await {
+async fn home_post(
+	State(g): State<Arc<ServerGlobal>>, cookies: CookieJar, form: Multipart,
+) -> Response {
+	match post_message(&g.base, &cookies, form, None).await {
 		Ok(r) => r,
 		Err(e) => return e,
 	};

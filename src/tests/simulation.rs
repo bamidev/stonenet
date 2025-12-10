@@ -3,30 +3,40 @@ use std::sync::{
 	Arc,
 };
 
-use log::*;
-use rand::RngCore;
-use stonenetd::{
+use crate::{
 	config::Config, core::*, db::PersistenceHandle, net::*, test::*, web::info::ObjectPayloadInfo,
 };
-#[cfg(test)]
-#[ctor::ctor]
-fn initialize() {
-	env_logger::init();
-}
+use log::*;
+use rand::RngCore;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_data_synchronizations_assisting() {
-	test_data_synchronization(Openness::Unidirectional, Openness::Bidirectional, true).await;
+	let _ = env_logger::try_init();
+	test_data_synchronization(
+		"kees1",
+		Openness::Unidirectional,
+		Openness::Bidirectional,
+		true,
+	)
+	.await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_data_synchronizations_relaying() {
-	test_data_synchronization(Openness::Unidirectional, Openness::Unidirectional, true).await;
+	let _ = env_logger::try_init();
+	test_data_synchronization(
+		"kees2",
+		Openness::Unidirectional,
+		Openness::Unidirectional,
+		true,
+	)
+	.await;
 }
 
 #[cfg(test)]
 async fn test_data_synchronization(
-	node1_openness: Openness, node2_openness: Openness, test_notifications: bool,
+	identity_label: &str, node1_openness: Openness, node2_openness: Openness,
+	test_notifications: bool,
 ) {
 	let mut rng = initialize_rng();
 
@@ -99,7 +109,8 @@ Hoi ik ben Kees!
 	};
 	let (actor_id, actor_info) = node1
 		.create_identity(
-			"kees",
+			None,
+			identity_label,
 			"Kees",
 			Some(&avatar_file_data),
 			Some(&wallpaper_file_data),
@@ -116,10 +127,12 @@ Hoi ik ben Kees!
 	let first_message = "First post!!!";
 	let second_message = "Second post!!!";
 	let third_message = "Third post!!!";
-	let (_, private_key) = node1
-		.fetch_my_identity(&actor_id)
+	let private_key = node1
+		.load_identity_private_key(None, identity_label)
+		.await
 		.expect("unable to load identity")
-		.expect("missing identity");
+		.expect("missing identity")
+		.expect("unable to load identity private key");
 	let first_post_hash = node1
 		.publish_post(
 			&actor_id,

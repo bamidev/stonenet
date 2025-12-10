@@ -1,11 +1,13 @@
 use std::{
 	error::Error,
-	fmt,
+	fmt, io,
 	ops::{Deref, DerefMut},
+	path::{Path, PathBuf},
 };
 
 use ed25519_dalek::{self as ed25519, Signer};
 use ed448_rust as ed448;
+use pem::{self, Pem, PemError};
 use rand::{prelude::*, rngs::OsRng};
 use rusqlite::{
 	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -15,13 +17,23 @@ use sea_orm::{prelude::*, ColIdx, TryGetError};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 use sha3::{Digest, Sha3_256};
+use tokio::fs;
 use zeroize::Zeroize;
 
 use crate::{common::*, core::NodeAddress};
 
+#[derive(thiserror::Error, Debug)]
+pub enum ActorPrivateKeyLoadError {
+	#[error("I/O error: {0}")]
+	Io(io::Error),
+	#[error("PEM format issue")]
+	Pem(PemError),
+	#[error("invalid key length")]
+	InvalidLength(usize),
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ActorPublicKeyV1(#[serde(with = "BigArray")] [u8; 57]);
-pub type ActorPublicKeyV1Error = ();
 
 pub struct ActorPrivateKeyV1(ed448::PrivateKey);
 
@@ -50,8 +62,8 @@ pub struct NodePrivateKey {
 struct NodePrivateKeyCopy([u8; ed25519::SECRET_KEY_LENGTH]);
 
 impl ActorPublicKeyV1 {
-	pub fn from_bytes(bytes: [u8; 57]) -> Result<Self, ActorPublicKeyV1Error> {
-		Ok(Self(bytes))
+	pub fn from_bytes(bytes: [u8; 57]) -> Self {
+		Self(bytes)
 	}
 
 	pub fn to_bytes(self) -> [u8; 57] {
@@ -64,6 +76,18 @@ impl ActorPublicKeyV1 {
 	}
 }
 
+impl From<PemError> for ActorPrivateKeyLoadError {
+	fn from(e: PemError) -> Self {
+		Self::Pem(e)
+	}
+}
+
+impl From<io::Error> for ActorPrivateKeyLoadError {
+	fn from(e: io::Error) -> Self {
+		Self::Io(e)
+	}
+}
+
 impl ActorPrivateKeyV1 {
 	pub fn as_bytes(&self) -> &[u8; ed448::KEY_LENGTH] {
 		self.0.as_bytes()
@@ -73,11 +97,40 @@ impl ActorPrivateKeyV1 {
 		Self(ed448::PrivateKey::from(bytes))
 	}
 
+	pub async fn from_disk(data_dir: &Path, label: &str) -> Result<Self, ActorPrivateKeyLoadError> {
+		let path = Self::key_file_path(data_dir, label);
+		let pem_string = fs::read_to_string(&path).await?;
+		let pem = pem::parse(&pem_string)?;
+
+		if pem.tag() != "ED448 PRIVATE KEY" {
+			return Err(ActorPrivateKeyLoadError::Pem(PemError::InvalidHeader(
+				pem.tag().to_string(),
+			)));
+		}
+
+		let data: &[u8; ed448::KEY_LENGTH] = match pem.contents().try_into() {
+			Ok(c) => c,
+			Err(_) => {
+				return Err(ActorPrivateKeyLoadError::InvalidLength(
+					pem.contents().len(),
+				))
+			}
+		};
+		return Ok(Self::from_bytes(data.clone()));
+	}
+
 	pub fn generate_with_rng<R>(rng: &mut R) -> Self
 	where
 		R: CryptoRng + RngCore,
 	{
 		Self(ed448::PrivateKey::new(rng))
+	}
+
+	fn key_file_path(data_dir: &Path, label: &str) -> PathBuf {
+		let filename = label.to_string() + ".pem";
+		let mut path = PathBuf::from(data_dir);
+		path.push(filename);
+		path
 	}
 
 	pub fn public(&self) -> ActorPublicKeyV1 {
@@ -86,6 +139,13 @@ impl ActorPrivateKeyV1 {
 
 	pub fn sign(&self, message: &[u8]) -> ActorSignatureV1 {
 		ActorSignatureV1(self.0.sign(message, None).expect("sign error"))
+	}
+
+	pub async fn store(&self, data_dir: &Path, label: &str) -> io::Result<()> {
+		let path = Self::key_file_path(data_dir, label);
+		let pem = Pem::new("ED448 PRIVATE KEY", self.as_bytes());
+		let encoded_data = pem::encode(&pem);
+		fs::write(&path, encoded_data.as_bytes()).await
 	}
 }
 
@@ -347,7 +407,7 @@ mod tests {
 
 	#[test]
 	fn test_type_sizes() {
-		let actor_public_key = ActorPublicKeyV1::from_bytes([0u8; ed448::KEY_LENGTH]).unwrap();
+		let actor_public_key = ActorPublicKeyV1::from_bytes([0u8; ed448::KEY_LENGTH]);
 		assert_eq!(
 			binserde::serialized_size(&actor_public_key).unwrap(),
 			ed448::KEY_LENGTH

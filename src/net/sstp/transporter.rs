@@ -379,7 +379,7 @@ impl Transporter {
 						}
 					// If the task channel has closed down, proceed with the closing sequence
 					} else {
-						debug!("SSTP transporter task channel has closed down uncleanly.");
+						trace!("SSTP transporter task channel has closed down from the other side.");
 						break;
 					}
 				},

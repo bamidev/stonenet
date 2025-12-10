@@ -17,6 +17,7 @@ use axum::{
 	routing::*,
 	*,
 };
+use axum_extra::extract::CookieJar;
 use email_address_parser::EmailAddress;
 use extract::{Multipart, Path};
 use lazy_static::lazy_static;
@@ -959,34 +960,17 @@ pub async fn object_get_stonenet(
 }
 
 async fn object_post(
-	State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i64>, multipart: Multipart,
+	State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i64>, cookies: CookieJar,
+	multipart: Multipart,
 ) -> Response {
-	// Load active identity and its private key
-	let identity = g
-		.base
-		.state
-		.lock()
-		.await
-		.active_identity
-		.as_ref()
-		.unwrap()
-		.1
-		.clone();
-	let private_key = match g.base.api.db.perform(|c| c.fetch_my_identity(&identity)) {
-		Ok(r) => {
-			if let Some((_, pk)) = r {
-				pk
-			} else {
-				return server_error_response2("unable to load identity");
-			}
-		}
-		Err(e) => return server_error_response(e, "unable to load identity"),
+	let (private_key, actor_address) = match load_private_key(&g.base, &cookies).await {
+		Ok(r) => r,
+		Err(r) => return r,
 	};
 
 	// Load the AP object
 	// TODO: Remove .unwrap():
 	let tx = g.base.api.db.transaction().await.unwrap();
-	let actor_address = g.base.state.lock().await.active_identity.clone().unwrap().1;
 	let ap_object = match activity_pub_object::Entity::find_by_id(object_id)
 		.one(tx.inner())
 		.await
