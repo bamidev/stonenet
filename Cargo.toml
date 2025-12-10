@@ -7,7 +7,7 @@ edition = "2021"
 homepage = "https://stonenet.org"
 license = "MIT"
 readme = "README.md"
-rust-version = "1.86"
+rust-version = "1.91"
 
 [dependencies]
 axum = { version = "0.7.9", features = ["multipart", "tokio"] }
