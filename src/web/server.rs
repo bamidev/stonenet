@@ -23,7 +23,7 @@ use tower_http::services::ServeDir;
 use self::common::*;
 use super::{
 	consolidated_feed::load_consolidated_feed,
-	info::{ObjectInfo, ObjectPayloadInfo, PostMessageInfo},
+	info::{IdentityInfo, ObjectInfo, ObjectPayloadInfo, PostMessageInfo},
 	Global,
 };
 use crate::{
@@ -31,7 +31,7 @@ use crate::{
 	common::*,
 	config::Config,
 	core::*,
-	db::{self, Database},
+	db::{self, Database, PersistenceHandle},
 };
 
 #[derive(Clone, Serialize)]
@@ -42,6 +42,7 @@ pub struct IdentityData {
 
 #[derive(Clone, Default, Serialize)]
 pub struct AppState {
+	identities: Vec<IdentityInfo>,
 	active_identity: Option<(String, ActorAddress)>,
 }
 
@@ -60,7 +61,9 @@ pub struct ServerInfo {
 
 impl AppState {
 	pub async fn load(db: &Database) -> db::Result<Self> {
+		let identities = db.fetch_identities_info().await?;
 		Ok(Self {
+			identities,
 			active_identity: None,
 		})
 	}
@@ -132,7 +135,7 @@ struct PaginationQuery {
 }
 
 async fn home(
-	State(g): State<Arc<ServerGlobal>>, Query(query): Query<PaginationQuery>,
+	State(g): State<Arc<ServerGlobal>>, Query(query): Query<PaginationQuery>, cookies: CookieJar,
 ) -> Response {
 	let p = query.page.unwrap_or(0);
 	let start = p * 5;
@@ -157,10 +160,17 @@ async fn home(
 
 	translate_special_mime_types_for_objects(&mut objects);
 
+	let system_user = cookies.get("system-user").map(|c| c.value().to_string());
+	let identities: Vec<(String, ActorAddress)> =
+		match g.base.api.fetch_identities(system_user.as_deref()).await {
+			Ok(result) => result.into_iter().map(|r| (r.0, r.1)).collect(),
+			Err(e) => return server_error_response(e, "unable to fetch identities"),
+		};
+
 	let mut context = Context::new();
 	context.insert("objects", &objects);
 	context.insert("page", &p);
-	g.render("home.html.tera", context).await
+	g.render("home.html.tera", context, &cookies).await
 }
 
 async fn home_post(
@@ -171,7 +181,7 @@ async fn home_post(
 		Err(e) => return e,
 	};
 
-	home(State(g), Query(PaginationQuery::default())).await
+	home(State(g), Query(PaginationQuery::default()), cookies).await
 }
 
 async fn rss_feed(State(g): State<Arc<ServerGlobal>>) -> Response {
@@ -241,11 +251,16 @@ async fn search(Query(query): Query<SearchQuery>) -> Response {
 }
 
 impl ServerGlobal {
-	pub async fn render(&self, template_name: &str, context: Context) -> Response {
+	pub async fn render(
+		&self, template_name: &str, context: Context, cookies: &CookieJar,
+	) -> Response {
 		let mut complete_context = Context::new();
 		let state = self.base.state.lock().await.clone();
 		complete_context.insert("app", &state);
 		complete_context.insert("server", &self.base.server_info);
+		if let Some(cookie) = cookies.get("system-user") {
+			complete_context.insert("system_user", cookie.value());
+		}
 		complete_context.extend(context);
 
 		match self

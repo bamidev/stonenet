@@ -3,7 +3,7 @@
 {% block title %}Home{% endblock %}
 
 {% block column_left %}
-	{{macros::post_form(title="Message", identities=app.identities)}}
+	{{macros::post_form(title="Message")}}
 {% endblock column_left %}
 
 {% block content %}

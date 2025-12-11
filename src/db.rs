@@ -3,10 +3,7 @@
 
 mod install;
 
-use std::{
-	cmp::min, fmt, net::SocketAddr, ops::*, path::*, str,
-	time::Duration,
-};
+use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration};
 
 use async_trait::async_trait;
 use chacha20::{
@@ -34,6 +31,7 @@ use crate::{
 	net::binserde,
 	serde_limit::LimString,
 	trace::{self, *},
+	web::info::*,
 };
 
 pub(crate) const BLOCK_SIZE: usize = 0x100000; // 1 MiB
@@ -208,18 +206,42 @@ pub trait PersistenceHandle {
 					.to(identity::Column::ActorId)
 					.into(),
 			)
-			.build(self.inner().get_database_backend());
+			.build(self.backend());
 		let results = self.inner().query_all(stat).await?;
 
 		// Prepare all fetched identities and load their private key from the disk
 		// Identities tied to a system user will load their private key from a local directory.
 		let mut identities = Vec::with_capacity(results.len());
 		for r in results {
-			let label: String = r.try_get_by_index(0)?;
-			let address: ActorAddress = r.try_get_by_index(1)?;
-			let first_object: IdType = r.try_get_by_index(2)?;
-			let actor_type: String = r.try_get_by_index(3)?;
+			let label: String = r.try_get_by(identity::Column::Label.as_str())?;
+			let address: ActorAddress = r.try_get_by(actor::Column::Address.as_str())?;
+			let first_object: IdType = r.try_get_by(actor::Column::FirstObject.as_str())?;
+			let actor_type: String = r.try_get_by(actor::Column::Type.as_str())?;
 			identities.push((label, address, first_object, actor_type));
+		}
+		Ok(identities)
+	}
+
+	async fn fetch_identities_info(&self) -> Result<Vec<IdentityInfo>> {
+		let (query, vals) = Query::select()
+			.column(identity::Column::Label)
+			.column(actor::Column::Address)
+			.from(identity::Entity)
+			.left_join(
+				actor::Entity,
+				Expr::col((actor::Entity, actor::Column::Id))
+					.equals((identity::Entity, identity::Column::ActorId)),
+			)
+			.build_any(&*self.backend().get_query_builder());
+		let results = self
+			.inner()
+			.query_all(Statement::from_sql_and_values(self.backend(), query, vals))
+			.await?;
+		let mut identities = Vec::with_capacity(results.len());
+		for result in results {
+			let label: String = result.try_get_by_index(0)?;
+			let address: ActorAddress = result.try_get_by_index(1)?;
+			identities.push(IdentityInfo { label, address });
 		}
 		Ok(identities)
 	}

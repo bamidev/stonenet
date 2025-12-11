@@ -10,6 +10,7 @@ use axum::{
 	routing::get,
 	Extension, Form, RequestExt, Router,
 };
+use axum_extra::extract::CookieJar;
 use sea_orm::prelude::*;
 use serde::Deserialize;
 use tera::Context;
@@ -81,7 +82,7 @@ async fn actor_middleware(
 
 async fn actor_get(
 	State(g): State<Arc<ServerGlobal>>, Extension(address): Extension<ActorAddress>,
-	Query(query): Query<PaginationQuery>,
+	Query(query): Query<PaginationQuery>, cookies: CookieJar,
 ) -> Response {
 	let result = if g.base.server_info.is_exposed {
 		find_profile_info(&g.base.api.db, &g.base.server_info.url_base, &address).await
@@ -124,12 +125,12 @@ async fn actor_get(
 	context.insert("is_following", &is_following);
 	context.insert("page", &p);
 	context.insert("objects", &objects);
-	g.render("actor.html.tera", context).await
+	g.render("actor.html.tera", context, &cookies).await
 }
 
 async fn actor_post(
 	State(g): State<Arc<ServerGlobal>>, Extension(address): Extension<ActorAddress>,
-	Form(form_data): Form<ActorActions>,
+	cookies: CookieJar, Form(form_data): Form<ActorActions>,
 ) -> Response {
 	if let Some(follow) = &form_data.follow {
 		// Follow
@@ -157,6 +158,7 @@ async fn actor_post(
 		State(g),
 		Extension(address),
 		Query(PaginationQuery::default()),
+		cookies,
 	)
 	.await
 }

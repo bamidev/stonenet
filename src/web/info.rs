@@ -24,6 +24,12 @@ pub struct FileInfo {
 	pub mime_type: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct IdentityInfo {
+	pub label: String,
+	pub address: ActorAddress,
+}
+
 #[derive(Serialize)]
 pub struct ObjectInfo {
 	pub url: String,

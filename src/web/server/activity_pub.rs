@@ -116,7 +116,7 @@ impl Serialize for NodeInfoVersion {
 }
 
 async fn activity_pub_actor_post(
-	State(g): State<Arc<ServerGlobal>>, Path(address): Path<String>,
+	State(g): State<Arc<ServerGlobal>>, Path(address): Path<String>, cookies: CookieJar,
 	Form(form_data): Form<ActorActions>,
 ) -> Response {
 	let webfinger_addr = match EmailAddress::parse(&address[1..], None) {
@@ -224,11 +224,11 @@ async fn activity_pub_actor_post(
 		}
 	}
 
-	activity_pub_actor_get(State(g), Path(address)).await
+	activity_pub_actor_get(State(g), Path(address), cookies).await
 }
 
 async fn activity_pub_actor_get(
-	State(g): State<Arc<ServerGlobal>>, Path(address): Path<String>,
+	State(g): State<Arc<ServerGlobal>>, Path(address): Path<String>, cookies: CookieJar,
 ) -> Response {
 	let webfinger_addr = match EmailAddress::parse(&address[1..], None) {
 		Some(r) => r,
@@ -348,7 +348,8 @@ async fn activity_pub_actor_get(
 	context.insert("is_following", &is_following);
 	context.insert("avatar_url", &avatar_url);
 	context.insert("wallpaper_url", &wallpaper_url);
-	g.render("activity_pub/actor.html.tera", context).await
+	g.render("activity_pub/actor.html.tera", context, &cookies)
+		.await
 }
 
 fn activity_pub_response(mut json: serde_json::Value, context: &[&str]) -> Response {
@@ -868,7 +869,9 @@ pub async fn nodeinfo(State(g): State<Arc<ServerGlobal>>) -> Response {
 	json_response(&info, Some("application/json"))
 }
 
-async fn object_get(State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i64>) -> Response {
+async fn object_get(
+	State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i64>, cookies: CookieJar,
+) -> Response {
 	let mut object_info = match web::activity_pub::load_object_info(&g.base.api.db, object_id).await
 	{
 		Ok(result) => {
@@ -919,7 +922,7 @@ async fn object_get(State(g): State<Arc<ServerGlobal>>, Path(object_id): Path<i6
 	let mut context = Context::new();
 	context.insert("object", &object_info);
 	context.insert("irt_webfinger", &irt_webfinger);
-	g.render("actor/object.html.tera", context).await
+	g.render("actor/object.html.tera", context, &cookies).await
 }
 
 pub async fn object_get_stonenet(

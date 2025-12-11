@@ -76,7 +76,7 @@ async fn object_middleware(
 
 async fn object_get(
 	State(g): State<Arc<ServerGlobal>>, Extension(actor_address): Extension<ActorAddress>,
-	Extension(object_hash): Extension<IdType>,
+	Extension(object_hash): Extension<IdType>, cookies: CookieJar,
 ) -> Response {
 	let mut object_info = match find_object_info(
 		&g.base.api.db,
@@ -101,7 +101,7 @@ async fn object_get(
 	let mut context = Context::new();
 	context.insert("address", &actor_address);
 	context.insert("object", &object_info);
-	g.render("actor/object.html.tera", context).await
+	g.render("actor/object.html.tera", context, &cookies).await
 }
 
 async fn object_post(

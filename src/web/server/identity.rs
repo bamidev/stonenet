@@ -78,7 +78,7 @@ async fn identity_middleware(
 
 async fn profile_get(
 	State(g): State<Arc<ServerGlobal>>, Extension(label): Extension<String>,
-	Extension(identity): Extension<identity::Model>,
+	Extension(identity): Extension<identity::Model>, cookies: CookieJar,
 ) -> Response {
 	let profile = match find_profile_info2(
 		&g.base.api.db,
@@ -95,7 +95,8 @@ async fn profile_get(
 	context.insert("label", &label);
 	context.insert("profile", &profile);
 	context.insert("is_following", &true);
-	g.render("identity/profile.html.tera", context).await
+	g.render("identity/profile.html.tera", context, &cookies)
+		.await
 }
 
 async fn profile_post(
@@ -135,7 +136,9 @@ async fn profile_post(
 		.unwrap()
 }
 
-async fn index(State(g): State<Arc<ServerGlobal>>, mut request: Request) -> Response {
+async fn index(
+	State(g): State<Arc<ServerGlobal>>, cookies: CookieJar, mut request: Request,
+) -> Response {
 	let system_user: Option<String>;
 	match request.extract_parts::<CookieJar>().await {
 		Ok(cookies) => {
@@ -161,11 +164,13 @@ async fn index(State(g): State<Arc<ServerGlobal>>, mut request: Request) -> Resp
 
 	let mut context = Context::new();
 	context.insert("identities", &identities_data);
-	g.render("identity/overview.html.tera", context).await
+	g.render("identity/overview.html.tera", context, &cookies)
+		.await
 }
 
-async fn new(State(g): State<Arc<ServerGlobal>>) -> Response {
-	g.render("identity/profile.html.tera", Context::new()).await
+async fn new(State(g): State<Arc<ServerGlobal>>, cookies: CookieJar) -> Response {
+	g.render("identity/profile.html.tera", Context::new(), &cookies)
+		.await
 }
 
 async fn parse_identity_form(
@@ -266,7 +271,7 @@ async fn new_post(
 			.header("Location", "/identity")
 			.body(Body::empty())
 			.unwrap(),
-		Err(e) => server_error_response(e, "Unable to create your new identity:"),
+		Err(e) => server_error_response(e, "Unable to create your new identity"),
 	}
 }
 

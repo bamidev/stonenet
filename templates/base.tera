@@ -80,14 +80,16 @@
 								<div class="input-group">
 									<select class="form-select form-select-sm w-50 d-inline" id="identity" name="identity">
 										{% for identity in app.identities %}
-											<option
-												value="{{identity.label}}"
-												{% if app.active_identity and app.active_identity.0 == identity.label %} 
-													selected="selected"
-												{% endif %}
-											>
-												{{identity.label}}
-											</option>
+                                            {% if identity.system_user == '' or identity.system_user == system_user %}
+                                              <option
+                                                  value="{{identity.label}}"
+                                                  {% if app.active_identity and app.active_identity.0 == identity.label %} 
+                                                      selected="selected"
+                                                  {% endif %}
+                                              >
+                                                  {{identity.label}}
+                                              </option>
+                                            {% endif %}
 										{% endfor %}
 									</select>
 									<button class="btn btn-secondary" type="submit">Use</button>
