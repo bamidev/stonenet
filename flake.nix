@@ -83,6 +83,7 @@
               pkg-config
               pkgs.openssl.dev
               rustPlatform.bindgenHook
+              zenity
             ] ++ browser-window.packages.${system}.webkitgtk.buildInputs;
           };
         };

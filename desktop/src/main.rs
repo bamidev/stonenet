@@ -15,13 +15,18 @@ fn main() {
 	let runtime = application.start();
 	let exit_code = runtime.run_async(|handle| async move {
 		if let Err(e) = daemon::ensure_running() {
-			DialogBuilder::message()
+			let result = DialogBuilder::message()
 				.set_level(MessageLevel::Error)
 				.set_title("Stonenet Error")
-				.set_text(&format!("Unable to spawn the Stonenet daemon: {}", e))
+				.set_text(&format!(
+					"The Stonenet daemon is not running and I was unable to launch it: {}",
+					e
+				))
 				.alert()
-				.show()
-				.expect("unable to show error dialog");
+				.show();
+			if let Err(e) = result {
+				println!("Unable to show error message: {}", e);
+			}
 			handle.exit(1);
 			return;
 		}
