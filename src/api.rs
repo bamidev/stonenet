@@ -158,7 +158,6 @@ impl Api {
 				))
 			}
 		};
-		private_key.store(&data_dir, label).await?;
 
 		// Create the identity
 		// TODO: Remove old code and create the identity with the same transaction as
@@ -186,6 +185,9 @@ impl Api {
 			description_hash,
 		)
 		.await?;
+
+		private_key.store(&data_dir, label).await?;
+
 		tx.commit().await?;
 		Ok((actor_address, actor_info))
 	}
