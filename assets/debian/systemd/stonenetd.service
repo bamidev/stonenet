@@ -7,9 +7,10 @@ Icon=stonenet
 WantedBy=multi-user.target
 
 [Service]
-WorkingDirectory=/usr/share/stonenet
-Type=simple
 ExecStart=/usr/bin/stonenetd
 StandardError=journal+console
 StandardOutput=journal+console
 SyslogIdentifier=stonenetd
+Type=simple
+User=stonenet
+WorkingDirectory=/usr/share/stonenet

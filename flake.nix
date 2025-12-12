@@ -129,6 +129,7 @@
                 Restart = "on-failure";
                 StandardError = "journal+console";
                 StandardOutput = "journal+console";
+                User = "stonenet";
                 # A workaround: stonenet looks for the templates and static files in the working directory at the moment
                 WorkingDirectory = "${stonenetPackage.share}";
               };
