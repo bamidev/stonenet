@@ -100,6 +100,12 @@ impl ActorPrivateKeyV1 {
 		Self(ed448::PrivateKey::from(bytes))
 	}
 
+	/// Load the private key from a PEM file with the given name in the given directory.
+	///
+	/// # Arguments
+	///
+	/// * `data_dir` - The folder where the file exists in.
+	/// * `label` - The filename of the key file. The file extension excluded.
 	pub async fn from_disk(data_dir: &Path, label: &str) -> Result<Self, ActorPrivateKeyLoadError> {
 		let path = Self::key_file_path(data_dir, label);
 		let pem_string = fs::read_to_string(&path).await?;

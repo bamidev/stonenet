@@ -7,8 +7,8 @@ use lazy_static::lazy_static;
 use tempfile::TempDir;
 
 lazy_static! {
-	pub static ref HOME_DATA: PathBuf = load_data_home_path();
-	pub static ref SYSTEM_DATA: PathBuf = "/var/lib/stonenet".into();
+	pub static ref HOME_DATA: PathBuf = load_home_data_path();
+	pub static ref SYSTEM_DATA: PathBuf = load_system_data_path();
 }
 
 #[cfg(test)]
@@ -18,7 +18,7 @@ lazy_static! {
 }
 
 #[cfg(not(target_family = "windows"))]
-fn load_data_home_path() -> PathBuf {
+fn load_home_data_path() -> PathBuf {
 	let mut path: PathBuf = env::var_os("XDG_DATA_HOME")
 		.unwrap_or("~/.local/share/".into())
 		.into();
@@ -27,10 +27,20 @@ fn load_data_home_path() -> PathBuf {
 }
 
 #[cfg(target_family = "windows")]
-fn load_data_home_path() -> PathBuf {
+fn load_home_data_path() -> PathBuf {
+	"~/AppData/Local".into()
+}
+
+#[cfg(target_family = "windows")]
+fn load_system_data_path() -> PathBuf {
 	let mut install_dir = env::current_exe().unwrap();
 	install_dir.pop();
 	install_dir
+}
+
+#[cfg(not(target_family = "windows"))]
+fn load_system_data_path() -> PathBuf {
+	"/var/lib/stonenet".into()
 }
 
 /// Load the home data directory.
