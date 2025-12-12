@@ -1,6 +1,6 @@
-use std::{env, path::PathBuf};
 #[cfg(test)]
-use std::{fs, sync::Mutex};
+use std::sync::Mutex;
+use std::{env, fs, path::PathBuf};
 
 use lazy_static::lazy_static;
 #[cfg(test)]
@@ -45,25 +45,23 @@ pub fn home_data(username: &str) -> Option<PathBuf> {
 	}
 }
 
-pub fn home_data_identity(username: &str) -> Option<PathBuf> {
-	home_data(username).map(|mut dir| {
-		dir.push("identity");
-		dir
-	})
-}
-
 /// The directory to store identity private keys in, or None if the given system user did not
 /// exist, but was needed to determine the folder location.
 pub fn data_identity(system_user: Option<&str>) -> Option<PathBuf> {
 	#[cfg(not(test))]
-	if let Some(username) = &system_user {
-		if let Some(dir) = home_data_identity(username) {
-			Some(dir)
+	{
+		let mut dir = if let Some(username) = &system_user {
+			if let Some(dir) = home_data(username) {
+				dir
+			} else {
+				return None;
+			}
 		} else {
-			None
-		}
-	} else {
-		Some(SYSTEM_DATA.clone())
+			SYSTEM_DATA.clone()
+		};
+		dir.push("identity");
+		let _ = fs::create_dir(&dir);
+		Some(dir)
 	}
 	#[cfg(test)]
 	{
