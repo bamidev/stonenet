@@ -17,7 +17,10 @@ use sea_orm::{prelude::*, ColIdx, TryGetError};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 use sha3::{Digest, Sha3_256};
-use tokio::fs;
+use tokio::{
+	fs::{self, OpenOptions},
+	io::AsyncWriteExt,
+};
 use zeroize::Zeroize;
 
 use crate::{common::*, core::NodeAddress};
@@ -141,11 +144,27 @@ impl ActorPrivateKeyV1 {
 		ActorSignatureV1(self.0.sign(message, None).expect("sign error"))
 	}
 
+	/// Store the private key in a PEM file with the given name in the given directory.
+	///
+	/// # Arguments
+	///
+	/// * `data_dir` - The folder where the file will be saved in.
+	/// * `label` - The filename of the key file. The file extension excluded.
 	pub async fn store(&self, data_dir: &Path, label: &str) -> io::Result<()> {
 		let path = Self::key_file_path(data_dir, label);
 		let pem = Pem::new("ED448 PRIVATE KEY", self.as_bytes());
 		let encoded_data = pem::encode(&pem);
-		fs::write(&path, encoded_data.as_bytes()).await
+		// Unit tests seem to have permission issues.
+		let mode = 0o600;
+		let mut file = OpenOptions::new()
+			.create(true)
+			.write(true)
+			.truncate(true)
+			.mode(mode)
+			.open(&path)
+			.await?;
+		file.write(encoded_data.as_bytes()).await?;
+		Ok(())
 	}
 }
 
