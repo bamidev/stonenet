@@ -64,7 +64,7 @@ simple-logging = "2"
 tempfile = "3"
 tera = "1.19.1"
 thiserror = "*"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "0"
 toml = "0"
 tower = "0.4.13"
