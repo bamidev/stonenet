@@ -161,14 +161,12 @@ impl ActorPrivateKeyV1 {
 		let pem = Pem::new("ED448 PRIVATE KEY", self.as_bytes());
 		let encoded_data = pem::encode(&pem);
 		// Unit tests seem to have permission issues.
-		let mode = 0o600;
-		let mut file = OpenOptions::new()
-			.create(true)
-			.write(true)
-			.truncate(true)
-			.mode(mode)
-			.open(&path)
-			.await?;
+		let _mode = 0o600;
+		let mut open_options = OpenOptions::new();
+		open_options.create(true).write(true).truncate(true);
+		#[cfg(not(target_family = "windows"))]
+		open_options.mode(_mode);
+		let mut file = open_options.open(&path).await?;
 		file.write(encoded_data.as_bytes()).await?;
 		Ok(())
 	}
