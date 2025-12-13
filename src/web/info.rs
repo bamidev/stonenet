@@ -28,6 +28,7 @@ pub struct FileInfo {
 pub struct IdentityInfo {
 	pub label: String,
 	pub address: ActorAddress,
+	pub system_user: Option<String>,
 }
 
 #[derive(Serialize)]

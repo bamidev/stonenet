@@ -226,6 +226,7 @@ pub trait PersistenceHandle {
 		let (query, vals) = Query::select()
 			.column(identity::Column::Label)
 			.column(actor::Column::Address)
+			.column(identity::Column::SystemUser)
 			.from(identity::Entity)
 			.left_join(
 				actor::Entity,
@@ -241,7 +242,12 @@ pub trait PersistenceHandle {
 		for result in results {
 			let label: String = result.try_get_by_index(0)?;
 			let address: ActorAddress = result.try_get_by_index(1)?;
-			identities.push(IdentityInfo { label, address });
+			let system_user: Option<String> = result.try_get_by_index(2)?;
+			identities.push(IdentityInfo {
+				label,
+				address,
+				system_user,
+			});
 		}
 		Ok(identities)
 	}
