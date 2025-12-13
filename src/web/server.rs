@@ -260,7 +260,9 @@ impl ServerGlobal {
 		complete_context.insert("server", &self.base.server_info);
 		if let Some(cookie) = cookies.get("system-user") {
 			complete_context.insert("system_user", cookie.value());
-		}
+		} else {
+			complete_context.insert("system_user", &Option::<&str>::None);
+		};
 		complete_context.extend(context);
 
 		match self
