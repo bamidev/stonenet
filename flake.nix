@@ -156,8 +156,19 @@
                 system.activationScripts.stonenet-state.text = ''
                   set -e
                   mkdir -p /var/lib/stonenet
+                  chown -R stonenet:stonenet /var/lib/stonenet
                   touch "${effectiveConfig.database_path}"
                 '';
+
+                users = {
+                  users.stonenet = {
+                    group = "stonenet";
+                    isNormalUser = false;
+                    isSystemUser = true;
+                  };
+
+                  groups.stonenet = {};
+                };
               } else {
                 home = {
                   file.".config/stonenet/config.toml".source = userConfigFile;
