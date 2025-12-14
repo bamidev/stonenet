@@ -937,86 +937,102 @@ impl Server {
 		let data = buffer[6..].to_vec();
 		let packet = CryptedPacket { ks_seq, seq, data };
 
-		let should_close = {
-			let sessions = self.sessions.lock().await;
-			if let Some(s) = sessions.map.get(&session_id).map(|s| s.clone()) {
-				drop(sessions);
-				let mut session = s.lock().await;
-				*session.last_activity.lock().unwrap() = SystemTime::now();
+		let should_close =
+			{
+				let sessions = self.sessions.lock().await;
+				if let Some(s) = sessions.map.get(&session_id).map(|s| s.clone()) {
+					drop(sessions);
+					let mut session = s.lock().await;
+					*session.last_activity.lock().unwrap() = SystemTime::now();
 
-				match &mut session.transport_data {
-					SessionTransportData::Direct(data) => {
-						data.packet_processor.send(packet).is_err()
-					}
-					SessionTransportData::Relay(data) => {
-						// The port of both sides need only be used to distinguish them from
-						// eachother when their IP and chosen protocol is the same. Otherwise, we
-						// can easily figure out who has send what packet.
-						let port_is_unimportant = data.source_contact.use_tcp
-							!= data.target_contact.use_tcp
-							|| data.source_contact.target.ip() != data.target_contact.target.ip();
-						if sender.use_tcp == data.source_contact.use_tcp
-							&& sender.target.ip() == data.source_contact.target.ip()
-							&& (port_is_unimportant
-								|| sender.target.port() == data.source_contact.target.port())
-						{
-							if let Some(target_socket) = &data.target_sender {
+					match &mut session.transport_data {
+						SessionTransportData::Direct(data) => {
+							data.packet_processor.send(packet).is_err()
+						}
+						SessionTransportData::Relay(data) => {
+							// The packet buffer size should always be small enough to be able to be
+							// sent on both sides.
+							debug_assert!(
+                            buffer.len() <= min(
+                                data.source_contact.max_packet_length(),
+                                data.target_contact.max_packet_length()
+                            ),
+                            "packet too big he relay connection (packet={}, source={}, target={})",
+                            buffer.len(),
+                            data.source_contact.max_packet_length(),
+                            data.target_contact.max_packet_length(),
+                        );
+
+							// The port of both sides need only be used to distinguish them from
+							// eachother when their IP and chosen protocol is the same. Otherwise, we
+							// can easily figure out who has send what packet.
+							let port_is_unimportant = data.source_contact.use_tcp
+								!= data.target_contact.use_tcp
+								|| data.source_contact.target.ip()
+									!= data.target_contact.target.ip();
+							if sender.use_tcp == data.source_contact.use_tcp
+								&& sender.target.ip() == data.source_contact.target.ip()
+								&& (port_is_unimportant
+									|| sender.target.port() == data.source_contact.target.port())
+							{
+								if let Some(target_socket) = &data.target_sender {
+									let result = Self::relay_crypted_packet(
+										target_socket,
+										data.target_session_id,
+										&buffer[2..],
+									)
+									.await;
+									if let Err(e) = &result {
+										warn!(
+										"Unable to pass relayed crypted packet to target {}: {:?}",
+										&data.target_contact, e
+									);
+									}
+									result.is_err()
+								} else {
+									error!(
+									"Received transport data packet before relay connected with \
+									 target."
+								);
+									false
+								}
+							} else if sender.use_tcp == data.target_contact.use_tcp
+								&& sender.target.ip() == data.target_contact.target.ip()
+								&& (port_is_unimportant
+									|| sender.target.port() == data.target_contact.target.port())
+							{
+								error!("BUFFER[{}]", buffer.len());
 								let result = Self::relay_crypted_packet(
-									target_socket,
-									data.target_session_id,
+									&data.source_sender,
+									data.source_session_id,
 									&buffer[2..],
 								)
 								.await;
 								if let Err(e) = &result {
 									warn!(
-										"Unable to pass relayed crypted packet to target {}: {:?}",
-										&data.target_contact, e
-									);
-								}
-								result.is_err()
-							} else {
-								error!(
-									"Received transport data packet before relay connected with \
-									 target."
-								);
-								false
-							}
-						} else if sender.use_tcp == data.target_contact.use_tcp
-							&& sender.target.ip() == data.target_contact.target.ip()
-							&& (port_is_unimportant
-								|| sender.target.port() == data.target_contact.target.port())
-						{
-							let result = Self::relay_crypted_packet(
-								&data.source_sender,
-								data.source_session_id,
-								&buffer[2..],
-							)
-							.await;
-							if let Err(e) = &result {
-								warn!(
 									"Unable to pass relayed crypted packet to source[{}] {}: {:?}",
 									buffer.len(), &data.target_contact, e
 								);
-							}
-							result.is_err()
-						} else {
-							warn!(
+								}
+								result.is_err()
+							} else {
+								warn!(
 								"Relay transport data packet received from unknown socket address. {} {} {}",
                                 sender, &data.source_contact, &data.target_contact
 							);
-							false
+								false
+							}
 						}
 					}
+				// If the result is an error, the receiving end of the queue has
+				// been closed. This happens all the time because connections get
+				// closed and then dropped before the other side may be able to send
+				// a close packet.
+				} else {
+					trace!("Invalid session ID: {}", session_id);
+					false
 				}
-			// If the result is an error, the receiving end of the queue has
-			// been closed. This happens all the time because connections get
-			// closed and then dropped before the other side may be able to send
-			// a close packet.
-			} else {
-				trace!("Invalid session ID: {}", session_id);
-				false
-			}
-		};
+			};
 
 		if should_close {
 			debug!(
