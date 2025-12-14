@@ -187,8 +187,16 @@ where
 #[cfg(not(target_family = "windows"))]
 async fn load_database(config: &Config, _install_dir: PathBuf) -> io::Result<Database> {
 	// If the path doesn' exist yet, create it
-	let db_path = PathBuf::from_str(&config.database_path)
-		.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+	let db_path: PathBuf = if config.database_path.starts_with("~/") {
+		if let Some(mut path) = homedir::my_home().expect("homedir error") {
+			path.push(&config.database_path[2..]);
+			path
+		} else {
+			config.database_path.clone().into()
+		}
+	} else {
+		config.database_path.clone().into()
+	};
 	tokio::fs::create_dir_all(
 		db_path
 			.parent()
