@@ -2,7 +2,9 @@
 use std::sync::Mutex;
 use std::{env, fs, path::PathBuf};
 
+use homedir::home;
 use lazy_static::lazy_static;
+use log::*;
 #[cfg(test)]
 use tempfile::TempDir;
 
@@ -32,6 +34,8 @@ fn load_home_data_path() -> PathBuf {
 }
 
 #[cfg(target_family = "windows")]
+/// On Windows, all data is stored in the installation dir, which we can obtain by checked from
+/// where the executable is run.
 fn load_system_data_path() -> PathBuf {
 	let mut install_dir = env::current_exe().unwrap();
 	install_dir.pop();
@@ -39,7 +43,53 @@ fn load_system_data_path() -> PathBuf {
 }
 
 #[cfg(not(target_family = "windows"))]
+/// First check if the current process is running as user stonenet, or some other normal user.
+/// If run as normal user, we store all data in the user-level directory .local/share/stonenet.
 fn load_system_data_path() -> PathBuf {
+	let mut checked = true;
+	let s = sysinfo::System::new_all();
+	match sysinfo::get_current_pid() {
+		Err(e) => {
+			warn!("Unable to get the current process ID: {}", e);
+			checked = false;
+		}
+		Ok(pid) => {
+			if let Some(process) = s.process(pid) {
+				if let Some(uid) = process.user_id() {
+					let users = sysinfo::Users::new_with_refreshed_list();
+					if let Some(user) = users.get_user_by_id(uid) {
+						if user.name() != "stonenet" {
+							match home(user.name()) {
+								Err(e) => {
+									warn!("Unable to get home dir of user {}: {}", user.name(), e);
+								}
+								Ok(result) => {
+									if let Some(mut home_dir) = result {
+										home_dir.push(".local/share/stonenet");
+										return home_dir;
+									} else {
+										warn!("No home directory found for user {}.", user.name());
+									}
+								}
+							}
+						}
+					} else {
+						warn!("Unable to load user of process.");
+						checked = false;
+					}
+				} else {
+					warn!("Unable to check process user ID.");
+					checked = false;
+				}
+			} else {
+				warn!("Platform doesn't support getting process info.");
+				checked = false;
+			}
+		}
+	}
+	if !checked {
+		warn!("Not able to check whether the process is running at system-level or user-level. Assuming system-level.");
+	}
 	"/var/lib/stonenet".into()
 }
 
