@@ -994,8 +994,8 @@ impl Server {
 							.await;
 							if let Err(e) = &result {
 								warn!(
-									"Unable to pass relayed crypted packet to source {}: {:?}",
-									&data.target_contact, e
+									"Unable to pass relayed crypted packet to source[{}] {}: {:?}",
+									buffer.len(), &data.target_contact, e
 								);
 							}
 							result.is_err()
