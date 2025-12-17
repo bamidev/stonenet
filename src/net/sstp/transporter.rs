@@ -1301,6 +1301,7 @@ impl TransporterInner {
 					if self.current_ks_unprocessed_first_packet.is_none() {
 						return self.process_current_ack_wait_packet(ks, data).await;
 					} else {
+						// FIXME: Why only keep one unprocessed packet?
 						trace!(
 							"Dropping stray ack-wait packet because we don't have a task for the \
 							 current stray packets yet. ({})",

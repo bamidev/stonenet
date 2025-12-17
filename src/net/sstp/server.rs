@@ -84,7 +84,7 @@ pub type RelayReadyPacket = RelayedHelloAckPacket;
 pub struct RelayInitiationInfo {
 	pub local_session_id: u16,
 	pub(super) session: Arc<Mutex<SessionData>>,
-	pub hello_receiver: HelloReceiver,
+	pub ready_receiver: HelloReceiver,
 	pub(super) packet_receiver: UnboundedReceiver<CryptedPacket>,
 	pub dh_private_key: x25519::StaticSecret,
 	pub packet: RelayHelloPacket,
@@ -815,7 +815,7 @@ impl Server {
 		&self, source_session_id: u16, source_contact: ContactOption,
 		source_public_key: NodePublicKey, source_sender: Arc<dyn LinkSocketSender>,
 		target_node_id: NodeAddress, target_contact: ContactOption,
-		hello_sender: Sender<RelayedHelloAckPacket>, ready_ack_sender: Option<Sender<u16>>,
+		relayed_hello_sender: Sender<RelayedHelloAckPacket>, ready_ack_sender: Option<Sender<u16>>,
 		keep_alive_timeout: Duration,
 	) -> Result<Option<(u16, Arc<Mutex<SessionData>>)>> {
 		let mut sessions = self.sessions.lock().await;
@@ -834,7 +834,7 @@ impl Server {
 			target_node_id: target_node_id.clone(),
 			target_public_key: None,
 			target_sender: None,
-			relayed_hello_sender: hello_sender,
+			relayed_hello_sender,
 			relay_ready_ack_sender: ready_ack_sender,
 		});
 		let session_data = Arc::new(Mutex::new(SessionData::new(
@@ -1342,7 +1342,7 @@ impl Server {
 	/// node.
 	pub async fn bring_together_relay_connection(
 		self: &Arc<Self>, source_socket: Arc<dyn LinkSocketSender>, source_contact: &ContactOption,
-		packet: RelayHelloPacket, relay_hello_ack_ack_sender: Option<Sender<u16>>,
+		packet: RelayHelloPacket,
 	) -> Result<()> {
 		// Set up the relay session and send back a relay-hello-ack packet.
 		let target_contact = ContactOption::new(
@@ -1351,7 +1351,7 @@ impl Server {
 		);
 		let target_node_id = packet.body.target_node_id.clone();
 		let (ready_ack_tx, mut ready_ack_rx) = mpsc::channel(1);
-		let (session, relayed_hello_packet, mut hello_rx) = match self
+		let (session, relayed_hello_packet, mut relayed_hello_rx) = match self
 			.new_relay_session2(
 				source_contact.clone(),
 				source_socket.clone(),
@@ -1402,7 +1402,7 @@ impl Server {
 			.await?;
 
 			select! {
-				result = hello_rx.recv() => break result,
+				result = relayed_hello_rx.recv() => break result,
 				_ = sleep(DEFAULT_TIMEOUT / 8) => {
 					i += 1;
 					if i == 8 {
@@ -1413,10 +1413,10 @@ impl Server {
 		};
 
 		// Send the relay-ready packet to the source node, and wait for a relay-ready-ack packet.
-		if let Some(relay_hello_ack) = hello_result {
+		if let Some(relayed_hello_ack) = hello_result {
 			i = 0;
 			loop {
-				Self::send_packet(&*source_socket, PACKET_TYPE_RELAY_READY, &relay_hello_ack)
+				Self::send_packet(&*source_socket, PACKET_TYPE_RELAY_READY, &relayed_hello_ack)
 					.await?;
 
 				if !source_socket.is_connection_based() {
@@ -1449,14 +1449,8 @@ impl Server {
 			&packet.body,
 		)?;
 
-		let (ready_ack_tx, mut ready_ack_rx) = mpsc::channel(1);
-		self.bring_together_relay_connection(
-			source_socket.clone(),
-			&relay_contact,
-			packet,
-			Some(ready_ack_tx),
-		)
-		.await
+		self.bring_together_relay_connection(source_socket.clone(), &relay_contact, packet)
+			.await
 	}
 
 	async fn _process_hello_packet(
@@ -1550,11 +1544,13 @@ impl Server {
 				*session.last_activity.lock().unwrap() = SystemTime::now();
 			}
 
-			sender.send(&hello_ack).await?;
+			if !underlying_protocol_is_reliable {
+				sender.send(&hello_ack).await?;
+			}
 			return Ok(());
 		}
 
-		let (hello_ack_tx, mut hello_ack_rx) = mpsc::channel(1);
+		//let (hello_ack_tx, mut hello_ack_rx) = mpsc::channel(1);
 		{
 			let mut s = session.lock().await;
 			match &mut s.transport_data {
@@ -1566,7 +1562,7 @@ impl Server {
 				}
 			};
 
-			s.hello_ack_channel = Some(hello_ack_tx);
+			//s.hello_ack_channel = Some(hello_ack_tx);
 		};
 
 		// Spawn transporter
@@ -1592,18 +1588,19 @@ impl Server {
 		// Or if on a connection-based socket already, don't wait for the ack from the
 		// other side.
 		if !underlying_protocol_is_reliable {
-			for i in 0..8 {
-				sender.send(&hello_ack).await?;
+			//for i in 0..8 {
+			sender.send(&hello_ack).await?;
 
-				select! {
-					_ = hello_ack_rx.recv() => break,
-					_ = sleep(self.default_timeout / 8) => {
-						if i == 7 {
-							return Err(Error::Timeout(self.default_timeout).trace());
-						}
+			// The three-way connection establishment sequence is not necessary actually.
+			/*select! {
+				_ = hello_ack_rx.recv() => break,
+				_ = sleep(self.default_timeout / 8) => {
+					if i == 7 {
+						return Err(Error::Timeout(self.default_timeout).trace());
 					}
 				}
-			}
+			}*/
+			//}
 		}
 
 		// Transporter is running, set up the connection object and pass it along
@@ -1849,7 +1846,7 @@ impl Server {
 			let s2 = s.clone();
 			drop(sessions);
 			let mut session = s2.lock().await;
-			let hello_relay_ack_sender = match &mut session.transport_data {
+			let relay_hello_ack_sender = match &mut session.transport_data {
 				SessionTransportData::Direct(data) => {
 					// Verify public key
 					let relay_public_key = packet.header.node_public_key;
@@ -1870,7 +1867,11 @@ impl Server {
 				}
 				_ => panic!("invalid session transport data"),
 			};
-			if let Some(tx) = hello_relay_ack_sender {
+			if let Some(tx) = relay_hello_ack_sender {
+				warn!(
+					"process_relay_hello_ack_packet {}",
+					packet.body.relayer_session_id
+				);
 				let _ = tx.send(packet.body.relayer_session_id).await;
 			}
 		}
@@ -1965,6 +1966,7 @@ impl Server {
 		let initial_sleep_time = min(timeout * 2 / 4, MAXIMUM_RETRY_TIMEOUT);
 
 		// Send hello packet to relay node
+		// TODO: Put the sending of this packet into its own function
 		let mut raw_packet = vec![
 			PACKET_TYPE_RELAY_HELLO;
 			1 + binserde::serialized_size(&initiation_info.packet).unwrap()
@@ -1976,7 +1978,7 @@ impl Server {
 
 			if !relay_contact.use_tcp {
 				select! {
-					_ = hello_relay_ack_rx.recv() => break,
+					_relay_session_id = hello_relay_ack_rx.recv() => break,
 					_ = sleep(initial_sleep_time) => {
 						if stop_flag.load(Ordering::Relaxed) || SystemTime::now().duration_since(started).unwrap() >= timeout {
 							warn!("No hello-relay-ack packet received from the relay.");
@@ -1994,7 +1996,7 @@ impl Server {
 
 		// Receive a relay-ready packet from relay node, and respond with a relay-ready-ack
 		tokio::select! {
-			result = initiation_info.hello_receiver.recv() => {
+			result = initiation_info.ready_receiver.recv() => {
 				let establish_info = result.unwrap();
 
 				if !relay_contact.use_tcp {
@@ -2005,7 +2007,7 @@ impl Server {
 				Ok(connection)
 			},
 			_ = sleep(timeout) => {
-				warn!("No relayed-h packet received from the relay.");
+				warn!("No relayed-hello packet received from the relay.");
 				// TODO: Provide mode specific timeout types so that we know what packet we were
 				// expecting.
 				trace::err(Error::Timeout(timeout))
@@ -2149,6 +2151,8 @@ impl Server {
 			.await
 			.ok_or(Error::OutOfSessions)?;
 
+		// FIXME: We need to store the first dh private key generated and use that again when we
+		// get another relay-hello packet.
 		let dh_private_key = x25519::StaticSecret::random_from_rng(OsRng);
 		let dh_public_key = x25519::PublicKey::from(&dh_private_key);
 		let packet = self.new_relay_hello_packet(
@@ -2160,7 +2164,7 @@ impl Server {
 		Ok(RelayInitiationInfo {
 			local_session_id,
 			session,
-			hello_receiver,
+			ready_receiver: hello_receiver,
 			packet_receiver,
 			dh_private_key,
 			packet,

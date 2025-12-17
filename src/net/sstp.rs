@@ -546,12 +546,12 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn test_relaying_ipv4_tcp() {
+	async fn test_relaying_ipv4_tcp_only() {
 		test_relaying(false, false, true, true).await;
 	}
 
 	#[tokio::test]
-	async fn test_relaying_ipv4_udp() {
+	async fn test_relaying_ipv4_udp_only() {
 		test_relaying(false, false, false, false).await;
 	}
 
@@ -576,12 +576,12 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn test_relaying_ipv6_udp() {
+	async fn test_relaying_ipv6_udp_only() {
 		test_relaying(true, true, false, false).await;
 	}
 
 	#[tokio::test]
-	async fn test_relaying_ipv6_tcp() {
+	async fn test_relaying_ipv6_tcp_only() {
 		test_relaying(true, true, true, true).await;
 	}
 
