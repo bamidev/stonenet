@@ -95,7 +95,7 @@ pub(super) struct TransporterInner {
 
 #[derive(Clone)]
 pub struct TransporterHandle {
-	sender: UnboundedSender<Traced<TransporterTask>>,
+	pub(super) sender: UnboundedSender<Traced<TransporterTask>>,
 	pub(super) alive_flag: Arc<AtomicBool>,
 	is_connection_based: bool,
 	pub(super) socket_sender: Arc<dyn LinkSocketSender>,
@@ -103,7 +103,7 @@ pub struct TransporterHandle {
 
 /// The instruction that is sent to the transporter task to make it do what we
 /// want
-enum TransporterTask {
+pub(super) enum TransporterTask {
 	Receive(
 		oneshot::Sender<u32>,
 		UnboundedSender<Result<Vec<u8>>>,
@@ -113,6 +113,7 @@ enum TransporterTask {
 	SendAsync(Vec<u8>),
 	Close(oneshot::Sender<Result<()>>),
 	CloseAsync,
+	Forget,
 	KeepAlive,
 }
 
@@ -200,6 +201,7 @@ impl KeyStateManager {
 	pub fn new(
 		our_dh_key: x25519::StaticSecret, their_dh_key: x25519::PublicKey, window_size: u16,
 	) -> Self {
+		let ks = KeyState::new(our_dh_key.clone(), their_dh_key.clone(), window_size);
 		Self {
 			use_first: true,
 			keystate1: KeyState::new(our_dh_key.clone(), their_dh_key.clone(), window_size),
@@ -271,6 +273,7 @@ impl Transporter {
 		peer_node_id: NodeAddress, timeout: Duration, private_key: x25519::StaticSecret,
 		public_key: x25519::PublicKey, receiver: UnboundedReceiver<CryptedPacket>,
 	) -> Self {
+		println!("PUBKEY {:?}", &public_key);
 		Self {
 			inner: TransporterInner::new(
 				max_packet_length,
@@ -355,6 +358,7 @@ impl Transporter {
 		// ourselves.
 		self.alive_flag.store(true, Ordering::Relaxed);
 		let mut close_sender = None;
+		let mut forget = false;
 		while !self.inner.close_received {
 			select! {
 				result = receiver.recv() => {
@@ -368,6 +372,7 @@ impl Transporter {
 							TransporterTask::SendAsync(message) => self.send(message, None).await,
 							TransporterTask::Close(tx) => { close_sender = Some(tx); break; }
 							TransporterTask::CloseAsync => break,
+							TransporterTask::Forget => { forget = true; break; }
 							TransporterTask::KeepAlive => {
 								self.keep_alive = true;
 								true
@@ -411,6 +416,12 @@ impl Transporter {
 			}
 		}
 
+		// If the connection can be forgotten, don't run the closing sequence.
+		if forget {
+			self.alive_flag.store(false, Ordering::Relaxed);
+			return;
+		}
+
 		// The closing sequence
 		let ks = self.key_state_manager.get_duo();
 		let result = if self.inner.close_received {
@@ -424,7 +435,7 @@ impl Transporter {
 					if !ok {
 						warn!(
 							"Transporter close channel got disconnected during the closing \
-							 sequence."
+                             sequence."
 						);
 					}
 					tx.send(Ok(()))
@@ -436,13 +447,14 @@ impl Transporter {
 			};
 			// Generally, the channels in the transporter handle should not be closed externally.
 			// We close it here by letting it go out of scope, and then the garbage collector can
-			// discover that the channel is broken now.
+			// discover that the channel is broken now, and clean up the session.
 			if let Err(_) = r {
 				warn!("Transporter handle has been closed before the closing sequence finished.");
 			}
 		}
 
-		// Once we're done, we can let the garbage collector clean up our session ID.
+		// If the connection is not 'forgotten', we can instruct the garbage collector that it
+		// doesn't have to keep the underlying TCP connection alive.
 		self.alive_flag.store(false, Ordering::Relaxed);
 	}
 
@@ -648,6 +660,16 @@ impl TransporterInner {
 		Self::verify_packet(&data)
 	}
 
+	/// Fill the given buffer with some additional random data, so that the actual size of the
+	/// plaintext data is a bit obscured. The resulting size will be a multiple of the constant
+	/// MAX_PACKET_FILL_BLOCK_SIZE.
+	/// If the packet can not be big enough, it will be filled up the packet's size limit
+	/// otherwise.
+	///
+	/// * `packet`: The packet data, which will just be returned when it doesn't need to be
+	/// resized.
+	/// * `buffer`: A new buffer that will be altered to contain the packet data together with
+	/// the random bytes appended, when necessary.
 	fn fill_packet<'a>(&self, packet: &'a [u8], buffer: &'a mut Vec<u8>) -> &'a [u8] {
 		let max_len = if packet.len() != self.max_data_packet_length()
 			&& self.max_data_packet_length() > MAX_PACKET_FILL_BLOCK_SIZE
@@ -1650,7 +1672,6 @@ impl TransporterInner {
 			self.local_session_id,
 			self.dest_session_id
 		);
-
 		let buffer = self.prepare_crypted_packet(ks, message_type, seq, packet);
 		self.socket_sender
 			.send(&buffer)
@@ -1721,15 +1742,17 @@ impl TransporterInner {
 		&mut self, ks: KeyStateDuoMut<'_>, buffer: &[u8], request_window_size: u16,
 		our_next_public_key: x25519::PublicKey,
 	) -> Result<(u32, Option<(u16, x25519::PublicKey)>)> {
-		if self.first_window {
-			debug_assert!(buffer.len() > MESSAGE_HEADER_SIZE);
-		} else {
-			debug_assert!(buffer.len() > 0);
-		}
-		debug_assert!(buffer.len() > 0);
+		debug_assert!(
+			buffer.len()
+				> if self.first_window {
+					MESSAGE_HEADER_SIZE
+				} else {
+					0
+				}
+		);
 
-		// Calculate number of data bytes in the first packet, and the number of packets
-		// for this window
+		// Calculate the number of data bytes in the first packet, and the number of packets
+		// for this window beforehand
 		let max_packet_len = self.max_data_packet_length();
 		let first_packet_max_data_len = max_packet_len - WINDOW_HEADER_SIZE;
 		let packet_count = if buffer.len() <= first_packet_max_data_len {
@@ -1828,6 +1851,13 @@ impl TransporterHandle {
 			.is_ok()
 	}
 
+	/// Forget about the connection.
+	/// No close packets will be exchanged.
+	/// For TCP connections, the TCP connection will stay alive.
+	pub fn forget(self) -> bool {
+		self.sender.send(TransporterTask::Forget.trace()).is_ok()
+	}
+
 	#[allow(dead_code)]
 	pub fn is_alive(&self) -> bool {
 		self.alive_flag.load(Ordering::Relaxed)
@@ -1899,6 +1929,7 @@ impl fmt::Display for TransporterTask {
 			Self::SendAsync(_) => write!(f, "send async"),
 			Self::Close(_) => write!(f, "close"),
 			Self::CloseAsync => write!(f, "close async"),
+			Self::Forget => write!(f, "forget"),
 			Self::KeepAlive => write!(f, "keep alive"),
 		}
 	}

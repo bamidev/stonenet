@@ -92,6 +92,7 @@ struct OpenRelayToDo {
 	assistant_node_info: NodeContactInfo,
 	hello_packet: RelayHelloPacket,
 	timeout: Duration,
+	relay_node_contact: ContactOption,
 }
 
 pub struct OverlayNode {
@@ -1920,8 +1921,51 @@ impl OverlayNode {
 			}
 		};
 
+		let mut response = OpenRelayResponse {
+			ok: self.is_relay_node,
+		};
+		if !response.ok {
+			return Some((
+				self.base
+					.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE, &response),
+				None,
+			));
+		}
+
+		if let Err(e) = Server::verify_hello_packet(
+			&request.hello_packet.header.base.node_public_key,
+			&request.hello_packet.header.base.signature,
+			&request.hello_packet.body,
+		) {
+			warn!("Invalid relay-hello packet in open-relay request: {}", e);
+			return Some((
+				self.base
+					.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE, &response),
+				None,
+			));
+		}
+
+		let relay_node_contact = match self
+			.contact_info()
+			.pick_similar_option(&request.target_contact_option)
+		{
+			Some(co) => co,
+			None => {
+				response.ok = false;
+				return Some((
+					self.base
+						.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE, &response),
+					None,
+				));
+			}
+		};
+
+		// Let the source node know that we are going to set up the relay connection for him.
+		let raw_response = self
+			.base
+			.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE, &response);
 		Some((
-			Vec::new(),
+			raw_response,
 			Some(Box::new(OpenRelayToDo {
 				node: self.clone(),
 				source_contact: source_contact.clone(),
@@ -1929,6 +1973,7 @@ impl OverlayNode {
 				target_contact: request.target_contact_option,
 				assistant_node_info: request.assistant_node,
 				hello_packet: request.hello_packet,
+				relay_node_contact,
 				timeout: DEFAULT_TIMEOUT * 3,
 			})),
 		))
@@ -2654,91 +2699,56 @@ impl MessageWorkToDo for OpenRelayToDo {
 	// target node, to ask it to sent a RelayedHelloAckPacket to our server. Then,
 	// if it worked out, the packet will be sent back to the source node.
 	async fn run(&mut self, mut connection: Box<Connection>) -> Result<Option<Box<Connection>>> {
-		let mut response = OpenRelayResponse { ok: true };
-
-		let (_, relayed_hello_packet, mut hello_receiver) = match self
+		let target_node_id = self.hello_packet.body.target_node_id.clone();
+		let (_, relayed_hello_packet, mut relayed_hello_ack_rx) = match self
 			.node
 			.base
 			.packet_server
-			.process_relay_hello_packet(
+			.new_relay_session2(
+				connection.contact_option(),
 				connection.socket_sender(),
-				&self.source_contact,
-				self.hello_packet.clone(),
+				&self.hello_packet,
+				self.timeout * 3,
 				None,
 			)
-			.await
+			.await?
 		{
-			Ok(r) => r,
-			Err(e) => {
-				error!(
-					"Unable to process relay hello packet for open relay request: {:?}",
-					e
-				);
-				response.ok = false;
-				let raw_response = self
-					.node
-					.base
-					.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE, &response);
-				connection.send(raw_response).await?;
-				return Ok(None);
-			}
+			Some(r) => r,
+			// TODO: Return a response with a proper error message
+			None => return Ok(None),
 		};
 
-		// The response wasn't sent yet
-		let raw_response = self
-			.node
-			.base
-			.simple_response(OVERLAY_MESSAGE_TYPE_OPEN_RELAY_RESPONSE, &response);
-		connection.send(raw_response).await?;
-		if !response.ok {
-			return Ok(None);
-		}
-
-		// Pass the packet to the assistant node.
-		// TODO: The source node has already picked a contact option for the relay node to use.
+		let request = PassRelayRequestRequest {
+			target_node_id: self.target_node_id.clone(),
+			base: RelayRequestRequest {
+				relay_node_contact: self.relay_node_contact.clone(),
+				relayed_hello_packet,
+			},
+		};
 		match self
 			.node
-			.contact_info()
-			.pick_similar_option(&self.target_contact)
+			.exchange_pass_relayed_hello_packet(&self.assistant_node_info, &request)
+			.await
 		{
-			None => {
-				warn!("Source node tried to contact target node through us using a contact option that we do not support.");
-				return Ok(None);
-			}
-			Some(relay_node_contact) => {
-				let request = PassRelayRequestRequest {
-					target_node_id: self.target_node_id.clone(),
-					base: RelayRequestRequest {
-						relay_node_contact,
-						relayed_hello_packet,
-					},
-				};
-				match self
-					.node
-					.exchange_pass_relayed_hello_packet(&self.assistant_node_info, &request)
-					.await
-				{
-					None => return Ok(None),
-					// If assistant node doesn't know the target node, we need to let the source
-					// node know
-					Some(response) => {
-						if !response.ok {
-							let message = OpenRelayStatusMessage {
-								status: OpenRelayStatus::AssistantUnaware,
-							};
-							connection
-								.send(binserde::serialize(&message).unwrap())
-								.await?;
-							return Ok(None);
-						}
-					}
+			None => return Ok(None),
+			// If assistant node doesn't know the target node, we need to let the source
+			// node know
+			Some(response) => {
+				if !response.ok {
+					let message = OpenRelayStatusMessage {
+						status: OpenRelayStatus::AssistantUnaware,
+					};
+					connection
+						.send(binserde::serialize(&message).unwrap())
+						.await?;
+					return Ok(None);
 				}
 			}
 		}
 
 		// Wait for the RelayedHelloAckPacket to arrive.
 		let relayed_hello_ack_packet = select! {
-			result = hello_receiver.recv() => {
+			result = relayed_hello_ack_rx.recv() => {
 				let packet = match result {
 					Some(r) => r,
 					None => {
@@ -2756,6 +2766,8 @@ impl MessageWorkToDo for OpenRelayToDo {
 			}
 		};
 
+		// Inform the source node about the fact that we have established the relay connection with
+		// the target node.
 		let message = OpenRelayStatusMessage {
 			status: match relayed_hello_ack_packet {
 				None => OpenRelayStatus::Timeout,
@@ -2765,8 +2777,9 @@ impl MessageWorkToDo for OpenRelayToDo {
 		connection
 			.send(binserde::serialize(&message).unwrap())
 			.await?;
-		// I guess we can keep the connection open if the client wants to do anything
-		// else with it
+
+		// If the relay connection has been established succesfully, keep the connection alive in
+		// case the client still wants to use it for anything else.
 		Ok(Some(connection))
 	}
 }

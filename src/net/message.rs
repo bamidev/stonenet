@@ -5,7 +5,7 @@ use crate::{
 	common::*,
 	core::*,
 	net::{
-		sstp::server::{RelayHelloAckPacket, RelayHelloPacket},
+		sstp::server::{RelayHelloPacket, RelayedHelloAckPacket},
 		*,
 	},
 	serde_limit::*,
@@ -159,7 +159,7 @@ pub enum OpenRelayStatus<T> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenRelayStatusMessage {
-	pub status: OpenRelayStatus<RelayHelloAckPacket>,
+	pub status: OpenRelayStatus<RelayedHelloAckPacket>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
 use std::{io, marker::PhantomData, mem, net::*, str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use tokio::{io::*, select, sync::Mutex, time::sleep};
+use tokio::{io::*, select, spawn, sync::Mutex, time::sleep};
 use unsafe_send_sync::*;
 
 const TCP_BACKLOG: u32 = 1024;
@@ -46,6 +46,7 @@ pub trait LinkSocketSender: Send + Sync {
 	/// Should be implemented to close the socket. See the `close` method in
 	/// `LinkSocket` for more info.
 	async fn close(&self) -> io::Result<()>;
+	fn close_async(&mut self);
 
 	fn max_packet_length(&self) -> usize;
 
@@ -195,7 +196,7 @@ where
 	type Receiver = UdpSocketReceiver<V>;
 	type Sender = UdpSocketSender<V>;
 
-	// Dropping the struct should already take care of closing the socket
+	// TODO: Only have these close methods on connection based sockets
 	async fn close(&mut self) -> io::Result<()> {
 		Ok(())
 	}
@@ -251,6 +252,8 @@ where
 	async fn close(&self) -> io::Result<()> {
 		Ok(())
 	}
+
+	fn close_async(&mut self) {}
 
 	fn max_packet_length(&self) -> usize {
 		udp_max_packet_length::<V>()
@@ -450,6 +453,14 @@ where
 		self.inner.as_ref().unwrap().lock().await.shutdown().await
 	}
 
+	fn close_async(&mut self) {
+		if let Some(inner) = self.inner.take() {
+			spawn(async move {
+				inner.lock().await.shutdown().await;
+			});
+		}
+	}
+
 	fn is_connection_based(&self) -> bool {
 		true
 	}
@@ -465,5 +476,15 @@ where
 		socket.write_all(&packet).await?;
 		socket.flush().await?;
 		Ok(())
+	}
+}
+
+// Close the sending direction of the TCP connection when it gets dropped.
+impl<V> Drop for TcpSocketSender<V>
+where
+	V: Into<SocketAddr>,
+{
+	fn drop(&mut self) {
+		self.close_async();
 	}
 }

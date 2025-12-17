@@ -234,6 +234,13 @@ impl Connection {
 		}
 	}
 
+	/// Forgets about this connection.
+	/// The session data will be discarded, and the underlying TCP connection will remain alive.
+	pub fn forget(self) {
+		self.server.forget_session_async(self.dest_session_id());
+		self.transporter.forget();
+	}
+
 	#[allow(dead_code)]
 	pub fn is_alive(&self) -> bool {
 		self.transporter.alive_flag.load(Ordering::Relaxed)
@@ -503,7 +510,7 @@ mod tests {
 			master_availability.tcp.unwrap().port
 		};
 		let master_addr = SocketAddrV4::new(ip, master_port);
-		let (mut connection, first_response) = slave
+		let mut connection = match slave
 			.clone()
 			.connect(
 				&ContactOption::new(master_addr.into(), !use_udp),
@@ -511,8 +518,16 @@ mod tests {
 				Some(&tiny_message),
 			)
 			.await
-			.unwrap();
-		assert_eq!(first_response, Some(tiny_message2));
+		{
+			Ok((connection, first_response)) => {
+				assert_eq!(first_response, Some(tiny_message2));
+				connection
+			}
+			Err(e) => {
+				error!("Unable to connect: {:?}", e);
+				panic!("Unable to connect.");
+			}
+		};
 
 		connection.send(small_message).await.unwrap();
 		debug!("Sent small message");
