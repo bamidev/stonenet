@@ -1264,7 +1264,8 @@ impl Server {
 	}
 
 	pub async fn process_relayed_hello_ack_packet(
-		&self, target_addr: &SocketAddr, packet: RelayedHelloAckPacket,
+		&self, socket_sender: Arc<dyn LinkSocketSender>, addr: &SocketAddr,
+		packet: RelayedHelloAckPacket,
 	) -> Result<()> {
 		let relayer_session_id = packet.body.relayer_session_id;
 		let session = {
@@ -1296,7 +1297,8 @@ impl Server {
 					return trace::err(Error::InvalidSessionId(packet.body.base.source_session_id));
 				}
 				data.target_session_id = target_session_id;
-				data.target_contact.target = target_addr.clone();
+				data.target_contact.target = addr.clone();
+				data.target_sender = Some(socket_sender);
 
 				let _ = data.relayed_hello_sender.send(packet).await;
 			}
@@ -1307,7 +1309,7 @@ impl Server {
 	}
 
 	async fn process_relayed_hello_ack_packet_raw(
-		&self, buffer: &[u8], target_addr: &SocketAddr,
+		&self, socket_sender: Arc<dyn LinkSocketSender>, buffer: &[u8], addr: &SocketAddr,
 	) -> Result<()> {
 		let packet: RelayedHelloAckPacket = binserde::deserialize(buffer)?;
 		let body_offset = 96;
@@ -1317,7 +1319,7 @@ impl Server {
 			&buffer[body_offset..],
 		)?;
 
-		self.process_relayed_hello_ack_packet(target_addr, packet)
+		self.process_relayed_hello_ack_packet(socket_sender, addr, packet)
 			.await?;
 		Ok(())
 	}
@@ -1544,9 +1546,7 @@ impl Server {
 				*session.last_activity.lock().unwrap() = SystemTime::now();
 			}
 
-			if !underlying_protocol_is_reliable {
-				sender.send(&hello_ack).await?;
-			}
+			sender.send(&hello_ack).await?;
 			return Ok(());
 		}
 
@@ -1585,23 +1585,7 @@ impl Server {
 
 		// Send hello-ack packet back after the session has been set up, and wait until
 		// it has been received by the other side.
-		// Or if on a connection-based socket already, don't wait for the ack from the
-		// other side.
-		if !underlying_protocol_is_reliable {
-			//for i in 0..8 {
-			sender.send(&hello_ack).await?;
-
-			// The three-way connection establishment sequence is not necessary actually.
-			/*select! {
-				_ = hello_ack_rx.recv() => break,
-				_ = sleep(self.default_timeout / 8) => {
-					if i == 7 {
-						return Err(Error::Timeout(self.default_timeout).trace());
-					}
-				}
-			}*/
-			//}
-		}
+		sender.send(&hello_ack).await?;
 
 		// Transporter is running, set up the connection object and pass it along
 		let peer_node_info = NodeContactInfo {
@@ -1912,7 +1896,7 @@ impl Server {
 					.await
 			}
 			PACKET_TYPE_RELAYED_HELLO_ACK => {
-				self.process_relayed_hello_ack_packet_raw(buffer, &contact.target)
+				self.process_relayed_hello_ack_packet_raw(link_socket, buffer, &contact.target)
 					.await
 			}
 			// Hole punching packets don't need to be responded to. They don't have any data other

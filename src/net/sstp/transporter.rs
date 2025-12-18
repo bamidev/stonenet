@@ -273,7 +273,6 @@ impl Transporter {
 		peer_node_id: NodeAddress, timeout: Duration, private_key: x25519::StaticSecret,
 		public_key: x25519::PublicKey, receiver: UnboundedReceiver<CryptedPacket>,
 	) -> Self {
-		println!("PUBKEY {:?}", &public_key);
 		Self {
 			inner: TransporterInner::new(
 				max_packet_length,
