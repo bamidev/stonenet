@@ -1,8 +1,12 @@
-# Changes since 0.5.0
-* Added a Nix flake that includes modules for NixOS and home-manager users.
-* We now log to journalctl rather than a seperate log file.
-* Use the first free port that is found when any of the UDP or TCP ports are set to 0.
-* Use an user-level config file if available. (At ~/.config/stonenet/config.toml)
-* Fixed a concurrency bug when initiating a connection with another node 'in reverse'.
-* Increased the file upload limit of the client from 2MB to 10MB.
-* Disabled the 'upgrade instructions' for Debian packages and Nix modules.
+# Changes since 0.6.0
+* Cleared all identities and blogchain data from the database because of a significant change to the data format of the blogchain.
+  This is in preparation to be able to host websites on Stonenet in the future.
+* Relay messages will not leak the 'relay-hello' packet if the relay node was configured to leak the first request.
+* Fixed a bug where different DH private keys where used when a (relay)-hello packet was sent a second time or more.
+* Stopped using the 'hello-ack-ack' packet for SSTP connection establishment.
+* Fixed a bug where packages where sent to a relay when relaying between UDP & TCP, that were to big for UDP.
+* When the database file path in the configuration file starts with "~/", it will be resolved to the running user's home directory.
+* Store the private keys of identities in XDG_DATA /var/lib/stonenet/identity, or in XDG_DATA_HOME or ~/.local/share/stonenet/identity if the system user name has been provided as a cookie.
+* Only show identities created for a specific system user to that specific system user.
+* The systemd service now runs stonenet as the stonenet user, unless using it through home-manager.
+* Fixed IPv6 communication on Windows.
