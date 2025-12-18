@@ -1094,7 +1094,6 @@ impl Server {
 								&& (port_is_unimportant
 									|| sender.target.port() == data.target_contact.target.port())
 							{
-								error!("BUFFER[{}]", buffer.len());
 								let result = Self::relay_crypted_packet(
 									&data.source_sender,
 									data.source_session_id,
@@ -2135,9 +2134,18 @@ impl Server {
 			.await
 			.ok_or(Error::OutOfSessions)?;
 
-		// FIXME: We need to store the first dh private key generated and use that again when we
-		// get another relay-hello packet.
-		let dh_private_key = x25519::StaticSecret::random_from_rng(OsRng);
+		// TODO: The exact same thing is done when opening a regular connection. Put this code in
+		// some function.
+		let dh_private_key = {
+			let mut s = session.lock().await;
+			if let Some(key) = &s.initial_dh_private_key {
+				key.clone()
+			} else {
+				let key = x25519::StaticSecret::random_from_rng(OsRng);
+				s.initial_dh_private_key = Some(key.clone());
+				key
+			}
+		};
 		let dh_public_key = x25519::PublicKey::from(&dh_private_key);
 		let packet = self.new_relay_hello_packet(
 			target_node_id,
