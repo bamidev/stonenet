@@ -317,10 +317,15 @@ where
 
 	pub async fn exchange(
 		&self, target: &NodeContactInfo, message_type: u8, buffer: &[u8],
+		allow_leaking_first_request: bool,
 	) -> Option<(Vec<u8>, Box<Connection>)> {
 		// If no existing connection already existed, open one
 		let first_buffer = self.interface.prepare(message_type, buffer);
-		let opt_request = self.first_request(&first_buffer);
+		let opt_request = if allow_leaking_first_request {
+			self.first_request(&first_buffer)
+		} else {
+			None
+		};
 
 		let (mut connection, opt_response) =
 			self.select_direct_connection(target, opt_request).await?;
@@ -363,7 +368,12 @@ where
 		let request = FindNodeRequest { node_id };
 		let raw_request = binserde::serialize(&request).unwrap();
 		let (raw_response, connection) = self
-			.exchange(target, NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST, &raw_request)
+			.exchange(
+				target,
+				NETWORK_MESSAGE_TYPE_FIND_NODE_REQUEST,
+				&raw_request,
+				true,
+			)
 			.await?;
 		let result = binserde::deserialize_sstp(&raw_response);
 		let response = self
@@ -488,7 +498,7 @@ where
 	/// Pings a peer and returns whether it succeeded or not. A.k.a. the 'PING'
 	/// RPC.
 	async fn exchange_ping(&self, target: &NodeContactInfo) -> Option<()> {
-		self.exchange(target, NETWORK_MESSAGE_TYPE_PING_REQUEST, &[])
+		self.exchange(target, NETWORK_MESSAGE_TYPE_PING_REQUEST, &[], true)
 			.await?;
 		Some(())
 	}

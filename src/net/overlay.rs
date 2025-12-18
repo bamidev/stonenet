@@ -612,6 +612,7 @@ impl OverlayNode {
 				target,
 				OVERLAY_MESSAGE_TYPE_PASS_RELAY_REQUEST_REQUEST,
 				&raw_request,
+				false,
 			)
 			.await?;
 		let result: Result<PassRelayRequestResponse> = binserde::deserialize_sstp(&raw_response);
@@ -722,6 +723,7 @@ impl OverlayNode {
 				target,
 				OVERLAY_MESSAGE_TYPE_STORE_ACTOR_REQUEST,
 				&binserde::serialize(&request).unwrap(),
+				true,
 			)
 			.await?;
 		Some(())
@@ -759,6 +761,7 @@ impl OverlayNode {
 				target,
 				OVERLAY_MESSAGE_TYPE_TRUST_LIST_REQUEST,
 				&raw_request,
+				true,
 			)
 			.await?;
 		let their_node_info = c.their_node_info().clone();
