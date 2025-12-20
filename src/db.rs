@@ -70,6 +70,7 @@ pub enum Error {
 	InvalidPublicKey,
 	/// The data that is stored for a block is corrupt
 	BlockDataCorrupt(i64),
+	BlockDataInvalidSize(i64, usize),
 	//PostMissingFiles(i64),
 	FileMissingBlock(i64, u32),
 
@@ -397,10 +398,9 @@ pub trait PersistenceHandle {
 			}
 			let size = size2.unwrap() as usize;
 			let mut data = data2.unwrap();
-			data.resize(size, 0);
 
-			if data.len() < size {
-				Err(Error::BlockDataCorrupt(block_id.unwrap()))?;
+			if data.len() != size {
+				Err(Error::BlockDataInvalidSize(block_id.unwrap(), size))?;
 			} else if data.len() > size {
 				warn!(
 					"Block {} has more data than its size: {} > {}",
@@ -409,6 +409,7 @@ pub trait PersistenceHandle {
 					size
 				);
 			}
+			data.resize(size, 0);
 
 			decrypt_block(i as u64, plain_hash, &mut data);
 			buffer.extend(&data);
@@ -2395,6 +2396,9 @@ impl fmt::Display for Error {
 			}
 			//Self::InvalidPrivateKey(e) => write!(f, "invalid private_key: {}", e),
 			Self::BlockDataCorrupt(block_id) => write!(f, "data of block {} is corrupt", block_id),
+			Self::BlockDataInvalidSize(block_id, size) => {
+				write!(f, "data of block {} has invalid size {}", block_id, size)
+			}
 			Self::FileMissingBlock(file_id, sequence) => {
 				write!(f, "file {} missing block sequence {}", file_id, sequence)
 			}
