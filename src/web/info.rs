@@ -52,11 +52,11 @@ pub enum ObjectPayloadInfo {
 	Post(PostObjectInfo),
 }
 
-#[derive(Clone, Debug, Serialize)]
+/*#[derive(Clone, Debug, Serialize)]
 pub enum PossiblyKnownFileHeader {
 	Unknown(IdType),
 	Known(FileHeader),
-}
+}*/
 
 #[derive(Debug, Serialize)]
 pub struct PostObjectInfo {
@@ -138,25 +138,6 @@ impl ObjectPayloadInfo {
 		}
 	}
 }
-
-impl PossiblyKnownFileHeader {
-	#[allow(unused)]
-	pub fn hash(&self) -> &IdType {
-		match self {
-			Self::Known(header) => &header.url,
-			Self::Unknown(hash) => hash,
-		}
-	}
-}
-
-/*impl PostMessageInfo {
-	pub fn new_html(html: String) -> Self {
-		Self {
-			mime_type: "text/html".to_string(),
-			body: html
-		}
-	}
-}*/
 
 pub fn actor_url(url_base: &str, actor_address: &ActorAddress) -> String {
 	format!("{}/actor/{}", url_base, actor_address)
