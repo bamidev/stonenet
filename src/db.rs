@@ -605,7 +605,7 @@ pub trait PersistenceHandle {
 		Ok(result)
 	}
 
-	async fn find_file(&self, hash: &IdType) -> Result<Option<(i64, File)>> {
+	async fn find_file(&self, hash: &IdType) -> Result<Option<(File, i64)>> {
 		let result = if let Some(file) = file::Entity::find()
 			.filter(file::Column::Hash.eq(hash))
 			.one(self.inner())
@@ -620,7 +620,6 @@ pub trait PersistenceHandle {
 				.map(|r| r.block_hash)
 				.collect();
 			Some((
-				file.id,
 				File {
 					plain_hash: file.plain_hash,
 					mime_type: file.mime_type.into(),
@@ -628,6 +627,7 @@ pub trait PersistenceHandle {
 					compression_type: file.compression_type,
 					blocks,
 				},
+				file.id,
 			))
 		} else {
 			None
@@ -849,6 +849,21 @@ pub trait PersistenceHandle {
 		} else {
 			Ok(0)
 		}
+	}
+
+	async fn store_file(&self, hash: &IdType, file: &File) -> Result<i64> {
+		let record = file::ActiveModel {
+			id: NotSet,
+			block_count: Set(file.blocks.len() as _),
+			compression_type: Set(file.compression_type),
+			hash: Set(hash.clone()),
+			plain_hash: Set(file.plain_hash.clone()),
+			mime_type: Set(file.mime_type.to_string()),
+		};
+		Ok(file::Entity::insert(record)
+			.exec(self.inner())
+			.await?
+			.last_insert_id)
 	}
 
 	async fn update_identity_label(&self, old_label: &str, new_label: &str) -> Result<()> {
@@ -2260,17 +2275,6 @@ impl Connection {
 		Ok(())
 	}
 
-	pub fn store_file(&mut self, id: &IdType, file: &File) -> Result<i64> {
-		Self::_store_file(
-			self,
-			id,
-			&file.plain_hash,
-			file.mime_type.as_str(),
-			file.compression_type as _,
-			&file.blocks,
-		)
-	}
-
 	pub fn store_identity(
 		&mut self, address: &ActorAddress, public_key: &ActorPublicKeyV1, first_object: &IdType,
 	) -> Result<()> {
@@ -2789,6 +2793,7 @@ mod tests {
 
 	use super::*;
 	use crate::test;
+
 	#[tokio::test]
 	async fn test_file_data() {
 		let (db, db_file) = test::load_database("db").await;

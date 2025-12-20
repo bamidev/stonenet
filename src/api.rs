@@ -295,34 +295,38 @@ impl Api {
 
 	pub async fn find_file(
 		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
-	) -> db::Result<Option<File>> {
-		let mut result = if let Some(record) = file::Entity::find()
-			.filter(file::Column::Hash.eq(hash))
-			.one(self.db.inner())
-			.await?
-		{
-			let blocks = self
-				.db
-				.load_file_blocks(record.id, record.block_count)
-				.await?;
-			Some(File {
-				plain_hash: record.plain_hash,
-				mime_type: record.mime_type.into(),
-				search_index: None,
-				compression_type: record.compression_type,
-				blocks,
-			})
-		} else {
-			None
-		};
-
-		if result.is_none() {
-			if let Some(actor_node) = actor_node_opt {
-				result = actor_node.find_file(hash).await.map(|r| r.file)
-			}
+	) -> db::Result<Option<(File, i64)>> {
+		if let Some(result) = self.db.find_file(hash).await? {
+			return Ok(Some(result));
 		}
 
-		Ok(result)
+		if let Some(actor_node) = actor_node_opt {
+			let result = actor_node.find_file(hash).await.map(|r| r.file);
+			if let Some(file) = result {
+				let db_id = self.db.store_file(hash, &file).await?;
+				return Ok(Some((file, db_id)));
+			}
+		}
+		Ok(None)
+	}
+
+	pub async fn find_file2(
+		&self, hash: &IdType, actor_address_opt: Option<&ActorAddress>,
+	) -> db::Result<Option<(File, i64)>> {
+		if let Some(file) = self.db.find_file(hash).await? {
+			return Ok(Some(file));
+		}
+
+		if let Some(actor_address) = actor_address_opt {
+			if let Some(actor_node) = self.node.get_actor_node_or_lurker(actor_address).await {
+				let result = actor_node.find_file(hash).await.map(|r| r.file);
+				if let Some(file) = result {
+					let db_id = self.db.store_file(hash, &file).await?;
+					return Ok(Some((file, db_id)));
+				}
+			}
+		}
+		Ok(None)
 	}
 
 	/// Loads the (undecompressed) file data
@@ -330,8 +334,7 @@ impl Api {
 	pub async fn find_file_data(
 		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
 	) -> db::Result<Option<FileData>> {
-		// TODO: Optionally decompress data
-		let file = if let Some(f) = self.find_file(actor_node_opt, hash).await? {
+		let file = if let Some((f, _)) = self.find_file(actor_node_opt, hash).await? {
 			f
 		} else {
 			return Ok(None);
@@ -481,10 +484,10 @@ impl Api {
 		&self, actor_address: ActorAddress, file_hash: IdType,
 	) -> db::Result<PossibleFileStream> {
 		let db = self.db.clone();
-		let r: Option<(i64, File)> = db.find_file(&file_hash).await?;
+		let r: Option<(File, i64)> = self.find_file2(&file_hash, Some(&actor_address)).await?;
 
 		// TODO: Don't decompress the file, but let the browser do that.
-		if let Some((file_id, file)) = r {
+		if let Some((file, file_id)) = r {
 			let compression_type = match CompressionType::from_u8(file.compression_type) {
 				Some(t) => t,
 				None => {
@@ -519,6 +522,8 @@ impl Api {
 				let mut loaded_actor_node = false;
 				for i in 0..file.blocks.len() {
 					let block_hash = &file.blocks[i];
+					// TODO: Put the logic that fetches blocks from either the DB or the network,
+					// into a seperate function
 					match db.perform(|c| c.fetch_block(block_hash)) {
 						Ok(block_result) => match block_result {
 							Some(mut block) => {

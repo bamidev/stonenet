@@ -196,7 +196,7 @@ impl ActorNode {
 			.await
 		{
 			if self.verify_file(file_id, &result.file) {
-				let file_id = self.store_file(file_id, &result.file)?;
+				let file_id = self.db().store_file(file_id, &result.file).await?;
 
 				for sequence in 0..result.file.blocks.len() {
 					let block_id = &result.file.blocks[sequence];
@@ -1111,10 +1111,6 @@ impl ActorNode {
 		self.db().perform(|mut c| c.store_block(file_id, id, data))
 	}
 
-	fn store_file(&self, id: &IdType, file: &File) -> db::Result<i64> {
-		self.db().perform(|mut c| c.store_file(id, file))
-	}
-
 	fn store_object(
 		&self, id: &IdType, object: &BlogchainObject, verified_from_start: bool,
 	) -> db::Result<bool> {
@@ -1200,12 +1196,12 @@ impl ActorNode {
 		for file_hash in files {
 			// TODO: Use collect_file on the same connection that found the file to collect
 			// the blocks where they are likely to be.
-			let (file_id, file) = if let Some(result) = self.db().find_file(&file_hash).await? {
+			let (file, file_id) = if let Some(result) = self.db().find_file(&file_hash).await? {
 				result
 			} else {
 				if let Some(result) = self.find_file(&file_hash).await {
-					let file_id = self.store_file(&file_hash, &result.file)?;
-					(file_id, result.file)
+					let file_id = self.db().store_file(&file_hash, &result.file).await?;
+					(result.file, file_id)
 				} else {
 					continue;
 				}
@@ -1387,10 +1383,7 @@ impl ActorNode {
 			.await?;
 		for hash in missing_files {
 			if let Some(result) = self.find_file(&hash).await {
-				tokio::task::block_in_place(|| {
-					let mut c = self.db().connect_old()?;
-					c.store_file(&hash, &result.file)
-				})?;
+				self.db().store_file(&hash, &result.file).await?;
 			}
 		}
 		Ok(())
