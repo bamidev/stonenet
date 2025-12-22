@@ -303,8 +303,8 @@ impl Api {
 		if let Some(actor_node) = actor_node_opt {
 			let result = actor_node.find_file(hash).await.map(|r| r.file);
 			if let Some(file) = result {
-				let db_id = self.db.store_file(hash, &file).await?;
-				return Ok(Some((file, db_id)));
+				let (record_id, _) = self.db.ensure_file(hash, &file).await?;
+				return Ok(Some((file, record_id)));
 			}
 		}
 		Ok(None)
@@ -321,17 +321,17 @@ impl Api {
 			if let Some(actor_node) = self.node.get_actor_node_or_lurker(actor_address).await {
 				let result = actor_node.find_file(hash).await.map(|r| r.file);
 				if let Some(file) = result {
-					let db_id = self.db.store_file(hash, &file).await?;
-					return Ok(Some((file, db_id)));
+					let (record_id, _) = self.db.ensure_file(hash, &file).await?;
+					return Ok(Some((file, record_id)));
 				}
 			}
 		}
 		Ok(None)
 	}
 
-	/// Loads the (undecompressed) file data
+	/// Loads the (decompressed) file data
 	#[allow(dead_code)]
-	pub async fn find_file_data(
+	pub async fn load_file_data(
 		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
 	) -> db::Result<Option<FileData>> {
 		let file = if let Some((f, _)) = self.find_file(actor_node_opt, hash).await? {
@@ -357,7 +357,6 @@ impl Api {
 
 		// TODO: Remove unwrap
 		let compression_type = CompressionType::from_u8(file.compression_type).unwrap();
-
 		Ok(Some(FileData {
 			mime_type: file.mime_type,
 			// TODO: remove unwrap
@@ -543,12 +542,12 @@ impl Api {
 									// Find the block on the network, and store it if we have found
 									// it
 									if let Some(r) = n.find_block(block_hash).await {
-										if let Err(e) = db.perform(|mut c| {
-											c.store_block(file_id, block_hash, &r.data)
-										}) {
-											if let Err(_) = tx.send(Err(e)).await {
+										if let Err(e) =
+											db.store_block(block_hash.clone(), &r.data).await
+										{
+											if let Err(e2) = tx.send(Err(e)).await {
 												error!(
-													"Unable to send error on stream-file channel."
+													"Unable to send error on stream-file channel. The error is: {:?}", e2
 												);
 											}
 										}

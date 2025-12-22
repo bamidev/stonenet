@@ -186,14 +186,13 @@ pub async fn find_profile_info(
 			db.inner().get_database_backend(),
 			r#"
 		SELECT i.address, po.name, po.avatar_file_hash, po.wallpaper_file_hash, df.id,
-			df.compression_type, df.plain_hash, df.block_count
+		       df.compression_type, df.plain_hash, df.block_count
 		FROM profile_object AS po
 		LEFT JOIN object AS o ON po.object_id = o.id
 		LEFT JOIN actor AS i ON o.actor_id = i.id
 		LEFT JOIN file AS df ON po.description_file_hash = df.hash
 		WHERE i.address = ?
 		ORDER BY sequence DESC
-		
 	"#,
 			[actor_address.to_bytes().into()],
 		))
@@ -306,8 +305,11 @@ async fn find_post_object_info_files(
 				// TODO: Remove unwrap
 				let compression_type = CompressionType::from_u8(compression_type_code).unwrap();
 
-				let body_opt = match db.find_file_data(file_id, &plain_hash, block_count).await {
-					Ok(r) => r,
+				let body_opt = match db
+					.load_file_data2(file_id, compression_type, &plain_hash, block_count)
+					.await
+				{
+					Ok(r) => Some(r),
 					Err(e) => match &*e {
 						// If a block is still missing from the message data file, don't
 						// actually raise an error, just leave the message data unset.
@@ -335,8 +337,7 @@ async fn find_post_object_info_files(
 					}
 
 					// TODO: remove unwrap
-					let decompressed = decompress(compression_type, &buffer).unwrap();
-					let body_string = String::from_utf8_lossy(&decompressed).to_string();
+					let body_string = String::from_utf8_lossy(&buffer).to_string();
 					return Ok(Some((mime_type, body_string, attachments)));
 				}
 			}
@@ -685,20 +686,18 @@ async fn _parse_profile_info(
 	let description_block_count: Option<i64> = result.try_get_by_index(7)?;
 
 	let description = if let Some(file_id) = description_id {
-		let data = db
-			.find_file_data(
-				file_id,
-				&description_plain_hash.unwrap(),
-				description_block_count.unwrap() as _,
-			)
-			.await?;
-
-		data.map(
-			|d| match CompressionType::from_u8(description_compression_type.unwrap()) {
-				Some(t) => decompress(t, &d).expect("decompression error"),
-				None => panic!("unsupported compression type"),
-			},
-		)
+		match CompressionType::from_u8(description_compression_type.unwrap()) {
+			None => None,
+			Some(compression_type) => Some(
+				db.load_file_data2(
+					file_id,
+					compression_type,
+					&description_plain_hash.unwrap(),
+					description_block_count.unwrap() as _,
+				)
+				.await?,
+			),
+		}
 	} else {
 		None
 	};

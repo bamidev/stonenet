@@ -63,14 +63,14 @@ pub enum Error {
 	ActorAddress(FromBytesAddressError),
 	InvalidCompressionType(u8),
 	InvalidObjectType(u8),
-	/// An invalid hash has been found in the database
+	/// An invalidhash has been found in the database
 	InvalidHash(IdFromBase58Error),
 	InvalidSignature(NodeSignatureError),
 	InvalidPrivateKey(usize),
 	InvalidPublicKey,
 	/// The data that is stored for a block is corrupt
 	BlockDataCorrupt(i64),
-	BlockDataInvalidSize(i64, usize),
+	BlockDataInvalidSize(IdType, usize, usize),
 	//PostMissingFiles(i64),
 	FileMissingBlock(i64, u32),
 
@@ -277,6 +277,15 @@ pub trait PersistenceHandle {
 			.is_some())
 	}
 
+	async fn has_object_sequence(&self, actor_id: i64, sequence: u64) -> Result<bool> {
+		Ok(object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.filter(object::Column::Sequence.eq(sequence))
+			.one(self.inner())
+			.await?
+			.is_some())
+	}
+
 	async fn load_activity_pub_follower_servers(&self, actor_id: i64) -> Result<Vec<String>> {
 		let (query, vals) = Query::select()
 			.distinct()
@@ -317,7 +326,6 @@ pub trait PersistenceHandle {
 		Ok(results.into_iter().map(|r| r.block_hash).collect())
 	}
 
-	#[allow(dead_code)]
 	async fn load_file_data(&self, hash: &IdType) -> Result<Option<FileData>> {
 		Ok(
 			if let Some(file) = file::Entity::find()
@@ -348,7 +356,6 @@ pub trait PersistenceHandle {
 		)
 	}
 
-	#[allow(dead_code)]
 	async fn load_file_data2(
 		&self, file_id: i64, compression_type: CompressionType, plain_hash: &IdType,
 		block_count: u32,
@@ -356,7 +363,6 @@ pub trait PersistenceHandle {
 		let query = Query::select()
 			.column(file_block::Column::BlockHash)
 			.column(file_block::Column::Sequence)
-			.column((block::Entity, block::Column::Id))
 			.column(block::Column::Size)
 			.column(block::Column::Data)
 			.from(file_block::Entity)
@@ -389,25 +395,18 @@ pub trait PersistenceHandle {
 			if sequence != i {
 				Err(Error::FileMissingBlock(file_id, sequence))?;
 			}
-			let block_id: Option<i64> = row.try_get_by_index(2)?;
-			let size2: Option<i64> = row.try_get_by_index(3)?;
-			let data2: Option<Vec<u8>> = row.try_get_by_index(4)?;
+			let size2: Option<i64> = row.try_get_by_index(2)?;
+			let data2: Option<Vec<u8>> = row.try_get_by_index(3)?;
 
-			if block_id.is_none() {
+			if data2.is_none() {
 				Err(Error::FileMissingBlock(file_id, sequence))?;
 			}
 			let size = size2.unwrap() as usize;
 			let mut data = data2.unwrap();
 
 			if data.len() != size {
-				Err(Error::BlockDataInvalidSize(block_id.unwrap(), size))?;
-			} else if data.len() > size {
-				warn!(
-					"Block {} has more data than its size: {} > {}",
-					block_id.unwrap(),
-					data.len(),
-					size
-				);
+				let hash: IdType = row.try_get_by(file_block::Column::BlockHash.as_str())?;
+				Err(Error::BlockDataInvalidSize(hash, size, data.len()))?;
 			}
 			data.resize(size, 0);
 
@@ -636,69 +635,6 @@ pub trait PersistenceHandle {
 		Ok(result)
 	}
 
-	async fn find_file_data(
-		&self, file_id: i64, plain_hash: &IdType, block_count: u32,
-	) -> Result<Option<Vec<u8>>> {
-		let query = file_block::Entity::find()
-			.column_as(block::Column::Id, "block_id")
-			.column(block::Column::Size)
-			.column(block::Column::Data)
-			.join(
-				JoinType::LeftJoin,
-				file_block::Entity::belongs_to(block::Entity)
-					.from(file_block::Column::BlockHash)
-					.to(block::Column::Hash)
-					.into(),
-			)
-			.filter(file_block::Column::FileId.eq(file_id))
-			.order_by(file_block::Column::Sequence, Order::Asc)
-			.build(self.inner().get_database_backend());
-
-		let results = self.inner().query_all(query).await?;
-		if results.len() == 0 {
-			return Ok(None);
-		}
-
-		let capacity = if block_count == 1 {
-			0
-		} else {
-			block_count as usize * BLOCK_SIZE
-		};
-		let mut buffer = Vec::with_capacity(capacity);
-		let mut i = 0;
-		for r in results {
-			let sequence: i64 = r.try_get_by(file_block::Column::Sequence.as_str())?;
-			if sequence != i {
-				Err(Error::FileMissingBlock(file_id, sequence as _))?;
-			}
-			let block_id_opt: Option<i64> = r.try_get_by("block_id")?;
-			if let Some(block_id) = block_id_opt {
-				let size: i64 = r.try_get_by(block::Column::Size.as_str())?;
-				let mut data: Vec<u8> = r.try_get_by(block::Column::Data.as_str())?;
-
-				data.resize(size as _, 0);
-				if (data.len() as i64) < size {
-					Err(Error::BlockDataCorrupt(block_id))?;
-				} else if (data.len() as i64) > size {
-					warn!(
-						"Block {} has more data than its size: {} > {}",
-						block_id,
-						data.len(),
-						size
-					);
-				}
-
-				decrypt_block(i as _, plain_hash, &mut data);
-				buffer.extend(&data);
-				i += 1;
-			} else {
-				Err(Error::FileMissingBlock(file_id, sequence as _))?;
-			}
-		}
-
-		Ok(Some(buffer))
-	}
-
 	async fn find_actor_info(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
 		let result = actor::Entity::find()
 			.filter(actor::Column::Address.eq(address))
@@ -852,16 +788,33 @@ pub trait PersistenceHandle {
 		}
 	}
 
-	async fn store_file(&self, hash: &IdType, file: &File) -> Result<i64> {
-		let record = file::ActiveModel {
+	/// Stores an actor
+	async fn store_actor(
+		&self, address: ActorAddress, public_key: &ActorPublicKeyV1, first_object: IdType,
+	) -> Result<i64> {
+		let record = actor::ActiveModel {
 			id: NotSet,
-			block_count: Set(file.blocks.len() as _),
-			compression_type: Set(file.compression_type),
-			hash: Set(hash.clone()),
-			plain_hash: Set(file.plain_hash.clone()),
-			mime_type: Set(file.mime_type.to_string()),
+			address: Set(address),
+			public_key: Set(public_key.clone().to_bytes().to_vec()),
+			first_object: Set(first_object),
+			r#type: Set(ACTOR_TYPE_BLOGCHAIN.to_string()),
 		};
-		Ok(file::Entity::insert(record)
+		Ok(actor::Entity::insert(record)
+			.exec(self.inner())
+			.await?
+			.last_insert_id)
+	}
+
+	/// Stores a data block and returns the record's ID if a block of the given hash did not
+	/// already exist.
+	async fn store_block(&self, hash: IdType, data: &[u8]) -> Result<i64> {
+		let record = block::ActiveModel {
+			id: NotSet,
+			hash: Set(hash.clone()),
+			size: Set(data.len() as _),
+			data: Set(data.to_vec()),
+		};
+		Ok(block::Entity::insert(record)
 			.exec(self.inner())
 			.await?
 			.last_insert_id)
@@ -1010,6 +963,48 @@ impl Database {
 		Ok(Connection::open_old(&self.path)?)
 	}
 
+	pub async fn ensure_block(&self, hash: &IdType, data: &[u8]) -> Result<i64> {
+		if let Some(record) = block::Entity::find()
+			.filter(block::Column::Hash.eq(hash))
+			.one(self.inner())
+			.await?
+		{
+			Ok(record.id)
+		} else {
+			Ok(self.store_block(hash.clone(), data).await?)
+		}
+	}
+
+	pub async fn ensure_file(&self, hash: &IdType, file: &File) -> Result<(i64, bool)> {
+		if let Some(record) = file::Entity::find()
+			.filter(file::Column::Hash.eq(hash))
+			.one(self.inner())
+			.await?
+		{
+			Ok((record.id, false))
+		} else {
+			Ok((self.store_file(hash.clone(), file).await?, true))
+		}
+	}
+
+	pub async fn ensure_object(
+		&self, actor_id: i64, hash: &IdType, object: &BlogchainObject, verified_from_start: bool,
+	) -> Result<(i64, bool)> {
+		if let Some(record) = object::Entity::find()
+			.filter(object::Column::Hash.eq(hash))
+			.one(self.inner())
+			.await?
+		{
+			Ok((record.id, false))
+		} else {
+			Ok((
+				self.store_object(actor_id, hash, object, verified_from_start)
+					.await?,
+				true,
+			))
+		}
+	}
+
 	/// Runs the given closure, which pauzes the task that runs it, but doesn't
 	/// block the runtime.
 	pub fn perform<T>(&self, task: impl FnOnce(Connection) -> Result<T>) -> Result<T> {
@@ -1055,6 +1050,24 @@ impl Database {
 			.map_err(|e| self::Error::OrmError(e))?;
 
 		Ok(Self { path, orm })
+	}
+
+	pub async fn store_object(
+		&self, actor_id: i64, hash: &IdType, object: &BlogchainObject, verified_from_start: bool,
+	) -> Result<i64> {
+		let tx = self.transaction().await?;
+		let result = tx
+			.store_object(actor_id, hash, object, verified_from_start)
+			.await?;
+		tx.commit().await?;
+		Ok(result)
+	}
+
+	pub async fn store_file(&self, hash: IdType, file: &File) -> Result<i64> {
+		let tx = self.transaction().await?;
+		let result = tx.store_file(hash, file).await?;
+		tx.commit().await?;
+		Ok(result)
 	}
 
 	pub async fn transaction(&self) -> Result<Transaction> {
@@ -1486,7 +1499,7 @@ impl Connection {
 		}
 	}
 
-	pub fn _store_block(
+	/*pub fn _store_block(
 		tx: &impl DerefConnection, _file_id: i64, hash: &IdType, data: &[u8],
 	) -> Result<()> {
 		let mut stat = tx.prepare(
@@ -1594,9 +1607,9 @@ impl Connection {
 			params![hash, plain_hash, mime_type, block_count, compression_type],
 		)?;
 		Ok(tx.last_insert_rowid())
-	}
+	}*/
 
-	fn _store_identity(
+	/*fn _store_identity(
 		tx: &impl DerefConnection, address: &ActorAddress, public_key: &ActorPublicKeyV1,
 		first_object: &IdType,
 	) -> Result<i64> {
@@ -1673,7 +1686,7 @@ impl Connection {
 		} else {
 			Err(Error::MissingIdentity(actor_address.clone()))?
 		}
-	}
+	}*/
 
 	pub fn _store_post(
 		tx: &impl DerefConnection, actor_id: i64, created: u64, previous_hash: &IdType,
@@ -2271,7 +2284,7 @@ impl Connection {
 		})
 	}
 
-	pub fn store_block(&mut self, file_id: i64, hash: &IdType, data: &[u8]) -> Result<()> {
+	/*pub fn store_block(&mut self, file_id: i64, hash: &IdType, data: &[u8]) -> Result<()> {
 		Self::_store_block(self, file_id, hash, data)?;
 		Ok(())
 	}
@@ -2317,7 +2330,7 @@ impl Connection {
 		};
 		tx.commit()?;
 		Ok(true)
-	}
+	}*/
 
 	pub fn unfollow(&mut self, actor_id: &ActorAddress) -> Result<bool> {
 		let affected = self.old.execute(
@@ -2396,8 +2409,12 @@ impl fmt::Display for Error {
 			}
 			//Self::InvalidPrivateKey(e) => write!(f, "invalid private_key: {}", e),
 			Self::BlockDataCorrupt(block_id) => write!(f, "data of block {} is corrupt", block_id),
-			Self::BlockDataInvalidSize(block_id, size) => {
-				write!(f, "data of block {} has invalid size {}", block_id, size)
+			Self::BlockDataInvalidSize(block_id, expected_size, actual_size) => {
+				write!(
+					f,
+					"data of block {} has invalid size {} (expected {})",
+					block_id, actual_size, expected_size
+				)
 			}
 			Self::FileMissingBlock(file_id, sequence) => {
 				write!(f, "file {} missing block sequence {}", file_id, sequence)
@@ -2534,8 +2551,7 @@ impl Transaction {
 			data
 		};
 
-		// Use an appropriate block size that is not too small to overload the network
-		// with blocks.
+		// Use an appropriate block size that is not too small to overload the network with blocks.
 		let mut block_count =
 			file_data.len() / BLOCK_SIZE + ((file_data.len() % BLOCK_SIZE) > 0) as usize;
 		let block_size = if block_count <= 100 {
@@ -2546,7 +2562,6 @@ impl Transaction {
 			bs
 		};
 		let mut block_hashes = Vec::with_capacity(block_count);
-		let mut block_ids = Vec::with_capacity(block_count);
 
 		// Devide data into blocks, and store them if they don't yet exist
 		let plain_hash = IdType::hash(data);
@@ -2555,34 +2570,23 @@ impl Transaction {
 		loop {
 			let slice = &file_data[i..];
 			let actual_block_size = min(block_size, slice.len());
-			let mut block = slice[..actual_block_size].to_vec();
-			encrypt_block(block_index, &plain_hash, &mut block);
-			let block_hash = IdType::hash(&block);
+			let mut block_data = slice[..actual_block_size].to_vec();
+			encrypt_block(block_index, &plain_hash, &mut block_data);
+			let block_hash = IdType::hash(&block_data);
 			block_hashes.push(block_hash.clone());
 
 			// Store block with an invalid file_id
 			// When PostgreSQL & MySQL are available, use a unique temporary file_id because
 			// there may be multiple files stored at once. For SQLite it should not be an
 			// issue.
-			let block_id = if let Some(record) = block::Entity::find()
+			if block::Entity::find()
 				.filter(block::Column::Hash.eq(&block_hash))
 				.one(self.inner())
 				.await?
+				.is_none()
 			{
-				record.id
-			} else {
-				let insert = block::ActiveModel {
-					id: NotSet,
-					hash: Set(block_hash),
-					size: Set(actual_block_size as _),
-					data: Set(block),
-				};
-				block::Entity::insert(insert)
-					.exec(self.inner())
-					.await?
-					.last_insert_id
-			};
-			block_ids.push(block_id);
+				self.store_block(block_hash, &block_data).await?;
+			}
 
 			block_index += 1;
 			i += block_size;
@@ -2594,11 +2598,11 @@ impl Transaction {
 		// Calculate the file hash
 		let file_hash = IdType::hash(
 			&binserde::serialize(&File {
-				plain_hash: plain_hash.clone(),
-				mime_type: mime_type.into(),
-				search_index: None,
-				compression_type: compression_type as u8,
 				blocks: block_hashes.clone(),
+				compression_type: compression_type as u8,
+				mime_type: mime_type.into(),
+				plain_hash: plain_hash.clone(),
+				search_index: None,
 			})
 			.unwrap(),
 		);
@@ -2611,34 +2615,14 @@ impl Transaction {
 		{
 			record.id
 		} else {
-			let file_record = file::ActiveModel {
-				id: NotSet,
-				hash: Set(file_hash.clone()),
-				compression_type: Set(compression_type as u8),
-				mime_type: Set(mime_type.to_string()),
-				block_count: Set(block_count as _),
-				plain_hash: Set(plain_hash),
-			};
-			let file_id = file::Entity::insert(file_record)
-				.exec(self.inner())
-				.await?
-				.last_insert_id;
-
-			// Create the file_block records
-			let mut seq = 0;
-			for block_hash in &block_hashes {
-				let insert = file_block::ActiveModel {
-					id: NotSet,
-					file_id: Set(file_id),
-					block_hash: Set(block_hash.clone()),
-					sequence: Set(seq),
-				};
-				file_block::Entity::insert(insert)
-					.exec(self.inner())
-					.await?;
-				seq += 1;
-			}
-			file_id
+			self.store_file2(
+				file_hash.clone(),
+				plain_hash,
+				mime_type.to_string(),
+				compression_type,
+				&block_hashes,
+			)
+			.await?
 		};
 
 		Ok((file_id as _, file_hash, block_hashes))
@@ -2669,7 +2653,145 @@ impl Transaction {
 		Ok(actor_id)
 	}
 
-	async fn store_object(
+	pub async fn find_actor_id(&self, actor_address: &ActorAddress) -> Result<Option<i64>> {
+		let actor = actor::Entity::find()
+			.filter(actor::Column::Address.eq(actor_address))
+			.one(self.inner())
+			.await?;
+		Ok(actor.map(|a| a.id))
+	}
+
+	pub async fn store_file(&self, hash: IdType, file: &File) -> Result<i64> {
+		let compression_type = CompressionType::from_u8(file.compression_type)
+			.ok_or(Error::InvalidCompressionType(file.compression_type))?;
+		self.store_file2(
+			hash.clone(),
+			file.plain_hash.clone(),
+			file.mime_type.to_string(),
+			compression_type,
+			&file.blocks,
+		)
+		.await
+	}
+
+	pub async fn store_file2(
+		&self, hash: IdType, plain_hash: IdType, mime_type: String,
+		compression_type: CompressionType, blocks: &[IdType],
+	) -> Result<i64> {
+		let record = file::ActiveModel {
+			id: NotSet,
+			block_count: Set(blocks.len() as _),
+			compression_type: Set(compression_type as u8),
+			hash: Set(hash.clone()),
+			plain_hash: Set(plain_hash.clone()),
+			mime_type: Set(mime_type.to_string()),
+		};
+		let file_id = file::Entity::insert(record)
+			.exec(self.inner())
+			.await?
+			.last_insert_id;
+
+		let mut i = 0;
+		for block in blocks {
+			let record = file_block::ActiveModel {
+				id: NotSet,
+				file_id: Set(file_id),
+				block_hash: Set(block.clone()),
+				sequence: Set(i),
+			};
+			file_block::Entity::insert(record)
+				.exec(self.inner())
+				.await?;
+			i += 1;
+		}
+		Ok(file_id)
+	}
+
+	pub async fn store_object(
+		&self, actor_id: i64, object_hash: &IdType, object: &BlogchainObject,
+		verified_from_start: bool,
+	) -> Result<i64> {
+		error!("store_object {}", object_hash);
+		let object_id = self
+			.store_object_meta(
+				actor_id,
+				object.created,
+				object_hash,
+				&object.previous_hash,
+				object.payload.type_id(),
+				&object.signature,
+				verified_from_start,
+				false,
+			)
+			.await?;
+		self.store_object_payload(object_id, &object.payload)
+			.await?;
+		Ok(object_id)
+	}
+
+	async fn store_object_payload(&self, object_id: i64, payload: &ObjectPayload) -> Result<()> {
+		match payload {
+			ObjectPayload::HomeFile(_) => {
+				error!("Home file payloads are not implemented yet");
+				Ok(())
+			}
+			ObjectPayload::Post(po) => self.store_post_object_payload(object_id, &po).await,
+			ObjectPayload::Profile(po) => self.store_profile_object_payload(object_id, &po).await,
+		}
+	}
+
+	async fn store_post_files(&self, object_id: i64, files: &[IdType]) -> Result<()> {
+		let mut i = 0;
+		for file in files {
+			let record = post_file::ActiveModel {
+				id: NotSet,
+				object_id: Set(object_id),
+				hash: Set(file.clone()),
+				sequence: Set(i),
+			};
+			post_file::Entity::insert(record).exec(self.inner()).await?;
+			i += 1;
+		}
+		Ok(())
+	}
+
+	async fn store_post_object_payload(&self, object_id: i64, payload: &PostObject) -> Result<()> {
+		match &payload.data {
+			PostObjectCryptedData::Plain(plain) => {
+				let record = post_object::ActiveModel {
+					object_id: Set(object_id),
+					in_reply_to_actor_address: Set(plain.in_reply_to.as_ref().map(|r| r.0.clone())),
+					in_reply_to_object_hash: Set(plain.in_reply_to.as_ref().map(|r| r.1.clone())),
+					file_count: Set(plain.files.len() as _),
+				};
+				post_object::Entity::insert(record)
+					.exec(self.inner())
+					.await?;
+
+				let tags2: Vec<_> = plain.tags.iter().map(|t| t.clone().to_string()).collect();
+				self.store_post_tags(object_id, &tags2).await?;
+				self.store_post_files(object_id, &plain.files).await?;
+				Ok(())
+			}
+		}
+	}
+
+	async fn store_post_tags(&self, object_id: i64, tags: &[String]) -> Result<()> {
+		let mut i = 0;
+		for tag in tags {
+			let record = post_tag::ActiveModel {
+				id: NotSet,
+				object_id: Set(object_id),
+				sequence: Set(i),
+				tag: Set(tag.clone()),
+			};
+			post_tag::Entity::insert(record).exec(self.inner()).await?;
+			i += 1;
+		}
+		Ok(())
+	}
+
+	async fn store_object_meta(
 		&self, actor_id: i64, created: u64, hash: &IdType, previous_hash: &IdType, object_type: u8,
 		signature: &ActorSignatureV1, verified_from_start: bool, published_on_fediverse: bool,
 	) -> Result<i64> {
@@ -2699,7 +2821,7 @@ impl Transaction {
 		in_reply_to: Option<(ActorAddress, IdType)>, published_on_fediverse: bool,
 	) -> Result<()> {
 		let object_id = self
-			.store_object(
+			.store_object_meta(
 				actor_id,
 				created,
 				hash,
@@ -2738,7 +2860,7 @@ impl Transaction {
 		description_hash: Option<IdType>,
 	) -> Result<()> {
 		let object_id = self
-			.store_object(
+			.store_object_meta(
 				actor_id,
 				created,
 				hash,
@@ -2763,30 +2885,19 @@ impl Transaction {
 		Ok(())
 	}
 
-	async fn store_post_tags(&self, object_id: i64, tags: &[String]) -> Result<()> {
-		for tag in tags {
-			let record = post_tag::ActiveModel {
-				id: NotSet,
-				object_id: Set(object_id),
-				tag: Set(tag.clone()),
-			};
-			post_tag::Entity::insert(record).exec(self.inner()).await?;
-		}
-		Ok(())
-	}
-
-	async fn store_post_files(&self, object_id: i64, files: &[IdType]) -> Result<()> {
-		let mut seq = 0;
-		for hash in files {
-			let record = post_file::ActiveModel {
-				id: NotSet,
-				object_id: Set(object_id),
-				hash: Set(hash.clone()),
-				sequence: Set(seq),
-			};
-			post_file::Entity::insert(record).exec(self.inner()).await?;
-			seq += 1;
-		}
+	async fn store_profile_object_payload(
+		&self, object_id: i64, payload: &ProfileObject,
+	) -> Result<()> {
+		let record = profile_object::ActiveModel {
+			object_id: Set(object_id),
+			name: Set(payload.name.to_string()),
+			description_file_hash: Set(payload.description.clone()),
+			avatar_file_hash: Set(payload.avatar.clone()),
+			wallpaper_file_hash: Set(payload.wallpaper.clone()),
+		};
+		profile_object::Entity::insert(record)
+			.exec(self.inner())
+			.await?;
 		Ok(())
 	}
 }

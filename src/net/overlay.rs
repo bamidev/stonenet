@@ -825,7 +825,8 @@ impl OverlayNode {
 				};
 				if let Err(e) = self
 					.db()
-					.perform(|mut c| c.store_object(actor_address, &object_id, &object, false))
+					.store_object(actor_id, &object_id, &object, false)
+					.await
 				{
 					error!(
 						"Unable to store profile object for {}: {:?}",
@@ -2660,9 +2661,15 @@ impl OverlayNode {
 			else {
 				if let Some(result) = self.find_actor(&address, 100, true).await {
 					let actor_info = result.0;
-					if let Err(e) = self.db().perform(|mut c| {
-						c.store_identity(&address, &actor_info.public_key, &actor_info.first_object)
-					}) {
+					if let Err(e) = self
+						.db()
+						.store_actor(
+							address.clone(),
+							&actor_info.public_key,
+							actor_info.first_object.clone(),
+						)
+						.await
+					{
 						error!("Unable to store identity of tracked actor: {:?}", e);
 					}
 					join(self.clone(), address.clone(), actor_info);
