@@ -1,4 +1,11 @@
-# Changes since 0.6.0
+# Changelog
+
+## v0.7.1
+* Changed the block size for newly created files to 16 MiB.
+* Fixed an issue with object synchronization when obtaining a new head object.
+* Fixed block size verification when loading them from the database.
+
+## v0.7.0
 * Cleared all identities and blogchain data from the database because of a significant change to the data format of the blogchain.
   This is in preparation to be able to host websites on Stonenet in the future.
 * Relay messages will not leak the 'relay-hello' packet if the relay node was configured to leak the first request.
