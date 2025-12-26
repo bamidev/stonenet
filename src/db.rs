@@ -34,7 +34,7 @@ use crate::{
 	web::info::*,
 };
 
-pub(crate) const BLOCK_SIZE: usize = 0x100000; // 1 MiB
+pub(crate) const BLOCK_SIZE: usize = 0x1000000; // 16 MiB
 
 #[derive(Clone)]
 pub struct Database {
