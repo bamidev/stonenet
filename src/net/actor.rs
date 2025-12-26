@@ -45,12 +45,14 @@ pub const ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE: u8 = 67 | 0x80;
 pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST: u8 = 70;
 pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE: u8 = 71 | 0x80;
 
-/// The amount of recent objects to always store for an actor.
-pub const ACTOR_LIMIT_RECENT_OBJECTS: u64 = 1_000;
-/// The amount of recent objects to always store its files (including its
+/// The number of recent objects to always store for an actor.
+pub const ACTOR_LIMIT_STORE_OBJECTS: u64 = 1_000;
+/// The number of recent objects for which data will be automatically collected.
+pub const ACTOR_LIMIT_RECENT_OBJECTS: u64 = 10;
+/// The number of recent objects to always store its files (including its
 /// blocks) for. The garbage collector will not clean up the files and blocks
 /// for these objects
-pub const ACTOR_LIMIT_RECENT_OBJECTS_FILES: u64 = 1_000;
+pub const ACTOR_LIMIT_STORE_FILES: u64 = 1_000;
 /// The max amount of objects to keep at minimum for an actor.
 /// This should equate to about 3-4MB of disk space.
 pub const ACTOR_MIN_LIMIT_TOTAL_OBJECTS: u64 = 10_000;
@@ -1179,15 +1181,11 @@ impl ActorNode {
 		// able to set the verify_from_start flag on objects.
 		self.synchronize_objects_from_start().await?;
 		if let Some(head) = &head_opt {
-			self.synchronize_objects_from_head(head, ACTOR_LIMIT_RECENT_OBJECTS)
+			self.synchronize_objects_from_head(head, ACTOR_LIMIT_STORE_OBJECTS)
 				.await?;
 			// Synchronize any file and block that we need but don't have yet
-			self.synchronize_files(
-				head,
-				ACTOR_LIMIT_RECENT_OBJECTS,
-				ACTOR_LIMIT_RECENT_OBJECTS_FILES,
-			)
-			.await?;
+			self.synchronize_files(head, ACTOR_LIMIT_STORE_OBJECTS, ACTOR_LIMIT_STORE_FILES)
+				.await?;
 			self.synchronize_blocks().await?;
 		}
 
@@ -1246,27 +1244,38 @@ impl ActorNode {
 		let up_to_sequence = up_to_object.sequence;
 		let mut i = up_to_object.sequence as i128;
 		let mut last_object = up_to_object;
-
-		while i > 0 && (up_to_sequence - i as u64) < ACTOR_LIMIT_RECENT_OBJECTS {
+		while i > 0 && (up_to_sequence - i as u64) < ACTOR_LIMIT_STORE_OBJECTS {
+			let recency_index = up_to_sequence - i as u64;
+			if recency_index >= ACTOR_LIMIT_STORE_OBJECTS {
+				break;
+			}
 			i -= 1;
-			if !self.has_object_by_sequence(i as u64).await? {
-				warn!(
-					"collect_object {} - {}",
-					self.actor_address(),
-					&last_object.previous_hash
-				);
+
+			// If the object is recent, try to collect all the files and objects as well.
+			last_object = if recency_index < ACTOR_LIMIT_RECENT_OBJECTS {
 				match self
 					.collect_object(connection, &last_object.previous_hash)
 					.await?
 				{
 					None => break,
-					Some((object, _)) => last_object = object,
+					Some((o, _)) => o,
 				}
-				// Stop if we closed the gap
-			}
+			// Oterhwise, collect the object meta data only, when we don't have it already
+			} else if let Some((o, _)) = self
+				.db()
+				.find_object(self.base.interface.actor_id, &last_object.previous_hash)
+				.await?
+			{
+				o
+			} else {
+				if let Some(result) = self.find_object(&last_object.previous_hash).await {
+					result.object
+				} else {
+					break;
+				}
+			};
 		}
-		// TODO: Actually check if the obtained objects are now verified
-		// from start.
+		// TODO: Actually check if we can set 'verified from start' on any of the new objects.
 		Ok(())
 	}
 

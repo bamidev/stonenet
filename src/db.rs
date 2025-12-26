@@ -73,6 +73,7 @@ pub enum Error {
 	BlockDataInvalidSize(IdType, usize, usize),
 	//PostMissingFiles(i64),
 	FileMissingBlock(i64, u32),
+	FileWithoutBlocks(i64),
 
 	MissingIdentity(ActorAddress),
 	/// Something in the database is not how it is expected to be.
@@ -377,7 +378,7 @@ pub trait PersistenceHandle {
 		let stat = self.backend().build(&query);
 		let results = self.inner().query_all(stat).await?;
 		if results.len() == 0 {
-			Err(Error::FileMissingBlock(file_id, 0))?;
+			Err(Error::FileWithoutBlocks(file_id))?;
 		}
 
 		// If block count is 1, chances are high that its size is pretty small.
@@ -991,6 +992,7 @@ impl Database {
 		&self, actor_id: i64, hash: &IdType, object: &BlogchainObject, verified_from_start: bool,
 	) -> Result<(i64, bool)> {
 		if let Some(record) = object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
 			.filter(object::Column::Hash.eq(hash))
 			.one(self.inner())
 			.await?
@@ -1003,6 +1005,14 @@ impl Database {
 				true,
 			))
 		}
+	}
+
+	pub async fn find_object(
+		&self, actor_id: i64, hash: &IdType,
+	) -> Result<Option<(BlogchainObject, i64)>> {
+		let tx = self.transaction().await?;
+		let result = tx.find_object(actor_id, hash).await?;
+		Ok(result)
 	}
 
 	/// Runs the given closure, which pauzes the task that runs it, but doesn't
@@ -2419,6 +2429,7 @@ impl fmt::Display for Error {
 			Self::FileMissingBlock(file_id, sequence) => {
 				write!(f, "file {} missing block sequence {}", file_id, sequence)
 			}
+			Self::FileWithoutBlocks(file_id) => write!(f, "file {} has no blocks", file_id),
 			Self::InvalidPrivateKey(len) => write!(f, "invalid private key (size={})", len),
 			Self::InvalidPublicKey => write!(f, "invalid public key"),
 			Self::MissingIdentity(hash) => write!(f, "identity {:?} is missing", &hash),
@@ -2659,6 +2670,34 @@ impl Transaction {
 			.one(self.inner())
 			.await?;
 		Ok(actor.map(|a| a.id))
+	}
+
+	pub async fn find_object(
+		&self, actor_id: i64, hash: &IdType,
+	) -> Result<Option<(BlogchainObject, i64)>> {
+		let result = object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.filter(object::Column::Hash.eq(hash))
+			.one(self.inner())
+			.await?;
+
+		if let Some(record) = result {
+			let payload = self.load_object_payload(record.id, record.r#type).await?;
+			return Ok(Some((
+				BlogchainObject {
+					created: record.created as _,
+					sequence: record.sequence as _,
+					payload: payload.expect(&format!(
+						"Missing object payload for object ID {}",
+						record.id
+					)),
+					previous_hash: record.previous_hash,
+					signature: record.signature,
+				},
+				record.id,
+			)));
+		}
+		Ok(None)
 	}
 
 	pub async fn store_file(&self, hash: IdType, file: &File) -> Result<i64> {
