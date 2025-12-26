@@ -201,7 +201,7 @@ Hoi ik ben Kees!
 		.expect("unable to load profile")
 		.expect("unable to load profile");
 	let avatar = node2
-		.find_file_data(
+		.load_file_data(
 			Some(&actor_node),
 			&profile_object.avatar.expect("missing avatar ID"),
 		)
@@ -209,7 +209,7 @@ Hoi ik ben Kees!
 		.expect("unable to get avatar file")
 		.expect("unable to get avatar file");
 	let wallpaper = node2
-		.find_file_data(
+		.load_file_data(
 			Some(&actor_node),
 			&profile_object.wallpaper.expect("missing wallpaper ID"),
 		)
@@ -239,7 +239,7 @@ Hoi ik ben Kees!
 		.await
 		.expect("unable to follow node 1");
 	assert!(actor_found, "actor not found");
-	debug!("Synchronizing...");
+	debug!("Waiting for synchronization...");
 	actor_node.wait_for_synchronization().await;
 
 	// Publish a fourth post after synchronization already happened

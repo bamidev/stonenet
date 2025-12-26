@@ -21,7 +21,7 @@ use std::{future::Future, pin::Pin, sync::Mutex as StdMutex};
 use futures::{future::BoxFuture, FutureExt};
 use tokio::{
 	select,
-	sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender},
+	sync::mpsc::{self, Sender, UnboundedReceiver, UnboundedSender},
 };
 
 use super::*;
@@ -29,7 +29,6 @@ use crate::{
 	net::socket::{TcpServerV4, TcpServerV6, UdpServerV4, UdpServerV6},
 	trace::Mutex,
 };
-use std::backtrace::Backtrace;
 
 const DEFAULT_KEEP_ALIVE_IDLE_TIME: Duration = Duration::from_secs(120);
 

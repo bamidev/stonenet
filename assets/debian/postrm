@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+#DEBHELPER#
 
 if [ "$1" == "purge" ]; then
 	deluser stonenet

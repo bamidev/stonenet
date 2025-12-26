@@ -45,12 +45,14 @@ pub const ACTOR_MESSAGE_TYPE_GET_PROFILE_RESPONSE: u8 = 67 | 0x80;
 pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_REQUEST: u8 = 70;
 pub const ACTOR_MESSAGE_TYPE_PUBLISH_OBJECT_RESPONSE: u8 = 71 | 0x80;
 
-/// The amount of recent objects to always store for an actor.
-pub const ACTOR_LIMIT_RECENT_OBJECTS: u64 = 1_000;
-/// The amount of recent objects to always store its files (including its
+/// The number of recent objects to always store for an actor.
+pub const ACTOR_LIMIT_STORE_OBJECTS: u64 = 1_000;
+/// The number of recent objects for which data will be automatically collected.
+pub const ACTOR_LIMIT_RECENT_OBJECTS: u64 = 10;
+/// The number of recent objects to always store its files (including its
 /// blocks) for. The garbage collector will not clean up the files and blocks
 /// for these objects
-pub const ACTOR_LIMIT_RECENT_OBJECTS_FILES: u64 = 1_000;
+pub const ACTOR_LIMIT_STORE_FILES: u64 = 1_000;
 /// The max amount of objects to keep at minimum for an actor.
 /// This should equate to about 3-4MB of disk space.
 pub const ACTOR_MIN_LIMIT_TOTAL_OBJECTS: u64 = 10_000;
@@ -172,14 +174,14 @@ impl ActorNode {
 
 	/// Attempts to collect as much blocks of this file on the given connection.
 	pub async fn collect_block(
-		&self, connection: &mut Connection, file_id: i64, block_id: &IdType,
+		&self, connection: &mut Connection, block_id: &IdType,
 	) -> db::Result<bool> {
 		if let Some(result) = self
 			.exchange_find_block_on_connection(connection, block_id)
 			.await
 		{
 			if self.verify_block(block_id, &result.data) {
-				self.store_block(file_id, block_id, &result.data)?;
+				self.db().ensure_block(block_id, &result.data).await?;
 			} else {
 				return Ok(false);
 			}
@@ -189,19 +191,19 @@ impl ActorNode {
 
 	/// Attempts to collect as much blocks of this file on the given connection.
 	pub async fn collect_file(
-		&self, connection: &mut Connection, file_id: &IdType,
+		&self, connection: &mut Connection, file_hash: &IdType,
 	) -> db::Result<bool> {
 		if let Some(result) = self
-			.exchange_find_file_on_connection(connection, &file_id)
+			.exchange_find_file_on_connection(connection, file_hash)
 			.await
 		{
-			if self.verify_file(file_id, &result.file) {
-				let file_id = self.store_file(file_id, &result.file)?;
+			if self.verify_file(file_hash, &result.file) {
+				self.db().ensure_file(file_hash, &result.file).await?;
 
 				for sequence in 0..result.file.blocks.len() {
 					let block_id = &result.file.blocks[sequence];
 					if self.needs_block(block_id) {
-						if !self.collect_block(connection, file_id, block_id).await? {
+						if !self.collect_block(connection, block_id).await? {
 							return Ok(false);
 						}
 					}
@@ -221,7 +223,7 @@ impl ActorNode {
 			.exchange_find_object_on_connection(connection, hash)
 			.await
 		{
-			self.store_object(hash, &result.object, false)?;
+			self.store_object(hash, &result.object, false).await?;
 			let completed = self
 				.complete_object(connection, result.object.clone())
 				.await?;
@@ -472,12 +474,10 @@ impl ActorNode {
 		})
 	}
 
-	fn has_object_by_sequence(&self, sequence: u64) -> bool {
-		tokio::task::block_in_place(|| {
-			let c = self.db().connect_old().expect("unable to open database");
-			c.has_object_sequence(self.actor_address(), sequence)
-				.expect("unable to read object from database")
-		})
+	async fn has_object_by_sequence(&self, sequence: u64) -> db::Result<bool> {
+		self.db()
+			.has_object_sequence(self.base.interface.actor_id, sequence)
+			.await
 	}
 
 	/// Does all the work that is expected upon joining the network.
@@ -818,13 +818,15 @@ impl ActorNode {
 			}
 		};
 
-		// Respond with whether we need the value or not.
+		// First check if we are already downloading this object.
+		// If not, check if we actually need the object.
 		let needed = {
 			let mut downloading_objects = self.downloading_objects.lock().await;
-			let mut needed = !downloading_objects.contains(&request.id);
-			let actor_id = &self.actor_address();
-			if needed {
+			let mut needed = false;
+			if !downloading_objects.contains(&request.id) {
+				let actor_id = &self.actor_address();
 				needed = self.needs_object(actor_id, &request.id);
+				error!("process_publish_object_request1 {} {}", needed, &request.id);
 				if needed {
 					downloading_objects.push(request.id.clone());
 				}
@@ -1082,7 +1084,10 @@ impl ActorNode {
 				// Find the object on the network
 				if let Some(result) = actor_node.find_object(&object_hash).await {
 					let result = async {
-						if actor_node.store_object(&object_hash, &result.object, false)? {
+						if actor_node
+							.store_object(&object_hash, &result.object, false)
+							.await?
+						{
 							// If found, collect all files & blocks on the network as well.
 							actor_node
 								.synchronize_files_and_blocks_of_object(&result.object.payload)
@@ -1107,19 +1112,21 @@ impl ActorNode {
 		});
 	}
 
-	fn store_block(&self, file_id: i64, id: &IdType, data: &[u8]) -> db::Result<()> {
-		self.db().perform(|mut c| c.store_block(file_id, id, data))
-	}
-
-	fn store_file(&self, id: &IdType, file: &File) -> db::Result<i64> {
-		self.db().perform(|mut c| c.store_file(id, file))
-	}
-
-	fn store_object(
-		&self, id: &IdType, object: &BlogchainObject, verified_from_start: bool,
+	/// Stores a blogchain object, and returns whether it was actually stored or whether it already
+	/// existed.
+	async fn store_object(
+		&self, hash: &IdType, object: &BlogchainObject, verified_from_start: bool,
 	) -> db::Result<bool> {
-		self.db()
-			.perform(|mut c| c.store_object(self.actor_address(), id, object, verified_from_start))
+		Ok(self
+			.db()
+			.ensure_object(
+				self.base.interface.actor_id,
+				hash,
+				object,
+				verified_from_start,
+			)
+			.await?
+			.1)
 	}
 
 	/// Does everything needed to make sure a node is up to date with the rest
@@ -1174,15 +1181,11 @@ impl ActorNode {
 		// able to set the verify_from_start flag on objects.
 		self.synchronize_objects_from_start().await?;
 		if let Some(head) = &head_opt {
-			self.synchronize_objects_from_head(head, ACTOR_LIMIT_RECENT_OBJECTS)
+			self.synchronize_objects_from_head(head, ACTOR_LIMIT_STORE_OBJECTS)
 				.await?;
 			// Synchronize any file and block that we need but don't have yet
-			self.synchronize_files(
-				head,
-				ACTOR_LIMIT_RECENT_OBJECTS,
-				ACTOR_LIMIT_RECENT_OBJECTS_FILES,
-			)
-			.await?;
+			self.synchronize_files(head, ACTOR_LIMIT_STORE_OBJECTS, ACTOR_LIMIT_STORE_FILES)
+				.await?;
 			self.synchronize_blocks().await?;
 		}
 
@@ -1200,13 +1203,17 @@ impl ActorNode {
 		for file_hash in files {
 			// TODO: Use collect_file on the same connection that found the file to collect
 			// the blocks where they are likely to be.
-			let (file_id, file) = if let Some(result) = self.db().find_file(&file_hash).await? {
-				result
+			let file = if let Some(result) = self.db().find_file(&file_hash).await? {
+				result.0
 			} else {
 				if let Some(result) = self.find_file(&file_hash).await {
-					let file_id = self.store_file(&file_hash, &result.file)?;
-					(file_id, result.file)
+					self.db()
+						.store_file(file_hash.clone(), &result.file)
+						.await?;
+					result.file
 				} else {
+					#[cfg(test)]
+					panic!("File not found");
 					continue;
 				}
 			};
@@ -1215,7 +1222,12 @@ impl ActorNode {
 			for block_hash in file.blocks {
 				if !self.db().has_block(&block_hash).await? {
 					if let Some(result) = self.find_block(&block_hash).await {
-						self.store_block(file_id, &block_hash, &result.data)?;
+						self.db()
+							.store_block(block_hash.clone(), &result.data)
+							.await?;
+					} else {
+						#[cfg(test)]
+						panic!("Block not found");
 					}
 				}
 			}
@@ -1232,35 +1244,46 @@ impl ActorNode {
 		let up_to_sequence = up_to_object.sequence;
 		let mut i = up_to_object.sequence as i128;
 		let mut last_object = up_to_object;
-
-		while i > 0 && (up_to_sequence - i as u64) < ACTOR_LIMIT_RECENT_OBJECTS {
+		while i > 0 && (up_to_sequence - i as u64) < ACTOR_LIMIT_STORE_OBJECTS {
+			let recency_index = up_to_sequence - i as u64;
+			if recency_index >= ACTOR_LIMIT_STORE_OBJECTS {
+				break;
+			}
 			i -= 1;
-			if !self.has_object_by_sequence(i as u64) {
+
+			// If the object is recent, try to collect all the files and objects as well.
+			last_object = if recency_index < ACTOR_LIMIT_RECENT_OBJECTS {
 				match self
 					.collect_object(connection, &last_object.previous_hash)
 					.await?
 				{
 					None => break,
-					Some((object, _)) => last_object = object,
+					Some((o, _)) => o,
 				}
-			// Stop if we closed the gap
+			// Oterhwise, collect the object meta data only, when we don't have it already
+			} else if let Some((o, _)) = self
+				.db()
+				.find_object(self.base.interface.actor_id, &last_object.previous_hash)
+				.await?
+			{
+				o
 			} else {
-				break;
-			}
+				if let Some(result) = self.find_object(&last_object.previous_hash).await {
+					result.object
+				} else {
+					break;
+				}
+			};
 		}
-		// TODO: Actually check if the obtained objects are now verified
-		// from start.
+		// TODO: Actually check if we can set 'verified from start' on any of the new objects.
 		Ok(())
 	}
 
 	pub(super) async fn synchronize_blocks(&self) -> db::Result<()> {
 		let missing_blocks = self.investigate_missing_blocks()?;
-		for (file_id, hash) in missing_blocks {
+		for (_file_id, hash) in missing_blocks {
 			if let Some(result) = self.find_block(&hash).await {
-				tokio::task::block_in_place(|| {
-					let mut c = self.db().connect_old()?;
-					c.store_block(file_id, &hash, &result.data)
-				})?;
+				self.db().store_block(hash, &result.data).await?;
 			}
 		}
 		Ok(())
@@ -1357,14 +1380,9 @@ impl ActorNode {
 		self: &Arc<Self>, connection: &mut Connection,
 	) -> db::Result<Option<(IdType, BlogchainObject)>> {
 		if let Some(response) = self.exchange_head_on_connection(connection).await {
-			let stored = self.db().perform(|mut c| {
-				c.store_object(
-					self.actor_address(),
-					&response.hash,
-					&response.object,
-					false,
-				)
-			})?;
+			let stored = self
+				.store_object(&response.hash, &response.object, false)
+				.await?;
 
 			if stored {
 				self.process_new_head_on_connection(
@@ -1387,10 +1405,7 @@ impl ActorNode {
 			.await?;
 		for hash in missing_files {
 			if let Some(result) = self.find_file(&hash).await {
-				tokio::task::block_in_place(|| {
-					let mut c = self.db().connect_old()?;
-					c.store_file(&hash, &result.file)
-				})?;
+				self.db().store_file(hash, &result.file).await?;
 			}
 		}
 		Ok(())
@@ -1427,7 +1442,8 @@ impl ActorNode {
 				previous_hash = previous_object.previous_hash;
 			} else {
 				if let Some(result) = self.find_object(&previous_hash).await {
-					self.store_object(&previous_hash, &result.object, false)?;
+					self.store_object(&previous_hash, &result.object, false)
+						.await?;
 					current_sequence = result.object.sequence;
 					previous_hash = result.object.previous_hash;
 				} else {
@@ -1462,11 +1478,14 @@ impl ActorNode {
 							&object_result.object,
 							&self.base.interface.actor_info.public_key,
 						) {
-							if !self.store_object(
-								&self.base.interface.actor_info.first_object,
-								&object_result.object,
-								true,
-							)? {
+							if !self
+								.store_object(
+									&self.base.interface.actor_info.first_object,
+									&object_result.object,
+									true,
+								)
+								.await?
+							{
 								return Ok(false);
 							}
 						} else {
@@ -1495,7 +1514,7 @@ impl ActorNode {
 						&object,
 						&self.base.interface.actor_info.public_key,
 					) {
-						self.store_object(&hash, &object, true)?;
+						self.store_object(&hash, &object, true).await?;
 					} else {
 						return Ok(false);
 					}
@@ -1619,9 +1638,7 @@ impl MessageWorkToDo for PublishObjectToDo {
 
 		// Store object
 		let stored = if let Some(object) = &object_result {
-			match self.node.db().perform(|mut c| {
-				c.store_object(self.node.actor_address(), &self.hash, object, false)
-			}) {
+			match self.node.store_object(&self.hash, object, false).await {
 				Ok(r) => r,
 				Err(e) => {
 					error!("Unable to store received object: {:?}", e);

@@ -9,6 +9,7 @@ pub struct Model {
 	pub id: i64,
 	pub object_id: i64,
 	pub tag: String,
+	pub sequence: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
