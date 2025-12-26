@@ -2750,7 +2750,6 @@ impl Transaction {
 		&self, actor_id: i64, object_hash: &IdType, object: &BlogchainObject,
 		verified_from_start: bool,
 	) -> Result<i64> {
-		error!("store_object {}", object_hash);
 		let object_id = self
 			.store_object_meta(
 				actor_id,

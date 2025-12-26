@@ -15,12 +15,6 @@ impl MigrationTrait for Migration {
 		tx.inner()
 			.execute_unprepared(
 				r#"
-            DELETE FROM post_object;
-            DELETE FROM post_file;
-            DELETE FROM post_tag;
-            DELETE FROM profile_object;
-            DELETE FROM object;
-
             ALTER TABLE post_tag ADD COLUMN sequence INTEGER;
         "#,
 			)

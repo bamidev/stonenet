@@ -826,7 +826,6 @@ impl ActorNode {
 			if !downloading_objects.contains(&request.id) {
 				let actor_id = &self.actor_address();
 				needed = self.needs_object(actor_id, &request.id);
-				error!("process_publish_object_request1 {} {}", needed, &request.id);
 				if needed {
 					downloading_objects.push(request.id.clone());
 				}
