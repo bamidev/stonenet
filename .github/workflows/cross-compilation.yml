@@ -21,10 +21,10 @@ jobs:
         rm -rf /opt/hostedtoolcache
     - name: Set up Docker
       uses: docker/setup-docker-action@v4
-    # This job currently fails on github because of disk space issues no their servers
-    - name: Cross compile for Debian armhf
-      run: |
-        docker build . --build-arg target=armhf
+    # Currently Github will fail when the workflow takes too long and 2 jobs is too much apparently.
+    #- name: Cross compile for Debian armhf
+    #  run: |
+    #    docker build . --build-arg target=armhf
     - name: Cross compile for Windows amd64
       run: |
         docker build . --build-arg target=win64
