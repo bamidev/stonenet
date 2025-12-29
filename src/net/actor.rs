@@ -716,10 +716,7 @@ impl ActorNode {
 			}
 		};
 
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db().connect_old()?;
-			c.fetch_profile_object(&self.base.interface.actor_address)
-		});
+		let result = self.db().find_profile_object(&self.base.interface.actor_address).await?;
 		let object = match result {
 			Ok(p) => p,
 			Err(e) => {
