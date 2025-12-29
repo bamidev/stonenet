@@ -6,8 +6,15 @@
     flake-utils.url = "github:numtide/flake-utils";
     browser-window.url = "github:bamidev/browser-window";
   };
-  outputs = { nixpkgs, flake-utils, browser-window, ... }:
-    flake-utils.lib.eachSystem flake-utils.lib.allSystems (system:
+  outputs =
+    {
+      nixpkgs,
+      flake-utils,
+      browser-window,
+      ...
+    }:
+    flake-utils.lib.eachSystem flake-utils.lib.allSystems (
+      system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         stdenv = pkgs.stdenv;
@@ -21,31 +28,36 @@
           };
         };
 
-        stonenet = {useHomeManager}: pkgs.rustPlatform.buildRustPackage {
-          pname = manifest.name;
-          version = manifest.version;
-          outputs = ["out" "share"];
-          cargoLock = workspaceCargoLock;
-          src = pkgs.lib.cleanSource ./.;
-          doCheck = false;
-          buildFeatures = [
-            "unbundled"
-            (if !useHomeManager then "nixos" else "home-manager")
-          ];
-          buildInputs = with pkgs; [ openssl.dev ];
-          nativeBuildInputs = with pkgs; [ pkg-config ];
+        stonenet =
+          { useHomeManager }:
+          pkgs.rustPlatform.buildRustPackage {
+            pname = manifest.name;
+            version = manifest.version;
+            outputs = [
+              "out"
+              "share"
+            ];
+            cargoLock = workspaceCargoLock;
+            src = pkgs.lib.cleanSource ./.;
+            doCheck = false;
+            buildFeatures = [
+              "unbundled"
+              (if !useHomeManager then "nixos" else "home-manager")
+            ];
+            buildInputs = with pkgs; [ openssl.dev ];
+            nativeBuildInputs = with pkgs; [ pkg-config ];
 
-          installPhase = with pkgs; ''
-            set -e
+            installPhase = with pkgs; ''
+              set -e
 
-            ls target/release
-            ${coreutils}/bin/mkdir -p $out/bin
-            ${coreutils}/bin/cp target/${stdenv.targetPlatform.rust.rustcTargetSpec}/release/stonenetd $out/bin
-            ${coreutils}/bin/mkdir -p $share
-            ${coreutils}/bin/cp -r static $share
-            ${coreutils}/bin/cp -r templates $share
-          '';
-        };
+              ls target/release
+              ${coreutils}/bin/mkdir -p $out/bin
+              ${coreutils}/bin/cp target/${stdenv.targetPlatform.rust.rustcTargetSpec}/release/stonenetd $out/bin
+              ${coreutils}/bin/mkdir -p $share
+              ${coreutils}/bin/cp -r static $share
+              ${coreutils}/bin/cp -r templates $share
+            '';
+          };
 
         stonenetDesktop = pkgs.rustPlatform.buildRustPackage {
           pname = desktopManifest.name;
@@ -61,12 +73,13 @@
           buildInputs = browser-window.packages.${system}.webkitgtk.buildInputs;
         };
 
-      in {
+      in
+      {
         apps = {
           default = {
             name = "stonenet";
             type = "app";
-            program = "${stonenet {useHomeManager = false;}}/bin/stonenetd";
+            program = "${stonenet { useHomeManager = false; }}/bin/stonenetd";
           };
           desktop = {
             name = "stonenet-desktop";
@@ -77,132 +90,212 @@
 
         devShells = {
           default = pkgs.mkShell {
-            packages = with pkgs; [
-              rustup
-              pkg-config
-              pkgs.openssl.dev
-              rustPlatform.bindgenHook
-              zenity
-            ] ++ browser-window.packages.${system}.webkitgtk.buildInputs;
+            packages =
+              with pkgs;
+              [
+                rustup
+                pkg-config
+                pkgs.openssl.dev
+                rustPlatform.bindgenHook
+                zenity
+              ]
+              ++ browser-window.packages.${system}.webkitgtk.buildInputs;
           };
         };
 
-        nixosModules = let
-          options = { lib }: {
-            services.stonenet = {
-              enable = lib.mkEnableOption "stonenet";
-              
-              package = lib.mkOption {
-                description = "Stonenet package to use";
-                type = lib.types.package;
-                default = stonenet;
+        nixosModules =
+          let
+            options =
+              { lib }:
+              {
+                services.stonenet = {
+                  enable = lib.mkEnableOption "stonenet";
+
+                  package = lib.mkOption {
+                    description = "Stonenet package to use";
+                    type = lib.types.package;
+                    default = stonenet;
+                  };
+
+                  desktop = {
+                    enable = lib.mkEnableOption "stonenet-desktop";
+                  };
+
+                  config = lib.mkOption {
+                    description = "Stonenet configuration file";
+                    type = lib.types.attrs;
+                    default = { };
+                  };
+                };
               };
 
-              desktop = {
-                enable = lib.mkEnableOption "stonenet-desktop";
+            moduleConfig =
+              {
+                config,
+                lib,
+                pkgs,
+                useHomeManager,
+                useLaunchd,
+              }:
+              let
+                settingsFormat = pkgs.formats.toml { };
+                defaultConfig =
+                  if !useHomeManager then
+                    (pkgs.lib.importTOML ./conf/default-system.toml)
+                  else
+                    (pkgs.lib.importTOML ./conf/default-user.toml);
+                effectiveConfig = defaultConfig // config.services.stonenet.config;
+                userConfigFile = settingsFormat.generate "stonenet.toml" effectiveConfig;
+                stonenetPackage = stonenet { useHomeManager = useHomeManager; };
+
+                systemdServiceConfig = {
+                  ExecStart = "${stonenetPackage}/bin/stonenetd";
+                  Type = "simple";
+
+                  Restart = "on-failure";
+                  StandardError = "journal+console";
+                  StandardOutput = "journal+console";
+                  User = "stonenet";
+                  # A workaround: stonenet looks for the templates and static files in the working directory at the moment
+                  WorkingDirectory = "${stonenetPackage.share}";
+                };
+
+              in
+              lib.mkIf (config.services.stonenet.enable) (
+                if !useHomeManager then
+                  {
+                    environment = {
+                      etc."stonenet/config.toml".source = userConfigFile;
+
+                      systemPackages = lib.mkIf config.services.stonenet.desktop.enable [
+                        stonenetDesktop
+                      ];
+                    };
+
+                    systemd.services.stonenet = {
+                      description = "Stonenet Daemon";
+                      after = [ "network-online.target" ];
+                      wantedBy = [ "multi-user.target" ];
+
+                      serviceConfig = systemdServiceConfig;
+                    };
+
+                    system.activationScripts.stonenet-state.text = ''
+                      set -e
+                      mkdir -p /var/lib/stonenet
+                      chown -R stonenet:stonenet /var/lib/stonenet
+                      touch "${effectiveConfig.database_path}"
+                    '';
+
+                    users = {
+                      users.stonenet = {
+                        group = "stonenet";
+                        isNormalUser = false;
+                        isSystemUser = true;
+                      };
+
+                      groups.stonenet = { };
+                    };
+                  }
+                else
+                  {
+                    home = {
+                      file.".config/stonenet/config.toml".source = userConfigFile;
+
+                      packages = lib.mkIf config.services.stonenet.desktop.enable [
+                        stonenetDesktop
+                      ];
+                    };
+
+                    systemd.user.services.stonenet =
+                      if !useLaunchd then
+                        {
+                          Unit = {
+                            Description = "Stonenet Daemon";
+                            After = "network-online.target";
+                            WantedBy = "multi-user.target";
+                          };
+
+                          Service = systemdServiceConfig;
+                        }
+                      else
+                        { };
+
+                    launchd.agents.stonenet =
+                      if useLaunchd then
+                        {
+                          enable = true;
+                          config = {
+                            ProgramArgumnts = [
+                              "${stonenetPackage}/bin/stonenetd"
+                            ];
+                            RunAtLoad = true;
+                          };
+                        }
+                      else
+                        { };
+                  }
+              );
+          in
+          {
+            default =
+              {
+                config,
+                lib,
+                pkgs,
+                ...
+              }:
+              {
+                options = options { lib = lib; };
+                config = moduleConfig {
+                  config = config;
+                  lib = lib;
+                  pkgs = pkgs;
+                  useHomeManager = false;
+                  useLaunchd = false;
+                };
               };
 
-              config = lib.mkOption {
-                description = "Stonenet configuration file";
-                type = lib.types.attrs;
-                default = {};
+            homeManager =
+              {
+                config,
+                lib,
+                pkgs,
+                ...
+              }:
+              {
+                options = options { lib = lib; };
+                config = moduleConfig {
+                  config = config;
+                  lib = lib;
+                  pkgs = pkgs;
+                  useHomeManager = true;
+                  useLaunchd = false;
+                };
               };
-            };
+            darwin =
+              {
+                config,
+                lib,
+                pkgs,
+                ...
+              }:
+              {
+                options = options { lib = lib; };
+                config = moduleConfig {
+                  config = config;
+                  lib = lib;
+                  pkgs = pkgs;
+                  useHomeManager = true;
+                  useLaunchd = true;
+                };
+              };
           };
-
-          moduleConfig = { config, lib, pkgs, useHomeManager }:
-            let
-              settingsFormat = pkgs.formats.toml {};
-              defaultConfig = if !useHomeManager then
-                (pkgs.lib.importTOML ./conf/default-system.toml)
-              else
-                (pkgs.lib.importTOML ./conf/default-user.toml);
-              effectiveConfig = defaultConfig // config.services.stonenet.config;
-              userConfigFile = settingsFormat.generate "stonenet.toml" effectiveConfig;
-              stonenetPackage = stonenet { useHomeManager=useHomeManager; };
-
-              systemdServiceConfig = {
-                ExecStart = "${stonenetPackage}/bin/stonenetd";
-                Type = "simple";
-
-                Restart = "on-failure";
-                StandardError = "journal+console";
-                StandardOutput = "journal+console";
-                User = "stonenet";
-                # A workaround: stonenet looks for the templates and static files in the working directory at the moment
-                WorkingDirectory = "${stonenetPackage.share}";
-              };
-
-
-            in lib.mkIf (config.services.stonenet.enable) (
-              if !useHomeManager then {
-                environment = {
-                  etc."stonenet/config.toml".source = userConfigFile;
-
-                  systemPackages = lib.mkIf config.services.stonenet.desktop.enable [
-                    stonenetDesktop
-                  ];
-                };
-
-                systemd.services.stonenet = {
-                  description = "Stonenet Daemon";
-                  after = ["network-online.target"];
-                  wantedBy = ["multi-user.target"];
-
-                  serviceConfig = systemdServiceConfig;
-                };
-
-                system.activationScripts.stonenet-state.text = ''
-                  set -e
-                  mkdir -p /var/lib/stonenet
-                  chown -R stonenet:stonenet /var/lib/stonenet
-                  touch "${effectiveConfig.database_path}"
-                '';
-
-                users = {
-                  users.stonenet = {
-                    group = "stonenet";
-                    isNormalUser = false;
-                    isSystemUser = true;
-                  };
-
-                  groups.stonenet = {};
-                };
-              } else {
-                home = {
-                  file.".config/stonenet/config.toml".source = userConfigFile;
-
-                  packages = lib.mkIf config.services.stonenet.desktop.enable [
-                    stonenetDesktop
-                  ];
-                };
-
-                systemd.user.services.stonenet = {
-                  Unit = {
-                    Description = "Stonenet Daemon";
-                    After = "network-online.target";
-                    WantedBy = "multi-user.target";
-                  };
-
-                  Service = systemdServiceConfig;
-                };
-              }
-            );
-          in {
-            default = { config, lib, pkgs, ... }: {
-              options = options { lib=lib; };
-              config = moduleConfig { config=config; lib=lib; pkgs=pkgs; useHomeManager=false; };
-            };
-
-            homeManager = { config, lib, pkgs, ... }: {
-              options = options { lib=lib; };
-              config = moduleConfig { config=config; lib=lib; pkgs=pkgs; useHomeManager=true; };
-            };
-        };
 
         packages = {
           default = stonenet { useHomeManager = false; };
           desktop = stonenetDesktop;
         };
-      });
+      }
+    );
 }
