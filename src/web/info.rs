@@ -9,9 +9,8 @@ use sea_orm::{
 use super::consolidated_feed::ConsolidatedObjectType;
 use crate::{
 	common::{current_timestamp, IdType},
-	compression::decompress,
 	core::{
-		ActorAddress, CompressionType, FileHeader, OBJECT_TYPE_HOME_FILE, OBJECT_TYPE_POST,
+		ActorAddress, CompressionType, OBJECT_TYPE_HOME_FILE, OBJECT_TYPE_POST,
 		OBJECT_TYPE_PROFILE,
 	},
 	db::{Database, Error, PersistenceHandle, Result},

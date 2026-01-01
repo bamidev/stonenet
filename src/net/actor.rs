@@ -32,7 +32,7 @@ use crate::{
 	common::*,
 	core::*,
 	db::{self, Database, PersistenceHandle},
-	entity::{block, object},
+	entity::object,
 	identity::ActorPublicKeyV1,
 	net::{message::BlogchainValueType, NodeContactInfo},
 	trace::Mutex,
