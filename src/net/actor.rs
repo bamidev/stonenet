@@ -84,46 +84,31 @@ struct PublishObjectToDo {
 	hash: IdType,
 }
 
+// Here are all the functions that create raw response data for a 'find X request'.
 impl ActorInterface {
-	async fn find_block(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
-		let result = block::Entity::find()
-			.filter(block::Column::Hash.eq(id))
-			.one(self.db.inner())
-			.await?;
-
-		if let Some(record) = result {
-			let response = FindBlockResult {
-				data: record.data.into(),
-			};
-			Ok(Some(binserde::serialize(&response).unwrap()))
-		} else {
-			Ok(None)
-		}
+	async fn find_block(&self, hash: &IdType) -> db::Result<Option<Vec<u8>>> {
+		let result = self.db.find_block(hash).await?;
+		Ok(result.map(|data| binserde::serialize(&FindBlockResult { data: data.into() }).unwrap()))
 	}
 
-	async fn find_file(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.fetch_file(id)
-		})?;
-		Ok(result.map(|file| binserde::serialize(&file).unwrap()))
+	async fn find_file(&self, hash: &IdType) -> db::Result<Option<Vec<u8>>> {
+		let result = self.db.find_file(hash).await?;
+		Ok(result.map(|(file, _)| binserde::serialize(&FindFileResult { file }).unwrap()))
 	}
 
-	async fn find_object(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.fetch_object(id)
-		})?;
+	async fn find_object(&self, hash: &IdType) -> db::Result<Option<Vec<u8>>> {
+		let result = self.db.find_object(self.actor_id, hash).await?;
 		Ok(result.map(|(object, _)| binserde::serialize(&FindObjectResult { object }).unwrap()))
 	}
 
-	async fn find_next_object(&self, id: &IdType) -> db::Result<Option<Vec<u8>>> {
-		let result = tokio::task::block_in_place(|| {
-			let mut c = self.db.connect_old()?;
-			c.fetch_next_object(&self.actor_address, id)
-		})?;
-		Ok(result.map(|(hash, object, _)| {
-			binserde::serialize(&FindNextObjectResult { hash, object }).unwrap()
+	async fn find_next_object(&self, hash: &IdType) -> db::Result<Option<Vec<u8>>> {
+		let result = self.db.find_next_object(self.actor_id, hash).await?;
+		Ok(result.map(|(object, _, next_hash)| {
+			binserde::serialize(&FindNextObjectResult {
+				hash: next_hash,
+				object,
+			})
+			.unwrap()
 		}))
 	}
 }
@@ -202,7 +187,7 @@ impl ActorNode {
 
 				for sequence in 0..result.file.blocks.len() {
 					let block_id = &result.file.blocks[sequence];
-					if self.needs_block(block_id) {
+					if self.needs_block(block_id).await {
 						if !self.collect_block(connection, block_id).await? {
 							return Ok(false);
 						}
@@ -242,21 +227,21 @@ impl ActorNode {
 			match object.payload {
 				ObjectPayload::Profile(payload) => {
 					if let Some(file_id) = payload.description.as_ref() {
-						if self.needs_file(file_id) {
+						if self.needs_file(file_id).await {
 							if !self.collect_file(connection, file_id).await? {
 								return Ok(false);
 							}
 						}
 					}
 					if let Some(hash) = payload.avatar.as_ref() {
-						if self.needs_file(&hash) {
+						if self.needs_file(&hash).await {
 							if !self.collect_file(connection, &hash).await? {
 								return Ok(false);
 							}
 						}
 					}
 					if let Some(hash) = payload.wallpaper.as_ref() {
-						if self.needs_file(&hash) {
+						if self.needs_file(&hash).await {
 							if !self.collect_file(connection, &hash).await? {
 								return Ok(false);
 							}
@@ -270,7 +255,7 @@ impl ActorNode {
 					match &payload.data {
 						PostObjectCryptedData::Plain(plain) => {
 							for hash in &plain.files {
-								if self.needs_file(&hash) {
+								if self.needs_file(&hash).await {
 									if !self.collect_file(connection, &hash).await? {
 										return Ok(false);
 									}
@@ -413,7 +398,6 @@ impl ActorNode {
 		let result: Box<FindNextObjectResult> = self
 			.find_value(BlogchainValueType::NextObject, id, 100, false)
 			.await?;
-
 		Some(*result)
 	}
 
@@ -557,7 +541,7 @@ impl ActorNode {
 		for seq in start..head.sequence {
 			for object in self
 				.db()
-				.find_objects_by_sequence2(self.base.interface.actor_id, seq)
+				.find_objects_by_sequence(self.base.interface.actor_id, seq)
 				.await?
 			{
 				// TODO: If the amount of files found exceeds the file_limit, only insert the
@@ -580,42 +564,40 @@ impl ActorNode {
 	}
 
 	#[allow(dead_code)]
-	fn investigate_missing_object_files(
+	async fn investigate_missing_object_files(
 		&self, object: &BlogchainObject,
 	) -> db::Result<Vec<IdType>> {
-		tokio::task::block_in_place(|| {
-			let c = self.db().connect_old()?;
-			let mut results = Vec::new();
-			match &object.payload {
-				ObjectPayload::Profile(payload) => {
-					if let Some(file_hash) = payload.avatar.as_ref() {
-						if !c.has_file(file_hash)? {
-							results.push(file_hash.clone());
-						}
-					}
-					if let Some(file_hash) = payload.wallpaper.as_ref() {
-						if !c.has_file(file_hash)? {
-							results.push(file_hash.clone());
-						}
+		let tx = self.db().transaction().await?;
+		let mut results = Vec::new();
+		match &object.payload {
+			ObjectPayload::Profile(payload) => {
+				if let Some(file_hash) = payload.avatar.as_ref() {
+					if !tx.has_file(file_hash).await? {
+						results.push(file_hash.clone());
 					}
 				}
-				ObjectPayload::Post(payload) => match &payload.data {
-					PostObjectCryptedData::Plain(plain) => {
-						for file_hash in &plain.files {
-							if !c.has_file(&file_hash)? {
-								results.push(file_hash.clone());
-							}
-						}
-					}
-				},
-				ObjectPayload::HomeFile(payload) => {
-					if let Some(hash) = &payload.hash {
-						results.push(hash.clone());
+				if let Some(file_hash) = payload.wallpaper.as_ref() {
+					if !tx.has_file(file_hash).await? {
+						results.push(file_hash.clone());
 					}
 				}
 			}
-			Ok(results)
-		})
+			ObjectPayload::Post(payload) => match &payload.data {
+				PostObjectCryptedData::Plain(plain) => {
+					for file_hash in &plain.files {
+						if !tx.has_file(&file_hash).await? {
+							results.push(file_hash.clone());
+						}
+					}
+				}
+			},
+			ObjectPayload::HomeFile(payload) => {
+				if let Some(hash) = &payload.hash {
+					results.push(hash.clone());
+				}
+			}
+		}
+		Ok(results)
 	}
 
 	pub async fn join_network_starting_with_connection(
@@ -671,7 +653,7 @@ impl ActorNode {
 		}
 	}
 
-	pub fn new(
+	pub async fn new(
 		stop_flag: Arc<AtomicBool>, overlay_node: Arc<OverlayNode>, node_id: NodeAddress,
 		socket: Arc<sstp::Server>, actor_address: ActorAddress, actor_id: i64,
 		actor_info: ActorInfo, db: Database, bucket_size: usize, leak_first_request: bool,
@@ -685,9 +667,10 @@ impl ActorNode {
 			// TODO: Load head sequence from parameter in new, and create an async method `load`
 			// that does the same as `new` except it also loads the head_sequence from DB
 			head_sequence: StdMutex::new(
-				db.perform(|c| c.fetch_head(&actor_address))
-					.unwrap()
-					.map(|o| o.1.sequence),
+				db.find_head_object(actor_id)
+					.await
+					.expect("no head found")
+					.map(|r| r.0.sequence),
 			),
 			actor_address,
 			is_lurker,
@@ -716,7 +699,10 @@ impl ActorNode {
 			}
 		};
 
-		let result = self.db().find_profile_object(&self.base.interface.actor_address).await?;
+		let result = self
+			.db()
+			.find_last_profile_object(self.base.interface.actor_id)
+			.await;
 		let object = match result {
 			Ok(p) => p,
 			Err(e) => {
@@ -772,35 +758,29 @@ impl ActorNode {
 			return None;
 		}
 
-		let head_result = tokio::task::block_in_place(|| {
-			let c = match self.db().connect_old() {
-				Ok(c) => c,
-				Err(e) => {
-					error!("Unable to connect to database to check block: {}", e);
-					return None;
-				}
-			};
-			match c.fetch_head(&self.base.interface.actor_address) {
-				Ok(h) => h,
-				Err(e) => {
-					error!("Unable to fetch head: {}", e);
-					return None;
+		match self
+			.db()
+			.find_head_object(self.base.interface.actor_id)
+			.await
+		{
+			Ok(result) => {
+				if let Some((object, _, hash)) = result {
+					let response = HeadResponse { hash, object };
+					self.base
+						.simple_result(ACTOR_MESSAGE_TYPE_HEAD_RESPONSE, &response)
+				} else {
+					warn!(
+						"No head object found for actor {}",
+						&self.base.interface.actor_address
+					);
+					None
 				}
 			}
-		});
-
-		let response = match head_result {
-			None => {
-				error!(
-					"No objects found for actor {:?}",
-					&self.base.interface.actor_address
-				);
-				return None;
+			Err(e) => {
+				error!("Unable to fetch head object: {:?}", e);
+				None
 			}
-			Some((hash, object, ..)) => HeadResponse { hash, object },
-		};
-		self.base
-			.simple_result(ACTOR_MESSAGE_TYPE_HEAD_RESPONSE, &response)
+		}
 	}
 
 	async fn process_publish_object_request(
@@ -821,8 +801,8 @@ impl ActorNode {
 			let mut downloading_objects = self.downloading_objects.lock().await;
 			let mut needed = false;
 			if !downloading_objects.contains(&request.id) {
-				let actor_id = &self.actor_address();
-				needed = self.needs_object(actor_id, &request.id);
+				// FIXME: needs_object needs to return an error in case of database issues
+				needed = self.needs_object(&request.id).await;
 				if needed {
 					downloading_objects.push(request.id.clone());
 				}
@@ -849,64 +829,41 @@ impl ActorNode {
 		))
 	}
 
-	fn needs_object(&self, actor_address: &ActorAddress, id: &IdType) -> bool {
-		tokio::task::block_in_place(|| {
-			let c = match self.db().connect_old() {
-				Ok(c) => c,
-				Err(e) => {
-					error!("Unable to connect to database to check object: {}", e);
-					return false;
-				}
-			};
-			let has_object = match c.has_object(actor_address, id) {
-				Ok(b) => b,
-				Err(e) => {
-					error!("Unable to check object: {}", e);
-					return false;
-				}
-			};
-			!has_object
-		})
+	async fn needs_object(&self, hash: &IdType) -> bool {
+		let has_object = match self
+			.db()
+			.has_object(self.base.interface.actor_id, hash)
+			.await
+		{
+			Ok(b) => b,
+			Err(e) => {
+				error!("Unable to check object: {}", e);
+				return false;
+			}
+		};
+		!has_object
 	}
 
-	fn needs_file(&self, id: &IdType) -> bool {
-		tokio::task::block_in_place(|| {
-			let c = match self.db().connect_old() {
-				Ok(c) => c,
-				Err(e) => {
-					error!("Unable to connect to database to check file: {}", e);
-					return false;
-				}
-			};
-			let has_object = match c.has_file(id) {
-				Ok(b) => b,
-				Err(e) => {
-					error!("Unable to check file: {}", e);
-					return false;
-				}
-			};
-			!has_object
-		})
+	async fn needs_file(&self, hash: &IdType) -> bool {
+		let has_object = match self.db().has_file(hash).await {
+			Ok(b) => b,
+			Err(e) => {
+				error!("Unable to check file: {}", e);
+				return false;
+			}
+		};
+		!has_object
 	}
 
-	fn needs_block(&self, id: &IdType) -> bool {
-		tokio::task::block_in_place(|| {
-			let c = match self.db().connect_old() {
-				Ok(c) => c,
-				Err(e) => {
-					error!("Unable to connect to database to check block: {}", e);
-					return false;
-				}
-			};
-			let has_object = match c.has_block(id) {
-				Ok(b) => b,
-				Err(e) => {
-					error!("Unable to check block: {}", e);
-					return false;
-				}
-			};
-			!has_object
-		})
+	async fn needs_block(&self, hash: &IdType) -> bool {
+		let has_object = match self.db().has_block(hash).await {
+			Ok(b) => b,
+			Err(e) => {
+				error!("Unable to check block: {}", e);
+				return false;
+			}
+		};
+		!has_object
 	}
 
 	fn verify_block(&self, id: &IdType, data: &[u8]) -> bool {
@@ -1161,6 +1118,7 @@ impl ActorNode {
 				if updated {
 					let mut m = <object::ActiveModel as Default>::default();
 					m.found = Set(current_timestamp() as _);
+					// TODO: Put in src/db.rs
 					object::Entity::update_many()
 						.set(m)
 						.filter(object::Column::Hash.eq(&head_hash))
@@ -1294,8 +1252,11 @@ impl ActorNode {
 		self: &Arc<Self>,
 	) -> db::Result<Option<(IdType, BlogchainObject, Vec<NodeAddress>, bool, bool)>> {
 		let mut up_to_date_nodes = Vec::with_capacity(4);
-		let our_head_info = self.db().perform(|c| c.fetch_head(self.actor_address()))?;
-		let our_head_sequence = if let Some((_, o, _)) = &our_head_info {
+		let our_head_info = self
+			.db()
+			.find_head_object(self.base.interface.actor_id)
+			.await?;
+		let our_head_sequence = if let Some((o, _, _)) = &our_head_info {
 			*self.base.interface.head_sequence.lock().unwrap() = Some(o.sequence);
 			o.sequence as i128
 		} else {
@@ -1303,7 +1264,7 @@ impl ActorNode {
 		};
 		let (mut latest_hash, mut latest_object) = our_head_info
 			.as_ref()
-			.map(|(h, o, _)| (h.clone(), Some(o.clone())))
+			.map(|(o, _, h)| (h.clone(), Some(o.clone())))
 			.unwrap_or((IdType::default(), None));
 		let mut a_node_is_behind = true;
 		let mut updated = false;
@@ -1325,7 +1286,7 @@ impl ActorNode {
 							if object.sequence as i128 == our_head_sequence {
 								// But if the sequence is the same but the hash different, it may
 								// have been overwritten
-								if let Some((our_head_hash, our_head, _)) = &our_head_info {
+								if let Some((our_head, _, our_head_hash)) = &our_head_info {
 									if our_head_hash != &hash {
 										if object.created < our_head.created {
 											a_node_is_behind = true;
@@ -1411,7 +1372,7 @@ impl ActorNode {
 	async fn synchronize_object(
 		&self, connection: &mut Connection, object: &BlogchainObject,
 	) -> db::Result<()> {
-		let missing_files = self.investigate_missing_object_files(object)?;
+		let missing_files = self.investigate_missing_object_files(object).await?;
 		for file_id in &missing_files {
 			self.collect_file(connection, file_id).await?;
 		}
@@ -1431,8 +1392,10 @@ impl ActorNode {
 		let mut current_sequence: u64;
 		let mut previous_hash = head.previous_hash.clone();
 		loop {
-			if let Some((previous_object, _)) =
-				self.db().perform(|c| c.fetch_object(&previous_hash))?
+			if let Some((previous_object, _)) = self
+				.db()
+				.find_object(self.base.interface.actor_id, &previous_hash)
+				.await?
 			{
 				current_sequence = previous_object.sequence;
 				previous_hash = previous_object.previous_hash;
@@ -1456,14 +1419,13 @@ impl ActorNode {
 
 	/// Iteratively search the network for object meta data.
 	async fn synchronize_objects_from_start(&self) -> db::Result<bool> {
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db().connect_old()?;
-			c.fetch_last_verified_object(self.actor_address())
-		})?;
-
-		let (mut last_known_object_id, mut last_known_object_sequence) = match result {
-			Some((hash, object)) => (hash, object.sequence),
-			// If we don't have anything, try to find the first object as well
+		let result = self
+			.db()
+			.find_last_verified_object(self.base.interface.actor_id)
+			.await?;
+		let (mut last_object_hash, mut last_object_sequence, last_previous_hash) = match result {
+			Some((object, _, hash)) => (hash, object.sequence, object.previous_hash),
+			// If we didn't receive anything, try to find the first object instead
 			None => {
 				let first_object_hash = &self.base.interface.actor_info.first_object;
 				match self.find_object(first_object_hash).await {
@@ -1487,73 +1449,55 @@ impl ActorNode {
 						} else {
 							return Ok(false);
 						}
-						(first_object_hash.clone(), 0)
+						(first_object_hash.clone(), 0, IdType::default())
 					}
 				}
 			}
 		};
 
 		loop {
-			match self.find_next_object(&last_known_object_id).await {
+			match self.find_next_object(&last_object_hash).await {
 				None => return Ok(true),
 				Some(FindNextObjectResult { hash, object }) => {
-					if object.sequence != (last_known_object_sequence + 1) {
+					if object.sequence != (last_object_sequence + 1) {
 						error!(
 							"Object received with invalid sequence number: {} {}",
-							object.sequence, last_known_object_sequence
+							object.sequence, last_object_sequence
 						);
 						return Ok(true);
 					}
 
-					if self.verify_object(
-						&hash,
-						&object,
-						&self.base.interface.actor_info.public_key,
-					) {
+					if &object.previous_hash == &last_previous_hash
+						&& self.verify_object(
+							&hash,
+							&object,
+							&self.base.interface.actor_info.public_key,
+						) {
 						self.store_object(&hash, &object, true).await?;
 					} else {
 						return Ok(false);
 					}
-					last_known_object_id = hash.clone();
-					last_known_object_sequence += 1;
+					last_object_hash = hash.clone();
+					last_object_sequence += 1;
 
 					// Update the objects we may have already stored if we know they have been
 					// verified.
-					loop {
-						let to_break: db::Result<bool> = tokio::task::block_in_place(|| {
-							let mut c = self.db().connect_old()?;
-							let result = c.fetch_object_by_sequence(
-								self.actor_address(),
-								last_known_object_sequence + 1,
-							)?;
-
-							if let Some((hash, _, verified_from_start)) = result {
-								// If hashes don't compare, we know the object is invalid (even
-								// though the signature is correct), and so we should delete it.
-
-								if (object.sequence > 0
-									&& object.previous_hash != last_known_object_id)
-									|| (object.sequence == 0
-										&& object.previous_hash != IdType::default())
-								{
-									c.delete_object(self.actor_address(), &hash)?;
-									Ok(true)
-								} else {
-									last_known_object_sequence += 1;
-									last_known_object_id = hash.clone();
-									if !verified_from_start {
-										c.update_object_verified(self.actor_address(), &hash)?;
-									}
-
-									Ok(false)
-								}
-							} else {
-								Ok(true)
-							}
-						});
-						if to_break? {
+					let tx = self.db().transaction().await?;
+					while let Some((_, next_object_id, hash, verified_from_start)) = tx
+						.find_object_by_sequence(
+							self.base.interface.actor_id,
+							last_object_sequence + 1,
+						)
+						.await?
+					{
+						if verified_from_start {
 							break;
 						}
+
+						last_object_hash = hash;
+						tx.update_object_as_verified_from_start(next_object_id)
+							.await?;
+						last_object_sequence += 1;
 					}
 				}
 			}

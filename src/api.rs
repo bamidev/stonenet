@@ -198,13 +198,12 @@ impl Api {
 		let tx = self.db.transaction().await?;
 
 		// Construct fields for the share object
-		let identity_record = actor::Entity::find()
-			.filter(actor::Column::Address.eq(identity))
-			.one(tx.inner())
+		// FIXME: Remove the expect
+		let actor_id = tx
+			.find_actor_id(identity)
 			.await?
-			.expect("identity doesn't exist");
-
-		let next_object_sequence = tx.find_next_object_sequence(identity_record.id).await?;
+			.expect("unknown actor address");
+		let next_object_sequence = tx.find_next_object_sequence(actor_id).await?;
 		let post_object = PostObject {
 			data: PostObjectCryptedData::Plain(PostObjectDataPlain {
 				in_reply_to: Some((share.actor_address.clone(), share.object_hash.clone())),
@@ -218,7 +217,7 @@ impl Api {
 		// TODO: Create a seperate db function that merely finds the hash of the object,
 		// not the whole object.
 		let previous_object = tx
-			.find_objects_by_sequence(identity, next_object_sequence - 1)
+			.find_objects_by_sequence(actor_id, next_object_sequence - 1)
 			.await?;
 		let previous_hash = previous_object
 			.get(0)
@@ -236,7 +235,7 @@ impl Api {
 		// TODO: Move this into module `db`:
 		let result = object::Entity::insert(object::ActiveModel {
 			id: NotSet,
-			actor_id: Set(identity_record.id),
+			actor_id: Set(actor_id),
 			hash: Set(hash.clone()),
 			signature: Set(signature.clone()),
 			sequence: Set(next_object_sequence as _),
@@ -276,10 +275,7 @@ impl Api {
 	pub async fn find_block(
 		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
 	) -> db::Result<Option<Vec<u8>>> {
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.fetch_block(hash)
-		})?;
+		let result = self.db.find_block(hash).await?;
 
 		Ok(match result {
 			Some(b) => Some(b),
@@ -498,20 +494,6 @@ impl Api {
 				}
 			};
 
-			/*if file.compression_type != CompressionType::None as u8 {
-				// TODO: Make sure that the file meta data isn't searched over the network
-				// twice.
-				let actor_node_opt = self.node.get_actor_node_or_lurker(&actor_address).await;
-				if let Some(file_data) = self
-					.find_file_data(actor_node_opt.as_ref(), &file_hash)
-					.await?
-				{
-					return Ok(PossibleFileStream::Full(file_data));
-				} else {
-					return Ok(PossibleFileStream::None);
-				}
-			}*/
-
 			let (tx, rx) = mpsc::channel(1);
 			// Asynchronously start loading the blocks one by one, from disk preferably,
 			// from the network otherwise
@@ -523,7 +505,7 @@ impl Api {
 					let block_hash = &file.blocks[i];
 					// TODO: Put the logic that fetches blocks from either the DB or the network,
 					// into a seperate function
-					match db.perform(|c| c.fetch_block(block_hash)) {
+					match db.find_block(block_hash).await {
 						Ok(block_result) => match block_result {
 							Some(mut block) => {
 								db::decrypt_block(i as _, &file.plain_hash, &mut block);

@@ -1,6 +1,9 @@
-// FIXME: Remove when going stable:
-#![allow(deprecated)]
-
+/// This module contains all functions to get objects, files & blocks from - and into the database.
+///
+/// Some functions are placed within the `Database` handle, some in the `Transaction` handle, and
+/// some in both.
+/// Anything that needs to be done with multiple SQL queries needs to be done inside a transaction,
+/// because the transaction also locks the database.
 mod install;
 
 use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration};
@@ -10,13 +13,12 @@ use chacha20::{
 	cipher::{KeyIvInit, StreamCipher},
 	ChaCha20,
 };
-use chrono::Utc;
 use generic_array::{typenum::U12, GenericArray};
 use log::*;
 use rusqlite::{
 	params,
 	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Value, ValueRef},
-	Rows, ToSql,
+	ToSql,
 };
 use sea_orm::{prelude::*, sea_query::*, *};
 use thiserror::Error;
@@ -177,22 +179,6 @@ pub trait PersistenceHandle {
 		}
 	}
 
-    async fn find_last_profile_object(&self, actor_id: i64) -> Result<Option<(IdType, BlogchainObject)>> {
-        let record = profile_object::Entity::find()
-            .left_join(
-				object::Entity,
-				Expr::col((profile_object::Entity, profile_object::Column::ObjectId))
-					.equals((object::Entity, object::Column::Id)),
-            )
-            .filter(object::Column::ActorId.eq(actor_id))
-            .order_by_desc(object::Column::Sequence)
-            .limit(1)
-            .one(self.inner())
-            .await?;
-
-
-    }
-
 	async fn load_identity_system_user(&self, label: &str) -> Result<Option<Option<String>>> {
 		// TODO: Only load system_user from query
 		let result = identity::Entity::find()
@@ -270,6 +256,14 @@ pub trait PersistenceHandle {
 		Ok(identities)
 	}
 
+	async fn find_block(&self, id: &IdType) -> Result<Option<Vec<u8>>> {
+		let result = block::Entity::find()
+			.filter(block::Column::Hash.eq(id))
+			.one(self.inner())
+			.await?;
+		Ok(result.map(|r| r.data.into()))
+	}
+
 	async fn has_block(&self, hash: &IdType) -> Result<bool> {
 		Ok(block::Entity::find()
 			.filter(block::Column::Hash.eq(hash))
@@ -286,8 +280,9 @@ pub trait PersistenceHandle {
 			.is_some())
 	}
 
-	async fn has_object(&self, hash: &IdType) -> Result<bool> {
+	async fn has_object(&self, actor_id: i64, hash: &IdType) -> Result<bool> {
 		Ok(object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
 			.filter(object::Column::Hash.eq(hash))
 			.one(self.inner())
 			.await?
@@ -612,16 +607,6 @@ pub trait PersistenceHandle {
 			.collect())
 	}
 
-	async fn find_actor_head(&self, address: &ActorAddress) -> Result<Option<object::Model>> {
-		let result = object::Entity::find()
-			.filter(object::Column::ActorId.in_subquery(query_actor_id(address)))
-			.order_by_desc(object::Column::Sequence)
-			.limit(1)
-			.one(self.inner())
-			.await?;
-		Ok(result)
-	}
-
 	async fn find_file(&self, hash: &IdType) -> Result<Option<(File, i64)>> {
 		let result = if let Some(file) = file::Entity::find()
 			.filter(file::Column::Hash.eq(hash))
@@ -691,21 +676,6 @@ pub trait PersistenceHandle {
 	}
 
 	async fn find_objects_by_sequence(
-		&self, actor_address: &ActorAddress, sequence: u64,
-	) -> Result<Vec<object::Model>> {
-		if let Some(actor) = actor::Entity::find()
-			.filter(actor::Column::Address.eq(actor_address))
-			.limit(1)
-			.one(self.inner())
-			.await?
-		{
-			self.find_objects_by_sequence2(actor.id, sequence).await
-		} else {
-			Ok(Vec::new())
-		}
-	}
-
-	async fn find_objects_by_sequence2(
 		&self, actor_id: i64, sequence: u64,
 	) -> Result<Vec<object::Model>> {
 		Ok(object::Entity::find()
@@ -1023,6 +993,38 @@ impl Database {
 		}
 	}
 
+	pub async fn find_head_object(
+		&self, actor_id: i64,
+	) -> Result<Option<(BlogchainObject, i64, IdType)>> {
+		let tx = self.transaction().await?;
+		let result = tx.find_head_object(actor_id).await?;
+		Ok(result)
+	}
+
+	pub async fn find_last_profile_object(
+		&self, actor_id: i64,
+	) -> Result<Option<(IdType, BlogchainObject)>> {
+		let tx = self.transaction().await?;
+		let result = tx.find_last_profile_object(actor_id).await?;
+		Ok(result)
+	}
+
+	pub async fn find_last_verified_object(
+		&self, actor_id: i64,
+	) -> Result<Option<(BlogchainObject, i64, IdType)>> {
+		let tx = self.transaction().await?;
+		let result = tx.find_last_verified_object(actor_id).await?;
+		Ok(result)
+	}
+
+	pub async fn find_next_object(
+		&self, actor_id: i64, hash: &IdType,
+	) -> Result<Option<(BlogchainObject, i64, IdType)>> {
+		let tx = self.transaction().await?;
+		let result = tx.find_next_object(actor_id, hash).await?;
+		Ok(result)
+	}
+
 	pub async fn find_object(
 		&self, actor_id: i64, hash: &IdType,
 	) -> Result<Option<(BlogchainObject, i64)>> {
@@ -1103,218 +1105,6 @@ impl Database {
 }
 
 impl Connection {
-	fn _fetch_block_data<C>(this: &C, id: &IdType) -> Result<Option<Vec<u8>>>
-	where
-		C: DerefConnection,
-	{
-		let mut stat = this.prepare(
-			r#"
-			SELECT id, size, data FROM block WHERE hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query([id.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let rowid: i64 = row.get(0)?;
-			let size: usize = row.get(1)?;
-			let data: Vec<u8> = row.get(2)?;
-
-			if data.len() < size {
-				Err(Error::BlockDataCorrupt(rowid))?
-			} else if data.len() > size {
-				warn!(
-					"Block {} data blob is is larger than its size: {} > {}",
-					id,
-					data.len(),
-					size
-				);
-				Ok(Some(data[..size].to_vec()))
-			} else {
-				Ok(Some(data))
-			}
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub(crate) fn _find_identity<C>(tx: &C, address: &ActorAddress) -> rusqlite::Result<Option<i64>>
-	where
-		C: DerefConnection,
-	{
-		let mut stat = tx.prepare(
-			r#"
-			SELECT id FROM actor WHERE address = ?
-		"#,
-		)?;
-		let mut rows = stat.query([address])?;
-		match rows.next()? {
-			None => Ok(None),
-			Some(row) => Ok(Some(row.get(0)?)),
-		}
-	}
-
-	/// Finds the name and avatar file hash of an actor.
-	/// Tries to return it's known profile name & avatar.
-	fn _find_profile_limited(
-		tx: &impl DerefConnection, actor_id: i64,
-	) -> Result<(Option<String>, Option<IdType>)> {
-		let mut stat = tx.prepare(
-			r#"
-			SELECT po.name, po.avatar_file_hash
-			FROM profile_object AS po
-			INNER JOIN object AS o ON po.object_id = o.id
-			WHERE o.actor_id = ?
-			ORDER BY o.id DESC LIMIT 1
-		"#,
-		)?;
-		let mut rows = stat.query([actor_id])?;
-		Ok(if let Some(row) = rows.next()? {
-			let name: String = row.get(0)?;
-			let avatar_id: Option<IdType> = row.get(1)?;
-			(Some(name), avatar_id)
-		} else {
-			(None, None)
-		})
-	}
-
-	/// Returns the lastest object sequence for an actor if available.
-	async fn _max_object_sequence(
-		&self, tx: &impl ConnectionTrait, actor_id: i64,
-	) -> self::Result<Option<u64>> {
-		let stat = object::Entity::find()
-			.column_as(object::Column::Sequence.max(), "max")
-			.filter(object::Column::ActorId.eq(actor_id))
-			.build(DatabaseBackend::Sqlite);
-
-		if let Some(result) = tx.query_one(stat).await? {
-			Ok(Some(result.try_get_by_index::<i64>(0)? as u64))
-		} else {
-			Ok(None)
-		}
-	}
-
-	/// Returns the lastest object sequence for an actor if available.
-	fn _max_object_sequence_old<C>(tx: &C, actor_id: i64) -> rusqlite::Result<Option<u64>>
-	where
-		C: DerefConnection,
-	{
-		let mut stat = tx.prepare(
-			r#"
-			SELECT MAX(sequence) FROM object WHERE actor_id = ?
-		"#,
-		)?;
-		let mut rows = stat.query([actor_id])?;
-		match rows.next()? {
-			None => Ok(None),
-			Some(row) => Ok(row.get(0)?),
-		}
-	}
-
-	/// Returns the lastest object sequence for an actor if available.
-	fn _max_object_sequence_by_address<C>(
-		tx: &C, actor_address: &IdType,
-	) -> rusqlite::Result<Option<u64>>
-	where
-		C: DerefConnection,
-	{
-		let mut stat = tx.prepare(
-			r#"
-			SELECT MAX(o.sequence)
-			FROM object AS o
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			WHERE i.address = ?
-		"#,
-		)?;
-		let mut rows = stat.query([actor_address.to_string()])?;
-		match rows.next()? {
-			None => Ok(None),
-			Some(row) => Ok(row.get(0)?),
-		}
-	}
-
-	/// Returns the sequence that the next object would use.
-	pub(crate) async fn _next_object_sequence(
-		&self, tx: &impl ConnectionTrait, actor_id: i64,
-	) -> Result<u64> {
-		match self._max_object_sequence(tx, actor_id).await? {
-			None => Ok(0),
-			Some(s) => Ok(s + 1),
-		}
-	}
-
-	/// Returns the sequence that the next object would use.
-	pub(crate) fn _next_object_sequence_old<C>(tx: &C, actor_id: i64) -> Result<u64>
-	where
-		C: DerefConnection,
-	{
-		match Self::_max_object_sequence_old(tx, actor_id)? {
-			None => Ok(0),
-			Some(s) => Ok(s + 1),
-		}
-	}
-
-	/// Returns the sequence that the next object would use.
-	fn _next_object_sequence_by_address<C>(tx: &C, actor_address: &IdType) -> Result<u64>
-	where
-		C: DerefConnection,
-	{
-		match Self::_max_object_sequence_by_address(tx, actor_address)? {
-			None => Ok(0),
-			Some(s) => Ok(s + 1),
-		}
-	}
-
-
-	pub fn delete_object(&self, actor_address: &ActorAddress, hash: &IdType) -> Result<bool> {
-		let object_id: i64 = self.old.query_row(
-			r#"
-			SELECT id FROM object WHERE hash = ? AND actor_id = (
-				SELECT id FROM actor WHERE address = ?
-			)"#,
-			params![hash.to_string(), actor_address],
-			|r| r.get(0),
-		)?;
-
-		// Delete all possible foreign references first
-		self.old.execute(
-			r#"
-			DELETE FROM post_file WHERE object_id = ?
-		"#,
-			[object_id],
-		)?;
-		self.old.execute(
-			r#"
-			DELETE FROM post_tag WHERE object_id = ?
-		"#,
-			[object_id],
-		)?;
-		self.old.execute(
-			r#"
-			DELETE FROM post_object WHERE object_id = ?
-		"#,
-			[object_id],
-		)?;
-		self.old.execute(
-			r#"
-			DELETE FROM share_object WHERE object_id = ?
-		"#,
-			[object_id],
-		)?;
-		self.old.execute(
-			r#"
-			DELETE FROM profile_object WHERE object_id = ?
-		"#,
-			[object_id],
-		)?;
-
-		let affected = self.old.execute(
-			r#"
-			DELETE FROM object WHERE id = ?
-		"#,
-			[object_id],
-		)?;
-		Ok(affected > 0)
-	}
-
 	/// Returns a list of hashes of blocks we're still missing but also in need
 	/// of
 	pub fn fetch_missing_file_blocks(&self) -> Result<Vec<(i64, IdType)>> {
@@ -1337,167 +1127,6 @@ impl Connection {
 			results.push((file_id, hash));
 		}
 		Ok(results)
-	}
-
-	pub fn fetch_block(&self, id: &IdType) -> Result<Option<Vec<u8>>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT b.id, b.size, b.data
-			FROM block AS b
-			WHERE b.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query([id.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let block_id = row.get(0)?;
-			let size: usize = row.get(1)?;
-			let data: Vec<u8> = row.get(2)?;
-			if data.len() != size {
-				Err(Error::BlockDataCorrupt(block_id))?;
-			}
-			Ok(Some(data))
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn fetch_file(&self, id: &IdType) -> Result<Option<File>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT id, plain_hash, mime_type, block_count, compression_type FROM file WHERE hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query([id.to_string()])?;
-		if let Some(row) = rows.next()? {
-			let file_id = row.get(0)?;
-			let plain_hash: IdType = row.get(1)?;
-			let mime_type: String = row.get(2)?;
-			let block_count: u32 = row.get(3)?;
-			let compression_type: u8 = row.get(4)?;
-
-			let mut stat = self.prepare(
-				r#"
-				SELECT sequence, block_hash
-				FROM file_block
-				WHERE file_id = ?
-				ORDER BY sequence ASC
-			"#,
-			)?;
-			let mut rows = stat.query([file_id])?;
-			let mut i = 0u32;
-			let mut blocks = Vec::with_capacity(block_count as _);
-			while let Some(row) = rows.next()? {
-				let sequence: u32 = row.get(0)?;
-				if sequence != i {
-					Err(Error::FileMissingBlock(file_id, sequence))?;
-				}
-				let block_hash: IdType = row.get(1)?;
-
-				blocks.push(block_hash);
-				if blocks.len() == blocks.capacity() {
-					break;
-				}
-				i += 1;
-			}
-
-			Ok(Some(File {
-				compression_type,
-				plain_hash,
-				search_index: None,
-				mime_type: mime_type.into(),
-				blocks,
-			}))
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn fetch_follow_list(&self) -> Result<Vec<(ActorAddress, ActorInfo)>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT i.address, i.public_key, i.first_object, i.type
-			FROM following AS f
-			LEFT JOIN actor AS i ON f.actor_id = i.id
-		"#,
-		)?;
-		let mut rows = stat.query([])?;
-
-		let mut list = Vec::new();
-		while let Some(row) = rows.next()? {
-			let address: ActorAddress = row.get(0)?;
-			let public_key: ActorPublicKeyV1 = row.get(1)?;
-			let first_object: IdType = row.get(2)?;
-			let actor_type: String = row.get(3)?;
-			let actor_info = ActorInfo::V1(ActorInfoV1 {
-				flags: 0,
-				public_key,
-				first_object,
-				actor_type: actor_type.into(),
-			});
-			list.push((address, actor_info));
-		}
-		Ok(list)
-	}
-
-	pub fn fetch_object(&self, object_hash: &IdType) -> Result<Option<(BlogchainObject, bool)>> {
-		if let Some((_, object, verified)) = Self::_fetch_object(self, object_hash)? {
-			Ok(Some((object, verified)))
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn fetch_object_by_sequence(
-		&self, actor_id: &ActorAddress, sequence: u64,
-	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
-		Self::_fetch_object_by_sequence_old(self, actor_id, sequence)
-	}
-
-	pub fn fetch_next_object(
-		&mut self, actor_address: &ActorAddress, hash: &IdType,
-	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
-		let tx = self.old.transaction()?;
-		let mut stat = tx.prepare(
-			r#"
-			SELECT o.sequence
-			FROM object AS o
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			WHERE i.address = ? AND o.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_address, hash])?;
-		if let Some(row) = rows.next()? {
-			let sequence: u64 = row.get(0)?;
-			if sequence < u64::MAX {
-				if let Some((hash, object, verified_from_start)) =
-					Self::_fetch_object_by_sequence_old(&tx, actor_address, sequence + 1)?
-				{
-					Ok(Some((hash, object, verified_from_start)))
-				} else {
-					Ok(None)
-				}
-			} else {
-				Ok(None)
-			}
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn fetch_head(
-		&self, actor_id: &ActorAddress,
-	) -> Result<Option<(IdType, BlogchainObject, bool)>> {
-		Self::_fetch_head(self, actor_id)
-	}
-
-	pub fn fetch_last_verified_object(
-		&self, actor_id: &ActorAddress,
-	) -> Result<Option<(IdType, BlogchainObject)>> {
-		if let Some((hash, object, _)) = Self::_fetch_last_verified_object(self, actor_id)? {
-			Ok(Some((hash, object)))
-		} else {
-			Ok(None)
-		}
 	}
 
 	pub fn fetch_identity(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
@@ -1584,58 +1213,6 @@ impl Connection {
 		Ok(())
 	}
 
-	pub fn has_block(&self, hash: &IdType) -> rusqlite::Result<bool> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT b.id
-			FROM block AS b
-			WHERE b.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query([hash.to_string()])?;
-		Ok(rows.next()?.is_some())
-	}
-
-	pub fn has_file(&self, hash: &IdType) -> rusqlite::Result<bool> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT f.id
-			FROM file AS f
-			WHERE f.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query([hash])?;
-		Ok(rows.next()?.is_some())
-	}
-
-	pub fn has_object(&self, actor_address: &ActorAddress, id: &IdType) -> rusqlite::Result<bool> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT o.id
-			FROM object AS o
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			WHERE i.address = ? AND o.hash = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_address, id.to_string()])?;
-		Ok(rows.next()?.is_some())
-	}
-
-	pub fn has_object_sequence(
-		&self, actor_address: &ActorAddress, sequence: u64,
-	) -> rusqlite::Result<bool> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT o.id
-			FROM object AS o
-			LEFT JOIN actor AS i ON o.actor_id = i.id
-			WHERE i.address = ? AND o.sequence = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_address, sequence as i64])?;
-		Ok(rows.next()?.is_some())
-	}
-
 	pub fn is_following(&self, actor_id: &ActorAddress) -> Result<bool> {
 		let mut stat = self.prepare(
 			r#"
@@ -1678,21 +1255,6 @@ impl Connection {
 			params![actor_id],
 		)?;
 		Ok(affected > 0)
-	}
-
-	pub fn update_object_verified(
-		&mut self, actor_address: &ActorAddress, object_id: &IdType,
-	) -> Result<()> {
-		self.old.execute(
-			r#"
-			UPDATE object SET verified_from_start = 1
-			WHERE hash = ? AND actor_id = (
-				SELECT id FROM actor WHERE address = ?
-			)
-		"#,
-			params![object_id.to_string(), actor_address],
-		)?;
-		Ok(())
 	}
 }
 
@@ -1824,13 +1386,6 @@ impl IdFromBase58Error {
 	}
 }
 
-impl Transaction {
-	pub async fn commit(self) -> Result<()> {
-		self.0.commit().await?;
-		Ok(())
-	}
-}
-
 pub fn decrypt_block(index: u64, key: &IdType, data: &mut [u8]) {
 	encrypt_block(index, key, data)
 }
@@ -1849,6 +1404,12 @@ pub fn encrypt_block(index: u64, key: &IdType, data: &mut [u8]) {
 }
 
 impl Transaction {
+	/// Commit the transaction.
+	pub async fn commit(self) -> Result<()> {
+		self.0.commit().await?;
+		Ok(())
+	}
+
 	/// Creates a file by doing the following:
 	/// * Compress the data if the file type isn't known to use compression
 	///   already
@@ -1998,6 +1559,104 @@ impl Transaction {
 		Ok(actor.map(|a| a.id))
 	}
 
+	pub async fn find_head_object(
+		&self, actor_id: i64,
+	) -> Result<Option<(BlogchainObject, i64, IdType)>> {
+		let result = object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.order_by_desc(object::Column::Sequence)
+			.limit(1)
+			.one(self.inner())
+			.await?;
+		if let Some(record) = result {
+			if let Some((object, id)) = self.load_object(Some(record.clone())).await? {
+				return Ok(Some((object, id, record.hash)));
+			}
+		}
+		Ok(None)
+	}
+
+	pub async fn find_last_profile_object(
+		&self, actor_id: i64,
+	) -> Result<Option<(IdType, BlogchainObject)>> {
+		let result = profile_object::Entity::find()
+			.left_join(object::Entity)
+			.filter(object::Column::ActorId.eq(actor_id))
+			.order_by_desc(object::Column::Sequence)
+			.limit(1)
+			.one(self.inner())
+			.await?;
+
+		if let Some(record) = result {
+			let object_result = object::Entity::find_by_id(record.object_id)
+				.one(self.inner())
+				.await?;
+			if let Some(object_record) = object_result {
+				if let Some((object, _)) = self.load_object(Some(object_record.clone())).await? {
+					return Ok(Some((object_record.hash, object)));
+				}
+			}
+		}
+		Ok(None)
+	}
+
+	pub async fn find_last_verified_object(
+		&self, actor_id: i64,
+	) -> Result<Option<(BlogchainObject, i64, IdType)>> {
+		let result = object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.filter(object::Column::VerifiedFromStart.eq(true))
+			.order_by_desc(object::Column::Sequence)
+			.limit(1)
+			.one(self.inner())
+			.await?;
+		if let Some(record) = result {
+			if let Some((object, id)) = self.load_object(Some(record.clone())).await? {
+				return Ok(Some((object, id, record.hash)));
+			}
+		}
+		Ok(None)
+	}
+
+	/// Finds the object that comes after the object of the given hash.
+	pub async fn find_next_object(
+		&self, actor_id: i64, hash: &IdType,
+	) -> Result<Option<(BlogchainObject, i64, IdType)>> {
+		let result = object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.filter(object::Column::PreviousHash.eq(hash))
+			.limit(1)
+			.one(self.inner())
+			.await?;
+		if let Some(record) = result {
+			if let Some((object, id)) = self.load_object(Some(record.clone())).await? {
+				return Ok(Some((object, id, record.hash)));
+			}
+		}
+		Ok(None)
+	}
+
+	async fn load_object(
+		&self, result: Option<object::Model>,
+	) -> Result<Option<(BlogchainObject, i64)>> {
+		if let Some(record) = result {
+			if let Some(payload) = self.load_object_payload(record.id, record.r#type).await? {
+				return Ok(Some((
+					BlogchainObject {
+						created: record.created as _,
+						sequence: record.sequence as _,
+						payload,
+						previous_hash: record.previous_hash,
+						signature: record.signature,
+					},
+					record.id,
+				)));
+			}
+			error!("Payload was missing for object {}.", record.id);
+		}
+		Ok(None)
+	}
+
 	pub async fn find_object(
 		&self, actor_id: i64, hash: &IdType,
 	) -> Result<Option<(BlogchainObject, i64)>> {
@@ -2006,22 +1665,23 @@ impl Transaction {
 			.filter(object::Column::Hash.eq(hash))
 			.one(self.inner())
 			.await?;
+		self.load_object(result).await
+	}
 
+	pub async fn find_object_by_sequence(
+		&self, actor_id: i64, sequence: u64,
+	) -> Result<Option<(BlogchainObject, i64, IdType, bool)>> {
+		let result = object::Entity::find()
+			.filter(object::Column::ActorId.eq(actor_id))
+			.filter(object::Column::Sequence.eq(sequence))
+			.order_by_desc(object::Column::VerifiedFromStart)
+			.order_by_desc(object::Column::Created)
+			.one(self.inner())
+			.await?;
 		if let Some(record) = result {
-			let payload = self.load_object_payload(record.id, record.r#type).await?;
-			return Ok(Some((
-				BlogchainObject {
-					created: record.created as _,
-					sequence: record.sequence as _,
-					payload: payload.expect(&format!(
-						"Missing object payload for object ID {}",
-						record.id
-					)),
-					previous_hash: record.previous_hash,
-					signature: record.signature,
-				},
-				record.id,
-			)));
+			if let Some((object, id)) = self.load_object(Some(record.clone())).await? {
+				return Ok(Some((object, id, record.hash, record.verified_from_start)));
+			}
 		}
 		Ok(None)
 	}
@@ -2262,6 +1922,16 @@ impl Transaction {
 		profile_object::Entity::insert(record)
 			.exec(self.inner())
 			.await?;
+		Ok(())
+	}
+
+	pub async fn update_object_as_verified_from_start(&self, object_id: i64) -> Result<()> {
+		let model = object::ActiveModel {
+			id: Set(object_id),
+			verified_from_start: Set(true),
+			..Default::default()
+		};
+		object::Entity::update(model).exec(self.inner()).await?;
 		Ok(())
 	}
 }

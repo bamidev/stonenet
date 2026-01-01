@@ -1850,10 +1850,6 @@ impl Server {
 				_ => panic!("invalid session transport data"),
 			};
 			if let Some(tx) = relay_hello_ack_sender {
-				warn!(
-					"process_relay_hello_ack_packet {}",
-					packet.body.relayer_session_id
-				);
 				let _ = tx.send(packet.body.relayer_session_id).await;
 			}
 		}

@@ -794,19 +794,22 @@ impl OverlayNode {
 					}
 				};
 
-				let node = Arc::new(ActorNode::new(
-					self.base.stop_flag.clone(),
-					self.clone(),
-					self.node_id().clone(),
-					self.base.packet_server.clone(),
-					actor_address.clone(),
-					actor_id,
-					actor_info.clone(),
-					self.db().clone(),
-					self.base.bucket_size,
-					self.base.leak_first_request,
-					true,
-				));
+				let node = Arc::new(
+					ActorNode::new(
+						self.base.stop_flag.clone(),
+						self.clone(),
+						self.node_id().clone(),
+						self.base.packet_server.clone(),
+						actor_address.clone(),
+						actor_id,
+						actor_info.clone(),
+						self.db().clone(),
+						self.base.bucket_size,
+						self.base.leak_first_request,
+						true,
+					)
+					.await,
+				);
 
 				let (object_id, object) =
 					if let Some(r) = node.exchange_profile_on_connection(&mut connection).await {
@@ -1068,19 +1071,22 @@ impl OverlayNode {
 				};
 
 				// Start up a new node for the actor network
-				let node = Arc::new(ActorNode::new(
-					self.base.stop_flag.clone(),
-					self.clone(),
-					self.node_id().clone(),
-					self.base.packet_server.clone(),
-					actor_address.clone(),
-					actor_id,
-					actor_info.clone(),
-					self.db().clone(),
-					self.base.bucket_size,
-					self.base.leak_first_request,
-					false,
-				));
+				let node = Arc::new(
+					ActorNode::new(
+						self.base.stop_flag.clone(),
+						self.clone(),
+						self.node_id().clone(),
+						self.base.packet_server.clone(),
+						actor_address.clone(),
+						actor_id,
+						actor_info.clone(),
+						self.db().clone(),
+						self.base.bucket_size,
+						self.base.leak_first_request,
+						false,
+					)
+					.await,
+				);
 				actor_nodes.insert(actor_address.as_id().into_owned(), node.clone());
 				node
 			}
@@ -1313,19 +1319,22 @@ impl OverlayNode {
 				}
 			};
 
-			let node = Arc::new(ActorNode::new(
-				self.base.stop_flag.clone(),
-				self.clone(),
-				self.base.address.clone(),
-				self.base.packet_server.clone(),
-				address.clone(),
-				actor_id,
-				actor_info,
-				self.base.interface.db.clone(),
-				1, // A lurker node doesn't need to keep fingers in the first place
-				self.base.leak_first_request,
-				true,
-			));
+			let node = Arc::new(
+				ActorNode::new(
+					self.base.stop_flag.clone(),
+					self.clone(),
+					self.base.address.clone(),
+					self.base.packet_server.clone(),
+					address.clone(),
+					actor_id,
+					actor_info,
+					self.base.interface.db.clone(),
+					1, // A lurker node doesn't need to keep fingers in the first place
+					self.base.leak_first_request,
+					true,
+				)
+				.await,
+			);
 			node.base
 				.mark_node_helpful(connection.their_node_info())
 				.await;
