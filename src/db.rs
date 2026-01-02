@@ -660,6 +660,31 @@ pub trait PersistenceHandle {
 		Ok(actor_info_opt)
 	}
 
+	/// Finds all the hashes of any file block that we know we don't have yet.
+	async fn find_missing_file_blocks(&self, actor_id: i64) -> Result<Vec<IdType>> {
+		let query = Query::select()
+			.distinct()
+			.column(file_block::Column::BlockHash)
+			.from(file_block::Entity)
+			.left_join(
+				block::Entity,
+				Expr::col((file_block::Entity, file_block::Column::BlockHash))
+					.equals((block::Entity, block::Column::Hash)),
+			)
+			.and_where(block::Column::Id.is_null())
+			.take();
+		let stat = self.backend().build(&query);
+		let results = self.inner().query_all(stat).await?;
+
+		// Convert query results to a list of block hashes
+		let mut hashes = Vec::with_capacity(results.len());
+		for result in results {
+			let hash: IdType = result.try_get_by_index(0)?;
+			hashes.push(hash);
+		}
+		Ok(hashes)
+	}
+
 	async fn find_next_object_sequence(&self, actor_id: i64) -> Result<u64> {
 		let stat = object::Entity::find()
 			.select_only()
@@ -1105,30 +1130,6 @@ impl Database {
 }
 
 impl Connection {
-	/// Returns a list of hashes of blocks we're still missing but also in need
-	/// of
-	pub fn fetch_missing_file_blocks(&self) -> Result<Vec<(i64, IdType)>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT fb.file_id, fb.block_hash
-			FROM file_block AS fb
-			INNER JOIN file AS f ON f.id = fb.file_id
-			WHERE fb.block_hash NOT IN (
-				SELECT hash FROM block
-			)
-		"#,
-		)?;
-
-		let mut rows = stat.query([])?;
-		let mut results = Vec::new();
-		while let Some(row) = rows.next()? {
-			let file_id: i64 = row.get(0)?;
-			let hash: IdType = row.get(1)?;
-			results.push((file_id, hash));
-		}
-		Ok(results)
-	}
-
 	pub fn fetch_identity(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
 		let mut stat = self.prepare(
 			r#"

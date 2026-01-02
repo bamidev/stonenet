@@ -10,8 +10,7 @@ use super::consolidated_feed::ConsolidatedObjectType;
 use crate::{
 	common::{current_timestamp, IdType},
 	core::{
-		ActorAddress, CompressionType, OBJECT_TYPE_HOME_FILE, OBJECT_TYPE_POST,
-		OBJECT_TYPE_PROFILE,
+		ActorAddress, CompressionType, OBJECT_TYPE_HOME_FILE, OBJECT_TYPE_POST, OBJECT_TYPE_PROFILE,
 	},
 	db::{Database, Error, PersistenceHandle, Result},
 	entity::*,

@@ -34,12 +34,6 @@ use crate::{
 	db::{self, Database, PersistenceHandle},
 };
 
-#[derive(Clone, Serialize)]
-pub struct IdentityData {
-	label: String,
-	address: String,
-}
-
 #[derive(Clone, Default, Serialize)]
 pub struct AppState {
 	identities: Vec<IdentityInfo>,

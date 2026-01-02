@@ -481,12 +481,12 @@ impl ActorNode {
 		}
 	}
 
-	/// Returns a list of block hashes that we'd like to have.
-	fn investigate_missing_blocks(&self) -> db::Result<Vec<(i64, IdType)>> {
-		tokio::task::block_in_place(|| {
-			let c = self.db().connect_old()?;
-			c.fetch_missing_file_blocks()
-		})
+	/// Returns a list of block hashes that we'd like to have, where the first blocks are the most
+	/// wanted by our node.
+	async fn investigate_missing_blocks(&self) -> db::Result<Vec<IdType>> {
+		self.db()
+			.find_missing_file_blocks(self.base.interface.actor_id)
+			.await
 	}
 
 	async fn object_missing_files(&self, object: &ObjectPayload) -> db::Result<Vec<IdType>> {
@@ -1233,9 +1233,11 @@ impl ActorNode {
 		Ok(())
 	}
 
+	/// Searches the network for any blocks that we want to have because we have the file meta data
+	/// for it.
 	pub(super) async fn synchronize_blocks(&self) -> db::Result<()> {
-		let missing_blocks = self.investigate_missing_blocks()?;
-		for (_file_id, hash) in missing_blocks {
+		let missing_blocks = self.investigate_missing_blocks().await?;
+		for hash in missing_blocks {
 			if let Some(result) = self.find_block(&hash).await {
 				self.db().store_block(hash, &result.data).await?;
 			}
