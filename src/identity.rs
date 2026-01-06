@@ -9,10 +9,6 @@ use ed25519_dalek::{self as ed25519, Signer};
 use ed448_rust as ed448;
 use pem::{self, Pem, PemError};
 use rand::{prelude::*, rngs::OsRng};
-use rusqlite::{
-	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
-	ToSql,
-};
 use sea_orm::{prelude::*, ColIdx, TryGetError};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
@@ -316,32 +312,6 @@ impl NodePrivateKey {
 
 	pub fn sign(&self, message: &[u8]) -> NodeSignature {
 		NodeSignature(self.inner.sign(message))
-	}
-}
-
-impl FromSql for NodePrivateKey {
-	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-		match value {
-			ValueRef::Blob(bytes) => {
-				if bytes.len() >= ed25519::SECRET_KEY_LENGTH {
-					FromSqlResult::Ok(NodePrivateKey::from_bytes(
-						bytes[..ed25519::SECRET_KEY_LENGTH].try_into().unwrap(),
-					))
-				} else {
-					FromSqlResult::Err(FromSqlError::InvalidBlobSize {
-						expected_size: ed25519::SECRET_KEY_LENGTH,
-						blob_size: bytes.len(),
-					})
-				}
-			}
-			_ => FromSqlResult::Err(FromSqlError::InvalidType),
-		}
-	}
-}
-
-impl ToSql for NodePrivateKey {
-	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-		Ok(ToSqlOutput::Borrowed(ValueRef::Blob(self.as_bytes())))
 	}
 }
 

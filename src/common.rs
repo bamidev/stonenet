@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use base58::*;
 use num::bigint::BigUint;
 use rand::Rng;
-use rusqlite::types::*;
 use sea_orm::{DbErr, TryGetError};
 use serde::{Deserialize, Serialize, Serializer};
 use sha3::{Digest, Sha3_256};
@@ -186,18 +185,6 @@ impl fmt::Debug for IdType {
 impl From<[u8; 32]> for IdType {
 	fn from(other: [u8; 32]) -> Self {
 		Self(other)
-	}
-}
-
-impl FromSql for IdType {
-	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-		match value {
-			ValueRef::Text(data) => {
-				let string = str::from_utf8(data).map_err(|e| FromSqlError::Other(Box::new(e)))?;
-				IdType::from_base58(string.as_ref()).map_err(|e| FromSqlError::Other(Box::new(e)))
-			}
-			_ => FromSqlResult::Err(FromSqlError::InvalidType),
-		}
 	}
 }
 

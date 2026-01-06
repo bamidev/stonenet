@@ -11,7 +11,10 @@ use crate::{
 	serde_limit::*,
 };
 
-pub type FindActorRequest = FindNodeRequest;
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FindActorRequest {
+	pub address: ActorAddress,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FindActorResponse {

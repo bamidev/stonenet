@@ -7,6 +7,8 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = false)]
 	pub actor_id: i64,
+	// TODO: Add this field:
+	//pub system_user: string,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

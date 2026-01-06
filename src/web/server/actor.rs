@@ -96,7 +96,7 @@ async fn actor_get(
 		Ok(p) => p,
 		Err(e) => return server_error_response(e, "Unable to fetch profile"),
 	};
-	let is_following: bool = match g.base.api.is_following(&address) {
+	let is_following: bool = match g.base.api.is_following(&address).await {
 		Ok(f) => f,
 		Err(e) => return server_error_response(e, "Unable to fetch follow status"),
 	};

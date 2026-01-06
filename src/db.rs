@@ -15,11 +15,6 @@ use chacha20::{
 };
 use generic_array::{typenum::U12, GenericArray};
 use log::*;
-use rusqlite::{
-	params,
-	types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Value, ValueRef},
-	ToSql,
-};
 use sea_orm::{prelude::*, sea_query::*, *};
 use thiserror::Error;
 use unsafe_send_sync::UnsafeSendSync;
@@ -44,14 +39,6 @@ pub struct Database {
 	orm: DatabaseConnection,
 }
 
-#[deprecated]
-pub struct Connection {
-	// The documentation of rusqlite mentions that the Connection struct does
-	// not need a mutex, that it is already thread-safe. For some reason it was
-	// not marked as Send and Sync.
-	old: UnsafeSendSync<rusqlite::Connection>,
-}
-
 // TODO: Make the sea_orm::DatabaseTransaction inside private
 pub struct Transaction(pub(crate) sea_orm::DatabaseTransaction);
 
@@ -60,7 +47,6 @@ pub enum Error {
 	/// Sqlite error
 	DecompressDecodeError(i32),
 	OrmError(sea_orm::DbErr),
-	SqliteError(rusqlite::Error),
 
 	ActorAddress(FromBytesAddressError),
 	InvalidCompressionType(u8),
@@ -81,9 +67,6 @@ pub enum Error {
 	/// Something in the database is not how it is expected to be.
 	UnexpectedState(String),
 }
-
-pub trait DerefConnection: Deref<Target = rusqlite::Connection> {}
-impl<T> DerefConnection for T where T: Deref<Target = rusqlite::Connection> {}
 
 pub type Result<T> = trace::Result<T, self::Error>;
 
@@ -254,6 +237,14 @@ pub trait PersistenceHandle {
 			});
 		}
 		Ok(identities)
+	}
+
+	async fn find_actor_id(&self, actor_address: &ActorAddress) -> Result<Option<i64>> {
+		let actor = actor::Entity::find()
+			.filter(actor::Column::Address.eq(actor_address))
+			.one(self.inner())
+			.await?;
+		Ok(actor.map(|a| a.id))
 	}
 
 	async fn find_block(&self, id: &IdType) -> Result<Option<Vec<u8>>> {
@@ -435,7 +426,8 @@ pub trait PersistenceHandle {
 		})
 	}
 
-	async fn load_is_following(&self, webfinger_address: &str) -> Result<bool> {
+	// TODO: Move to the transaction struct
+	async fn is_following_fediverse(&self, webfinger_address: &str) -> Result<bool> {
 		let is_following = if let Some(actor) = activity_pub_actor::Entity::find()
 			.filter(activity_pub_actor::Column::Address.eq(webfinger_address.to_string()))
 			.one(self.inner())
@@ -529,27 +521,6 @@ pub trait PersistenceHandle {
 			.collect())
 	}
 
-	async fn load_profile(&self, actor_address: &ActorAddress) -> Result<Option<ProfileObject>> {
-		if let Some(actor) = actor::Entity::find()
-			.filter(actor::Column::Address.eq(actor_address))
-			.one(self.inner())
-			.await?
-		{
-			if let Some(result) = object::Entity::find()
-				.filter(object::Column::ActorId.eq(actor.id))
-				.filter(object::Column::Type.eq(OBJECT_TYPE_PROFILE))
-				.one(self.inner())
-				.await?
-			{
-				self.load_profile_object_payload(result.id).await
-			} else {
-				Ok(None)
-			}
-		} else {
-			Ok(None)
-		}
-	}
-
 	async fn load_profile_object_payload(&self, object_id: i64) -> Result<Option<ProfileObject>> {
 		let result = profile_object::Entity::find_by_id(object_id)
 			.one(self.inner())
@@ -637,6 +608,7 @@ pub trait PersistenceHandle {
 		Ok(result)
 	}
 
+	/// Get the actor info for a particular actor by its address.
 	async fn find_actor_info(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
 		let result = actor::Entity::find()
 			.filter(actor::Column::Address.eq(address))
@@ -660,17 +632,57 @@ pub trait PersistenceHandle {
 		Ok(actor_info_opt)
 	}
 
+	/// Gets the actor info for a particular actor by providing the search hash value corresponding
+	/// to an actor address, regardless of version of the address.
+	async fn find_actor_info_by_hash(&self, hash: IdType) -> Result<Option<ActorInfo>> {
+		// Currently there is only one address version
+		let address = ActorAddress::V1(hash);
+		self.find_actor_info(&address).await
+	}
+
 	/// Finds all the hashes of any file block that we know we don't have yet.
 	async fn find_missing_file_blocks(&self, actor_id: i64) -> Result<Vec<IdType>> {
 		let query = Query::select()
 			.distinct()
 			.column(file_block::Column::BlockHash)
-			.from(file_block::Entity)
+			.from(object::Entity)
+            // Join the different object types into the result to get the available files
+            .full_outer_join(
+                post_object::Entity,
+                Expr::col((post_object::Entity, post_object::Column::ObjectId)).equals((object::Entity, object::Column::Id))
+            )
+            .full_outer_join(
+                profile_object::Entity,
+                Expr::col((profile_object::Entity, profile_object::Column::ObjectId)).equals((object::Entity, object::Column::Id))
+            )
+            .full_outer_join(
+                post_file::Entity,
+                Expr::col((post_file::Entity, post_file::Column::ObjectId)).equals((object::Entity, object::Column::Id))
+            )
+            // All available files that are part of the objects
+            .right_join(
+                file::Entity,
+                Expr::col((file::Entity, file::Column::Hash)).equals((post_file::Entity, post_file::Column::Hash))
+                .or(
+                    Expr::col((file::Entity, file::Column::Hash)).equals((profile_object::Entity, profile_object::Column::AvatarFileHash))
+                )
+                .or(
+                    Expr::col((file::Entity, file::Column::Hash)).equals((profile_object::Entity, profile_object::Column::DescriptionFileHash))
+                )
+                .or(
+                    Expr::col((file::Entity, file::Column::Hash)).equals((profile_object::Entity, profile_object::Column::WallpaperFileHash))
+                )
+            )
+            // Join all file blocks that does not have any corresponding block data stored
+            .left_join(
+                file_block::Entity,
+                Expr::col((file_block::Entity, file_block::Column::FileId)).equals((file::Entity, file::Column::Id))
+            )
 			.left_join(
 				block::Entity,
-				Expr::col((file_block::Entity, file_block::Column::BlockHash))
-					.equals((block::Entity, block::Column::Hash)),
+				Expr::col((file_block::Entity, file_block::Column::BlockHash)).equals((block::Entity, block::Column::Hash)),
 			)
+            .and_where(object::Column::ActorId.eq(actor_id))
 			.and_where(block::Column::Id.is_null())
 			.take();
 		let stat = self.backend().build(&query);
@@ -761,6 +773,14 @@ pub trait PersistenceHandle {
 		Ok(values)
 	}
 
+	async fn is_following(&self, actor_id: i64) -> Result<bool> {
+		let result = following::Entity::find()
+			.filter(following::Column::ActorId.eq(actor_id))
+			.one(self.inner())
+			.await?;
+		Ok(result.is_some())
+	}
+
 	async fn load_trust_score(&self, address: &NodeAddress) -> Result<u8> {
 		// Try our own list of trusted nodes first
 		let result = trusted_node::Entity::find()
@@ -832,6 +852,15 @@ pub trait PersistenceHandle {
 			.last_insert_id)
 	}
 
+	/// Stops the client from following a particular actor.
+	async fn unfollow(&self, actor_id: i64) -> Result<bool> {
+		let result = following::Entity::delete_many()
+			.filter(following::Column::ActorId.eq(actor_id))
+			.exec(self.inner())
+			.await?;
+		Ok(result.rows_affected > 0)
+	}
+
 	async fn update_identity_label(&self, old_label: &str, new_label: &str) -> Result<()> {
 		let mut model = <identity::ActiveModel as std::default::Default>::default();
 		model.label = Set(new_label.to_string());
@@ -844,137 +873,7 @@ pub trait PersistenceHandle {
 	}
 }
 
-#[allow(dead_code)]
-fn query_actor_id(address: &ActorAddress) -> SelectStatement {
-	Query::select()
-		.column(actor::Column::Id)
-		.from(Alias::new(actor::Entity::default().table_name()))
-		.and_where(actor::Column::Address.eq(address))
-		.take()
-}
-
-impl FromSql for ActorAddress {
-	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-		match value {
-			ValueRef::Blob(blob) => {
-				if blob.len() != 33 {
-					Err(FromSqlError::InvalidBlobSize {
-						expected_size: 33,
-						blob_size: blob.len(),
-					})
-				} else {
-					Ok(Self::from_bytes(blob).map_err(|e| FromSqlError::Other(Box::new(e)))?)
-				}
-			}
-			_ => Err(FromSqlError::InvalidType),
-		}
-	}
-}
-
-impl ToSql for ActorAddress {
-	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-		Ok(ToSqlOutput::Owned(Value::Blob(self.to_bytes())))
-	}
-}
-
-impl ToSql for IdType {
-	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-		Ok(ToSqlOutput::Owned(Value::Text(self.to_string())))
-	}
-}
-
-impl ToSql for ActorPublicKeyV1 {
-	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-		Ok(ToSqlOutput::Owned(Value::Blob(
-			self.clone().to_bytes().to_vec(),
-		)))
-	}
-}
-
-impl FromSql for ActorPublicKeyV1 {
-	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-		match value {
-			ValueRef::Blob(blob) => {
-				if blob.len() != 57 {
-					Err(FromSqlError::InvalidBlobSize {
-						expected_size: 57,
-						blob_size: blob.len(),
-					})
-				} else {
-					Ok(Self::from_bytes(*array_ref![blob, 0, 57]))
-				}
-			}
-			_ => Err(FromSqlError::InvalidType),
-		}
-	}
-}
-
-impl FromSql for ActorPrivateKeyV1 {
-	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-		match value {
-			ValueRef::Blob(blob) => {
-				if blob.len() != 57 {
-					Err(FromSqlError::InvalidBlobSize {
-						expected_size: 57,
-						blob_size: blob.len(),
-					})
-				} else {
-					Ok(Self::from_bytes(*array_ref![blob, 0, 57]))
-				}
-			}
-			_ => Err(FromSqlError::InvalidType),
-		}
-	}
-}
-
-impl FromSql for ActorSignatureV1 {
-	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-		match value {
-			ValueRef::Blob(blob) => {
-				if blob.len() != 114 {
-					Err(FromSqlError::InvalidBlobSize {
-						expected_size: 114,
-						blob_size: blob.len(),
-					})
-				} else {
-					Ok(Self::from_bytes(*array_ref![blob, 0, 114]))
-				}
-			}
-			_ => Err(FromSqlError::InvalidType),
-		}
-	}
-}
-
-impl ToSql for ActorSignatureV1 {
-	fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-		Ok(ToSqlOutput::Borrowed(ValueRef::Blob(self.as_bytes())))
-	}
-}
-
-impl FromSql for NodePublicKey {
-	fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-		match value {
-			ValueRef::Blob(blob) => {
-				if blob.len() != 32 {
-					Err(FromSqlError::InvalidBlobSize {
-						expected_size: 32,
-						blob_size: blob.len(),
-					})
-				} else {
-					Ok(Self::from_bytes(*array_ref![blob, 0, 32])
-						.map_err(|e| FromSqlError::Other(Box::new(e)))?)
-				}
-			}
-			_ => Err(FromSqlError::InvalidType),
-		}
-	}
-}
-
 impl Database {
-	pub fn connect_old(&self) -> self::Result<Connection> {
-		Ok(Connection::open_old(&self.path)?)
-	}
-
 	pub async fn ensure_block(&self, hash: &IdType, data: &[u8]) -> Result<i64> {
 		if let Some(record) = block::Entity::find()
 			.filter(block::Column::Hash.eq(hash))
@@ -1058,42 +957,17 @@ impl Database {
 		Ok(result)
 	}
 
-	/// Runs the given closure, which pauzes the task that runs it, but doesn't
-	/// block the runtime.
-	pub fn perform<T>(&self, task: impl FnOnce(Connection) -> Result<T>) -> Result<T> {
-		tokio::task::block_in_place(move || {
-			let connection = self.connect_old()?;
-			task(connection)
-		})
-	}
-
-	fn install(conn: &Connection) -> Result<()> {
-		Ok(conn.execute_batch(install::QUERY)?)
+	async fn install(conn: &DatabaseConnection) -> Result<()> {
+		conn.query_one(Statement::from_sql_and_values(
+			conn.get_database_backend(),
+			install::QUERY,
+			[],
+		))
+		.await?;
+		Ok(())
 	}
 
 	pub async fn load(path: PathBuf) -> Result<Self> {
-		let connection = Connection::open_old(&path).map_err(|e| Error::SqliteError(e))?;
-
-		match connection.prepare("SELECT major, minor FROM version") {
-			Ok(mut stat) => {
-				let mut rows = stat.query([])?;
-				let _row = rows.next()?.expect("missing version data");
-			}
-			Err(e) => match &e {
-				rusqlite::Error::SqliteFailure(_err, msg) => match msg {
-					Some(error_message) => {
-						if error_message == "no such table: version" {
-							Self::install(&connection)?;
-						} else {
-							Err(e)?;
-						}
-					}
-					None => Err(e)?,
-				},
-				_ => Err(e)?,
-			},
-		}
-
 		let mut opts = ConnectOptions::new(format!("sqlite://{}?mode=rwc", path.display()));
 		opts.idle_timeout(Duration::from_secs(10));
 		opts.acquire_timeout(Duration::from_secs(1));
@@ -1101,6 +975,27 @@ impl Database {
 		let orm = sea_orm::Database::connect(opts)
 			.await
 			.map_err(|e| self::Error::OrmError(e))?;
+
+		match orm
+			.query_one(Statement::from_sql_and_values(
+				orm.get_database_backend(),
+				"SELECT major, minor FROM version",
+				[],
+			))
+			.await
+		{
+			Ok(_) => {}
+			//Query(SqlxError(Database(SqliteError { code: 1, message: "no such table: version" })))
+			Err(e) => {
+				if let DbErr::Query(sea_orm::error::RuntimeErr::SqlxError(e2)) = &e {
+					if e2.to_string().ends_with("no such table: version") {
+						Self::install(&orm).await?;
+						return Ok(Self { path, orm });
+					}
+				}
+				Err(e)?
+			}
+		}
 
 		Ok(Self { path, orm })
 	}
@@ -1129,136 +1024,6 @@ impl Database {
 	}
 }
 
-impl Connection {
-	pub fn fetch_identity(&self, address: &ActorAddress) -> Result<Option<ActorInfo>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT public_key, first_object, type FROM actor WHERE address = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![address])?;
-		if let Some(row) = rows.next()? {
-			let public_key: ActorPublicKeyV1 = row.get(0)?;
-			let first_object: IdType = row.get(1)?;
-			let actor_type: String = row.get(2)?;
-			Ok(Some(ActorInfo::V1(ActorInfoV1 {
-				flags: 0,
-				public_key,
-				first_object,
-				actor_type: actor_type.into(),
-			})))
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn fetch_identity_by_id(&self, id: &IdType) -> Result<Option<ActorInfo>> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT public_key, first_object, type FROM actor WHERE address = ?
-		"#,
-		)?;
-		let mut rows = stat.query([id])?;
-		if let Some(row) = rows.next()? {
-			let public_key: ActorPublicKeyV1 = row.get(0)?;
-			let first_object: IdType = row.get(1)?;
-			let actor_type: String = row.get(2)?;
-			Ok(Some(ActorInfo::V1(ActorInfoV1 {
-				flags: 0,
-				public_key,
-				first_object,
-				actor_type: actor_type.into(),
-			})))
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn follow(&mut self, actor_id: &ActorAddress, actor_info: &ActorInfo) -> Result<()> {
-		let tx = self.old.transaction()?;
-
-		let actor_id = {
-			let mut stat = tx.prepare(
-				r#"
-				SELECT id FROM actor WHERE address = ?
-			"#,
-			)?;
-			let mut rows = stat.query(params![actor_id])?;
-			let actor_id = if let Some(row) = rows.next()? {
-				row.get(0)?
-			} else {
-				drop(rows);
-				let mut stat = tx.prepare(
-					r#"
-					INSERT INTO actor (address, public_key, first_object, type) VALUES (?,?,?,?,?)
-				"#,
-				)?;
-				stat.insert(params![
-					actor_id,
-					actor_info.public_key,
-					actor_info.first_object,
-					ACTOR_TYPE_BLOGCHAIN
-				])?
-			};
-			actor_id
-		};
-
-		tx.execute(
-			r#"
-			INSERT INTO following (actor_id) VALUES (?)
-		"#,
-			params![actor_id],
-		)?;
-
-		tx.commit()?;
-		Ok(())
-	}
-
-	pub fn is_following(&self, actor_id: &ActorAddress) -> Result<bool> {
-		let mut stat = self.prepare(
-			r#"
-			SELECT 1
-			FROM following AS f
-			LEFT JOIN actor AS i ON f.actor_id = i.id
-			WHERE i.address = ?
-		"#,
-		)?;
-		let mut rows = stat.query(params![actor_id])?;
-		Ok(rows.next()?.is_some())
-	}
-
-	pub fn old(&self) -> &rusqlite::Connection {
-		&self.old.0
-	}
-
-	pub fn old_mut(&mut self) -> &mut rusqlite::Connection {
-		&mut self.old.0
-	}
-
-	pub fn open_old(path: &Path) -> rusqlite::Result<Self> {
-		let c = rusqlite::Connection::open(&path)?;
-		// For some reason foreign key checks are not working properly on windows, so
-		// disable it for now.
-		#[cfg(target_family = "windows")]
-		c.pragma_update(None, "foreign_keys", false)?;
-		Ok(Self {
-			old: UnsafeSendSync::new(c),
-		})
-	}
-
-	pub fn unfollow(&mut self, actor_id: &ActorAddress) -> Result<bool> {
-		let affected = self.old.execute(
-			r#"
-			DELETE FROM following WHERE actor_id = (
-				SELECT id FROM actor WHERE address = ?
-			)
-		"#,
-			params![actor_id],
-		)?;
-		Ok(affected > 0)
-	}
-}
-
 impl PersistenceHandle for Database {
 	type Inner = sea_orm::DatabaseConnection;
 
@@ -1275,27 +1040,12 @@ impl PersistenceHandle for Transaction {
 	}
 }
 
-impl Deref for Connection {
-	type Target = rusqlite::Connection;
-
-	fn deref(&self) -> &Self::Target {
-		self.old()
-	}
-}
-
-impl DerefMut for Connection {
-	fn deref_mut(&mut self) -> &mut Self::Target {
-		self.old_mut()
-	}
-}
-
 impl fmt::Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
 			Self::DecompressDecodeError(code) => {
 				write!(f, "decode error during decompression: {}", code)
 			}
-			Self::SqliteError(e) => write!(f, "{}", e),
 			Self::OrmError(e) => write!(f, "{}", e),
 			Self::ActorAddress(e) => write!(f, "invalid actor address format: {}", e),
 			Self::InvalidCompressionType(code) => write!(f, "invalid compression type: {}", code),
@@ -1342,18 +1092,6 @@ impl From<FromBytesAddressError> for Error {
 impl From<FromBytesAddressError> for Traced<Error> {
 	fn from(other: FromBytesAddressError) -> Self {
 		Error::ActorAddress(other).trace()
-	}
-}
-
-impl From<rusqlite::Error> for Error {
-	fn from(other: rusqlite::Error) -> Self {
-		Self::SqliteError(other)
-	}
-}
-
-impl From<rusqlite::Error> for Traced<Error> {
-	fn from(other: rusqlite::Error) -> Self {
-		Error::SqliteError(other).trace()
 	}
 }
 
@@ -1552,14 +1290,6 @@ impl Transaction {
 		Ok(actor_id)
 	}
 
-	pub async fn find_actor_id(&self, actor_address: &ActorAddress) -> Result<Option<i64>> {
-		let actor = actor::Entity::find()
-			.filter(actor::Column::Address.eq(actor_address))
-			.one(self.inner())
-			.await?;
-		Ok(actor.map(|a| a.id))
-	}
-
 	pub async fn find_head_object(
 		&self, actor_id: i64,
 	) -> Result<Option<(BlogchainObject, i64, IdType)>> {
@@ -1635,6 +1365,16 @@ impl Transaction {
 			}
 		}
 		Ok(None)
+	}
+
+	pub async fn follow(&self, actor_address: &ActorAddress, actor_info: &ActorInfo) -> Result<()> {
+		let actor_id = self.ensure_actor_id(actor_address, actor_info).await?;
+		let model = following::ActiveModel {
+			actor_id: Set(actor_id),
+			..Default::default()
+		};
+		following::Entity::insert(model).exec(self.inner()).await?;
+		Ok(())
 	}
 
 	async fn load_object(

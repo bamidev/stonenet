@@ -107,7 +107,7 @@ Hoi ik ben Kees!
 		mime_type: "text/markdown".into(),
 		data: profile_description.as_bytes().to_vec(),
 	};
-	let (actor_id, actor_info) = node1
+	let (actor_address, actor_info) = node1
 		.create_identity(
 			None,
 			identity_label,
@@ -120,7 +120,7 @@ Hoi ik ben Kees!
 		.expect("unable to create identity");
 	let _ = node1
 		.node
-		.join_actor_network(&actor_id, &actor_info)
+		.join_actor_network(&actor_address, &actor_info)
 		.await
 		.expect("unable to join actor network");
 	// Create some posts
@@ -135,7 +135,7 @@ Hoi ik ben Kees!
 		.expect("unable to load identity private key");
 	let first_post_hash = node1
 		.publish_post(
-			&actor_id,
+			&actor_address,
 			&private_key,
 			"text/plain",
 			first_message,
@@ -147,7 +147,7 @@ Hoi ik ben Kees!
 		.expect("unable to publish first post");
 	let second_post_hash = node1
 		.publish_post(
-			&actor_id,
+			&actor_address,
 			&private_key,
 			"text/plain",
 			second_message,
@@ -159,7 +159,7 @@ Hoi ik ben Kees!
 		.expect("unable to publish second post");
 	let third_post_hash = node1
 		.publish_post(
-			&actor_id,
+			&actor_address,
 			&private_key,
 			"text/plain",
 			third_message,
@@ -170,17 +170,17 @@ Hoi ik ben Kees!
 		.await
 		.expect("unable to publish third post");
 	let share_object = ShareObject {
-		actor_address: actor_id.clone(),
+		actor_address: actor_address.clone(),
 		object_hash: first_post_hash.clone(),
 	};
 	let share_hash = node1
-		.publish_share(&actor_id, &private_key, &share_object)
+		.publish_share(&actor_address, &private_key, &share_object)
 		.await
 		.expect("unable to publish share object");
 
 	// Check if all profile data came through correctly
 	let profile_info = node2
-		.find_profile_info("", &actor_id)
+		.find_profile_info("", &actor_address)
 		.await
 		.expect("unable to fetch profile object from node")
 		.expect("got empty profile object");
@@ -191,19 +191,24 @@ Hoi ik ben Kees!
 	);
 	let actor_node = node2
 		.node
-		.join_actor_network(&actor_id, &actor_info)
+		.join_actor_network(&actor_address, &actor_info)
 		.await
 		.expect("actor node not found");
-	let profile_object = node2
+	let (_, profile_object) = node2
 		.db
-		.load_profile(&actor_id)
+		.find_last_profile_object(actor_node.actor_id())
 		.await
 		.expect("unable to load profile")
 		.expect("unable to load profile");
+	let profile = if let ObjectPayload::Profile(p) = profile_object.payload {
+		p
+	} else {
+		panic!("not a profile object")
+	};
 	let avatar = node2
 		.load_file_data(
 			Some(&actor_node),
-			&profile_object.avatar.expect("missing avatar ID"),
+			&profile.avatar.expect("missing avatar ID"),
 		)
 		.await
 		.expect("unable to get avatar file")
@@ -211,7 +216,7 @@ Hoi ik ben Kees!
 	let wallpaper = node2
 		.load_file_data(
 			Some(&actor_node),
-			&profile_object.wallpaper.expect("missing wallpaper ID"),
+			&profile.wallpaper.expect("missing wallpaper ID"),
 		)
 		.await
 		.expect("unable to get wallpaper file")
@@ -235,7 +240,7 @@ Hoi ik ben Kees!
 
 	// Download the posts
 	let actor_found = node2
-		.follow(&actor_id, false)
+		.follow(&actor_address, false)
 		.await
 		.expect("unable to follow node 1");
 	assert!(actor_found, "actor not found");
@@ -247,7 +252,7 @@ Hoi ik ben Kees!
 	let fourth_message = "Fourth post!!!";
 	let fourth_post_hash = node1
 		.publish_post(
-			&actor_id,
+			&actor_address,
 			&private_key,
 			"text/plain",
 			fourth_message,

@@ -410,22 +410,18 @@ impl Api {
 	}
 
 	pub async fn follow(&self, address: &ActorAddress, join_network: bool) -> db::Result<bool> {
-		let result = tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.fetch_identity(address)
-		})?;
+		let result = self.db.find_actor_info(address).await?;
 		let actor_info = match result {
-			Some(pk) => pk,
+			Some(ai) => ai,
 			None => match self.node.find_actor(&address, 100, false).await {
 				Some(r) => r.0.clone(),
 				None => return Ok(false),
 			},
 		};
 
-		let _private_key = tokio::task::block_in_place(|| {
-			let mut c = self.db.connect_old()?;
-			c.follow(address, &actor_info)
-		})?;
+		let tx = self.db.transaction().await?;
+		tx.follow(address, &actor_info).await?;
+		tx.commit().await?;
 
 		// Join network
 		if join_network {
@@ -439,23 +435,25 @@ impl Api {
 		Ok(true)
 	}
 
-	pub async fn unfollow(&self, actor_id: &ActorAddress) -> db::Result<bool> {
-		let success = tokio::task::block_in_place(|| {
-			let mut c = self.db.connect_old()?;
-			c.unfollow(actor_id)
-		})?;
-
-		if success {
-			self.node.drop_actor_network(&actor_id.as_id()).await;
+	pub async fn unfollow(&self, actor_address: &ActorAddress) -> db::Result<bool> {
+		if let Some(actor_id) = self.db.find_actor_id(actor_address).await? {
+			let success = self.db.unfollow(actor_id).await?;
+			if success {
+				self.node.drop_actor_network(&actor_address.as_id()).await;
+			}
+			Ok(success)
+		} else {
+			Ok(false)
 		}
-		Ok(success)
 	}
 
-	pub fn is_following(&self, actor_id: &ActorAddress) -> db::Result<bool> {
-		tokio::task::block_in_place(|| {
-			let c = self.db.connect_old()?;
-			c.is_following(actor_id)
-		})
+	/// Whether the client is following the given actor address.
+	pub async fn is_following(&self, actor_address: &ActorAddress) -> db::Result<bool> {
+		if let Some(actor_id) = self.db.find_actor_id(actor_address).await? {
+			self.db.is_following(actor_id).await
+		} else {
+			Ok(false)
+		}
 	}
 
 	pub async fn load_home_feed(&self, count: u64, offset: u64) -> db::Result<Vec<ObjectInfo>> {

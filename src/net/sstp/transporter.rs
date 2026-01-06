@@ -201,7 +201,6 @@ impl KeyStateManager {
 	pub fn new(
 		our_dh_key: x25519::StaticSecret, their_dh_key: x25519::PublicKey, window_size: u16,
 	) -> Self {
-		let ks = KeyState::new(our_dh_key.clone(), their_dh_key.clone(), window_size);
 		Self {
 			use_first: true,
 			keystate1: KeyState::new(our_dh_key.clone(), their_dh_key.clone(), window_size),

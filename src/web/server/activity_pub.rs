@@ -247,7 +247,7 @@ async fn activity_pub_actor_get(
 		return server_error_response2("Actor URL not found from webfinger");
 	};
 
-	let is_following = match g.base.api.db.load_is_following(&address[1..]).await {
+	let is_following = match g.base.api.db.is_following_fediverse(&address[1..]).await {
 		Ok(r) => r,
 		Err(e) => return server_error_response(e, "Database error while checking follow status"),
 	};
@@ -1066,26 +1066,23 @@ pub async fn webfinger(
 		};
 
 		let webfinger = match &address {
-			Address::Actor(actor_address) => match g.base.api.db.connect_old() {
-				Err(e) => return server_error_response(e, "DB issue"),
-				Ok(c) => {
-					let result = match c.fetch_identity(actor_address) {
-						Err(e) => return server_error_response(e, "DB issue"),
-						Ok(r) => r,
-					};
-
-					if result.is_some() {
-						WebFingerDocument::new(
-							&g.base.server_info.federation_domain,
-							&g.base.server_info.url_base,
-							"actor",
-							&address,
-						)
-					} else {
-						return not_found_error_response("actor doesn't exist");
+			Address::Actor(actor_address) => {
+				match g.base.api.db.find_actor_info(actor_address).await {
+					Err(e) => return server_error_response(e, "DB issue"),
+					Ok(result) => {
+						if result.is_some() {
+							WebFingerDocument::new(
+								&g.base.server_info.federation_domain,
+								&g.base.server_info.url_base,
+								"actor",
+								&address,
+							)
+						} else {
+							return not_found_error_response("actor doesn't exist");
+						}
 					}
 				}
-			},
+			}
 			Address::Node(_) => WebFingerDocument::new(
 				&g.base.server_info.federation_domain,
 				&g.base.server_info.url_base,

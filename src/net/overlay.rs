@@ -144,21 +144,21 @@ impl NodeInterface for OverlayInterface {
 		return Ok(response);
 	}
 
-	async fn find_value(&self, value_type: u8, id: &IdType) -> db::Result<Option<Vec<u8>>> {
+	async fn find_value(&self, value_type: u8, hash: &IdType) -> db::Result<Option<Vec<u8>>> {
 		if value_type > 0 {
 			return Ok(None);
 		}
 
 		// Check what we have in memory first.
 		let node_actor_store = NODE_ACTOR_STORE.lock().await;
-		let value = if let Some(store_entry) = node_actor_store.find(id) {
+		let value = if let Some(store_entry) = node_actor_store.find(hash) {
 			let actor_info = store_entry.actor_info.clone();
 			let peers: Vec<NodeContactInfo> =
 				store_entry.available_nodes.clone().into_iter().collect();
 			drop(node_actor_store);
 
 			let actor_nodes = self.actor_nodes.lock().await;
-			let i_am_available = actor_nodes.contains_key(id);
+			let i_am_available = actor_nodes.contains_key(hash);
 			drop(actor_nodes);
 
 			FindActorResult {
@@ -169,10 +169,7 @@ impl NodeInterface for OverlayInterface {
 		}
 		// Otherwise, check our database
 		else {
-			let result = tokio::task::block_in_place(|| {
-				let db = self.db.connect_old()?;
-				db.fetch_identity_by_id(id)
-			})?;
+			let result = self.db.find_actor_info_by_hash(hash.clone()).await?;
 			if result.is_none() {
 				return Ok(None);
 			}
@@ -1850,11 +1847,9 @@ impl OverlayNode {
 			}
 			Ok(r) => r,
 		};
+		let actor_hash = request.address.clone().to_id();
 
-		let (connected, fingers) = self
-			.base
-			.find_nearest_public_contacts(&request.node_id)
-			.await;
+		let (connected, fingers) = self.base.find_nearest_public_contacts(&actor_hash).await;
 		let mut response = FindActorResponse {
 			contacts: FindNodeResponse {
 				is_relay_node: self.is_relay_node,
@@ -1867,7 +1862,7 @@ impl OverlayNode {
 		// Load the public key and available nodes from our cache
 		{
 			let store = NODE_ACTOR_STORE.lock().await;
-			match store.find(&request.node_id) {
+			match store.find(&actor_hash) {
 				None => {}
 				Some(entry) => {
 					response.result = Some(FindActorResult {
@@ -1880,10 +1875,7 @@ impl OverlayNode {
 		}
 
 		// If we have the public key in our own database, show that as well.
-		let actor_info_result = tokio::task::block_in_place(|| {
-			let c = self.db().connect_old()?;
-			c.fetch_identity_by_id(&request.node_id)
-		});
+		let actor_info_result = self.db().find_actor_info(&request.address).await;
 		match actor_info_result {
 			Err(e) => error!("Database error while looking for public key: {}", e),
 			Ok(actor_info) => {
