@@ -38,6 +38,8 @@ use crate::{
 	},
 };
 
+/// The interface that loads all sorts of data from either the local database or the Stonenet
+/// network.
 #[derive(Clone)]
 pub struct Api {
 	pub node: Arc<OverlayNode>,
@@ -55,19 +57,14 @@ pub enum CreateIdentityError {
 	InvalidSystemUsername(String),
 }
 
-#[derive(Debug, Serialize)]
-pub struct OtherObjectInfo {
-	pub mime_type: String,
-	pub content: String,
-}
-
+// TODO: Turn this into: pub type PossibleFileStream = Option<(...)>
 pub enum PossibleFileStream {
 	None,
-	//Full(FileData),
 	Stream((String, CompressionType, ReceiverStream<db::Result<Vec<u8>>>)),
 }
 
 impl Api {
+	/// Close the network node.
 	pub async fn close(self) {
 		self.node.close().await;
 	}
@@ -108,6 +105,14 @@ impl Api {
 		(object_hash, object)
 	}
 
+	/// Create a new identity.
+	///
+	/// * `system_user`: An optional system username for which this identity is available.
+	/// * `label`: A string to identity this identity in the client.
+	/// * `name`: The initial display name for the identity.
+	/// * `avatar`: The initial avatar for the identity.
+	/// * `wallpaper`: The initial profile wallpaper for the identity.
+	/// * `description`: The initial profile description for the dentity.
 	pub async fn create_identity(
 		&self, system_user: Option<String>, label: &str, name: &str, avatar: Option<&FileData>,
 		wallpaper: Option<&FileData>, description: Option<&FileData>,
@@ -192,6 +197,11 @@ impl Api {
 		Ok((actor_address, actor_info))
 	}
 
+	/// Creates a post object that is just there to share another post.
+	///
+	/// * `identity`: The actor address of the identity to create the post for
+	/// * `private_key`: The identity's private key
+	/// * `share`: The 'share' data
 	pub async fn create_share(
 		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, share: &ShareObject,
 	) -> db::Result<(i64, IdType, BlogchainObject)> {
@@ -272,6 +282,10 @@ impl Api {
 		Ok((result.last_insert_id, hash, object))
 	}
 
+	/// Searches for the data of a block.
+	///
+	/// * `actor_node_opt`: If provided, will use the given actor node to search the network as well.
+	/// * `hash`: The hash of the block
 	pub async fn find_block(
 		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
 	) -> db::Result<Option<Vec<u8>>> {
@@ -289,6 +303,11 @@ impl Api {
 		})
 	}
 
+	/// Finds the file meta data.
+	///
+	/// * `actor_node_opt`: An optional actor node handle. If the file is not found in the local
+	/// database, it will be searched for in the actor network.
+	/// * `hash`: The hash of the file.
 	pub async fn find_file(
 		&self, actor_node_opt: Option<&Arc<ActorNode>>, hash: &IdType,
 	) -> db::Result<Option<(File, i64)>> {
@@ -306,6 +325,11 @@ impl Api {
 		Ok(None)
 	}
 
+	/// Finds the file meta data.
+	///
+	/// * `hash`: The file hash.
+	/// * `actor_address_opt`: An optional actor address. If set and the file could not be found in
+	/// the local database, it will be searched in the actor network of the corresponding address.
 	pub async fn find_file2(
 		&self, hash: &IdType, actor_address_opt: Option<&ActorAddress>,
 	) -> db::Result<Option<(File, i64)>> {
@@ -360,6 +384,10 @@ impl Api {
 		}))
 	}
 
+	/// Loads the private key for an identity from disk.
+	///
+	/// * `system_user`: The system user that the identity is stored for.
+	/// * `label`: The label of the identity.
 	pub async fn load_identity_private_key(
 		&self, system_user: Option<&str>, label: &str,
 	) -> db::Result<Option<Result<ActorPrivateKeyV1, ActorPrivateKeyLoadError>>> {
@@ -386,12 +414,18 @@ impl Api {
 	}
 
 	/// Fetchess all identities that are accessible to the given system user.
+	/// When a system is user is specified, the identities tied to that user will also be included
+	/// in the resulting list.
 	pub async fn fetch_identities(
 		&self, system_user: Option<&str>,
 	) -> db::Result<Vec<(String, ActorAddress, IdType, String)>> {
 		self.db.fetch_identities(system_user, false).await
 	}
 
+	/// Finds profile info for a particular actor.
+	///
+	/// * `url_base`: The URL base that will be used in all the URL's of the profile info.
+	/// * `actor_address`: The address of the actor for which the profile info shall be obtained.
 	pub async fn find_profile_info(
 		&self, url_base: &str, actor_address: &ActorAddress,
 	) -> db::Result<Option<ProfileObjectInfo>> {
@@ -409,6 +443,11 @@ impl Api {
 		Ok(None)
 	}
 
+	/// Lets the client follow an actor.
+	///
+	/// * `address`: The address for the actor to follow.
+	/// * `join_network`: Whether to also join the actor network of the actor with our own network
+	/// node.
 	pub async fn follow(&self, address: &ActorAddress, join_network: bool) -> db::Result<bool> {
 		let result = self.db.find_actor_info(address).await?;
 		let actor_info = match result {
@@ -435,6 +474,9 @@ impl Api {
 		Ok(true)
 	}
 
+	/// Stop following an actor.
+	///
+	/// * `actor_address`: The address of the actor to stop following.
 	pub async fn unfollow(&self, actor_address: &ActorAddress) -> db::Result<bool> {
 		if let Some(actor_id) = self.db.find_actor_id(actor_address).await? {
 			let success = self.db.unfollow(actor_id).await?;
@@ -456,6 +498,10 @@ impl Api {
 		}
 	}
 
+	/// Loads a list of object info that can be used to display a 'feed'.
+	///
+	/// * `count`: The number of objects to load.
+	/// * `offset`: The number of objects to skip.
 	pub async fn load_home_feed(&self, count: u64, offset: u64) -> db::Result<Vec<ObjectInfo>> {
 		// TODO: Manage tracked actors as followers with a CLI tool
 		//       Currently, because tracked actors are not stored in the DB, it
@@ -559,6 +605,16 @@ impl Api {
 		}
 	}
 
+	/// Publishes a post. This creates the post object as part of the given actor's blogchain, stores
+	/// it in the database, and publishes it to any other nodes that might be available.
+	///
+	/// * `actor_address`: The address of the identity to create the post for.
+	/// * `private_key`: The private key of the identity.
+	/// * `msg_mime_type`: The mime-type of the message of the post.
+	/// * `message`: The message of the post.
+	/// * `tags`: Any tags for the post.
+	/// * `attachments`: Any attachments for the post.
+	/// * `in_reply_to`: An optional reference to another post.
 	pub async fn publish_post(
 		&self, actor_address: &ActorAddress, private_key: &ActorPrivateKeyV1, msg_mime_type: &str,
 		message: &str, tags: Vec<String>, attachments: &[FileData],
@@ -653,6 +709,7 @@ impl Api {
 		Ok(hash)
 	}
 
+	/// Publishes a post object that only shares another post.
 	pub async fn publish_share(
 		&self, identity: &ActorAddress, private_key: &ActorPrivateKeyV1, object: &ShareObject,
 	) -> db::Result<IdType> {
@@ -670,7 +727,7 @@ impl Api {
 		Ok(hash)
 	}
 
-	/// Calculates the signature of the s
+	/// Calculates the hash and signature of an object.
 	fn sign_object(
 		sequence: u64, previous_hash: &IdType, created: u64, payload: &ObjectPayload,
 		private_key: &ActorPrivateKeyV1,
@@ -691,6 +748,7 @@ impl Api {
 		(hash, signature)
 	}
 
+	/// Processes all objects that have not yet been added to the 'consolidated feed'.
 	pub async fn update_consolidated_feed(&self) -> db::Result<()> {
 		fn merge_objects(
 			batch: u64, stonenet_objects: HashMap<i64, (i64, i64)>,
@@ -753,6 +811,17 @@ impl Api {
 		}
 	}
 
+	/// Changes profile information for an identity.
+	/// This creates a new profile object and publishes it.
+	///
+	/// * `private_key`: The private key of the identity.
+	/// * `actor_id`: The database id of the identity's actor.
+	/// * `old_label`: The current label of the identity.
+	/// * `new_label`: The new label of the identity. This can be the same as `old_label`.
+	/// * `name`: The new display name on the profile.
+	/// * `avatar`: The new avatar on the profile.
+	/// * `wallpaper`: The new wallpaper on the profile.
+	/// * `description`: The new description on the profile.
 	pub async fn update_profile(
 		&self, private_key: &ActorPrivateKeyV1, actor_id: i64, old_label: &str, new_label: &str,
 		name: &str, avatar: Option<FileData>, wallpaper: Option<FileData>,
