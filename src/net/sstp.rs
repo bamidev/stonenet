@@ -236,7 +236,10 @@ impl Connection {
 
 	/// Forgets about this connection.
 	/// The session data will be discarded, and the underlying TCP connection will remain alive.
+	#[allow(dead_code)]
 	pub fn forget(self) {
+		// Currently there is no reason to yet to close the SSTP connection while keeping the
+		// underlying TCP connection open. Maybe one day I will need to do that...
 		self.server.forget_session_async(self.dest_session_id());
 		self.transporter.forget();
 	}

@@ -506,10 +506,6 @@ impl Server {
 		(buffer, request_included)
 	}
 
-	fn compose_hello_ack_ack_packet(&self, their_session_id: u16) -> Vec<u8> {
-		self._compose_hello_ack_ack_packet(PACKET_TYPE_HELLO_ACK_ACK, their_session_id)
-	}
-
 	pub async fn connect(
 		self: &Arc<Self>, target: &ContactOption, node_id: Option<&NodeAddress>,
 		request: Option<&[u8]>,
@@ -2007,7 +2003,7 @@ impl Server {
 	async fn send_hello_ack_ack_packet(
 		&self, sender: &dyn LinkSocketSender, session_id: u16,
 	) -> Result<()> {
-		let buffer = self._compose_hello_ack_ack_packet(PACKET_TYPE_HELLO_ACK_ACK, session_id);
+		let buffer = self.compose_hello_ack_ack_packet(PACKET_TYPE_HELLO_ACK_ACK, session_id);
 		sender.send(&buffer).await?;
 		Ok(())
 	}
@@ -2032,7 +2028,7 @@ impl Server {
 		Ok(())
 	}
 
-	fn _compose_hello_ack_ack_packet(&self, packet_type: u8, session_id: u16) -> Vec<u8> {
+	fn compose_hello_ack_ack_packet(&self, packet_type: u8, session_id: u16) -> Vec<u8> {
 		let signature = self.private_key.sign(&session_id.to_le_bytes());
 		let packet = HelloAckAckPacket {
 			session_id,
@@ -2070,7 +2066,7 @@ impl Server {
 	async fn send_relay_ready_ack_packet(
 		&self, sender: &dyn LinkSocketSender, session_id: u16,
 	) -> Result<()> {
-		let buffer = self._compose_hello_ack_ack_packet(PACKET_TYPE_RELAY_READY_ACK, session_id);
+		let buffer = self.compose_hello_ack_ack_packet(PACKET_TYPE_RELAY_READY_ACK, session_id);
 		sender.send(&buffer).await?;
 		Ok(())
 	}
@@ -2195,7 +2191,7 @@ impl Server {
 		});
 	}
 
-	/// Starts garbage collecting the unresponded requests.
+	/// Starts garbage collecting all the SSTP sessions that have not received any packets anymore.
 	pub fn spawn_garbage_collector(self: Arc<Self>) {
 		tokio::task::spawn(async move {
 			let this = self.clone();
@@ -2965,6 +2961,7 @@ impl<S> SstpSocketServer<S>
 where
 	S: ConnectionLessLinkServer + 'static,
 {
+	#[allow(unused)]
 	fn port(&self) -> u16 {
 		self.port
 	}

@@ -385,7 +385,7 @@ pub async fn compose_activity_from_object_info(
 						reply_webfingers = webfinger::find_from_content(&message.body);
 					}
 
-					let mut note = ActivityNoteObject::new2(
+					let mut note = ActivityNoteObject::new(
 						&object.actor_url,
 						&object.id,
 						object.created,
@@ -1359,29 +1359,15 @@ impl ActivityNoteObject {
 		}
 	}
 
-	/// `id_info`: An optional tuple of the url base, the actor address & the
-	/// object hash, to construct the id property from.
+	/// Constructor.
+	///
+	/// * `actor_url`: The base URL of the actor.
+	/// * `object_hash`: The object's hash.
+	/// * `created`: The `created` field of the object, the timestamp.
+	/// * `mime_type`: The mime-type of the main message.
+	/// * `content`: The main message content.
+	/// * `attachments`: The post attachments.
 	pub fn new(
-		url_base: &str, actor_address: &ActorAddress, object_hash: &str, created: u64,
-		mime_type: String, content: String, attachments: &[(&str, IdType)],
-	) -> Self {
-		Self {
-			id: Some(format!(
-				"{}/actor/{}/object/{}/activity-pub",
-				url_base, actor_address, object_hash
-			)),
-			r#type: ActivityNoteObjectType,
-			content,
-			mediaType: mime_type,
-			published: DateTime(created),
-			attachment: Self::attachments(url_base, actor_address, attachments),
-			inReplyTo: None,
-		}
-	}
-
-	/// `id_info`: An optional tuple of the url base, the actor address & the
-	/// object hash, to construct the id property from.
-	pub fn new2(
 		actor_url: &str, object_hash: &str, created: u64, mime_type: String, content: String,
 		attachments: &[FileInfo],
 	) -> Self {

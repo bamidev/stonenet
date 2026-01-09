@@ -95,6 +95,7 @@ fn load_system_data_path() -> PathBuf {
 
 /// Load the home data directory.
 /// Returns None when the username could not be found.
+#[cfg(not(test))]
 pub fn home_data(username: &str) -> Option<PathBuf> {
 	if let Ok(x) = HOME_DATA.strip_prefix("~") {
 		let mut dir = homedir::home(username).expect("homedir error")?;
