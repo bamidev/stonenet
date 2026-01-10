@@ -90,12 +90,6 @@ pub struct IpAvailability {
 	pub tcp: Option<TransportAvailabilityEntry>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct LinkProtocol {
-	pub use_ipv6: bool,
-	pub use_tcp: bool,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NodeContactInfo {
 	pub address: NodeAddress,

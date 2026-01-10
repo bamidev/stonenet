@@ -59,6 +59,8 @@ impl Bucket {
 		self.fingers.iter().map(|e| &e.node_info)
 	}
 
+	/// Get the node's contact info that is saved for a finger of the bucket.
+	#[allow(dead_code)]
 	pub fn find(&self, address: &NodeAddress) -> Option<&NodeContactInfo> {
 		if let Some(index) = self.connections.iter().position(|n| &n.address == address) {
 			return Some(&self.connections[index]);

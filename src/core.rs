@@ -89,13 +89,6 @@ pub struct FileSearchIndex {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct FileHeader {
-	pub url: IdType,
-	pub mime_type: LimString<LimitMimeType>,
-	pub block_count: u32,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HomeFileObject {
 	pub hash: Option<IdType>,
 }

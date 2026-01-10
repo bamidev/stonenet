@@ -121,7 +121,7 @@ pub struct RelayedHelloAckPacket {
 }
 
 #[derive(Deserialize, Serialize)]
-struct HelloAckAckPacket {
+pub struct HelloAckAckPacket {
 	session_id: u16,
 	signature: NodeSignature,
 }
@@ -141,8 +141,6 @@ pub struct RelayHelloAckPacketBody {
 }
 
 pub type RelayHelloAckAckPacket = HelloAckAckPacket;
-
-pub type RelayedReadyAckPacket = HelloAckAckPacket;
 
 #[derive(Deserialize, Serialize)]
 pub struct HelloAckPacket {
@@ -297,6 +295,8 @@ where
 {
 	inner: S,
 	port: u16,
+	// Currently the 'openness' of the server is not being displayed anywere yet.
+	#[allow(dead_code)]
 	openness: Openness,
 }
 
@@ -806,7 +806,7 @@ impl Server {
 
 	/// Creates a new session for a relay connection to be established.
 	/// Returns None is the session already exists.
-	pub async fn new_relay_session(
+	pub(crate) async fn new_relay_session(
 		&self, source_session_id: u16, source_contact: ContactOption,
 		source_public_key: NodePublicKey, source_sender: Arc<dyn LinkSocketSender>,
 		target_node_id: NodeAddress, target_contact: ContactOption,
@@ -846,7 +846,7 @@ impl Server {
 		return Ok(Some((session_id, session_data)));
 	}
 
-	pub async fn new_relay_session2(
+	pub(crate) async fn new_relay_session2(
 		&self, source_contact: ContactOption, source_sender: Arc<dyn LinkSocketSender>,
 		packet: &RelayHelloPacket, timeout: Duration, ready_ack_sender: Option<Sender<u16>>,
 	) -> Result<

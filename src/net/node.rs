@@ -559,29 +559,6 @@ where
 		Some(&self.buckets[bucket_index as usize])
 	}
 
-	pub async fn find_finger_or_connection(
-		&self, id: &NodeAddress,
-	) -> Option<(NodeContactInfo, Option<Arc<Mutex<Box<sstp::Connection>>>>)> {
-		let bucket_pos = match self.differs_at_bit(id.as_id().as_ref()) {
-			// If ID is the same as ours, don't give any other contacts
-			None => return None,
-			Some(p) => p as usize,
-		};
-		let bucket = self.buckets[bucket_pos].lock().await;
-		// First check if we have an active connection to it
-		if let Some(node_info) = bucket.connections.iter().find(|c| &c.address == id) {
-			if &node_info.address == id {
-				if let Some((_, connection)) =
-					self.overlay_node().connection_manager().find(id).await
-				{
-					return Some((node_info.clone(), Some(connection.clone())));
-				}
-			}
-		}
-		// Then see if we have it in our cache.
-		bucket.find(id).map(|f| (f.clone(), None))
-	}
-
 	pub(super) async fn find_nearest_public_contacts(
 		&self, id: &IdType,
 	) -> (Vec<NodeContactInfo>, Vec<NodeContactInfo>) {

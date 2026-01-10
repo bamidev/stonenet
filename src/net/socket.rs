@@ -17,19 +17,12 @@ pub trait LinkSocket: Send + Sync {
 	type Receiver: LinkSocketReceiver + 'static;
 	type Sender: LinkSocketSender + 'static;
 
-	/// Should be implemented to fully close the socket.
-	/// Note: This method is async because TCP sockets for example, need to have
-	/// their internal handle dropped before another connection to the same
-	/// outbound and inbound address pair can be made. But before the internal
-	/// handle can be even dropped, it needs to be shutdown so that the
-	/// TCP connection can be shutdown cleanly, and that operation needs to
-	/// wait, further necessitating this method's async form.
-	async fn close(&mut self) -> io::Result<()>;
-
-	/// Should be implemented to return the max size a packet should be to be
+	/// Should be implemented to return the max size a packet should be, to be
 	/// able to be delivered, all circumstances considered.
+	#[allow(dead_code)]
 	fn max_packet_length(&self) -> usize;
 
+	/// Split the socket in a sending and receiving part to be used seperately.
 	fn split(self) -> (Self::Sender, Self::Receiver);
 }
 
@@ -63,8 +56,6 @@ pub trait LinkServer: Send + Sized + Sync {
 	type Target: Into<SocketAddr> + Clone + Send + 'static;
 
 	async fn bind(addr: Self::Target) -> io::Result<Self>;
-
-	fn is_connection_based(&self) -> bool;
 }
 
 #[async_trait]
@@ -117,7 +108,7 @@ where
 	V: Into<SocketAddr>,
 {
 	inner: tokio::net::TcpListener,
-	addr: UnsafeSync<V>,
+	_phantom: PhantomData<UnsafeSync<V>>,
 }
 pub struct TcpSocket<V>
 where
@@ -181,10 +172,6 @@ where
 			_phantom: PhantomData,
 		})
 	}
-
-	fn is_connection_based(&self) -> bool {
-		false
-	}
 }
 
 #[async_trait]
@@ -194,11 +181,6 @@ where
 {
 	type Receiver = UdpSocketReceiver<V>;
 	type Sender = UdpSocketSender<V>;
-
-	// TODO: Only have these close methods on connection based sockets
-	async fn close(&mut self) -> io::Result<()> {
-		Ok(())
-	}
 
 	fn max_packet_length(&self) -> usize {
 		udp_max_packet_length::<V>()
@@ -315,12 +297,8 @@ where
 		inner.set_keepalive(true)?;
 		Ok(Self {
 			inner: inner.listen(TCP_BACKLOG)?,
-			addr: UnsafeSync::new(addr),
+			_phantom: PhantomData,
 		})
-	}
-
-	fn is_connection_based(&self) -> bool {
-		true
 	}
 }
 
@@ -375,10 +353,6 @@ where
 {
 	type Receiver = TcpSocketReceiver<V>;
 	type Sender = TcpSocketSender<V>;
-
-	async fn close(&mut self) -> io::Result<()> {
-		self.inner.as_mut().unwrap().shutdown().await
-	}
 
 	fn split(self) -> (Self::Sender, Self::Receiver) {
 		let (rx, tx) = self.inner.unwrap().into_split();

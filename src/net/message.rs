@@ -72,12 +72,6 @@ pub struct FindNodeResponse {
 	//pub private: Vec<IdType>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileUploadMessage {
-	pub mime_type: LimString<LimitMimeType>,
-	pub blocks: LimVec<IdType, Limit10K>,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FindValueRequest {
 	pub id: IdType,
@@ -93,28 +87,14 @@ pub struct GetProfileResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct HeadRequest {}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct HeadResponse {
 	pub hash: IdType,
 	pub object: BlogchainObject,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct KeepAliveRequest {}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct KeepAliveResponse {
 	pub ok: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ListActorsRequest {}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ListActorsResponse {
-	address: NodeAddress,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -188,10 +168,7 @@ pub struct PassRelayRequestResponse {
 	pub ok: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PingRequest {}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct PingResponse {}
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -232,16 +209,6 @@ pub struct ReverseConnectionRequest {}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReverseConnectionResponse {
-	pub ok: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct StartRelayRequest {
-	pub origin: NodeContactInfo,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct StartRelayResponse {
 	pub ok: bool,
 }
 

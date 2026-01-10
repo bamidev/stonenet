@@ -86,9 +86,7 @@ struct KeepAliveToDo {
 
 struct OpenRelayToDo {
 	node: Arc<OverlayNode>,
-	source_contact: ContactOption,
 	target_node_id: NodeAddress,
-	target_contact: ContactOption,
 	assistant_node_info: NodeContactInfo,
 	hello_packet: RelayHelloPacket,
 	timeout: Duration,
@@ -1973,9 +1971,7 @@ impl OverlayNode {
 			raw_response,
 			Some(Box::new(OpenRelayToDo {
 				node: self.clone(),
-				source_contact: source_contact.clone(),
 				target_node_id: request.target_node_id,
-				target_contact: request.target_contact_option,
 				assistant_node_info: request.assistant_node,
 				hello_packet: request.hello_packet,
 				relay_node_contact,
