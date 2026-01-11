@@ -153,7 +153,7 @@ impl ActorNode {
 		&self.base.interface.actor_address
 	}
 
-	#[cfg(test)]
+	#[allow(dead_code)]
 	pub fn actor_id(&self) -> i64 {
 		self.base.interface.actor_id
 	}
@@ -1147,8 +1147,9 @@ impl ActorNode {
 						.await?;
 					result.file
 				} else {
-					#[cfg(test)]
-					panic!("File not found");
+					if cfg!(test) {
+						panic!("File not found");
+					}
 					continue;
 				}
 			};

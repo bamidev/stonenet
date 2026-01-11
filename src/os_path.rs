@@ -20,6 +20,7 @@ lazy_static! {
 }
 
 #[cfg(not(target_family = "windows"))]
+#[allow(dead_code)]
 fn load_home_data_path() -> PathBuf {
 	let mut path: PathBuf = env::var_os("XDG_DATA_HOME")
 		.unwrap_or("~/.local/share/".into())
@@ -29,6 +30,7 @@ fn load_home_data_path() -> PathBuf {
 }
 
 #[cfg(target_family = "windows")]
+#[allow(dead_code)]
 fn load_home_data_path() -> PathBuf {
 	"~/AppData/Local".into()
 }
@@ -43,6 +45,7 @@ fn load_system_data_path() -> PathBuf {
 }
 
 #[cfg(not(target_family = "windows"))]
+#[allow(dead_code)]
 /// First check if the current process is running as user stonenet, or some other normal user.
 /// If run as normal user, we store all data in the user-level directory .local/share/stonenet.
 fn load_system_data_path() -> PathBuf {
