@@ -55,13 +55,13 @@ pub const ACTOR_LIMIT_RECENT_OBJECTS: u64 = 10;
 pub const ACTOR_LIMIT_STORE_FILES: u64 = 1_000;
 /// The max amount of objects to keep at minimum for an actor.
 /// This should equate to about 3-4MB of disk space.
-pub const ACTOR_MIN_LIMIT_TOTAL_OBJECTS: u64 = 10_000;
+//pub const ACTOR_MIN_LIMIT_TOTAL_OBJECTS: u64 = 10_000;
 /// The max amount of files to keep at minimum for an actor.
 /// This should equate to about 1MB of disk space.
-pub const ACTOR_MIN_LIMIT_TOTAL_FILES: u64 = 10_000;
+//pub const ACTOR_MIN_LIMIT_TOTAL_FILES: u64 = 10_000;
 /// The max amount of bytes of blocks (excluding their meta data) to keep at
 /// minimum for an actor.
-pub const ACTOR_MIN_LIMIT_TOTAL_BLOCK_SPACE: u64 = 100_000_000;
+//pub const ACTOR_MIN_LIMIT_TOTAL_BLOCK_SPACE: u64 = 100_000_000;
 
 pub struct ActorNode {
 	pub(super) base: Arc<Node<ActorInterface>>,
@@ -266,20 +266,18 @@ impl ActorNode {
 									}
 								}
 							}
-						}
-					}
 
-					// If the post is a reply, also collect the object it replied to.
-					if let PostObjectCryptedData::Plain(plain) = &payload.data {
-						if let Some((actor_address, object_hash)) = &plain.in_reply_to {
-							if actor_address == self.actor_address() {
-								self.collect_object(connection, object_hash).await?;
-							} else {
-								self.spawn_collect_object_from_other_network(
-									actor_address.clone(),
-									object_hash.clone(),
-								);
-							};
+							// If the post is a reply, also collect the object it replied to.
+							if let Some((actor_address, object_hash)) = &plain.in_reply_to {
+								if actor_address == self.actor_address() {
+									self.collect_object(connection, object_hash).await?;
+								} else {
+									self.spawn_collect_object_from_other_network(
+										actor_address.clone(),
+										object_hash.clone(),
+									);
+								};
+							}
 						}
 					}
 				}
@@ -461,12 +459,6 @@ impl ActorNode {
 			let object_result: Box<V> = unsafe { Box::from_raw(p.into_inner() as *mut V) };
 			object_result
 		})
-	}
-
-	async fn has_object_by_sequence(&self, sequence: u64) -> db::Result<bool> {
-		self.db()
-			.has_object_sequence(self.base.interface.actor_id, sequence)
-			.await
 	}
 
 	/// Does all the work that is expected upon joining the network.

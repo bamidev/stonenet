@@ -249,6 +249,8 @@ impl sea_orm::sea_query::ValueType for ActorSignatureV1 {
 }
 
 impl NodePublicKey {
+	#[allow(dead_code)]
+	/// Constructs the public key from an array of bytes.
 	pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, NodePublicKeyError> {
 		Ok(Self(
 			ed25519::VerifyingKey::from_bytes(&bytes).map_err(|e| NodePublicKeyError(e))?,

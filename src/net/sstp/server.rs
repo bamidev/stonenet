@@ -253,19 +253,19 @@ pub(super) struct Sessions {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-enum SocketAddrSstp {
+pub enum SocketAddrSstp {
 	V4(SocketAddrSstpV4),
 	V6(SocketAddrSstpV6),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct SocketAddrSstpV4 {
+pub struct SocketAddrSstpV4 {
 	ip: Ipv4Addr,
 	port: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct SocketAddrSstpV6 {
+pub struct SocketAddrSstpV6 {
 	ip: Ipv6Addr,
 	port: u16,
 }
@@ -1345,7 +1345,6 @@ impl Server {
 			packet.header.target.clone().into(),
 			packet.header.target_use_tcp,
 		);
-		let target_node_id = packet.body.target_node_id.clone();
 		let (ready_ack_tx, mut ready_ack_rx) = mpsc::channel(1);
 		let (session, relayed_hello_packet, mut relayed_hello_rx) = match self
 			.new_relay_session2(

@@ -1913,9 +1913,7 @@ impl OverlayNode {
 		))
 	}
 
-	async fn process_open_relay_request(
-		self: &Arc<Self>, buffer: &[u8], source_contact: &ContactOption,
-	) -> MessageProcessorResult {
+	async fn process_open_relay_request(self: &Arc<Self>, buffer: &[u8]) -> MessageProcessorResult {
 		let request: OpenRelayRequest = match binserde::deserialize(buffer) {
 			Ok(r) => r,
 			Err(e) => {
@@ -2311,7 +2309,7 @@ impl OverlayNode {
 					.await
 			}
 			OVERLAY_MESSAGE_TYPE_OPEN_RELAY_REQUEST => {
-				self.process_open_relay_request(buffer, &contact).await
+				self.process_open_relay_request(buffer).await
 			}
 			OVERLAY_MESSAGE_TYPE_RELAY_REQUEST_REQUEST => {
 				self.process_relay_request_request(buffer).await
@@ -2706,7 +2704,6 @@ impl MessageWorkToDo for OpenRelayToDo {
 	// target node, to ask it to sent a RelayedHelloAckPacket to our server. Then,
 	// if it worked out, the packet will be sent back to the source node.
 	async fn run(&mut self, mut connection: Box<Connection>) -> Result<Option<Box<Connection>>> {
-		let target_node_id = self.hello_packet.body.target_node_id.clone();
 		let (_, relayed_hello_packet, mut relayed_hello_ack_rx) = match self
 			.node
 			.base

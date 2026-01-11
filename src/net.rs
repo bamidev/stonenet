@@ -54,12 +54,6 @@ pub struct ContactInfo {
 	pub ipv6: Option<Ipv6ContactInfo>,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
-pub struct ContactAvailability {
-	pub ipv4: Option<IpAvailability>,
-	pub ipv6: Option<IpAvailability>,
-}
-
 /// The contact info on a particular IP version
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ContactInfoEntry<A>

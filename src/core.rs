@@ -3,7 +3,6 @@ use std::{
 	fmt::Display,
 	ops::{Deref, DerefMut},
 	str::{self, FromStr},
-	sync::Arc,
 };
 
 use base58::{FromBase58, FromBase58Error, ToBase58};
@@ -41,12 +40,6 @@ pub struct ActorInfoV1 {
 	pub actor_type: LimString<Limit32>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-pub struct Block {
-	pub hash: IdType,
-	pub data: Arc<Vec<u8>>,
-}
-
 #[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[repr(u8)]
 pub enum CompressionType {
@@ -78,13 +71,6 @@ pub struct File {
 	/// Or 0 for no compression.
 	pub compression_type: u8,
 	/// The sequence of data blocks of the file.
-	pub blocks: Vec<IdType>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct FileSearchIndex {
-	pub hash: IdType,
-	pub mime_type: LimString<LimitMimeType>,
 	pub blocks: Vec<IdType>,
 }
 
@@ -195,12 +181,6 @@ pub enum ObjectPayload {
 	/// a user chooses to 'visit' the actor as if it was a website.
 	/// The hash is a hash of a file that was once posted using a post object.
 	HomeFile(HomeFileObject),
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-pub struct ObjectHeader {
-	pub index: u64,
-	pub signature: ActorSignatureV1,
 }
 
 impl ActorAddress {

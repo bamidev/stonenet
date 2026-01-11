@@ -154,13 +154,6 @@ async fn home(
 
 	translate_special_mime_types_for_objects(&mut objects);
 
-	let system_user = cookies.get("system-user").map(|c| c.value().to_string());
-	let identities: Vec<(String, ActorAddress)> =
-		match g.base.api.fetch_identities(system_user.as_deref()).await {
-			Ok(result) => result.into_iter().map(|r| (r.0, r.1)).collect(),
-			Err(e) => return server_error_response(e, "unable to fetch identities"),
-		};
-
 	let mut context = Context::new();
 	context.insert("objects", &objects);
 	context.insert("page", &p);

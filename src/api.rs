@@ -11,7 +11,6 @@ use chrono::Utc;
 use log::*;
 use rand::rngs::OsRng;
 use sea_orm::{prelude::*, NotSet, Set};
-use serde::Serialize;
 use tokio::{io, spawn, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -407,6 +406,7 @@ impl Api {
 	}
 
 	/// Fetches all known identities, regardless of what system user it may be tied to.
+	#[allow(dead_code)]
 	pub async fn fetch_all_identities(
 		&self,
 	) -> db::Result<Vec<(String, ActorAddress, IdType, String)>> {
@@ -523,10 +523,10 @@ impl Api {
 		&self, actor_address: ActorAddress, file_hash: IdType,
 	) -> db::Result<PossibleFileStream> {
 		let db = self.db.clone();
-		let r: Option<(File, i64)> = self.find_file2(&file_hash, Some(&actor_address)).await?;
+		let r = self.find_file2(&file_hash, Some(&actor_address)).await?;
 
 		// TODO: Don't decompress the file, but let the browser do that.
-		if let Some((file, file_id)) = r {
+		if let Some((file, _)) = r {
 			let compression_type = match CompressionType::from_u8(file.compression_type) {
 				Some(t) => t,
 				None => {

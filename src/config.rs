@@ -57,11 +57,6 @@ pub struct Config {
 	pub federation_server_name: Option<String>,
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
-pub struct Settings {
-	pub default_space_allocation: u32,
-}
-
 impl Config {
 	pub fn parse_tracked_actors(&self) -> Vec<ActorAddress> {
 		let mut addrs = Vec::new();

@@ -438,7 +438,6 @@ pub async fn compose_activity_from_object_info(
 			);
 			Some((serde_json::to_value(activity).unwrap(), Vec::new()))
 		}
-		_ => None,
 	};
 	Ok(activity_opt)
 }

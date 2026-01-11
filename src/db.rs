@@ -6,7 +6,7 @@
 /// because the transaction also locks the database.
 mod install;
 
-use std::{cmp::min, fmt, net::SocketAddr, ops::*, path::*, str, time::Duration};
+use std::{cmp::min, net::SocketAddr, path::*, str, time::Duration};
 
 use async_trait::async_trait;
 use chacha20::{
@@ -16,8 +16,6 @@ use chacha20::{
 use generic_array::{typenum::U12, GenericArray};
 use log::*;
 use sea_orm::{prelude::*, sea_query::*, *};
-use thiserror::Error;
-use unsafe_send_sync::UnsafeSendSync;
 
 use crate::{
 	common::*,
@@ -35,36 +33,39 @@ pub(crate) const BLOCK_SIZE: usize = 0x1000000; // 16 MiB
 
 #[derive(Clone)]
 pub struct Database {
-	path: PathBuf,
 	orm: DatabaseConnection,
 }
 
 // TODO: Make the sea_orm::DatabaseTransaction inside private
 pub struct Transaction(pub(crate) sea_orm::DatabaseTransaction);
 
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-	/// Sqlite error
-	DecompressDecodeError(i32),
-	OrmError(sea_orm::DbErr),
-
+	#[error("invalid actor address format: {0}")]
 	ActorAddress(FromBytesAddressError),
-	InvalidCompressionType(u8),
-	InvalidObjectType(u8),
-	/// An invalidhash has been found in the database
-	InvalidHash(IdFromBase58Error),
-	InvalidSignature(NodeSignatureError),
-	InvalidPrivateKey(usize),
-	InvalidPublicKey,
-	/// The data that is stored for a block is corrupt
-	BlockDataCorrupt(i64),
+	#[error("data of block {0} has invalid size {1} (expected {2})")]
 	BlockDataInvalidSize(IdType, usize, usize),
-	//PostMissingFiles(i64),
+	#[error("decoding error during decompression: {0}")]
+	DecompressDecodeError(i32),
+	#[error("file {0} is missing block with sequence {1}")]
 	FileMissingBlock(i64, u32),
+	#[error("file {0} has no blocks")]
 	FileWithoutBlocks(i64),
-
-	MissingIdentity(ActorAddress),
-	/// Something in the database is not how it is expected to be.
+	#[error("invalid compression type: {0}")]
+	InvalidCompressionType(u8),
+	#[error("invalid object type: {0}")]
+	InvalidObjectType(u8),
+	#[error("hash not a valid base58 encoded 32-byte address: {0}")]
+	InvalidHash(IdFromBase58Error),
+	#[error("invalid signature: {0}")]
+	InvalidSignature(NodeSignatureError),
+	#[error("invalid private key (size = {0})")]
+	InvalidPrivateKey(usize),
+	#[error("invalid public key")]
+	InvalidPublicKey,
+	#[error("orm error: {0}")]
+	OrmError(sea_orm::DbErr),
+	#[error("unexpected database state: {0}")]
 	UnexpectedState(String),
 }
 
@@ -280,15 +281,6 @@ pub trait PersistenceHandle {
 			.is_some())
 	}
 
-	async fn has_object_sequence(&self, actor_id: i64, sequence: u64) -> Result<bool> {
-		Ok(object::Entity::find()
-			.filter(object::Column::ActorId.eq(actor_id))
-			.filter(object::Column::Sequence.eq(sequence))
-			.one(self.inner())
-			.await?
-			.is_some())
-	}
-
 	async fn load_activity_pub_follower_servers(&self, actor_id: i64) -> Result<Vec<String>> {
 		let (query, vals) = Query::select()
 			.distinct()
@@ -309,26 +301,10 @@ pub trait PersistenceHandle {
 		Ok(servers)
 	}
 
-	async fn load_file_blocks(&self, file_id: i64, block_count: u32) -> Result<Vec<IdType>> {
-		let results = file_block::Entity::find()
-			.filter(file_block::Column::FileId.eq(file_id))
-			.order_by_asc(file_block::Column::Sequence)
-			.all(self.inner())
-			.await?;
-
-		// Verify if all blocks are all there
-		for i in 0..results.len() as u32 {
-			if results[i as usize].sequence != i {
-				Err(Error::FileMissingBlock(file_id, i))?;
-			}
-		}
-		if (results.len() as u32) < block_count {
-			Err(Error::FileMissingBlock(file_id, results.len() as u32))?;
-		}
-
-		Ok(results.into_iter().map(|r| r.block_hash).collect())
-	}
-
+	#[allow(dead_code)]
+	/// Loads the data of a file, if all blocks are stored locally.
+	///
+	/// * `hash`: The hash of the file.
 	async fn load_file_data(&self, hash: &IdType) -> Result<Option<FileData>> {
 		Ok(
 			if let Some(file) = file::Entity::find()
@@ -359,6 +335,12 @@ pub trait PersistenceHandle {
 		)
 	}
 
+	/// Loads the data of a file, if all blocks are stored locally.
+	///
+	/// * `file_id`: The database file ID.
+	/// * `compression_type`: The type of compression that is used to store the file data.
+	/// * `plain_hash`: The hash of the plain data.
+	/// * `block_count`: The number of blocks.
 	async fn load_file_data2(
 		&self, file_id: i64, compression_type: CompressionType, plain_hash: &IdType,
 		block_count: u32,
@@ -546,7 +528,7 @@ pub trait PersistenceHandle {
 				.load_profile_object_payload(object_id)
 				.await?
 				.map(|p| ObjectPayload::Profile(p)),
-			_ => None,
+			_ => Err(Error::InvalidObjectType(object_type))?,
 		})
 	}
 
@@ -985,19 +967,18 @@ impl Database {
 			.await
 		{
 			Ok(_) => {}
-			//Query(SqlxError(Database(SqliteError { code: 1, message: "no such table: version" })))
 			Err(e) => {
 				if let DbErr::Query(sea_orm::error::RuntimeErr::SqlxError(e2)) = &e {
 					if e2.to_string().ends_with("no such table: version") {
 						Self::install(&orm).await?;
-						return Ok(Self { path, orm });
+						return Ok(Self { orm });
 					}
 				}
 				Err(e)?
 			}
 		}
 
-		Ok(Self { path, orm })
+		Ok(Self { orm })
 	}
 
 	pub async fn store_object(
@@ -1037,43 +1018,6 @@ impl PersistenceHandle for Transaction {
 
 	fn inner(&self) -> &Self::Inner {
 		&self.0
-	}
-}
-
-impl fmt::Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		match self {
-			Self::DecompressDecodeError(code) => {
-				write!(f, "decode error during decompression: {}", code)
-			}
-			Self::OrmError(e) => write!(f, "{}", e),
-			Self::ActorAddress(e) => write!(f, "invalid actor address format: {}", e),
-			Self::InvalidCompressionType(code) => write!(f, "invalid compression type: {}", code),
-			Self::InvalidHash(e) => {
-				write!(f, "hash not a valid base58-encoded 32-byte address {}", e)
-			}
-			Self::InvalidSignature(e) => write!(f, "invalid signature: {}", e),
-			Self::InvalidObjectType(code) => {
-				write!(f, "invalid object type found in database: {}", code)
-			}
-			//Self::InvalidPrivateKey(e) => write!(f, "invalid private_key: {}", e),
-			Self::BlockDataCorrupt(block_id) => write!(f, "data of block {} is corrupt", block_id),
-			Self::BlockDataInvalidSize(block_id, expected_size, actual_size) => {
-				write!(
-					f,
-					"data of block {} has invalid size {} (expected {})",
-					block_id, actual_size, expected_size
-				)
-			}
-			Self::FileMissingBlock(file_id, sequence) => {
-				write!(f, "file {} missing block sequence {}", file_id, sequence)
-			}
-			Self::FileWithoutBlocks(file_id) => write!(f, "file {} has no blocks", file_id),
-			Self::InvalidPrivateKey(len) => write!(f, "invalid private key (size={})", len),
-			Self::InvalidPublicKey => write!(f, "invalid public key"),
-			Self::MissingIdentity(hash) => write!(f, "identity {:?} is missing", &hash),
-			Self::UnexpectedState(msg) => write!(f, "unexpected database state: {}", msg),
-		}
 	}
 }
 
