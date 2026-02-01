@@ -2,10 +2,10 @@
 set -e
 
 if [ "$1" == "configure" ]; then
-	chown -R stonenet /var/lib/stonenet
-
 	if ! getent passwd stonenet; then
-		adduser --system --ingroup myuser --no-create-home myuser
+		adduser --system --ingroup stonenet --no-create-home stonenet
 	fi
+
+	chown -R stonenet:stonenet /var/lib/stonenet
 fi
 
