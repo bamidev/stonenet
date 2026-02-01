@@ -97,9 +97,16 @@
                 pkg-config
                 pkgs.openssl.dev
                 rustPlatform.bindgenHook
+                rustPlatform.rustLibSrc
                 zenity
               ]
               ++ browser-window.packages.${system}.webkitgtk.buildInputs;
+
+            # Install rust-analyzer for those who want to use an LSP for the toolchain of this
+            # project.
+            shellHook = ''
+              rustup component add rust-analyzer
+            '';
           };
         };
 
