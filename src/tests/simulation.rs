@@ -1,11 +1,16 @@
-use std::sync::{
-	atomic::{AtomicBool, Ordering},
-	Arc,
+use std::{
+	env,
+	sync::{
+		atomic::{AtomicBool, Ordering},
+		Arc,
+	},
 };
 
-use crate::{config::Config, core::*, net::*, test::*, web::info::ObjectPayloadInfo};
+use crate::{api::Api, config::Config, core::*, net::*, test::*, web::info::ObjectPayloadInfo};
+use futures::future::join_all;
 use log::*;
-use rand::RngCore;
+use rand::prelude::*;
+use tempfile::NamedTempFile;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_data_synchronizations_assisting() {
@@ -36,7 +41,39 @@ async fn test_data_synchronization(
 	identity_label: &str, node1_openness: Openness, node2_openness: Openness,
 	test_notifications: bool,
 ) {
+	async fn load_extra_nodes(
+		count: usize, stop_flag: &Arc<AtomicBool>, rng: &mut (impl CryptoRng + RngCore),
+		bootstrap_node_port: u16,
+	) -> Vec<(Api, NamedTempFile)> {
+		let mut results = Vec::with_capacity(count);
+		for i in 0..count {
+			let mut config = Config::default();
+			config.ipv4_address = Some("127.0.0.1".to_string());
+			config.ipv4_udp_openness = Some("bidirectional".to_string());
+			config.ipv4_udp_port = Some(0);
+			config.bootstrap_nodes = vec![format!("127.0.0.1:{}", bootstrap_node_port)];
+
+			let result = load_test_node(
+				stop_flag.clone(),
+				rng,
+				&config,
+				&("extra-node-".to_string() + &i.to_string()),
+			)
+			.await;
+			results.push(result);
+		}
+		results
+	}
+
 	let mut rng = initialize_rng();
+	let mut network_size: usize = env::var("NETWORK_SIZE")
+		.unwrap_or("4".to_string())
+		.parse()
+		.expect("unable to parse NETWORK_SIZE environment variable");
+	if network_size < 4 {
+		network_size = 4;
+	}
+	let extra_nodes = network_size - 4;
 
 	// Set up four nodes
 	let stop_flag = Arc::new(AtomicBool::new(false));
@@ -75,6 +112,7 @@ async fn test_data_synchronization(
 		load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
 	let (node1, node1_file) = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
 	let (node2, node2_file) = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
+	let extra_nodes = load_extra_nodes(extra_nodes, &stop_flag, &mut rng, port1).await;
 
 	// Make sure node 1 & 2 know about the relay node, because otherwise they may not be able to
 	// reach eachother whenever they just happened to not need to come across this node before and
@@ -311,4 +349,5 @@ Hoi ik ben Kees!
 	drop(node1_file);
 	drop(node2_file);
 	drop(relay_file);
+	drop(extra_nodes);
 }
