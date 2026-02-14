@@ -34,3 +34,5 @@ jobs:
       run: sudo nix --extra-experimental-features 'nix-command flakes' build
     - name: Build desktop client with Nix
       run: sudo nix --extra-experimental-features 'nix-command flakes' build .#desktop
+    - name: Run a simulation with 100 nodes
+      run: RUST_BACKTRACE=full RUST_LOG=info NETWORK_SIZE=100 cargo test --verbose test_data_synchronizations_relaying
