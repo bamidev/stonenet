@@ -110,9 +110,9 @@ async fn test_data_synchronization(
 	config4.bootstrap_nodes = vec![format!("127.0.0.1:{}", port1)];
 	let (relay_node, relay_file) =
 		load_test_node(stop_flag.clone(), &mut rng, &config2, "random").await;
+	let extra_nodes = load_extra_nodes(extra_nodes, &stop_flag, &mut rng, port1).await;
 	let (node1, node1_file) = load_test_node(stop_flag.clone(), &mut rng, &config3, "node1").await;
 	let (node2, node2_file) = load_test_node(stop_flag.clone(), &mut rng, &config4, "node2").await;
-	let extra_nodes = load_extra_nodes(extra_nodes, &stop_flag, &mut rng, port1).await;
 
 	// Make sure node 1 & 2 know about the relay node, because otherwise they may not be able to
 	// reach eachother whenever they just happened to not need to come across this node before and
